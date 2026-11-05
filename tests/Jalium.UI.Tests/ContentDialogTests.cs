@@ -4,12 +4,51 @@ using Jalium.UI.Controls;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Tests;
 
 [Collection("Application")]
 public class ContentDialogTests
 {
+    [Fact]
+    public void CssModalSelector_FollowsInPlaceDialogLifecycle()
+    {
+        ResetApplicationState();
+        ResetInputState();
+        var app = new Application();
+
+        try
+        {
+            var root = new Grid();
+            var dialog = new ContentDialog { Title = "Dialog" };
+            root.Children.Add(dialog);
+            var window = CreateWindow(root);
+            app.MainWindow = window;
+            Css.SetStyleSheet(root, "ContentDialog:modal { opacity:.6 }");
+            MeasureWindow(window);
+            CssEvaluationScheduler.FlushIfPending(window.Dispatcher);
+            Assert.Equal(1, dialog.Opacity);
+
+            var showTask = dialog.ShowAsync(ContentDialogPlacement.InPlace);
+            MeasureWindow(window);
+            CssEvaluationScheduler.FlushIfPending(window.Dispatcher);
+            Assert.Equal(.6, dialog.Opacity);
+            Assert.False(showTask.IsCompleted);
+
+            dialog.Hide();
+            ProcessUiQueue();
+            CssEvaluationScheduler.FlushIfPending(window.Dispatcher);
+            Assert.Equal(1, dialog.Opacity);
+            Assert.True(showTask.IsCompletedSuccessfully);
+        }
+        finally
+        {
+            ResetApplicationState();
+            ResetInputState();
+        }
+    }
+
     [Fact]
     public void ShowAsync_DetachedDialog_ShouldResolveMainWindow()
     {
@@ -27,12 +66,20 @@ public class ContentDialogTests
                 Title = "Dialog",
                 PrimaryButtonText = "OK"
             };
+            Css.SetStyleSheet(dialog, "ContentDialog:modal { opacity:.6 }");
+            var modal = Assert.Single(CssSelectorParser.ParseGroup(":modal", out _)!);
+            Assert.False(CssMatcher.Matches(dialog, modal, evaluateStates: true));
+            CssEvaluationScheduler.FlushIfPending(window.Dispatcher);
+            Assert.Equal(1, dialog.Opacity);
 
             var showTask = dialog.ShowAsync();
             MeasureWindow(window);
             ProcessUiQueue();
 
             Assert.False(showTask.IsCompleted);
+            Assert.True(CssMatcher.Matches(dialog, modal, evaluateStates: true));
+            CssEvaluationScheduler.FlushIfPending(window.Dispatcher);
+            Assert.Equal(.6, dialog.Opacity);
             Assert.Same(dialog, window.ActiveContentDialog);
             Assert.Equal(Visibility.Visible, dialog.Visibility);
             Assert.NotNull(GetPrivateField<ContentDialogOverlayHost>(dialog, "_popupHost"));
@@ -41,6 +88,9 @@ public class ContentDialogTests
             ProcessUiQueue();
 
             Assert.True(showTask.IsCompletedSuccessfully);
+            Assert.False(CssMatcher.Matches(dialog, modal, evaluateStates: true));
+            CssEvaluationScheduler.FlushIfPending(window.Dispatcher);
+            Assert.Equal(1, dialog.Opacity);
             Assert.Equal(ContentDialogResult.None, GetCompleted(showTask));
             Assert.Null(window.ActiveContentDialog);
         }
@@ -756,9 +806,195 @@ public class ContentDialogTests
         }
     }
 
+    [Theory]
+    [InlineData(ContentDialogPlacement.Popup)]
+    [InlineData(ContentDialogPlacement.InPlace)]
+    [InlineData(ContentDialogPlacement.UnconstrainedPopup)]
+    public void Close_ShouldRestoreOriginalInputFocus(ContentDialogPlacement placement)
+    {
+        ResetApplicationState();
+        ResetInputState();
+        var app = new Application();
+        try
+        {
+            var root = new Grid();
+            var input = new TextBox { Text = "search query" };
+            root.Children.Add(input);
+            var window = new DisplayedTestWindow { Content = root, Width = 800, Height = 600 };
+            app.MainWindow = window;
+            MeasureWindow(window);
+            Assert.True(input.Focus());
+            var dialogInput = new TextBox();
+            var dialog = new ContentDialog { Content = dialogInput, CloseButtonText = "Cancel" };
+            if (placement == ContentDialogPlacement.InPlace) root.Children.Add(dialog);
+
+            var task = dialog.ShowAsync(placement);
+            MeasureWindow(window);
+            ProcessUiQueue();
+            Assert.True(dialogInput.Focus());
+            Assert.Same(dialogInput, Keyboard.FocusedElement);
+            dialog.Hide();
+            ProcessUiQueue();
+
+            Assert.True(task.IsCompletedSuccessfully);
+            Assert.Same(input, Keyboard.FocusedElement);
+            Assert.Equal("search query", input.Text);
+        }
+        finally
+        {
+            ResetApplicationState();
+            ResetInputState();
+        }
+    }
+
+    [Fact]
+    public void Close_ShouldRestoreSourceReenabledAfterShowTaskCompletes()
+    {
+        ResetApplicationState();
+        ResetInputState();
+        Jalium.UI.Markup.ThemeLoader.Initialize();
+        var app = new Application();
+        try
+        {
+            var source = new Button { Content = "Open" };
+            var window = CreateWindow(source);
+            app.MainWindow = window;
+            MeasureWindow(window);
+            Assert.True(source.Focus());
+            var dialogInput = new TextBox();
+            var dialog = new ContentDialog { Content = dialogInput, CloseButtonText = "Cancel" };
+            var task = dialog.ShowAsync();
+            source.IsEnabled = false;
+            MeasureWindow(window);
+            ProcessUiQueue();
+            Assert.True(dialogInput.Focus());
+            dialog.Hide();
+            Assert.True(task.IsCompletedSuccessfully);
+            // Async commands enable their source after awaiting ShowAsync.
+            source.IsEnabled = true;
+            ProcessUiQueue();
+            Assert.Same(source, Keyboard.FocusedElement);
+        }
+        finally
+        {
+            ResetApplicationState();
+            ResetInputState();
+        }
+    }
+
+    [Theory]
+    [InlineData("removed")]
+    [InlineData("disabled")]
+    [InlineData("hidden")]
+    [InlineData("other-window")]
+    public void Close_ShouldNotRestoreUnavailableInput(string state)
+    {
+        ResetApplicationState();
+        ResetInputState();
+        var app = new Application();
+        try
+        {
+            var root = new Grid();
+            var input = new TextBox();
+            root.Children.Add(input);
+            var window = new DisplayedTestWindow { Content = root, Width = 800, Height = 600 };
+            app.MainWindow = window;
+            MeasureWindow(window);
+            Assert.True(input.Focus());
+            var dialog = new ContentDialog { Content = new TextBox(), CloseButtonText = "Cancel" };
+            var task = dialog.ShowAsync();
+            MeasureWindow(window);
+            ProcessUiQueue();
+            if (state == "removed") root.Children.Remove(input);
+            if (state == "disabled") input.IsEnabled = false;
+            if (state == "hidden") input.Visibility = Visibility.Hidden;
+            if (state == "other-window")
+            {
+                root.Children.Remove(input);
+                _ = CreateWindow(input);
+            }
+            dialog.Hide();
+            ProcessUiQueue();
+            Assert.True(task.IsCompletedSuccessfully);
+            Assert.NotSame(input, Keyboard.FocusedElement);
+        }
+        finally
+        {
+            ResetApplicationState();
+            ResetInputState();
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Close_ShouldRespectExplicitFocusTransfer(bool inClosedHandler)
+    {
+        ResetApplicationState();
+        ResetInputState();
+        var app = new Application();
+        try
+        {
+            var root = new Grid();
+            var original = new TextBox();
+            var destination = new TextBox();
+            root.Children.Add(original);
+            root.Children.Add(destination);
+            var window = CreateWindow(root);
+            app.MainWindow = window;
+            MeasureWindow(window);
+            Assert.True(original.Focus());
+            var dialog = new ContentDialog { Content = new TextBox(), CloseButtonText = "Cancel" };
+            var task = dialog.ShowAsync();
+            MeasureWindow(window);
+            ProcessUiQueue();
+            if (inClosedHandler) dialog.Closed += (_, _) => destination.Focus();
+            else Assert.True(destination.Focus());
+            dialog.Hide();
+            ProcessUiQueue();
+            Assert.True(task.IsCompletedSuccessfully);
+            Assert.Same(destination, Keyboard.FocusedElement);
+        }
+        finally
+        {
+            ResetApplicationState();
+            ResetInputState();
+        }
+    }
+
+    [Fact]
+    public void HostWindowClose_ShouldNotRefocusOriginalInput()
+    {
+        ResetApplicationState();
+        ResetInputState();
+        var app = new Application();
+        try
+        {
+            var input = new TextBox();
+            var window = CreateWindow(input);
+            app.MainWindow = window;
+            MeasureWindow(window);
+            Assert.True(input.Focus());
+            var dialog = new ContentDialog { Content = new TextBox(), CloseButtonText = "Cancel" };
+            var task = dialog.ShowAsync();
+            MeasureWindow(window);
+            ProcessUiQueue();
+            typeof(ContentDialog).GetMethod("OnHostWindowClosed", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(dialog, null);
+            ProcessUiQueue();
+            Assert.True(task.IsCompletedSuccessfully);
+            Assert.NotSame(input, Keyboard.FocusedElement);
+        }
+        finally
+        {
+            ResetApplicationState();
+            ResetInputState();
+        }
+    }
+
     private static Window CreateWindow(UIElement content)
     {
-        return new Window
+        return new DisplayedTestWindow
         {
             TitleBarStyle = WindowTitleBarStyle.Native,
             Width = 800,
@@ -829,8 +1065,8 @@ public class ContentDialogTests
         Assert.Equal(width, dialog.ActualWidth);
         Assert.Equal(height, dialog.ActualHeight);
 
-        Assert.Equal((width - card.ActualWidth) / 2, card.VisualBounds.X, 3);
-        Assert.Equal((height - card.ActualHeight) / 2, card.VisualBounds.Y, 3);
+        Assert.Equal(card.RoundLayoutValue((width - card.ActualWidth) / 2), card.VisualBounds.X, 3);
+        Assert.Equal(card.RoundLayoutValue((height - card.ActualHeight) / 2), card.VisualBounds.Y, 3);
     }
 
     private static void ProcessUiQueue()

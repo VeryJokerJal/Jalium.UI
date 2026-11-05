@@ -7,8 +7,10 @@ using Jalium.UI.Media;
 
 namespace Jalium.UI.Tests;
 
-public class ScrollViewerAutoHideTests
+public class ScrollViewerAutoHideTests : IDisposable
 {
+    public ScrollViewerAutoHideTests() => ScrollBarTemplateTestHelper.Register();
+
     [Fact]
     public void ScrollViewer_AutoHide_Default_ShouldBeEnabled()
     {
@@ -352,6 +354,28 @@ public class ScrollViewerAutoHideTests
     }
 
     [Fact]
+    public void ScrollBar_SettledAutoHideTarget_ShouldNotInvalidateAgain()
+    {
+        var scrollBar = new ScrollBar
+        {
+            Orientation = Orientation.Vertical,
+            Maximum = 100,
+            ViewportSize = 20
+        };
+
+        scrollBar.Measure(new Size(12, 120));
+        scrollBar.Arrange(new Rect(0, 0, 12, 120));
+        ForceAutoHideProgress(scrollBar, 1.0);
+        ForceAutoHideVisibilityProgress(scrollBar, 1.0);
+        scrollBar.ClearRenderDirty();
+
+        scrollBar.StartAutoHideVisualTransition(1.0);
+        scrollBar.StartAutoHideVisibilityTransition(1.0);
+
+        Assert.False(scrollBar.IsRenderDirty);
+    }
+
+    [Fact]
     public void ScrollViewer_AutoVisibility_WithAutoHideDisabled_ShouldRemainVisible()
     {
         var viewer = CreateConfiguredViewer(autoHideEnabled: false, verticalVisibility: ScrollBarVisibility.Auto);
@@ -504,4 +528,6 @@ public class ScrollViewerAutoHideTests
         Assert.NotNull(value);
         return (T)value!;
     }
+    public void Dispose() => ScrollBarTemplateTestHelper.Reset();
+
 }

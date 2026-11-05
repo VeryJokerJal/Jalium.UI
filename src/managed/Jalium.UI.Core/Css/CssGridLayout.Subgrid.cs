@@ -4,7 +4,7 @@ namespace Jalium.UI.Styling;
 
 internal sealed partial class CssGridLayout
 {
-    private Panel? _parentGrid;
+    private FrameworkElement? _parentGrid;
     private BorrowedAxis? _borrowedColumns, _borrowedRows;
     private double _parentAreaWidth = double.NaN;
     private bool _assignmentDirty;
@@ -13,7 +13,7 @@ internal sealed partial class CssGridLayout
 
     private BorrowedAxis? Borrowed(bool row)
     {
-        if (_parentGrid is null || _parentGrid.CssDisplayMode != CssDisplayMode.Grid || !ReferenceEquals(owner.VisualParent, _parentGrid))
+        if (_parentGrid is null || _parentGrid.CssDisplayMode != CssDisplayMode.Grid || !ReferenceEquals(CssContentsLayout.BoxParent(owner), _parentGrid))
         {
             _parentGrid = null; _borrowedColumns = _borrowedRows = null;
             return null;
@@ -42,7 +42,7 @@ internal sealed partial class CssGridLayout
         private static bool EqualArray(double[]? a, double[]? b) => a is null ? b is null : b is not null && a.AsSpan().SequenceEqual(b);
     }
 
-    private void SetAssignment(Panel parent, BorrowedAxis? columns, BorrowedAxis? rows, double width)
+    private void SetAssignment(FrameworkElement parent, BorrowedAxis? columns, BorrowedAxis? rows, double width)
     {
         var same = ReferenceEquals(parent, _parentGrid) && width.Equals(_parentAreaWidth) &&
             (columns?.SameAs(_borrowedColumns) ?? _borrowedColumns is null) && (rows?.SameAs(_borrowedRows) ?? _borrowedRows is null);
@@ -55,7 +55,7 @@ internal sealed partial class CssGridLayout
     {
         foreach (var item in items)
         {
-            if (item.Box.Element is not Panel { CssDisplayMode: CssDisplayMode.Grid } child) continue;
+            if (item.Box.Element is not FrameworkElement { CssDisplayMode: CssDisplayMode.Grid } child) continue;
             var columnTemplate = ((CssComputedGridTracks)child.GetValue(CssGridProperties.ColumnsProperty)!).Tracks;
             var rowTemplate = ((CssComputedGridTracks)child.GetValue(CssGridProperties.RowsProperty)!).Tracks;
             var borrowedColumns = columnTemplate.IsSubgrid
@@ -130,7 +130,7 @@ internal sealed partial class CssGridLayout
         {
             var start = row ? item.Row : item.Column;
             var span = row ? item.RowSpan : item.ColumnSpan;
-            if (item.Box.Element is Panel { CssDisplayMode: CssDisplayMode.Grid } child &&
+            if (item.Box.Element is FrameworkElement { CssDisplayMode: CssDisplayMode.Grid } child &&
                 CssDisplayLayout.GridFor(child) is { } subgrid && subgrid.Borrowed(row) is { } borrowed &&
                 (row ? subgrid._snapshot?.RowContributions : item.SubgridColumnContributions) is { } source)
             {
@@ -172,7 +172,7 @@ internal sealed partial class CssGridLayout
     {
         foreach (var item in plan.Items)
         {
-            if (item.Box.Element is Panel { CssDisplayMode: CssDisplayMode.Grid } child &&
+            if (item.Box.Element is FrameworkElement { CssDisplayMode: CssDisplayMode.Grid } child &&
                 CssDisplayLayout.GridFor(child) is { } grid && grid.IsSubgridded(false))
             {
                 var nested = grid.CreatePlan(new Size(double.PositiveInfinity, double.PositiveInfinity));

@@ -105,6 +105,13 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
 
     public UIElement()
     {
+        // Metadata defaults do not raise a property-changed callback.
+        var type = GetType();
+        if (BackdropEffectProperty.GetMetadata(type).DefaultValue is IBackdropEffect)
+            SetBackdropReplayCandidate(BackdropReplayEffect, true);
+        if (Styling.CssCompositingProperties.MixProperty.GetMetadata(type).DefaultValue is CssBlendMode mode &&
+            mode != CssBlendMode.Normal)
+            SetBackdropReplayCandidate(BackdropReplayBlend, true);
     }
 
     // Thunk = WPF 风格的"原始事件 → 翻译事件"裂解：MouseDownEvent（Bubble）路由到每个
@@ -556,7 +563,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         DependencyProperty.Register(nameof(RenderTransform), typeof(Transform), typeof(UIElement),
             new FrameworkPropertyMetadata(null,
                 FrameworkPropertyMetadataOptions.AffectsRender | FrameworkPropertyMetadataOptions.AffectsCompositionOnly,
-                OnRenderTransformChanged));
+                OnRenderTransformChanged, Styling.CssMotionPath.CoerceRenderTransform));
 
     /// <summary>
     /// Identifies the RenderTransformOrigin dependency property.
@@ -567,7 +574,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         DependencyProperty.Register(nameof(RenderTransformOrigin), typeof(Point), typeof(UIElement),
             new FrameworkPropertyMetadata(new Point(0, 0),
                 FrameworkPropertyMetadataOptions.AffectsRender | FrameworkPropertyMetadataOptions.AffectsCompositionOnly,
-                OnCompositionPropertyChanged));
+                OnRenderTransformOriginChanged, Styling.CssTransform3D.CoerceRenderTransformOrigin));
 
     /// <summary>
     /// Identifies the Focusable dependency property.
@@ -718,7 +725,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         get
         {
             var localValue = (bool)GetValue(IsHitTestVisibleProperty)!;
-            if (!localValue) return false;
+            if (!localValue || Styling.CssContainmentProperties.SuppressedBySkippedAncestor(this)) return false;
             return VisualParent is not UIElement parent || parent.IsHitTestVisible;
         }
         set => SetValue(IsHitTestVisibleProperty, value);
@@ -962,12 +969,16 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     /// <returns>True if focus was successfully set; otherwise, false.</returns>
     public bool Focus()
     {
-        if (!Focusable || !IsEnabled || !IsVisible ||
+        if (!Focusable || !IsEnabled || !IsVisible || Styling.CssContentsLayout.IsContents(this) ||
+            Styling.CssContentsLayout.Suppressed(this) ||
+            Styling.CssContainmentProperties.SuppressedBySkippedAncestor(this, hiddenOnly: true) ||
             Jalium.UI.Styling.CssDisplayProperties.IsExitInert(this))
         {
             return false;
         }
 
+        if (this is FrameworkElement element)
+            Styling.CssContainmentProperties.RequestRevealForFocusOrSearch(element);
         var result = FocusService.Focus(this);
         return result == this;
     }
@@ -1248,7 +1259,17 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     /// Gets or sets a visual-only translation offset applied during rendering.
     /// Does not affect layout — used for animation effects (e.g., cloth draping).
     /// </summary>
-    internal Point RenderOffset { get; set; }
+    private Point _renderOffset;
+    internal Point RenderOffset
+    {
+        get => _renderOffset;
+        set
+        {
+            if (_renderOffset == value) return;
+            _renderOffset = value;
+            if (this is FrameworkElement element) element.RefreshCssTextInkAncestors();
+        }
+    }
 
     /// <summary>
     /// Returns a geometry for clipping the contents of this element.
@@ -1269,13 +1290,15 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     internal virtual Geometry? GetAdditionalChildLayoutClip(Visual child) => null;
 
     internal bool IsPointInsideChildLayoutClip(Point localPoint)
-        => GetChildLayoutClip()?.FillContains(localPoint) ?? true;
+        => Styling.CssTableLayout.WrapperClip(this, GetChildLayoutClip())?.FillContains(localPoint) ?? true;
 
     internal bool IsPointInsideAdditionalChildLayoutClip(Point localPoint, Visual child)
-        => GetAdditionalChildLayoutClip(child)?.FillContains(localPoint) ?? true;
+        => (GetAdditionalChildLayoutClip(child) ?? Styling.CssTableLayout.GridChildClip(this, child))?.FillContains(localPoint) ?? true;
 
     internal virtual Geometry? GetLayoutClip()
     {
+        if (Styling.CssContentsLayout.IsContents(this)) return null;
+        if (Styling.CssLineClampLayout.VisuallySuppressed(this)) return new RectangleGeometry(default(Rect));
         // Explicit Clip geometry takes precedence
         var clip = Clip;
         if (clip != null)
@@ -1428,7 +1451,8 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     /// </summary>
     internal virtual bool IsPointInsideLayoutClip(Point localPoint)
     {
-        var clip = GetLayoutClip();
+        if (Styling.CssLineClampLayout.HitSuppressed(this)) return false;
+        var clip = Styling.CssTableLayout.WrapperClip(this, GetLayoutClip());
         if (clip == null)
         {
             return true;
@@ -1505,6 +1529,8 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         _isArrangeValid = false;
     }
 
+    internal FrameworkElement? CssInlineLayoutOwner;
+
     /// <summary>
     /// Invalidates the measure pass for this element.
     /// </summary>
@@ -1513,6 +1539,8 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         MeasureInputVersion = Interlocked.Increment(ref s_measureInputVersion);
         _isMeasureValid = false;
         _isArrangeValid = false;
+        if (CssInlineLayoutOwner is { } inlineOwner && !ReferenceEquals(inlineOwner, this))
+            inlineOwner.InvalidateMeasure();
 
         // Same reasoning as in InvalidateArrange: this clears the arrange flag directly,
         // so a request raised from inside this element's own arrange has to be recorded
@@ -1522,7 +1550,18 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
             _arrangeInvalidatedWhileArranging = true;
         }
 
-        FindLayoutManager()?.InvalidateMeasure(this);
+        if (FindLayoutManager() is { } layoutManager)
+        {
+            layoutManager.InvalidateMeasure(this);
+        }
+        else if (!IsLayoutIsolated)
+        {
+            for (var parent = VisualParent as UIElement; parent is not null; parent = parent.VisualParent as UIElement)
+            {
+                parent.MarkMeasureInvalid();
+                if (parent.IsLayoutIsolated) break;
+            }
+        }
 
         // Always register this element in the window's dirty-element set — NOT only
         // on the first valid->invalid transition, which is what the old code did (it
@@ -1579,7 +1618,18 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
             _arrangeInvalidatedWhileArranging = true;
         }
 
-        FindLayoutManager()?.InvalidateArrange(this);
+        if (FindLayoutManager() is { } layoutManager)
+        {
+            layoutManager.InvalidateArrange(this);
+        }
+        else if (!IsLayoutIsolated)
+        {
+            for (var parent = VisualParent as UIElement; parent is not null; parent = parent.VisualParent as UIElement)
+            {
+                parent.MarkArrangeInvalid();
+                if (parent.IsLayoutIsolated) break;
+            }
+        }
 
         // Always register as dirty — same reasoning as InvalidateMeasure above. An
         // element arrange-invalidated while already arrange-invalid (a fresh subtree,
@@ -1607,10 +1657,12 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     /// </remarks>
     private void InvalidateLayoutVisual()
     {
+        // Detached visuals can already own recorded drawings (bitmap captures,
+        // previews, or a tree prepared before it is attached to a window).
+        SetRenderDirty();
         var windowHost = GetWindowHostOrNull();
         if (windowHost == null) return;
 
-        SetRenderDirty();
         windowHost.AddDirtyElement(this);
         windowHost.InvalidateWindow();
     }
@@ -1654,6 +1706,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     /// </remarks>
     public void InvalidateComposition()
     {
+        if (this is FrameworkElement element) element.RefreshCssTextInkAncestors();
         MarkSubtreeDirtyForComposition();
 
         var windowHost = GetWindowHostOrNull();
@@ -1770,10 +1823,10 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         _cachedLayoutManager = null;
 
         // Recursively invalidate children's host caches too
-        var count = VisualChildrenCount;
+        var count = InternalVisualChildrenCount;
         for (int i = 0; i < count; i++)
         {
-            if (GetVisualChild(i) is UIElement uiChild)
+            if (InternalGetVisualChild(i) is UIElement uiChild)
                 uiChild.InvalidateHostCachesCore();
         }
     }
@@ -1870,6 +1923,12 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     /// </remarks>
     internal Rect GetRenderBounds()
     {
+        if (Styling.CssTransform3D.ChainHas3DTransform(this))
+        {
+            var m3d = Styling.CssTransform3D.GetWorldMatrix3DTo(this, null, includeRenderOffset: true);
+            return Styling.CssTransform3D.TransformLocalRectBounds(m3d, new Rect(0, 0, _renderSize.Width, _renderSize.Height));
+        }
+
         // Fast path: identical to GetScreenBounds() when nothing on the chain carries a
         // RenderTransform (the overwhelmingly common case → no matrix math, cache-friendly).
         if (!ChainHasRenderTransform())
@@ -1933,6 +1992,12 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     /// </summary>
     internal Rect MapLocalRectToScreen(Rect local)
     {
+        if (Styling.CssTransform3D.ChainHas3DTransform(this))
+        {
+            var m3d = Styling.CssTransform3D.GetWorldMatrix3DTo(this, null, includeRenderOffset: true);
+            return Styling.CssTransform3D.TransformLocalRectBounds(m3d, local);
+        }
+
         if (!ChainHasRenderTransform())
         {
             var origin = GetScreenBounds();
@@ -1964,7 +2029,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         Visual? current = this;
         while (current != null && current is not IWindowHost)
         {
-            if (current is UIElement ui)
+            if (current is UIElement ui && !Styling.CssContentsLayout.IsContents(ui))
             {
                 var vb = ui.VisualBounds;
                 var ro = ui.RenderOffset;
@@ -2028,7 +2093,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         Visual? current = this;
         while (current != null && current != ancestor && current is not IWindowHost)
         {
-            if (current is UIElement ui)
+            if (current is UIElement ui && !Styling.CssContentsLayout.IsContents(ui))
             {
                 var vb = ui.VisualBounds;
                 double offX = vb.X;
@@ -2128,7 +2193,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
                     ui.RenderOffset.Y != 0)
                     return false;
 
-                var clip = ui.GetLayoutClip();
+                var clip = Styling.CssTableLayout.WrapperClip(ui, ui.GetLayoutClip());
                 if (clip != null)
                 {
                     // clip.Bounds is the ancestor-local AABB. Rounded/inset shapes collapse to their
@@ -2192,6 +2257,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     /// <param name="availableSize">The available size for the element.</param>
     public void Measure(Size availableSize)
     {
+        Jalium.UI.Styling.CssPositionedLayout.RecordAvailable(this, availableSize);
         if (Visibility == Visibility.Collapsed)
         {
             _desiredSize = default;
@@ -2249,6 +2315,25 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     /// </summary>
     /// <param name="finalRect">The final area for this element.</param>
     public void Arrange(Rect finalRect)
+    {
+        if (!Jalium.UI.Styling.CssPositionedLayout.IsActive)
+        {
+            ArrangeInternal(finalRect);
+            return;
+        }
+
+        Jalium.UI.Styling.CssPositionedLayout.BeginArrange();
+        Jalium.UI.Styling.CssPositionedLayout.RecordAvailable(this, finalRect.Size);
+        var completed = false;
+        try
+        {
+            ArrangeInternal(finalRect);
+            completed = true;
+        }
+        finally { Jalium.UI.Styling.CssPositionedLayout.EndArrange(this, completed); }
+    }
+
+    private void ArrangeInternal(Rect finalRect)
     {
         if (Jalium.UI.Styling.CssEngine.IsActive && this is FrameworkElement cssRoot)
             Jalium.UI.Styling.CssEngine.RecordViewportAllocation(cssRoot, finalRect.Size);
@@ -2536,10 +2621,10 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     /// </summary>
     private static void InvalidateVisualRecursive(UIElement element)
     {
-        var count = element.VisualChildrenCount;
+        var count = element.InternalVisualChildrenCount;
         for (int i = 0; i < count; i++)
         {
-            if (element.GetVisualChild(i) is UIElement child)
+            if (element.InternalGetVisualChild(i) is UIElement child)
             {
                 child.InvalidateVisual();
                 InvalidateVisualRecursive(child);
@@ -2605,9 +2690,9 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
 
     private void PropagateIsEnabledToDescendants()
     {
-        for (int i = 0; i < VisualChildrenCount; i++)
+        for (int i = 0; i < InternalVisualChildrenCount; i++)
         {
-            if (GetVisualChild(i) is UIElement child)
+            if (InternalGetVisualChild(i) is UIElement child)
             {
                 child.InvalidateVisual();
                 child.OnIsEnabledChanged(true, child.IsEnabled);
@@ -2625,9 +2710,9 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
 
     private void PropagateIsHitTestVisibleToDescendants()
     {
-        for (int i = 0; i < VisualChildrenCount; i++)
+        for (int i = 0; i < InternalVisualChildrenCount; i++)
         {
-            if (GetVisualChild(i) is UIElement child)
+            if (InternalGetVisualChild(i) is UIElement child)
             {
                 child.InvalidateVisual();
                 child.OnIsHitTestVisibleChanged(true, child.IsHitTestVisible);
@@ -2765,7 +2850,9 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     {
         if (d is UIElement element)
         {
+            element.SetBackdropReplayCandidate(BackdropReplayEffect, e.NewValue is IBackdropEffect);
             element.OnBackdropEffectChanged((IBackdropEffect?)e.OldValue, (IBackdropEffect?)e.NewValue);
+            Jalium.UI.Styling.CssPositionedLayout.ContainingBlockChanged(element);
         }
     }
 
@@ -2800,6 +2887,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
             // GetDirtyRenderBounds 的扩边判断落后于真实 Effect。
             element._effectForDirtyBounds = e.NewValue as IEffect;
             element.OnEffectChanged(e.OldValue, e.NewValue);
+            Jalium.UI.Styling.CssPositionedLayout.ContainingBlockChanged(element);
         }
     }
 
@@ -2870,6 +2958,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     {
         if (d is UIElement element)
         {
+            InvalidateHitTestCache();
             element.InvalidateVisual();
         }
     }
@@ -2899,6 +2988,13 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         if (d is UIElement element)
         {
             element.InvalidateComposition();
+            if (e.Property == OpacityProperty)
+            {
+                bool wasGroup = e.OldValue is double oldOp && oldOp < 1.0;
+                bool isGroup = e.NewValue is double newOp && newOp < 1.0;
+                if (wasGroup != isGroup)
+                    Jalium.UI.Styling.CssPositionedLayout.ContainingBlockChanged(element);
+            }
         }
     }
 
@@ -2917,6 +3013,8 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         // Publish the effective transform before any event-driven work observes
         // the element's new composition state.
         element._renderTransformForBounds = e.NewValue as Transform;
+        if ((e.OldValue is null) != (e.NewValue is null))
+            Jalium.UI.Styling.CssPositionedLayout.ContainingBlockChanged(element);
 
         if (e.OldValue is Transform oldTransform)
         {
@@ -2929,6 +3027,45 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         }
 
         element.InvalidateComposition();
+        element.RefreshCssTransformOrigin();
+    }
+
+    private Point? _resolvedRenderTransformOrigin;
+
+    private static void OnRenderTransformOriginChanged(DependencyObject owner, DependencyPropertyChangedEventArgs change)
+    {
+        if (owner is UIElement element)
+            element._resolvedRenderTransformOrigin = (Point)change.NewValue!;
+        OnCompositionPropertyChanged(owner, change);
+        if (owner is UIElement visual) Styling.CssMotionPath.RefreshTransformOrigin(visual);
+    }
+
+    internal bool RefreshCssTransformOrigin()
+    {
+        var current = RenderTransformOrigin;
+        var previous = _resolvedRenderTransformOrigin ??
+            (RenderTransformOriginProperty.GetMetadata(GetType()).DefaultValue is Point value ? value : default);
+        _resolvedRenderTransformOrigin = current;
+        if (previous == current) return false;
+        OnPropertyChanged(new DependencyPropertyChangedEventArgs(RenderTransformOriginProperty, previous, current));
+        return true;
+    }
+
+    internal override void OnEffectiveValueSourceChanged(DependencyProperty property)
+    {
+        base.OnEffectiveValueSourceChanged(property);
+        if (property == RenderTransformProperty || property == RenderTransformOriginProperty)
+            RefreshCssTransformOrigin();
+        if (property == RenderTransformOriginProperty)
+            Styling.CssMotionPath.RefreshTransformOrigin(this);
+    }
+
+    internal bool NotifyCssMotionTransformChanged(Transform? previous, Transform? current)
+    {
+        if ((previous is null) == (current is null) &&
+            (previous?.Value ?? Matrix.Identity) == (current?.Value ?? Matrix.Identity)) return false;
+        OnPropertyChanged(new DependencyPropertyChangedEventArgs(RenderTransformProperty, previous, current));
+        return true;
     }
 
     private void OnRenderTransformSubPropertyChanged(object? sender, EventArgs e)
@@ -5185,10 +5322,10 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
 
         if (clearAnimatedValue)
         {
-            if (animation.Kind is ElementAnimationKind.Storyboard or ElementAnimationKind.Explicit)
+            if (animation.IsCssTransition || animation.Kind is ElementAnimationKind.Storyboard or ElementAnimationKind.Explicit)
             {
-                // Removing or replacing an explicit clock restores the base
-                // layer, including BeginAnimation(dp, null). HoldEnd keeps its
+                // Explicit clocks and CSS transitions restore the base layer
+                // at teardown, including BeginAnimation(dp, null). HoldEnd keeps its
                 // value while the clock is attached; teardown must not rewrite
                 // a local, styled or bound base value.
                 DiscardAnimatedValue(dp);
@@ -5235,7 +5372,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         // Handle fill behavior
         var fillBehavior = completedAnimation.Animation.AnimationFillBehavior;
 
-        if (fillBehavior == AnimationFillBehavior.Stop)
+        if (completedAnimation.IsCssTransition || fillBehavior == AnimationFillBehavior.Stop)
         {
             // Remove animation and restore base value
             RemoveAnimationCore(completedProperty, completedAnimation, clearAnimatedValue: true);
@@ -5387,6 +5524,13 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         return dp.GetMetadata(GetType()) is FrameworkPropertyMetadata fpm && fpm.AffectsCompositionOnly;
     }
 
+    /// <summary>Applies an explicit storyboard seek without advancing a paused clock.</summary>
+    internal void RefreshStoryboardAnimationValue(DependencyProperty dp, IAnimationClock clock)
+    {
+        if (_activeAnimations?.TryGetValue(dp, out var animation) == true && ReferenceEquals(animation.Clock, clock))
+            UpdateAnimatedValue(dp);
+    }
+
     /// <summary>
     /// Recomputes and applies the current value for an animated dependency property.
     /// </summary>
@@ -5454,9 +5598,9 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     {
         StopAnimationsForRecycleLocal();
 
-        for (int i = 0; i < VisualChildrenCount; i++)
+        for (int i = 0; i < InternalVisualChildrenCount; i++)
         {
-            if (GetVisualChild(i) is UIElement child)
+            if (InternalGetVisualChild(i) is UIElement child)
             {
                 child.StopAnimationsForRecycleRecursiveCore();
             }
@@ -5843,9 +5987,9 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
                 return true;
             }
 
-            for (var index = 0; index < VisualChildrenCount; index++)
+            for (var index = 0; index < InternalVisualChildrenCount; index++)
             {
-                if (GetVisualChild(index) is UIElement child && child.AreAnyTouchesOver)
+                if (InternalGetVisualChild(index) is UIElement child && child.AreAnyTouchesOver)
                 {
                     return true;
                 }
@@ -6169,6 +6313,8 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
             return false;
 
         if (Jalium.UI.Styling.CssEngine.IsActive && Jalium.UI.Styling.CssTransitions.IsConfiguration(dp)) return false;
+        if (Jalium.UI.Styling.CssEngine.IsActive && this is FrameworkElement sizingElement &&
+            Jalium.UI.Styling.CssSizingPresentation.SuppressNativeTransition(sizingElement, dp)) return false;
 
         if (dp == VisibilityProperty &&
             HasAutomaticTransition(Jalium.UI.Styling.CssDisplayProperties.SpecificationProperty)) return false;
@@ -6190,12 +6336,21 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         if (_transitionNoProperties)
             return false;
 
+        // Most writes during hover are not transition targets (pointer state,
+        // scale, layout metadata). Reject them before querying OS motion policy.
+        var cssTransitionData = Jalium.UI.Styling.CssEngine.IsActive
+            ? GetValue(Jalium.UI.Styling.CssTransitions.DataProperty) as Jalium.UI.Styling.CssTransitionData
+            : null;
+        if (cssTransitionData is null && !_transitionAllProperties &&
+            _transitionPropertyLookup?.ContainsKey(dp.Name) != true)
+            return false;
+
         if (AutomaticTransitionsEnabledProvider is { } transitionsEnabled && !transitionsEnabled())
             return false;
         if (GetAutomaticTransitionAnimationFactory() == null)
             return false;
 
-        if (Jalium.UI.Styling.CssEngine.IsActive && GetValue(Jalium.UI.Styling.CssTransitions.DataProperty) is Jalium.UI.Styling.CssTransitionData cssData)
+        if (cssTransitionData is { } cssData)
         {
             if (HasLocalValue(dp)) return false;
             var cssTransition = cssData.Find(this, dp);
@@ -6314,6 +6469,18 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     {
         return TryGetActiveAnimation(dp, out var animation) &&
                animation.Kind == ElementAnimationKind.AutomaticTransition;
+    }
+
+    internal bool HasCssTransition(DependencyProperty dp)
+        => TryGetActiveAnimation(dp, out var animation) && animation.IsCssTransition;
+
+    internal void CancelUnselectedCssTransitions(Styling.CssTransitionData? data)
+    {
+        if (_activeAnimations is null) return;
+        // Teardown can invoke property callbacks; do not enumerate the live map.
+        var cancelled = _activeAnimations.Where(pair => pair.Value.IsCssTransition &&
+            data?.Find(this, pair.Key) is null).Select(pair => pair.Key).ToArray();
+        foreach (var property in cancelled) StopAutomaticTransition(property, clearAnimatedValue: true);
     }
 
     private static void OnTransitionConfigurationChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -6445,9 +6612,9 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     {
         root.ScheduleAutomaticTransitionArm();
 
-        for (int i = 0; i < root.VisualChildrenCount; i++)
+        for (int i = 0; i < root.InternalVisualChildrenCount; i++)
         {
-            if (root.GetVisualChild(i) is UIElement child)
+            if (root.InternalGetVisualChild(i) is UIElement child)
             {
                 ScheduleAutomaticTransitionArmRecursive(child);
             }
@@ -6458,9 +6625,9 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     {
         root.DisarmAutomaticTransitions();
 
-        for (int i = 0; i < root.VisualChildrenCount; i++)
+        for (int i = 0; i < root.InternalVisualChildrenCount; i++)
         {
-            if (root.GetVisualChild(i) is UIElement child)
+            if (root.InternalGetVisualChild(i) is UIElement child)
             {
                 DisarmAutomaticTransitionsRecursive(child);
             }
@@ -6652,10 +6819,22 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
 
     public bool ShouldSerializeInputBindings() => _inputBindings is { Count: > 0 };
 
-    public IInputElement? InputHitTest(Point point) => VisualTreeHelper.HitTest(this, point)?.VisualHit as IInputElement;
+    public IInputElement? InputHitTest(Point point) => Styling.CssGeneratedContent.ResolveHit(VisualTreeHelper.HitTest(this, point))?.VisualHit as IInputElement;
 
     public Point TranslatePoint(Point point, UIElement? relativeTo)
     {
+        if (Styling.CssTransform3D.ChainHas3DTransform(this) ||
+            (relativeTo != null && Styling.CssTransform3D.ChainHas3DTransform(relativeTo)))
+        {
+            var mThis = Styling.CssTransform3D.GetWorldMatrix3DTo(this, null, includeRenderOffset: false);
+            if (!Styling.CssTransform3D.TryProjectPoint(mThis, point, out var inRoot3D))
+                return point;
+            if (relativeTo == null)
+                return inRoot3D;
+            var mRel = Styling.CssTransform3D.GetWorldMatrix3DTo(relativeTo, null, includeRenderOffset: false);
+            return Styling.CssTransform3D.TryInverseProjectPoint(mRel, inRoot3D, out var relPt) ? relPt : point;
+        }
+
         var inRoot = GetRenderMatrixTo(null).Transform(point);
         if (relativeTo == null)
         {
@@ -6705,7 +6884,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
             }
         }
 
-        RaiseLayoutUpdatedRecursive(root);
+        PublishLayoutUpdated(root);
     }
 
     private static (bool Measure, bool Arrange) PropagateHeadlessLayoutInvalidation(Visual visual)
@@ -6715,9 +6894,9 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         var arrange = element is not null && !element.IsArrangeValid;
         if (element?.Visibility != Visibility.Collapsed)
         {
-            for (var i = 0; i < visual.VisualChildrenCount; i++)
+            for (var i = 0; i < visual.InternalVisualChildrenCount; i++)
             {
-                if (visual.GetVisualChild(i) is not { } child) continue;
+                if (visual.InternalGetVisualChild(i) is not { } child) continue;
                 var dirty = PropagateHeadlessLayoutInvalidation(child);
                 measure |= dirty.Measure; arrange |= dirty.Arrange;
             }
@@ -6861,9 +7040,9 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     private static void RaiseLayoutUpdatedRecursive(UIElement element)
     {
         element.LayoutUpdated?.Invoke(element, EventArgs.Empty);
-        for (var index = 0; index < element.VisualChildrenCount; index++)
+        for (var index = 0; index < element.InternalVisualChildrenCount; index++)
         {
-            if (element.GetVisualChild(index) is UIElement child)
+            if (element.InternalGetVisualChild(index) is UIElement child)
             {
                 RaiseLayoutUpdatedRecursive(child);
             }
@@ -7008,7 +7187,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         bool visible;
         if (!Styling.CssDisplayProperties.HasVisibilityDeclarations)
         {
-            visible = Visibility == Visibility.Visible &&
+            visible = !Styling.CssReplacedContent.IsSuppressed(this) && !Styling.CssContentsLayout.Suppressed(this) && !Styling.CssRubyVisibility.Suppressed(this) && Visibility == Visibility.Visible &&
                       (VisualParent is not UIElement parent || parent.IsVisible);
         }
         else
@@ -7047,9 +7226,9 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         }
 
         if (IsVisible != visible) SetValue(IsVisiblePropertyKey, visible);
-        for (var index = 0; index < VisualChildrenCount; index++)
+        for (var index = 0; index < InternalVisualChildrenCount; index++)
         {
-            if (GetVisualChild(index) is UIElement child)
+            if (InternalGetVisualChild(index) is UIElement child)
             {
                 child.UpdateIsVisibleFromTree(forceDescendants);
             }

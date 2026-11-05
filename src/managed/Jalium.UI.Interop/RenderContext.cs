@@ -667,11 +667,18 @@ public sealed class RenderContext : IDisposable
     {
     }
 
+    internal static RenderContext CreateRasterizerContext() =>
+        new(RenderBackend.Software, GpuPreference.Auto, RenderingEngine.Auto, publishIfAbsent: false, rasterizer: true);
+
+    internal RenderTarget CreateOffscreenRenderTarget(int width, int height) =>
+        new(this, default, width, height, offscreen: true);
+
     private RenderContext(
         RenderBackend backend,
         GpuPreference gpuPreference,
         RenderingEngine renderingEngine,
-        bool publishIfAbsent)
+        bool publishIfAbsent,
+        bool rasterizer = false)
     {
         var requestedBackend = backend;
         bool hasExplicitConfiguration =
@@ -688,10 +695,10 @@ public sealed class RenderContext : IDisposable
         // and vulkan-1.dll remain unloaded for the lifetime of the process.
         NativeMethods.EnsureBackendInitialized(backend);
 
-        _handle = NativeMethods.ContextCreate(backend);
+        _handle = rasterizer ? NativeMethods.ContextCreateRasterizer() : NativeMethods.ContextCreate(backend);
 
         // If Auto failed, explicitly retry with Software as last-resort fallback.
-        if (_handle == nint.Zero && backend != RenderBackend.Software)
+        if (_handle == nint.Zero && backend != RenderBackend.Software && !rasterizer)
         {
             NativeMethods.EnsureBackendInitialized(RenderBackend.Software);
             _handle = NativeMethods.ContextCreate(RenderBackend.Software);

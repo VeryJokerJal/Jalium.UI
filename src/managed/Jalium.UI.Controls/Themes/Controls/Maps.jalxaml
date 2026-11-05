@@ -1,58 +1,128 @@
 ﻿<ResourceDictionary
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:automation="clr-namespace:Jalium.UI.Automation">
 
     <!-- ============================================== -->
     <!-- MapView Style                                    -->
     <!-- ============================================== -->
-    <!-- MapView is a self-rendering control: OnRender draws the tiles,
-         markers, polylines, polygons, scale bar, attribution and zoom
-         buttons directly. A ControlTemplate is intentionally omitted —
-         a templated Border child would render *after* OnRender (children
-         render on top) and occlude the map surface. -->
+    <Style TargetType="MapScaleBar">
+        <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
+        <Setter Property="Padding" Value="4,2" /><Setter Property="CornerRadius" Value="3" />
+        <Setter Property="FontSize" Value="10" />
+        <Setter Property="Template"><ControlTemplate TargetType="MapScaleBar">
+            <Border Background="{TemplateBinding Background}" CornerRadius="{TemplateBinding CornerRadius}" Padding="{TemplateBinding Padding}">
+                <StackPanel>
+                    <TextBlock Name="PART_Label" Text="{TemplateBinding Label}" Foreground="{TemplateBinding Foreground}" />
+                    <Grid Name="PART_Scale" Width="{TemplateBinding ScaleWidth}" Height="8" HorizontalAlignment="Left">
+                        <Border Background="{TemplateBinding Foreground}" Height="4" VerticalAlignment="Center" />
+                        <Border Background="{TemplateBinding Foreground}" Width="1" HorizontalAlignment="Left" />
+                        <Border Background="{TemplateBinding Foreground}" Width="1" HorizontalAlignment="Right" />
+                    </Grid>
+                </StackPanel>
+            </Border>
+        </ControlTemplate></Setter>
+    </Style>
+    <Style x:Key="MapView.ZoomButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+        <Setter Property="Width" Value="28" /><Setter Property="Height" Value="28" />
+        <Setter Property="MinWidth" Value="0" /><Setter Property="MinHeight" Value="0" />
+        <Setter Property="Padding" Value="0" /><Setter Property="FontSize" Value="16" />
+        <Setter Property="CornerRadius" Value="4" />
+    </Style>
     <Style TargetType="MapView">
         <Setter Property="Background" Value="{ThemeResource LayerFillColorDefaultBrush}" />
         <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
         <Setter Property="BorderBrush" Value="{ThemeResource SurfaceStrokeColorDefaultBrush}" />
-        <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="CornerRadius" Value="12" />
-        <Setter Property="Padding" Value="0" />
-        <Setter Property="MinWidth" Value="200" />
-        <Setter Property="MinHeight" Value="200" />
-
-        <Style.Triggers>
-            <Trigger Property="IsEnabled" Value="False">
-                <Setter Property="Opacity" Value="0.65" />
-            </Trigger>
-        </Style.Triggers>
+        <Setter Property="BorderThickness" Value="1" /><Setter Property="CornerRadius" Value="12" />
+        <Setter Property="Padding" Value="0" /><Setter Property="MinWidth" Value="200" /><Setter Property="MinHeight" Value="200" />
+        <Setter Property="Template"><ControlTemplate TargetType="MapView">
+            <Grid Name="PART_Root">
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup Name="CommonStates"><VisualState Name="Normal" /><VisualState Name="Disabled"><VisualState.Setters><Setter TargetName="PART_Root" Property="Opacity" Value="0.65" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="FocusStates"><VisualState Name="Unfocused" /><VisualState Name="Focused" /></VisualStateGroup>
+                    <VisualStateGroup Name="InteractionStates"><VisualState Name="Idle" /><VisualState Name="Dragging" /></VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <Border Name="PART_Border" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="{TemplateBinding CornerRadius}" IsHitTestVisible="False" />
+                <Grid Clip="{TemplateBinding MapContentClip}">
+                    <MapViewSurface Name="PART_MapSurface" Owner="{Binding RelativeSource={RelativeSource TemplatedParent}}" />
+                    <StackPanel Name="PART_ZoomControls" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="10" Visibility="{TemplateBinding ZoomControlsVisibility}">
+                        <Button Name="PART_ZoomInButton" Style="{StaticResource MapView.ZoomButton}" Content="+" Command="{TemplateBinding ZoomInCommand}" IsEnabled="{TemplateBinding CanZoomIn}" automation:AutomationProperties.Name="Zoom in" />
+                        <Button Name="PART_ZoomOutButton" Style="{StaticResource MapView.ZoomButton}" Content="−" Margin="0,2,0,0" Command="{TemplateBinding ZoomOutCommand}" IsEnabled="{TemplateBinding CanZoomOut}" automation:AutomationProperties.Name="Zoom out" />
+                    </StackPanel>
+                    <MapScaleBar Name="PART_ScaleBar" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="6" Label="{TemplateBinding ScaleBarLabel}" ScaleWidth="{TemplateBinding ScaleBarWidth}" Visibility="{TemplateBinding ScaleBarVisibility}" IsHitTestVisible="False" />
+                    <Border Name="PART_Attribution" Background="{ThemeResource SurfaceBackground}" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="4" Padding="4,2" MaxWidth="180" Visibility="{TemplateBinding AttributionVisibility}">
+                        <TextBlock Text="{TemplateBinding AttributionText}" FontSize="9" Foreground="{ThemeResource TextSecondary}" TextWrapping="Wrap" />
+                    </Border>
+                </Grid>
+            </Grid>
+        </ControlTemplate></Setter>
     </Style>
-
-    <!-- ============================================== -->
-    <!-- MiniMap Style                                    -->
-    <!-- ============================================== -->
-    <!-- A small overview map typically overlaid on a MapView. -->
     <Style TargetType="MiniMap">
         <Setter Property="Background" Value="{ThemeResource LayerFillColorDefaultBrush}" />
         <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
         <Setter Property="BorderBrush" Value="{ThemeResource SurfaceStrokeColorDefaultBrush}" />
-        <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="CornerRadius" Value="10" />
-        <Setter Property="Width" Value="150" />
-        <Setter Property="Height" Value="100" />
-
-        <Style.Triggers>
-            <Trigger Property="IsEnabled" Value="False">
-                <Setter Property="Opacity" Value="0.65" />
-            </Trigger>
-        </Style.Triggers>
+        <Setter Property="BorderThickness" Value="1" /><Setter Property="CornerRadius" Value="10" />
+        <Setter Property="Width" Value="150" /><Setter Property="Height" Value="100" />
+        <Setter Property="Template"><ControlTemplate TargetType="MiniMap">
+            <Grid Name="PART_Root">
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup Name="CommonStates"><VisualState Name="Normal" /><VisualState Name="Disabled"><VisualState.Setters><Setter TargetName="PART_Root" Property="Opacity" Value="0.65" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="InteractionStates"><VisualState Name="Idle" /><VisualState Name="Dragging" /></VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <Border Name="PART_Border" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="{TemplateBinding CornerRadius}" IsHitTestVisible="False" />
+                <Grid Clip="{TemplateBinding OverviewContentClip}">
+                    <MiniMapSurface Name="PART_OverviewSurface" Owner="{Binding RelativeSource={RelativeSource TemplatedParent}}" />
+                    <Canvas IsHitTestVisible="False">
+                        <Border Name="PART_Viewport" Background="{TemplateBinding EffectiveViewportBrush}" BorderBrush="{TemplateBinding EffectiveViewportBorderBrush}" BorderThickness="{TemplateBinding EffectiveViewportBorderThickness}" Visibility="{TemplateBinding ViewportVisibility}"
+                            Canvas.Left="{Binding ViewportBounds.X, RelativeSource={RelativeSource TemplatedParent}}" Canvas.Top="{Binding ViewportBounds.Y, RelativeSource={RelativeSource TemplatedParent}}"
+                            Width="{Binding ViewportBounds.Width, RelativeSource={RelativeSource TemplatedParent}}" Height="{Binding ViewportBounds.Height, RelativeSource={RelativeSource TemplatedParent}}" />
+                    </Canvas>
+                </Grid>
+            </Grid>
+        </ControlTemplate></Setter>
     </Style>
 
     <!-- ============================================== -->
     <!-- GeographicHeatmap Style                          -->
     <!-- ============================================== -->
-    <!-- A geographic heatmap overlay (FrameworkElement-based, no template). -->
+    <!-- Intensity pixels and the replaceable legend are separate template parts. -->
     <Style TargetType="GeographicHeatmap">
         <Setter Property="IsHitTestVisible" Value="False" />
+        <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
+        <Setter Property="Template"><ControlTemplate TargetType="GeographicHeatmap">
+            <Grid Name="Root">
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup Name="CommonStates"><VisualState Name="Normal" /><VisualState Name="Disabled" /></VisualStateGroup>
+                    <VisualStateGroup Name="LegendStates"><VisualState Name="LegendVisible" /><VisualState Name="LegendHidden" /></VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <Border Name="PART_Border" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="{TemplateBinding CornerRadius}" />
+                <Grid Clip="{TemplateBinding HeatmapContentClip}">
+                    <GeographicHeatmapView Name="PART_HeatmapView" Owner="{Binding RelativeSource={RelativeSource TemplatedParent}}" />
+                    <Canvas>
+                        <Border Name="PART_Legend" Background="{ThemeResource LayerFillColorDefaultBrush}" BorderBrush="{ThemeResource SurfaceStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="3" Padding="6" ClipToBounds="True"
+                                Visibility="{TemplateBinding LegendVisibility}"
+                                Canvas.Left="{Binding LegendBounds.X, RelativeSource={RelativeSource TemplatedParent}}" Canvas.Top="{Binding LegendBounds.Y, RelativeSource={RelativeSource TemplatedParent}}"
+                                Width="{Binding LegendBounds.Width, RelativeSource={RelativeSource TemplatedParent}}" Height="{Binding LegendBounds.Height, RelativeSource={RelativeSource TemplatedParent}}">
+                            <Grid>
+                                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                                <TextBlock Name="PART_LegendTitle" Text="{TemplateBinding LegendTitle}" FontSize="10" LineHeight="13" Margin="0,0,0,4" TextTrimming="CharacterEllipsis" />
+                                <Grid Grid.Row="1">
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="16" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                    <Border Name="PART_GradientBar" Background="{TemplateBinding LegendGradientBrush}" BorderBrush="{ThemeResource SurfaceStrokeColorDefaultBrush}" BorderThickness="0.5" />
+                                    <Grid Grid.Column="1" Margin="4,0,0,0">
+                                        <TextBlock Text="{TemplateBinding HighLabel}" FontSize="10" LineHeight="13" VerticalAlignment="Top" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Text="{TemplateBinding MidLabel}" FontSize="10" LineHeight="13" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Text="{TemplateBinding LowLabel}" FontSize="10" LineHeight="13" VerticalAlignment="Bottom" TextTrimming="CharacterEllipsis" />
+                                    </Grid>
+                                </Grid>
+                            </Grid>
+                        </Border>
+                    </Canvas>
+                </Grid>
+            </Grid>
+        </ControlTemplate></Setter>
+
 
         <Style.Triggers>
             <Trigger Property="IsEnabled" Value="False">

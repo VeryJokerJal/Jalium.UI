@@ -1,7 +1,4 @@
-using Jalium.UI.Media;
-
 namespace Jalium.UI.Controls.Primitives;
-
 /// <summary>
 /// Specifies the preferred placement of a flyout relative to a visual element.
 /// </summary>
@@ -44,12 +41,10 @@ public sealed class FlyoutShowOptions
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public FlyoutPlacementMode Placement { get; set; } = FlyoutPlacementMode.Auto;
-
     /// <summary>
     /// Gets or sets the point relative to the placement target at which to show the flyout.
     /// </summary>
     public Point? Position { get; set; }
-
     /// <summary>
     /// Gets or sets the show mode for the flyout.
     /// </summary>
@@ -61,67 +56,56 @@ public sealed class FlyoutShowOptions
 /// </summary>
 public abstract class FlyoutBase : DependencyObject
 {
-    private static readonly SolidColorBrush s_fallbackPopupBackgroundBrush = new(Color.FromRgb(45, 45, 48));
-    private static readonly SolidColorBrush s_fallbackPopupBorderBrush = new(Color.FromRgb(67, 67, 70));
     private Popup? _popup;
     private Control? _presenter;
     private FrameworkElement? _target;
-
-    #region Dependency Properties
-
+    private FlyoutPresenter? _frame;
+    private bool _notifiedOpen;
+    private Style? _appliedFrameStyle;
+    private Style? _originalFrameStyle;
+    private bool _originalFrameHasLocalStyle;
+    private bool _overridingFrameStyle;
+#region Dependency Properties
     /// <summary>
     /// Identifies the Placement dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
-    public static readonly DependencyProperty PlacementProperty =
-        DependencyProperty.Register(nameof(Placement), typeof(FlyoutPlacementMode), typeof(FlyoutBase),
-            new PropertyMetadata(FlyoutPlacementMode.Bottom));
-
-    #endregion
-
-    #region CLR Properties
-
+    public static readonly DependencyProperty PlacementProperty = DependencyProperty.Register(nameof(Placement), typeof(FlyoutPlacementMode), typeof(FlyoutBase), new PropertyMetadata(FlyoutPlacementMode.Bottom));
+    public static readonly DependencyProperty FlyoutPresenterStyleProperty = DependencyProperty.Register(nameof(FlyoutPresenterStyle), typeof(Style), typeof(FlyoutBase), new PropertyMetadata(null, (d, _) => ((FlyoutBase)d).UpdatePresenterStyle()));
+#endregion
+#region CLR Properties
     /// <summary>
     /// Gets or sets the default placement to be used for the flyout.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
-    public FlyoutPlacementMode Placement
-    {
-        get => (FlyoutPlacementMode)(GetValue(PlacementProperty) ?? FlyoutPlacementMode.Bottom);
-        set => SetValue(PlacementProperty, value);
-    }
-
+    public FlyoutPlacementMode Placement { get => (FlyoutPlacementMode)(GetValue(PlacementProperty) ?? FlyoutPlacementMode.Bottom); set => SetValue(PlacementProperty, value); }
+    /// <summary>Gets or sets the generic flyout frame style.</summary>
+    public Style? FlyoutPresenterStyle { get => (Style? )GetValue(FlyoutPresenterStyleProperty); set => SetValue(FlyoutPresenterStyleProperty, value); }
     /// <summary>
     /// Gets a value indicating whether the flyout is currently open.
     /// </summary>
     public bool IsOpen => _popup?.IsOpen == true;
+    internal FrameworkElement? PlacementTarget => _target;
 
-    #endregion
-
-    #region Events
-
+#endregion
+#region Events
     /// <summary>
     /// Occurs before the flyout is opened.
     /// </summary>
     public event EventHandler? Opening;
-
     /// <summary>
     /// Occurs after the flyout is opened.
     /// </summary>
     public event EventHandler? Opened;
-
     /// <summary>
     /// Occurs before the flyout is closed.
     /// </summary>
     public event EventHandler? Closing;
-
     /// <summary>
     /// Occurs after the flyout is closed.
     /// </summary>
     public event EventHandler? Closed;
-
-    #endregion
-
+#endregion
     /// <summary>
     /// Shows the flyout placed in relation to the specified element.
     /// </summary>
@@ -135,15 +119,32 @@ public abstract class FlyoutBase : DependencyObject
     /// </summary>
     public void ShowAt(FrameworkElement placementTarget, FlyoutShowOptions options)
     {
-        _target = placementTarget;
+        if (!ReferenceEquals(_target, placementTarget))
+        {
+            if (_target != null)
+            {
+                _target.DataContextChanged -= OnTargetDataContextChanged;
+            }
+
+            _target = placementTarget;
+            _target.DataContextChanged += OnTargetDataContextChanged;
+        }
 
         Opening?.Invoke(this, EventArgs.Empty);
-
         EnsurePopup();
-        if (_popup == null) return;
-
+        if (_popup == null)
+            return;
         _popup.PlacementTarget = placementTarget;
+        _popup.DataContext = placementTarget.DataContext;
+        if (_frame != null)
+        {
+            _frame.UpdateDefaultStyle();
+            _frame.ApplyImplicitStyleIfNeeded();
+            _frame.ApplyTemplate();
+        }
 
+        if (_presenter != null)
+            Control.ReactivateBindingsRecursive(_presenter);
         if (options.Position.HasValue)
         {
             // WinUI 3 语义：Position 是相对 PlacementTarget 左上角的明确落点（context-menu / 右键菜单
@@ -160,8 +161,15 @@ public abstract class FlyoutBase : DependencyObject
             _popup.VerticalOffset = 0;
         }
 
+        if (_frame is { IsEnabled: false })
+            return;
         _popup.IsOpen = true;
-        Opened?.Invoke(this, EventArgs.Empty);
+        _frame?.SetOpen(_popup.IsOpen);
+        if (_popup.IsOpen && !_notifiedOpen)
+        {
+            _notifiedOpen = true;
+            Opened?.Invoke(this, EventArgs.Empty);
+        }
     }
 
     /// <summary>
@@ -169,59 +177,27 @@ public abstract class FlyoutBase : DependencyObject
     /// </summary>
     public void Hide()
     {
-        if (_popup == null || !_popup.IsOpen) return;
-
+        if (_popup == null || !_popup.IsOpen)
+            return;
         Closing?.Invoke(this, EventArgs.Empty);
         _popup.IsOpen = false;
-        Closed?.Invoke(this, EventArgs.Empty);
+        if (!_popup.IsOpen)
+            NotifyClosed();
     }
 
     /// <summary>
     /// When overridden in a derived class, initializes a control to show the flyout content.
     /// </summary>
     protected abstract Control CreatePresenter();
-
-    private Brush ResolvePopupBackgroundBrush()
-    {
-        return ResolveApplicationBrush("MenuFlyoutPresenterBackground")
-            ?? ResolveApplicationBrush("TooltipBackground")
-            ?? ResolveApplicationBrush("SurfaceBackground")
-            ?? s_fallbackPopupBackgroundBrush;
-    }
-
-    private Brush ResolvePopupBorderBrush()
-    {
-        return ResolveApplicationBrush("MenuFlyoutPresenterBorderBrush")
-            ?? ResolveApplicationBrush("TooltipBorder")
-            ?? ResolveApplicationBrush("ControlBorder")
-            ?? s_fallbackPopupBorderBrush;
-    }
-
-    private static Brush? ResolveApplicationBrush(object resourceKey)
-    {
-        var app = global::Jalium.UI.Application.Current;
-        if (app?.Resources != null &&
-            app.Resources.TryGetValue(resourceKey, out var resource) &&
-            resource is Brush brush)
-        {
-            return brush;
-        }
-
-        return null;
-    }
-
     private void EnsurePopup()
     {
-        if (_popup != null) return;
-
+        if (_popup != null)
+            return;
         _presenter = CreatePresenter();
-        if (_presenter == null) return;
-
-        // MenuFlyoutPresenter 自带 chrome（边框/圆角/背景由 OnRender 画），不要再外包 Border，
-        // 否则会出现双重边框；其它 Flyout 没自带 chrome，需要 Border 提供视觉容器。
-        var isMenuFlyout = _presenter is global::Jalium.UI.Controls.MenuFlyoutPresenter;
-        var presenterPaintsOwnChrome = isMenuFlyout;
-
+        if (_presenter == null)
+            return;
+        var isMenuFlyout = _presenter is MenuFlyoutPresenter;
+        var presenterPaintsOwnChrome = _presenter is MenuFlyoutPresenter or FlyoutPresenter;
         _popup = new Popup
         {
             StaysOpen = false,
@@ -232,29 +208,87 @@ public abstract class FlyoutBase : DependencyObject
             // 仍走"溢出才升级"的默认策略，避免引入不必要的窗口创建开销。
             PreferExternalWindow = isMenuFlyout
         };
-
         if (presenterPaintsOwnChrome)
         {
             _popup.Child = _presenter;
         }
         else
         {
-            var border = new Border
+            _frame = new FlyoutPresenter
             {
-                Child = _presenter,
-                Background = ResolvePopupBackgroundBrush(),
-                BorderBrush = ResolvePopupBorderBrush(),
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(8),
-                Padding = new Thickness(4)
+                Content = _presenter
             };
-
-            _popup.Child = border;
+            _frame.CloseRequested += OnFrameCloseRequested;
+            UpdatePresenterStyle();
+            _popup.Child = _frame;
         }
-        _popup.Closed += (_, _) =>
+
+        if (_presenter is FlyoutPresenter presenterFrame)
         {
-            Closed?.Invoke(this, EventArgs.Empty);
-        };
+            _frame = presenterFrame;
+            _frame.CloseRequested += OnFrameCloseRequested;
+            UpdatePresenterStyle();
+        }
+
+        _popup.Closed += OnPopupClosed;
+    }
+
+    private void UpdatePresenterStyle()
+    {
+        if (_frame == null)
+            return;
+        var style = FlyoutPresenterStyle;
+        if (style != null)
+        {
+            if (!_overridingFrameStyle)
+            {
+                _originalFrameStyle = _frame.Style;
+                _originalFrameHasLocalStyle = _frame.HasLocalValue(FrameworkElement.StyleProperty);
+            }
+
+            _frame.Style = style;
+            _overridingFrameStyle = true;
+        }
+        else if (_overridingFrameStyle)
+        {
+            if (ReferenceEquals(_frame.Style, _appliedFrameStyle))
+            {
+                if (_originalFrameHasLocalStyle)
+                    _frame.Style = _originalFrameStyle;
+                else
+                    _frame.ClearValue(FrameworkElement.StyleProperty);
+            }
+
+            _overridingFrameStyle = false;
+        }
+
+        _appliedFrameStyle = style;
+    }
+
+    private void OnTargetDataContextChanged(object? sender, DependencyPropertyChangedEventArgs e)
+    {
+        if (!ReferenceEquals(sender, _target))
+            return;
+        if (_popup != null)
+            _popup.DataContext = e.NewValue;
+        if (_presenter != null)
+            Control.ReactivateBindingsRecursive(_presenter);
+    }
+
+    private void OnFrameCloseRequested(object? sender, EventArgs e) => Hide();
+    private void OnPopupClosed(object? sender, EventArgs e)
+    {
+        if (ReferenceEquals(sender, _popup) && !_popup!.IsOpen)
+            NotifyClosed();
+    }
+
+    private void NotifyClosed()
+    {
+        if (!_notifiedOpen)
+            return;
+        _notifiedOpen = false;
+        _frame?.SetOpen(false);
+        Closed?.Invoke(this, EventArgs.Empty);
     }
 
     private static PlacementMode MapPlacement(FlyoutPlacementMode flyoutPlacement)

@@ -1,7 +1,5 @@
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
-using Jalium.UI.Controls.Themes;
-using Jalium.UI.Media;
 using Jalium.UI.Threading;
 
 namespace Jalium.UI.Controls;
@@ -73,24 +71,13 @@ public enum ToastPosition
 /// with severity indicator, optional title, message, action button, and close button.
 /// Automatically dismisses after a configurable timeout.
 /// </summary>
-public class ToastNotificationItem : ContentControl
+public partial class ToastNotificationItem : ContentControl
 {
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
         return new Jalium.UI.Automation.Peers.ToastNotificationItemAutomationPeer(this);
     }
-
-    // Cached brushes per-severity (matching screenshot colors)
-    private static readonly SolidColorBrush s_whiteBrush = new(Color.White);
-    private static readonly SolidColorBrush s_infoBgBrush = new(Color.FromRgb(0, 120, 212));    // Blue
-    private static readonly SolidColorBrush s_infoIconBrush = new(Color.White);
-    private static readonly SolidColorBrush s_successBgBrush = new(Color.FromRgb(16, 185, 129)); // Green
-    private static readonly SolidColorBrush s_successIconBrush = new(Color.White);
-    private static readonly SolidColorBrush s_warningBgBrush = new(Color.FromRgb(245, 158, 11)); // Orange
-    private static readonly SolidColorBrush s_warningIconBrush = new(Color.White);
-    private static readonly SolidColorBrush s_errorBgBrush = new(Color.FromRgb(220, 38, 38));    // Red
-    private static readonly SolidColorBrush s_errorIconBrush = new(Color.White);
 
     #region Dependency Properties
 
@@ -148,7 +135,7 @@ public class ToastNotificationItem : ContentControl
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ActionButtonProperty =
         DependencyProperty.Register(nameof(ActionButton), typeof(ButtonBase), typeof(ToastNotificationItem),
-            new PropertyMetadata(null, OnLayoutPropertyChanged));
+            new PropertyMetadata(null, OnActionButtonChanged));
 
     /// <summary>
     /// Identifies the Duration dependency property.
@@ -307,11 +294,6 @@ public class ToastNotificationItem : ContentControl
 
     #region Private Fields
 
-    private const double IconSize = 20;
-    private const double IconMargin = 12;
-    private const double CloseButtonSize = 32;
-    private new const double MinHeight = 56;
-    private Rect _closeButtonRect;
     private DispatcherTimer? _autoDismissTimer;
 
     // Fade animation state
@@ -325,36 +307,13 @@ public class ToastNotificationItem : ContentControl
 
     public ToastNotificationItem()
     {
-        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
         AddHandler(MouseEnterEvent, new MouseEventHandler(OnMouseEnterHandler));
         AddHandler(MouseLeaveEvent, new MouseEventHandler(OnMouseLeaveHandler));
 
         Loaded += OnLoaded;
-    }
-
-    #endregion
-
-    #region Template Parts
-
-    private Border? _rootBorder;
-    private Button? _closeButton;
-
-    /// <inheritdoc />
-    public override void OnApplyTemplate()
-    {
-        base.OnApplyTemplate();
-
-        _rootBorder = GetTemplateChild("RootBorder") as Border;
-        _closeButton = GetTemplateChild("PART_CloseButton") as Button;
-
-        if (_closeButton != null)
-        {
-            _closeButton.Click += (s, e) =>
-            {
-                RaiseEvent(new RoutedEventArgs(CloseButtonClickEvent, this));
-                Dismiss();
-            };
-        }
+        Unloaded += OnUnloaded;
+        UseTemplateContentManagement();
+        DefaultStyleKey = typeof(ToastNotificationItem);
     }
 
     #endregion
@@ -363,6 +322,7 @@ public class ToastNotificationItem : ContentControl
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
+        if (!IsOpen) return;
         // Start fade-in animation
         StartFadeIn();
 
@@ -373,6 +333,11 @@ public class ToastNotificationItem : ContentControl
         }
     }
 
+    private void OnUnloaded(object sender, RoutedEventArgs e)
+    {
+        StopAutoDismissTimer(); StopFadeTimer(); _isFadingOut = false;
+    }
+
     #endregion
 
     #region Auto-Dismiss
@@ -380,6 +345,7 @@ public class ToastNotificationItem : ContentControl
     private void StartAutoDismissTimer()
     {
         StopAutoDismissTimer();
+        if (!IsLoaded || !IsOpen || !IsAutoDismissEnabled || _isFadingOut || IsMouseOver) return;
 
         _autoDismissTimer = new DispatcherTimer
         {
@@ -407,14 +373,24 @@ public class ToastNotificationItem : ContentControl
     /// </summary>
     public void Dismiss()
     {
-        if (_isFadingOut)
+        if (!IsOpen || _isFadingOut)
             return;
 
         StopAutoDismissTimer();
+        if (!IsLoaded)
+        {
+            SetCurrentValue(IsOpenProperty, false);
+            return;
+        }
         StartFadeOut();
     }
 
     #endregion
+
+    private void StopFadeTimer()
+    {
+        _fadeTimer?.Stop(); _fadeTimer = null;
+    }
 
     #region Fade Animations
 
@@ -434,11 +410,11 @@ public class ToastNotificationItem : ContentControl
                 _fadeTimer?.Stop();
                 _fadeTimer = null;
             }
-            Opacity = _currentOpacity;
+            SetCurrentValue(OpacityProperty, _currentOpacity);
             InvalidateVisual();
         };
         _fadeTimer.Start();
-        Opacity = 0;
+        SetCurrentValue(OpacityProperty, 0d);
     }
 
     private void StartFadeOut()
@@ -456,9 +432,9 @@ public class ToastNotificationItem : ContentControl
                 _isFadingOut = false;
                 _fadeTimer?.Stop();
                 _fadeTimer = null;
-                IsOpen = false;
+                SetCurrentValue(IsOpenProperty, false);
             }
-            Opacity = _currentOpacity;
+            SetCurrentValue(OpacityProperty, _currentOpacity);
             InvalidateVisual();
         };
         _fadeTimer.Start();
@@ -467,21 +443,6 @@ public class ToastNotificationItem : ContentControl
     #endregion
 
     #region Input Handling
-
-    private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
-    {
-        if (e.ChangedButton == MouseButton.Left)
-        {
-            var position = e.GetPosition(this);
-
-            if (IsClosable && _closeButtonRect.Contains(position))
-            {
-                RaiseEvent(new RoutedEventArgs(CloseButtonClickEvent, this));
-                Dismiss();
-                e.Handled = true;
-            }
-        }
-    }
 
     private void OnMouseEnterHandler(object sender, MouseEventArgs e)
     {
@@ -500,222 +461,6 @@ public class ToastNotificationItem : ContentControl
 
     #endregion
 
-    #region Layout
-
-    /// <inheritdoc />
-    protected override Size MeasureOverride(Size availableSize)
-    {
-        if (!IsOpen)
-        {
-            return default(Size);
-        }
-
-        var padding = Padding;
-        var width = availableSize.Width;
-        var height = MinHeight;
-
-        if (FontSize > 0 && !string.IsNullOrEmpty(Title))
-        {
-            var titleFormatted = new FormattedText(Title, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize + 2);
-            titleFormatted.FontWeight = 600;
-            Interop.TextMeasurement.MeasureText(titleFormatted);
-            height = Math.Max(height, titleFormatted.Height + padding.TotalHeight + 8);
-        }
-
-        if (FontSize > 0 && !string.IsNullOrEmpty(Message))
-        {
-            var messageFormatted = new FormattedText(Message, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize);
-            Interop.TextMeasurement.MeasureText(messageFormatted);
-
-            if (!string.IsNullOrEmpty(Title))
-            {
-                height += messageFormatted.Height + 2;
-            }
-            else
-            {
-                height = Math.Max(height, messageFormatted.Height + padding.TotalHeight);
-            }
-        }
-
-        return new Size(width, height);
-    }
-
-    #endregion
-
-    #region Rendering
-
-    /// <inheritdoc />
-    protected override void OnRender(DrawingContext drawingContext)
-    {
-        if (_rootBorder != null)
-            return;
-
-        if (!IsOpen)
-            return;
-        var dc = drawingContext;
-
-        var rect = new Rect(RenderSize);
-        var padding = Padding;
-        var cornerRadius = CornerRadius;
-
-        // Get severity brushes
-        var (bgBrush, iconBrush) = GetSeverityBrushes();
-
-        // Draw background
-        var background = Background ?? bgBrush;
-        dc.DrawRoundedRectangle(background, null, rect, cornerRadius);
-
-        var currentX = padding.Left + 12;
-
-        // Draw icon
-        if (IsIconVisible)
-        {
-            var iconY = !string.IsNullOrEmpty(Title) && !string.IsNullOrEmpty(Message)
-                ? padding.Top + 10
-                : (rect.Height - IconSize) / 2;
-            DrawIcon(dc, currentX, iconY, iconBrush.Color);
-            currentX += IconSize + IconMargin;
-        }
-
-        // Draw title and message
-        var textBrush = Foreground ?? s_whiteBrush;
-        var textStartX = currentX;
-        var currentY = padding.Top + 8;
-
-        if (FontSize > 0 && !string.IsNullOrEmpty(Title))
-        {
-            var titleFormatted = new FormattedText(Title, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize + 2)
-            {
-                Foreground = textBrush,
-                FontWeight = 700
-            };
-            Interop.TextMeasurement.MeasureText(titleFormatted);
-            dc.DrawText(titleFormatted, new Point(textStartX, currentY));
-            currentY += titleFormatted.Height + 2;
-        }
-
-        if (FontSize > 0 && !string.IsNullOrEmpty(Message))
-        {
-            var messageFormatted = new FormattedText(Message, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
-            {
-                Foreground = textBrush
-            };
-            Interop.TextMeasurement.MeasureText(messageFormatted);
-
-            if (string.IsNullOrEmpty(Title))
-            {
-                currentY = (rect.Height - messageFormatted.Height) / 2;
-            }
-
-            dc.DrawText(messageFormatted, new Point(textStartX, currentY));
-        }
-
-        // Draw close button
-        if (IsClosable)
-        {
-            var closeX = rect.Width - CloseButtonSize - padding.Right - 4;
-            var closeY = (rect.Height - CloseButtonSize) / 2;
-            _closeButtonRect = new Rect(closeX, closeY, CloseButtonSize, CloseButtonSize);
-
-            DrawCloseButton(dc, closeX, closeY, (textBrush as SolidColorBrush)?.Color ?? Color.White);
-        }
-    }
-
-    private Pen? _iconPen;
-    private Color _iconPenColor;
-    private Pen? _closePen;
-    private Color _closePenColor;
-
-    private void DrawIcon(DrawingContext dc, double x, double y, Color color)
-    {
-        if (_iconPen == null || _iconPenColor != color)
-        {
-            _iconPenColor = color;
-            _iconPen = new Pen(new SolidColorBrush(color), 2);
-        }
-        var iconPen = _iconPen;
-        var centerX = x + IconSize / 2;
-        var centerY = y + IconSize / 2;
-        var radius = IconSize / 2 - 2;
-
-        // Draw circle
-        dc.DrawEllipse(null, iconPen, new Point(centerX, centerY), radius, radius);
-
-        switch (Severity)
-        {
-            case ToastSeverity.Information:
-                // "i" icon
-                dc.DrawLine(iconPen, new Point(centerX, centerY - 4), new Point(centerX, centerY - 3));
-                dc.DrawLine(iconPen, new Point(centerX, centerY - 1), new Point(centerX, centerY + 4));
-                break;
-
-            case ToastSeverity.Success:
-                // Checkmark
-                dc.DrawLine(iconPen, new Point(centerX - 4, centerY), new Point(centerX - 1, centerY + 3));
-                dc.DrawLine(iconPen, new Point(centerX - 1, centerY + 3), new Point(centerX + 4, centerY - 3));
-                break;
-
-            case ToastSeverity.Warning:
-                // "!" icon
-                dc.DrawLine(iconPen, new Point(centerX, centerY - 4), new Point(centerX, centerY + 1));
-                dc.DrawLine(iconPen, new Point(centerX, centerY + 3), new Point(centerX, centerY + 4));
-                break;
-
-            case ToastSeverity.Error:
-                // "X" icon
-                dc.DrawLine(iconPen, new Point(centerX - 3, centerY - 3), new Point(centerX + 3, centerY + 3));
-                dc.DrawLine(iconPen, new Point(centerX + 3, centerY - 3), new Point(centerX - 3, centerY + 3));
-                break;
-        }
-    }
-
-    private void DrawCloseButton(DrawingContext dc, double x, double y, Color color)
-    {
-        var closeColor = Color.FromArgb(180, color.R, color.G, color.B);
-        if (_closePen == null || _closePenColor != closeColor)
-        {
-            _closePenColor = closeColor;
-            _closePen = new Pen(new SolidColorBrush(closeColor), 1.5);
-        }
-        var closePen = _closePen;
-
-        var centerX = x + CloseButtonSize / 2;
-        var centerY = y + CloseButtonSize / 2;
-        var size = 5;
-
-        dc.DrawLine(closePen, new Point(centerX - size, centerY - size), new Point(centerX + size, centerY + size));
-        dc.DrawLine(closePen, new Point(centerX + size, centerY - size), new Point(centerX - size, centerY + size));
-    }
-
-    private (SolidColorBrush Background, SolidColorBrush Icon) GetSeverityBrushes()
-    {
-        return Severity switch
-        {
-            ToastSeverity.Information => (
-                ResolveSolidColorBrush("ToastInformationBackground", s_infoBgBrush),
-                ResolveSolidColorBrush("ToastInformationIcon", s_infoIconBrush)),
-            ToastSeverity.Success => (
-                ResolveSolidColorBrush("ToastSuccessBackground", s_successBgBrush),
-                ResolveSolidColorBrush("ToastSuccessIcon", s_successIconBrush)),
-            ToastSeverity.Warning => (
-                ResolveSolidColorBrush("ToastWarningBackground", s_warningBgBrush),
-                ResolveSolidColorBrush("ToastWarningIcon", s_warningIconBrush)),
-            ToastSeverity.Error => (
-                ResolveSolidColorBrush("ToastErrorBackground", s_errorBgBrush),
-                ResolveSolidColorBrush("ToastErrorIcon", s_errorIconBrush)),
-            _ => (
-                ResolveSolidColorBrush("ToastInformationBackground", s_infoBgBrush),
-                ResolveSolidColorBrush("ToastInformationIcon", s_infoIconBrush))
-        };
-    }
-
-    private SolidColorBrush ResolveSolidColorBrush(string resourceKey, SolidColorBrush fallback)
-    {
-        return TryFindResource(resourceKey) as SolidColorBrush ?? fallback;
-    }
-
-    #endregion
-
     #region Property Changed Callbacks
 
     private static void OnIsOpenChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -724,11 +469,16 @@ public class ToastNotificationItem : ContentControl
         {
             toast.InvalidateMeasure();
             toast.InvalidateVisual();
+            toast.UpdateVisualStates();
 
             if ((bool)e.NewValue! == false)
             {
-                toast.StopAutoDismissTimer();
+                toast.StopAutoDismissTimer(); toast.StopFadeTimer(); toast._isFadingOut = false;
                 toast.RaiseEvent(new RoutedEventArgs(ClosedEvent, toast));
+            }
+            else if (toast.IsLoaded)
+            {
+                toast.StartFadeIn(); toast.StartAutoDismissTimer();
             }
         }
     }
@@ -737,7 +487,7 @@ public class ToastNotificationItem : ContentControl
     {
         if (d is ToastNotificationItem toast)
         {
-            toast.InvalidateMeasure();
+            toast.InvalidateMeasure(); toast.UpdateVisualStates();
         }
     }
 
@@ -745,8 +495,7 @@ public class ToastNotificationItem : ContentControl
     {
         if (d is ToastNotificationItem toast)
         {
-            toast._iconPen = null; // Reset cached pen on severity change
-            toast.InvalidateVisual();
+            toast.InvalidateVisual(); toast.UpdateVisualStates();
         }
     }
 

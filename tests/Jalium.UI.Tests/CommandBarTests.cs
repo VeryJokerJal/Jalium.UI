@@ -31,7 +31,7 @@ public class CommandBarTests
         {
             var commandBar = new CommandBar();
             var host = MeasureInHost(commandBar);
-            var moreButton = GetPrivateField<Button>(commandBar, "_moreButton");
+            var moreButton = Assert.IsType<Button>(commandBar.FindName("PART_MoreButton"));
 
             Assert.Equal(Visibility.Collapsed, moreButton.Visibility);
 
@@ -68,7 +68,7 @@ public class CommandBarTests
 
             commandBar.IsOpen = true;
 
-            var popup = GetPrivateField<Popup>(commandBar, "_overflowPopup");
+            var popup = Assert.IsType<Popup>(commandBar.FindName("PART_OverflowPopup"));
             Assert.True(popup.IsOpen);
 
             popup.IsOpen = false;
@@ -101,7 +101,7 @@ public class CommandBarTests
 
             _ = MeasureInHost(commandBar);
 
-            var overflowBorder = GetPrivateField<Border>(commandBar, "_overflowBorder");
+            var overflowBorder = Assert.IsAssignableFrom<Control>(commandBar.FindName("PART_OverflowBorder"));
             Assert.Same(background, overflowBorder.Background);
             Assert.Same(borderBrush, overflowBorder.BorderBrush);
         }
@@ -112,7 +112,7 @@ public class CommandBarTests
     }
 
     [Fact]
-    public void CommandBar_InternalResolvers_ShouldUseThemeResources()
+    public void CommandBar_TemplateBindings_ShouldUseThemeResources()
     {
         ResetApplicationState();
         var app = new Application();
@@ -125,9 +125,13 @@ public class CommandBarTests
 
             var commandBar = new CommandBar();
 
-            Assert.Same(commandBarBackground, InvokePrivateBrushResolver(commandBar, "ResolveBackgroundBrush"));
-            Assert.Same(overflowBackground, InvokePrivateBrushResolver(commandBar, "ResolveOverflowBackgroundBrush"));
-            Assert.Same(commandBarBorder, InvokePrivateBrushResolver(commandBar, "ResolveBorderBrush"));
+            _ = MeasureInHost(commandBar);
+            var border = Assert.IsType<ContentControl>(commandBar.FindName("PART_OverflowBorder"));
+            Assert.Same(commandBarBackground, commandBar.Background);
+            Assert.Same(commandBar.Background, border.Background);
+            Assert.Same(commandBarBorder, border.BorderBrush);
+            commandBar.OverflowBackground = overflowBackground;
+            Assert.Same(overflowBackground, border.Background);
         }
         finally
         {
@@ -149,7 +153,7 @@ public class CommandBarTests
         var host = new StackPanel { Width = 400, Height = 80 };
         host.Children.Add(commandBar);
 
-        var window = new Window
+        var window = new DisplayedTestWindow
         {
             Width = 400,
             Height = 80,
@@ -162,19 +166,4 @@ public class CommandBarTests
         return window;
     }
 
-    private static T GetPrivateField<T>(object owner, string fieldName)
-    {
-        var field = owner.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
-        Assert.NotNull(field);
-        var value = field!.GetValue(owner);
-        Assert.NotNull(value);
-        return (T)value!;
-    }
-
-    private static Brush InvokePrivateBrushResolver(CommandBar commandBar, string methodName)
-    {
-        var method = typeof(CommandBar).GetMethod(methodName, BindingFlags.Instance | BindingFlags.NonPublic);
-        Assert.NotNull(method);
-        return Assert.IsAssignableFrom<Brush>(method!.Invoke(commandBar, null));
-    }
 }

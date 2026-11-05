@@ -140,12 +140,71 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
         if (_handle == nint.Zero) return;
         if (OperatingSystem.IsMacOS())
             AppleWindowShow(_handle, activate ? 1 : 0);
+        else if (OperatingSystem.IsLinux())
+            LinuxWindowShow(_handle, activate ? 1 : 0);
         else
             Show();
     }
 
-    public bool SetStyle(uint style) => OperatingSystem.IsMacOS() &&
-        _handle != nint.Zero && AppleWindowSetStyle(_handle, style) == 0;
+    public bool SetStyle(uint style) => _handle != nint.Zero &&
+        (OperatingSystem.IsMacOS() ? AppleWindowSetStyle(_handle, style) == 0 :
+         OperatingSystem.IsLinux() && LinuxWindowSetStyle(_handle, style) == 0);
+
+    public PlatformWindowDecorationMode DecorationMode => OperatingSystem.IsLinux() && _handle != nint.Zero
+        ? (PlatformWindowDecorationMode)LinuxWindowGetDecorationMode(_handle)
+        : PlatformWindowDecorationMode.Unspecified;
+
+    public bool SetDesktopApplicationId(string applicationId) => OperatingSystem.IsLinux() &&
+        _handle != nint.Zero && LinuxWindowSetApplicationId(_handle, applicationId) == 0;
+
+    [LibraryImport(JaliumNativeLibraryNames.Platform, EntryPoint = "jalium_linux_window_set_application_id", StringMarshalling = StringMarshalling.Utf8)]
+    private static partial int LinuxWindowSetApplicationId(nint window, string applicationId);
+
+    public PlatformWindowCapabilities Capabilities => OperatingSystem.IsLinux() && _handle != nint.Zero
+        ? (PlatformWindowCapabilities)LinuxWindowGetCapabilities(_handle) : PlatformWindowCapabilities.All;
+
+    [LibraryImport(JaliumNativeLibraryNames.Platform, EntryPoint = "jalium_linux_window_get_capabilities")]
+    private static partial uint LinuxWindowGetCapabilities(nint window);
+
+    public PlatformWindowKeyboardOperations KeyboardOperations
+    {
+        get
+        {
+            if (!OperatingSystem.IsLinux() || _handle == nint.Zero) return PlatformWindowKeyboardOperations.None;
+            try { return (PlatformWindowKeyboardOperations)LinuxWindowGetKeyboardOperations(_handle); }
+            catch (EntryPointNotFoundException) { return PlatformWindowKeyboardOperations.None; }
+        }
+    }
+
+    public bool BeginKeyboardMoveResize(bool resize)
+    {
+        if (!OperatingSystem.IsLinux() || _handle == nint.Zero) return false;
+        try { return LinuxWindowBeginKeyboardMoveResize(_handle, resize ? 1 : 0) == 0; }
+        catch (EntryPointNotFoundException) { return false; }
+    }
+
+    [LibraryImport(JaliumNativeLibraryNames.Platform, EntryPoint = "jalium_linux_window_get_keyboard_operations")]
+    private static partial uint LinuxWindowGetKeyboardOperations(nint window);
+
+    [LibraryImport(JaliumNativeLibraryNames.Platform, EntryPoint = "jalium_linux_window_begin_keyboard_move_resize")]
+    private static partial int LinuxWindowBeginKeyboardMoveResize(nint window, int resize);
+
+    public PlatformWindowResizeEdges ResizableEdges => OperatingSystem.IsLinux() && _handle != nint.Zero
+        ? (PlatformWindowResizeEdges)LinuxWindowGetResizableEdges(_handle) : PlatformWindowResizeEdges.All;
+
+    [LibraryImport(JaliumNativeLibraryNames.Platform, EntryPoint = "jalium_linux_window_get_resizable_edges")]
+    private static partial uint LinuxWindowGetResizableEdges(nint window);
+
+    public bool IsTiled => OperatingSystem.IsLinux() && _handle != nint.Zero && LinuxWindowIsTiled(_handle) != 0;
+
+    [LibraryImport(JaliumNativeLibraryNames.Platform, EntryPoint = "jalium_linux_window_is_tiled")]
+    private static partial int LinuxWindowIsTiled(nint window);
+
+    public bool IsRenderingSuspended => OperatingSystem.IsLinux() && _handle != nint.Zero &&
+        LinuxWindowIsRenderingSuspended(_handle) != 0;
+
+    [LibraryImport(JaliumNativeLibraryNames.Platform, EntryPoint = "jalium_linux_window_is_rendering_suspended")]
+    private static partial int LinuxWindowIsRenderingSuspended(nint window);
 
     public bool SetSystemBackdrop(int backdrop) => OperatingSystem.IsMacOS() &&
         _handle != nint.Zero && AppleWindowSetSystemBackdrop(_handle, backdrop) == 0;
@@ -153,8 +212,9 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
     public bool TryGetRestoreBounds(out int x, out int y, out int width, out int height)
     {
         x = y = width = height = 0;
-        return OperatingSystem.IsMacOS() && _handle != nint.Zero &&
-            AppleWindowGetRestoreBounds(_handle, out x, out y, out width, out height) == 0;
+        return _handle != nint.Zero &&
+            (OperatingSystem.IsMacOS() ? AppleWindowGetRestoreBounds(_handle, out x, out y, out width, out height) == 0 :
+             OperatingSystem.IsLinux() && LinuxWindowGetRestoreBounds(_handle, out x, out y, out width, out height) == 0);
     }
 
     public bool TryGetClientOrigin(out int x, out int y)
@@ -178,6 +238,18 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
 
     [LibraryImport(JaliumNativeLibraryNames.Platform, EntryPoint = "jalium_apple_window_show")]
     private static partial void AppleWindowShow(nint window, int activate);
+
+    [LibraryImport(JaliumNativeLibraryNames.Platform, EntryPoint = "jalium_linux_window_show")]
+    private static partial void LinuxWindowShow(nint window, int activate);
+
+    [LibraryImport(JaliumNativeLibraryNames.Platform, EntryPoint = "jalium_linux_window_set_style")]
+    private static partial int LinuxWindowSetStyle(nint window, uint style);
+
+    [LibraryImport(JaliumNativeLibraryNames.Platform, EntryPoint = "jalium_linux_window_get_decoration_mode")]
+    private static partial int LinuxWindowGetDecorationMode(nint window);
+
+    [LibraryImport(JaliumNativeLibraryNames.Platform, EntryPoint = "jalium_linux_window_get_restore_bounds")]
+    private static partial int LinuxWindowGetRestoreBounds(nint window, out int x, out int y, out int width, out int height);
 
     [LibraryImport(JaliumNativeLibraryNames.Platform, EntryPoint = "jalium_apple_window_set_style")]
     private static partial int AppleWindowSetStyle(nint window, uint style);
@@ -774,20 +846,20 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
             NativeMethods.DragSetEffect(_handle, sessionId, effect);
     }
 
-    internal byte[]? GetMacOSDragData(ulong sessionId, string mimeType, int maxBytes)
+    internal byte[]? GetMacOSDragData(ulong sessionId, string mimeType)
     {
         if (!OperatingSystem.IsMacOS() || _handle == 0) return null;
         int result = NativeMethods.AppleDragGetData(_handle, sessionId, mimeType, out nint data, out uint size);
         try
         {
-            return result == 0 ? CopyMacOSDragData(data, size, maxBytes) : null;
+            return result == 0 ? CopyMacOSDragData(data, size) : null;
         }
         finally { if (data != 0) NativeMethods.PlatformFree(data); }
     }
 
-    internal static byte[]? CopyMacOSDragData(nint data, uint size, int maxBytes = ClipboardPlatform.MaxClipboardPayloadBytes)
+    internal static byte[]? CopyMacOSDragData(nint data, uint size)
     {
-        if (data == 0 || maxBytes < 0 || size > maxBytes || size > ClipboardPlatform.MaxClipboardPayloadBytes) return null;
+        if (data == 0 || size > ClipboardPlatform.MaxClipboardPayloadBytes) return null;
         var bytes = new byte[(int)size];
         if (bytes.Length != 0) Marshal.Copy(data, bytes, 0, bytes.Length);
         return bytes;

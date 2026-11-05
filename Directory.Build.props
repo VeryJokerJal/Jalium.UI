@@ -7,6 +7,11 @@
 
     Usage: dotnet build ... -p:JaliumBuildRoot=/tmp/jalium-build
   -->
+  <!-- macOS AppleDouble resource forks on external volumes are binary metadata. -->
+  <PropertyGroup>
+    <DefaultItemExcludes>$(DefaultItemExcludes);**/._*</DefaultItemExcludes>
+  </PropertyGroup>
+
   <PropertyGroup Condition="'$(JaliumBuildRoot)' != ''">
     <JaliumBuildRoot>$([System.IO.Path]::GetFullPath('$(JaliumBuildRoot)'))</JaliumBuildRoot>
     <!-- A RID-specific JaliumBuildRoot is selected by the publish/build entry

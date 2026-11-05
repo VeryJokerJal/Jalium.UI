@@ -14,6 +14,7 @@ internal static partial class CssMatcher
         while (children.MoveNext())
         {
             if (children.Current is not CssNode child) continue;
+            if (CssGeneratedContent.Kind(child) != CssPseudoElement.None) continue;
             if (IsCssMatchable(child)) yield return child;
             else foreach (var content in Children(child)) yield return content;
         }
@@ -34,6 +35,7 @@ internal static partial class CssMatcher
         if (pseudo == CssPseudoClass.Empty)
         {
             if (Children(element).Any()) return false;
+            if (element.Target is CssXmlElement xml) return !xml.Source.Nodes().OfType<System.Xml.Linq.XText>().Any(text => text.Value.Length > 0);
             foreach (var name in new[] { "Text", "Content" })
                 if (CssDependencyPropertyLookup.Find(element.GetType(), name) is { } dp &&
                     element.GetValue(dp) is string { Length: > 0 }) return false;
@@ -55,6 +57,8 @@ internal static partial class CssMatcher
 
     private static bool MatchesAttribute(CssNode element, CssAttributeSelector selector,CssMatchContext context)
     {
+        if (element.Target is CssXmlElement xml)
+            return xml.Attributes(selector.NamespaceUri, selector.Name).Any(attribute => CompareAttribute(attribute.Value, selector));
         var seen=new HashSet<CssExpandedName>();
         foreach(var attribute in Css.AttributeValues(element.Target,selector.NamespaceUri,selector.Name))
         {
@@ -108,6 +112,8 @@ internal static partial class CssMatcher
                 }
                 if (!property.GetMetadata(current.GetType()).Inherits) break;
             }
+            if (element.Target is CssXmlElement xml && xml.Computed.TryGetValue("direction", out var specified))
+                direction = specified == "rtl" ? FlowDirection.RightToLeft : FlowDirection.LeftToRight;
             var argument = function.DirectionArgument ?? string.Empty;
             return AsciiEquals(argument, "ltr") && direction == FlowDirection.LeftToRight ||
                    AsciiEquals(argument, "rtl") && direction == FlowDirection.RightToLeft;
@@ -120,6 +126,7 @@ internal static partial class CssMatcher
                 context.Observe(current, "Language");
             var language = (element.GetValue(FrameworkElement.LanguageProperty) as XmlLanguage ??
                 XmlLanguage.GetLanguage("en-US")).IetfLanguageTag;
+            if (element.Target is CssXmlElement xml) language = xml.InheritedAttribute("lang", System.Xml.Linq.XNamespace.Xml) ?? xml.InheritedAttribute("lang") ?? string.Empty;
             return function.LanguageRanges?.Any(range => MatchesLanguageRange(range, language)) == true;
         }
         if (function.Name is "is" or "where" or "not" or "nesting")

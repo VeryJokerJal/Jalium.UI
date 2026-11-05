@@ -17,7 +17,7 @@ internal static class CssBoxDecorationBreakProperties
 
     private static void Changed(DependencyObject target, DependencyPropertyChangedEventArgs _)
     {
-        if (target is UIElement element) element.InvalidateVisual();
+        if (target is UIElement element) { element.InvalidateMeasure(); element.InvalidateVisual(); }
         else if (target is Jalium.UI.Documents.TextElement textElement)
             textElement.NotifyTextContentChanged();
     }

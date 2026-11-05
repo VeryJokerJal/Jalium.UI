@@ -9,6 +9,90 @@ namespace Jalium.UI.Tests;
 
 public class MenuPopupAndArrowRegressionTests
 {
+    public MenuPopupAndArrowRegressionTests() => LegacyMenuTemplateTestHelper.Register();
+
+    [Fact]
+    public void MenuPopupScrollHost_RepeatedMeasure_PreservesFiniteScrollViewport()
+    {
+        var host = CreateOverflowingMenuPopupHost(out var hostType);
+        var viewer = GetPrivateField<ScrollViewer>(hostType, host, "_scrollViewer");
+        var panel = GetPrivateField<StackPanel>(hostType, host, "_itemsPanel");
+
+        for (var pass = 0; pass < 3; pass++)
+        {
+            host.InvalidateMeasure();
+            host.Measure(new Size(220, 120));
+            host.Arrange(new Rect(0, 0, 220, 120));
+
+            Assert.True(double.IsFinite(panel.ViewportHeight));
+            Assert.Equal(viewer.ViewportHeight, panel.ViewportHeight);
+            Assert.True(panel.ExtentHeight > panel.ViewportHeight);
+            viewer.ScrollToVerticalOffset(32 * (pass + 1));
+            Assert.True(viewer.VerticalOffset > 0);
+            Assert.Equal(viewer.VerticalOffset, panel.VerticalOffset);
+        }
+    }
+
+    [Fact]
+    public void MenuPopupScrollHost_NativeWheelRoute_AppliesEachDeltaOnce()
+    {
+        var host = CreateOverflowingMenuPopupHost(out var hostType);
+        var viewer = GetPrivateField<ScrollViewer>(hostType, host, "_scrollViewer");
+        var panel = GetPrivateField<StackPanel>(hostType, host, "_itemsPanel");
+        var step = ScrollViewer.LineScrollAmount * 2;
+
+        // Follow PopupWindow: preview first; bubble only when the preview is unhandled.
+        var preview = CreateMouseWheel(new Point(20, 30), delta: -120, timestamp: 1);
+        preview.RoutedEvent = UIElement.PreviewMouseWheelEvent;
+        panel.Children[0].RaiseEvent(preview);
+        if (!preview.Handled)
+            panel.Children[0].RaiseEvent(CreateMouseWheel(new Point(20, 30), delta: -120, timestamp: 1));
+
+        Assert.True(preview.Handled);
+        Assert.Equal(step, viewer.VerticalOffset);
+    }
+
+    [Fact]
+    public void MenuPopupScrollHost_ArrowClicksAfterRemeasure_ScrollAndUpdateBoundaryState()
+    {
+        var host = CreateOverflowingMenuPopupHost(out var hostType);
+        var viewer = GetPrivateField<ScrollViewer>(hostType, host, "_scrollViewer");
+        var up = GetPrivateField<RepeatButton>(hostType, host, "_scrollUpButton");
+        var down = GetPrivateField<RepeatButton>(hostType, host, "_scrollDownButton");
+        host.InvalidateMeasure();
+        host.Measure(new Size(220, 120));
+        host.Arrange(new Rect(0, 0, 220, 120));
+
+        Assert.False(up.IsEnabled);
+        Assert.True(down.IsEnabled);
+        down.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        Assert.True(viewer.VerticalOffset > 0);
+        Assert.True(up.IsEnabled);
+        viewer.ScrollToVerticalOffset(viewer.ScrollableHeight);
+        Assert.False(down.IsEnabled);
+        var bottom = viewer.VerticalOffset;
+        up.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        Assert.True(viewer.VerticalOffset < bottom);
+        Assert.True(down.IsEnabled);
+    }
+
+    [Fact]
+    public void MenuPopupScrollHost_GrowingViewportToFitContent_RemovesScrollArrows()
+    {
+        var host = CreateOverflowingMenuPopupHost(out var hostType);
+        var viewer = GetPrivateField<ScrollViewer>(hostType, host, "_scrollViewer");
+        var up = GetPrivateField<RepeatButton>(hostType, host, "_scrollUpButton");
+        var down = GetPrivateField<RepeatButton>(hostType, host, "_scrollDownButton");
+        viewer.ScrollToVerticalOffset(32);
+
+        host.Measure(new Size(220, 1000));
+        host.Arrange(new Rect(0, 0, 220, 1000));
+
+        Assert.Equal(0, viewer.VerticalOffset);
+        Assert.Equal(Visibility.Collapsed, up.Visibility);
+        Assert.Equal(Visibility.Collapsed, down.Visibility);
+    }
+
     [Fact]
     public void MenuPopupScrollHost_MouseWheelHandledByRepeatButton_ShouldStillScroll()
     {
@@ -30,6 +114,7 @@ public class MenuPopupAndArrowRegressionTests
     public void MenuFlyoutSubItem_ZeroSize_ShouldNotDrawArrowAtOrigin()
     {
         var item = new MenuFlyoutSubItem();
+        MenuFlyoutTemplateTestHelper.Apply(item);
         item.Measure(new Size(0, 0));
         item.Arrange(new Rect(0, 0, 0, 0));
 
@@ -86,6 +171,7 @@ public class MenuPopupAndArrowRegressionTests
     public void MenuFlyoutSubItemPopup_ShouldNotForceRootConstraint()
     {
         var subItem = new MenuFlyoutSubItem();
+        MenuFlyoutTemplateTestHelper.Apply(subItem);
         subItem.Items.Add(new MenuFlyoutItem { Text = "Child" });
 
         subItem.ShowSubMenu();
@@ -97,7 +183,7 @@ public class MenuPopupAndArrowRegressionTests
     [Fact]
     public void ContextMenuPopup_ShouldNotForceRootConstraint()
     {
-        var contextMenu = new ContextMenu();
+        var contextMenu = LegacyMenuTemplateTestHelper.Apply(new ContextMenu());
         contextMenu.Items.Add(new MenuItem { Header = "Item" });
 
         contextMenu.Open(new Point(12, 18));
@@ -150,11 +236,13 @@ public class MenuPopupAndArrowRegressionTests
         var host = new StackPanel { Width = 320, Height = 200 };
 
         var addBreakpoint = new MenuFlyoutSubItem { Text = "Add Breakpoint" };
+        MenuFlyoutTemplateTestHelper.Apply(addBreakpoint);
         addBreakpoint.Items.Add(new MenuFlyoutItem { Text = "Function Breakpoint" });
 
         var goToDefinition = new MenuFlyoutItem { Text = "Go to Definition" };
 
         var breakpoints = new MenuFlyoutSubItem { Text = "Breakpoints" };
+        MenuFlyoutTemplateTestHelper.Apply(breakpoints);
         breakpoints.Items.Add(addBreakpoint);
         breakpoints.Items.Add(goToDefinition);
 
@@ -182,12 +270,15 @@ public class MenuPopupAndArrowRegressionTests
         var host = new StackPanel { Width = 320, Height = 200 };
 
         var addBreakpoint = new MenuFlyoutSubItem { Text = "Add Breakpoint" };
+        MenuFlyoutTemplateTestHelper.Apply(addBreakpoint);
         addBreakpoint.Items.Add(new MenuFlyoutItem { Text = "Function Breakpoint" });
 
         var breakpoints = new MenuFlyoutSubItem { Text = "Breakpoints" };
+        MenuFlyoutTemplateTestHelper.Apply(breakpoints);
         breakpoints.Items.Add(addBreakpoint);
 
         var refactor = new MenuFlyoutSubItem { Text = "Refactor" };
+        MenuFlyoutTemplateTestHelper.Apply(refactor);
         refactor.Items.Add(new MenuFlyoutItem { Text = "Rename" });
 
         host.Children.Add(breakpoints);
@@ -216,6 +307,7 @@ public class MenuPopupAndArrowRegressionTests
     {
         var ownerWindow = new Window();
         var target = new MenuFlyoutSubItem();
+        MenuFlyoutTemplateTestHelper.Apply(target);
         target.SetVisualBounds(new Rect(20, 30, 80, 24));
 
         var panel = new StackPanel();
@@ -259,6 +351,7 @@ public class MenuPopupAndArrowRegressionTests
         // between the two windows' client origins.
         var ownerWindow = new Window();
         var target = new MenuFlyoutSubItem();
+        MenuFlyoutTemplateTestHelper.Apply(target);
         target.SetVisualBounds(new Rect(20, 30, 80, 24));
 
         var panel = new StackPanel();
@@ -291,13 +384,17 @@ public class MenuPopupAndArrowRegressionTests
             ?? throw new InvalidOperationException("Failed to create MenuPopupScrollHost.");
         var host = Assert.IsAssignableFrom<Control>(hostInstance);
 
-        var itemsPanelProperty = hostType.GetProperty("ItemsPanel", BindingFlags.Instance | BindingFlags.Public);
-        Assert.NotNull(itemsPanelProperty);
-        var itemsPanel = Assert.IsType<StackPanel>(itemsPanelProperty!.GetValue(host));
+        Jalium.UI.Markup.ThemeLoader.Initialize(); using var stream = new MemoryStream();
+        var themes = Jalium.UI.Controls.Themes.ThemeManager.XamlLoader!(stream, "Themes/Generic.jalxaml", typeof(Control).Assembly)!;
+        var scoped = new ResourceDictionary(); foreach (var type in new[] { hostType, typeof(RepeatButton), typeof(MenuFlyoutItem) }) if (themes.TryGetValue(type, out var style)) scoped[type] = style;
+        Jalium.UI.Controls.Themes.ThemeManager.RegisterControlThemes(scoped);
+        host.Style = (Style)themes[hostType]!;
+        host.Resources["ScrollBarLineButtonStyle"] = themes["ScrollBarLineButtonStyle"];
+        var items = Assert.IsAssignableFrom<IList<UIElement>>(hostType.GetProperty("Items")!.GetValue(host));
 
         for (int i = 0; i < 16; i++)
         {
-            itemsPanel.Children.Add(new MenuFlyoutItem { Text = $"Item {i}" });
+            items.Add(new MenuFlyoutItem { Text = $"Item {i}" });
         }
 
         host.Measure(new Size(220, 120));

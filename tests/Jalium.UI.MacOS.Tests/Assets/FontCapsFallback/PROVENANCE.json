@@ -1,0 +1,29 @@
+{
+  "source": "../FontNumeric/FontWithFancyFeatures.otf",
+  "source_sha256": "0f7e550009d5d7348fdbaf79365e9cdbe010feb04e3af00bacc49f825e1f93f2",
+  "repository": "https://github.com/web-platform-tests/wpt",
+  "commit": "850b36a56cfc15b9117a9d222d32a63104662f49",
+  "license": "BSD-3-Clause; retained in LICENSE.md",
+  "derivation": "Rename optional GSUB features; re-sort records and remap LangSys indices; recompute checksums. Outlines and metrics are unchanged.",
+  "files": {
+    "no-petite.otf": {
+      "sha256": "82752ec1896fb1f9de3806bfc92ace56f84dc2f370ec9a72ccc18cc351fb2486",
+      "renamed_features": {
+        "pcap": "ZP01",
+        "c2pc": "ZP02"
+      }
+    },
+    "lower-petite-only.otf": {
+      "sha256": "91459af47e431aec89d9bb19effb902c698abcca55fb0d5c376fd95812b13644",
+      "renamed_features": {
+        "c2pc": "ZP02"
+      }
+    },
+    "upper-petite-only.otf": {
+      "sha256": "33f1964c54981831a0d8ce5a7e462c19b4191875001562185bc3d86c73a6248d",
+      "renamed_features": {
+        "pcap": "ZP01"
+      }
+    }
+  }
+}

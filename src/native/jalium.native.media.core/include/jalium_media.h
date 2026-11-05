@@ -106,9 +106,8 @@ typedef enum jalium_linux_media_capability {
     JALIUM_LINUX_MEDIA_TRACK_DISCOVERY   = 1u << 5,
     JALIUM_LINUX_MEDIA_SUBTITLE_DECODE   = 1u << 6,
     // Reported only after this process has actually negotiated and exported a
-    // single-plane packed RGB dma-buf layout accepted by the Vulkan importer.
-    // Plugin presence alone is insufficient. NV12/P010, DMA_DRM and
-    // multi-plane layouts currently fall back to CPU frames.
+    // supported RGB/NV12/P010 dma-buf descriptor. Plugin presence alone is
+    // insufficient; the renderer still validates device/layout compatibility.
     JALIUM_LINUX_MEDIA_DMABUF_EXPORT     = 1u << 7,
 } jalium_linux_media_capability_t;
 
@@ -260,11 +259,10 @@ JALIUM_MEDIA_API void jalium_video_decoder_close(jalium_video_decoder_t* decoder
 // `out_descriptor->kind` matches JaliumVideoSurfaceKind in jalium_video_surface.h.
 // `handle0` / `handle1` interpretation depends on `kind`.
 // The Linux descriptor ABI can describe up to four planes, but the current
-// Vulkan consumer accepts only one packed RGB AR24/XR24/AB24/XB24 plane.
-// NV12/P010, DMA_DRM and multi-plane samples return an unsupported GPU layout
-// and are reopened through the precise-timestamp CPU frame path.
-// The producer completed all GPU writes and will never mutate this allocation
-// again. The importer must hold its own resource reference through GPU use.
+// Vulkan consumer supports packed RGB and progressive SDR NV12/P010 with
+// explicit layout and color metadata. Unsupported layouts use the precise-PTS
+// CPU reopen path. Consumers must wait on acquire_fence_fd or dma-buf implicit
+// write fences, and hold the producer lifetime through the final GPU fence.
 // Kept in sync with JALIUM_VS_FLAG_IMMUTABLE_READY; does not change the ABI.
 #define JALIUM_VIDEO_GPU_DESCRIPTOR_IMMUTABLE_READY (1u << 16)
 
@@ -306,7 +304,7 @@ JALIUM_MEDIA_API jalium_media_status_t jalium_video_decoder_acquire_gpu_surface_
 
 /// Pulls the next hardware-decoded GPU frame. Unlike the legacy acquire call,
 /// this does not require a preceding CPU read/copy. On success the descriptor
-/// owns duplicated fds and must be released exactly once after the renderer
+/// owns its handle/fd/producer reference and must be released once after the renderer
 /// has imported (or rejected) it.
 JALIUM_MEDIA_API jalium_media_status_t jalium_video_decoder_read_gpu_frame_descriptor(
     jalium_video_decoder_t*                decoder,
@@ -317,9 +315,10 @@ JALIUM_MEDIA_API jalium_media_status_t jalium_video_decoder_read_gpu_frame_descr
 JALIUM_MEDIA_API void jalium_video_decoder_release_gpu_surface_descriptor(
     jalium_video_decoder_gpu_descriptor_t* descriptor);
 
-/// Switches a Linux decoder from its dma-buf pipeline to the CPU BGRA/RGBA
-/// pipeline at the last decoded timestamp. Other platforms return
-/// NOT_IMPLEMENTED. Used when Vulkan rejects a modifier/format at runtime.
+/// Switches a GPU decoder to its CPU BGRA/RGBA path at the last decoded
+/// timestamp. Used when the renderer rejects an external layout or format.
+/// Linux and Android rebuild their output pipeline; Windows retains/reseeks
+/// the matching MF sample. Unsupported platforms return NOT_IMPLEMENTED.
 JALIUM_MEDIA_API jalium_media_status_t jalium_video_decoder_disable_gpu_output(
     jalium_video_decoder_t* decoder);
 

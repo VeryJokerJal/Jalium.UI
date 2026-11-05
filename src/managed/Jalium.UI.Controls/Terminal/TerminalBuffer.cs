@@ -180,12 +180,43 @@ internal class TerminalBuffer
     #region Character Writing
 
     /// <summary>
+    /// Determines whether a BMP Unicode character has an East Asian Wide / Fullwidth
+    /// display width of 2 columns in POSIX terminals (wcwidth == 2).
+    /// Supplementary plane wide characters (emoji, CJK Ext B+) are represented as UTF-16
+    /// surrogate pairs (2 chars) and therefore naturally occupy 2 cells.
+    /// </summary>
+    internal static bool IsWideBmpChar(char c)
+    {
+        if (c < 0x1100) return false;
+        return (c >= 0x1100 && c <= 0x115F) ||
+               c == 0x2329 || c == 0x232A ||
+               (c >= 0x2E80 && c <= 0x303E) ||
+               (c >= 0x3040 && c <= 0xA4CF) ||
+               (c >= 0xAC00 && c <= 0xD7A3) ||
+               (c >= 0xF900 && c <= 0xFAFF) ||
+               (c >= 0xFE10 && c <= 0xFE19) ||
+               (c >= 0xFE30 && c <= 0xFE6F) ||
+               (c >= 0xFF01 && c <= 0xFF60) ||
+               (c >= 0xFFE0 && c <= 0xFFE6);
+    }
+
+    /// <summary>
     /// Writes a character at the current cursor position and advances the cursor.
     /// </summary>
     public void WriteChar(char c)
     {
+        bool isWide = IsWideBmpChar(c);
+
         if (_wrapPending && _autoWrap)
         {
+            _wrapPending = false;
+            _cursorCol = 0;
+            LineFeed();
+        }
+        else if (isWide && _cursorCol == _columns - 1 && _autoWrap && _columns > 1)
+        {
+            if (_cursorRow >= 0 && _cursorRow < _rows)
+                _screen[_cursorRow, _cursorCol] = TerminalChar.Blank;
             _wrapPending = false;
             _cursorCol = 0;
             LineFeed();
@@ -193,6 +224,15 @@ internal class TerminalBuffer
 
         if (_cursorRow >= 0 && _cursorRow < _rows && _cursorCol >= 0 && _cursorCol < _columns)
         {
+            if (_screen[_cursorRow, _cursorCol].Character == '\0' && _cursorCol > 0)
+            {
+                _screen[_cursorRow, _cursorCol - 1] = TerminalChar.Blank;
+            }
+            if (!isWide && _cursorCol + 1 < _columns && _screen[_cursorRow, _cursorCol + 1].Character == '\0')
+            {
+                _screen[_cursorRow, _cursorCol + 1] = TerminalChar.Blank;
+            }
+
             _screen[_cursorRow, _cursorCol] = new TerminalChar
             {
                 Character = c,
@@ -202,9 +242,39 @@ internal class TerminalBuffer
                 BackgroundRgb = _currentBgRgb,
                 Attributes = _currentAttributes
             };
+
+            if (isWide && _cursorCol + 1 < _columns)
+            {
+                if (_cursorCol + 2 < _columns && _screen[_cursorRow, _cursorCol + 2].Character == '\0')
+                {
+                    _screen[_cursorRow, _cursorCol + 2] = TerminalChar.Blank;
+                }
+
+                _screen[_cursorRow, _cursorCol + 1] = new TerminalChar
+                {
+                    Character = '\0',
+                    ForegroundIndex = _currentFgIndex,
+                    BackgroundIndex = _currentBgIndex,
+                    ForegroundRgb = _currentFgRgb,
+                    BackgroundRgb = _currentBgRgb,
+                    Attributes = _currentAttributes
+                };
+            }
         }
 
-        if (_cursorCol < _columns - 1)
+        if (isWide && _columns > 1)
+        {
+            if (_cursorCol + 1 < _columns - 1)
+            {
+                _cursorCol += 2;
+            }
+            else
+            {
+                _cursorCol = _columns - 1;
+                _wrapPending = true;
+            }
+        }
+        else if (_cursorCol < _columns - 1)
         {
             _cursorCol++;
         }
@@ -461,10 +531,17 @@ internal class TerminalBuffer
     }
 
     /// <summary>
+    /// Erases saved lines (ESC[3J), preserving the active screen and cursor.
+    /// </summary>
+    public void ClearScrollback() => _scrollback.Clear();
+
+    /// <summary>
     /// Erases from cursor to end of line (ESC[0K).
     /// </summary>
     public void EraseToEndOfLine()
     {
+        if (_cursorCol > 0 && _cursorCol < _columns && _screen[_cursorRow, _cursorCol].Character == '\0')
+            _screen[_cursorRow, _cursorCol - 1] = TerminalChar.Blank;
         for (int c = _cursorCol; c < _columns; c++)
             _screen[_cursorRow, c] = TerminalChar.Blank;
     }
@@ -474,6 +551,8 @@ internal class TerminalBuffer
     /// </summary>
     public void EraseToStartOfLine()
     {
+        if (_cursorCol + 1 < _columns && _screen[_cursorRow, _cursorCol + 1].Character == '\0')
+            _screen[_cursorRow, _cursorCol + 1] = TerminalChar.Blank;
         for (int c = 0; c <= _cursorCol && c < _columns; c++)
             _screen[_cursorRow, c] = TerminalChar.Blank;
     }
@@ -492,8 +571,13 @@ internal class TerminalBuffer
     /// </summary>
     public void EraseCharacters(int count)
     {
+        if (_cursorCol > 0 && _cursorCol < _columns && _screen[_cursorRow, _cursorCol].Character == '\0')
+            _screen[_cursorRow, _cursorCol - 1] = TerminalChar.Blank;
         for (int i = 0; i < count && _cursorCol + i < _columns; i++)
             _screen[_cursorRow, _cursorCol + i] = TerminalChar.Blank;
+        int endCol = _cursorCol + count;
+        if (endCol >= 0 && endCol < _columns && _screen[_cursorRow, endCol].Character == '\0')
+            _screen[_cursorRow, endCol] = TerminalChar.Blank;
     }
 
     #endregion
@@ -762,10 +846,15 @@ internal class TerminalBuffer
         if (row < 0 || row >= _rows) return string.Empty;
 
         var chars = new char[_columns];
+        int len = 0;
         for (int c = 0; c < _columns; c++)
-            chars[c] = _screen[row, c].Character;
+        {
+            char ch = _screen[row, c].Character;
+            if (ch != '\0')
+                chars[len++] = ch;
+        }
 
-        return new string(chars).TrimEnd();
+        return new string(chars, 0, len).TrimEnd();
     }
 
     /// <summary>
@@ -777,10 +866,15 @@ internal class TerminalBuffer
         if (row < 0 || row >= _rows) return string.Empty;
 
         var chars = new char[_columns];
+        int len = 0;
         for (int c = 0; c < _columns; c++)
-            chars[c] = _screen[row, c].Character;
+        {
+            char ch = _screen[row, c].Character;
+            if (ch != '\0')
+                chars[len++] = ch;
+        }
 
-        return new string(chars);
+        return new string(chars, 0, len);
     }
 
     /// <summary>
@@ -792,10 +886,15 @@ internal class TerminalBuffer
 
         var line = _scrollback[index];
         var chars = new char[line.Length];
+        int len = 0;
         for (int i = 0; i < line.Length; i++)
-            chars[i] = line[i].Character;
+        {
+            char ch = line[i].Character;
+            if (ch != '\0')
+                chars[len++] = ch;
+        }
 
-        return new string(chars).TrimEnd();
+        return new string(chars, 0, len).TrimEnd();
     }
 
     #endregion

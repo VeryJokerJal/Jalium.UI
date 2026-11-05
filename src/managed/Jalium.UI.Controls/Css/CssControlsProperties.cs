@@ -42,7 +42,11 @@ internal static class CssControlsProperties
         CssDisplayProperties.Register();
         CssFlowProperties.Register();
         CssFloatProperties.Register();
+        CssInitialLetterProperties.Register();
         CssContainerProperties.Register();
+        CssGeneratedContent.Register();
+        CssCounters.Register();
+        CssListProperties.Register();
     }
 
     // ── Flexbox ────────────────────────────────────────────────────────────────────────
@@ -305,6 +309,12 @@ internal static class CssControlsProperties
 
     private static CssCompiledValue? ParseFlexBasis(ref CssTokenReader reader)
     {
+        var sizingProbe = reader;
+        if (CssSizingValue.TryRead(ref sizingProbe, out var sizing, allowContent: true) && sizingProbe.AtEnd)
+        {
+            reader = sizingProbe;
+            return new CssIntrinsicBasisValue(sizing!);
+        }
         var probe = reader;
         if (probe.TryReadIdent(out var ident) && probe.AtEnd)
         {
@@ -315,10 +325,7 @@ internal static class CssControlsProperties
 
             if (ident.Equals("content", StringComparison.OrdinalIgnoreCase))
             {
-                CssDiagnostics.Report(
-                    "flex-basis", CssDiagnosticReason.LossyConversion, null,
-                    "'content' is treated as auto");
-                return new CssImmediateValue(FlexPanel.BasisProperty, double.NaN);
+                return new CssImmediateValue(FlexPanel.CssContentBasisProperty, true);
             }
 
             return null;
@@ -356,9 +363,15 @@ internal static class CssControlsProperties
     {
         double grow = 1, shrink = 1, basis = double.NaN;
         CssLength? contextualBasis = null;
+        CssSizingValue? intrinsicBasis = null;
+        var contentBasis = false;
 
         var probe = reader;
-        if (probe.TryReadIdent(out var ident) && probe.AtEnd)
+        if (probe.TryReadIdent(out var ident) && probe.AtEnd &&
+            (ident.Equals("none", StringComparison.OrdinalIgnoreCase) ||
+             ident.Equals("auto", StringComparison.OrdinalIgnoreCase) ||
+             ident.Equals("initial", StringComparison.OrdinalIgnoreCase) ||
+             ident.Equals("content", StringComparison.OrdinalIgnoreCase)))
         {
             if (ident.Equals("none", StringComparison.OrdinalIgnoreCase))
             {
@@ -372,6 +385,7 @@ internal static class CssControlsProperties
             {
                 (grow, shrink, basis) = (0, 1, double.NaN);
             }
+            else if (ident.Equals("content", StringComparison.OrdinalIgnoreCase)) contentBasis = true;
             else
             {
                 return false;
@@ -383,15 +397,27 @@ internal static class CssControlsProperties
         {
             var numberSlot = 0; // 0 = grow next, 1 = shrink next, 2 = numbers exhausted
             var sawBasis = false;
+            var basisAfterFirstNumber = false;
             var sawAnything = false;
             while (!reader.AtEnd)
             {
+                var sizingProbe = reader;
+                if (CssSizingValue.TryRead(ref sizingProbe, out var sizing, allowContent: true))
+                {
+                    if (sawBasis) return false;
+                    intrinsicBasis = sizing;
+                    basisAfterFirstNumber = numberSlot == 1;
+                    sawBasis = sawAnything = true;
+                    reader = sizingProbe;
+                    continue;
+                }
                 var lengthProbe = reader;
                 if (lengthProbe.TryReadLength(out var basisLength) && basisLength.Unit != CssUnit.None)
                 {
                     if (sawBasis || basisLength.IsAbsolute && basisLength.ToPxAbsolute() < 0 || basisLength.Unit == CssUnit.Percent && basisLength.Value < 0) return false;
                     if (basisLength.IsAbsolute) basis = basisLength.ToPxAbsolute();
                     else contextualBasis = basisLength;
+                    basisAfterFirstNumber = numberSlot == 1;
                     sawBasis = true;
                     sawAnything = true;
                     reader = lengthProbe;
@@ -402,6 +428,8 @@ internal static class CssControlsProperties
                 {
                     if (unit == CssUnit.None)
                     {
+                        // Grow and shrink form one contiguous component group.
+                        if (basisAfterFirstNumber && numberSlot == 1) return false;
                         if (numberProbe.NumberWasCalculated) value = Math.Max(0, value);
                         if (numberSlot == 2 && value == 0 && !sawBasis)
                         {
@@ -445,6 +473,8 @@ internal static class CssControlsProperties
                     }
 
                     basis = double.NaN;
+                    contentBasis = word.Equals("content", StringComparison.OrdinalIgnoreCase);
+                    basisAfterFirstNumber = numberSlot == 1;
                     sawBasis = true;
                     sawAnything = true;
                     reader = identProbe;
@@ -459,7 +489,7 @@ internal static class CssControlsProperties
                 return false;
             }
 
-            // `flex: <number>` implies basis 0 (the flex:1 pattern).
+            // CSS Flexbox 7.1: an omitted basis is the definite length zero.
             if (numberSlot >= 1 && !sawBasis)
             {
                 basis = 0;
@@ -472,6 +502,8 @@ internal static class CssControlsProperties
         output.Add(new CssCompiledDeclaration("flex-shrink",
             new CssImmediateValue(FlexPanel.ShrinkProperty, shrink), false));
         output.Add(new CssCompiledDeclaration("flex-basis",
+            contentBasis ? new CssImmediateValue(FlexPanel.CssContentBasisProperty, true) :
+            intrinsicBasis is { } intrinsic ? new CssIntrinsicBasisValue(intrinsic) :
             contextualBasis is { } deferred ? new CssFlexBasisValue(deferred) : new CssImmediateValue(FlexPanel.BasisProperty, basis), false));
         return true;
     }
@@ -482,6 +514,16 @@ internal static class CssControlsProperties
         {
             sink.Set(FlexPanel.BasisProperty, double.NaN);
             sink.Set(FlexPanel.CssBasisProperty, length);
+            return true;
+        }
+    }
+
+    private sealed class CssIntrinsicBasisValue(CssSizingValue sizing) : CssCompiledValue
+    {
+        public override bool TryApply(in CssApplyContext context, ICssSetterSink sink)
+        {
+            sink.Set(FlexPanel.BasisProperty, double.NaN);
+            sink.Set(FlexPanel.CssBasisProperty, sizing.Compute(context.Lengths));
             return true;
         }
     }
@@ -514,18 +556,19 @@ internal static class CssControlsProperties
                 return true;
             }
 
-            if (context.Element.Target is Panel) sink.Set(_flexProperty, _boxedValue);
+            var host = context.Element.Target is FrameworkElement { IsCssContentHost: true } or Documents.TextElement or Documents.FlowDocument;
+            if (host) sink.Set(_flexProperty, _boxedValue);
 
             var setter = new CssDeclarationSetter(sink, context.Element, _cssName);
             if (context.Element.TryApplyCssPropertyCore(_cssName, _rawValue, in setter))
             {
                 return true;
             }
-            if (context.Element.Target is Panel) return true;
+            if (host) return true;
 
             CssDiagnostics.Report(
                 _cssName, CssDiagnosticReason.TargetPropertyMissing, context.Element.GetType(),
-                "flex container properties need a FlexPanel (or a panel that intercepts them)");
+                "flex container properties need a CSS content host");
             return false;
         }
     }
@@ -538,14 +581,16 @@ internal static class CssControlsProperties
         {
             Name = "z-index",
             Kind = CssPropertyKind.Longhand,
+            StorageProperty = CssCompositingProperties.ZIndexProperty,
+            TransitionTargetDpName = CssCompositingProperties.ZIndexProperty.Name,
             Parse = (ref CssTokenReader reader, CssCompileContext ctx_) =>
             {
                 var probe = reader;
                 if (probe.TryReadIdent(out var ident))
                 {
-                    return ident.Equals("auto", StringComparison.OrdinalIgnoreCase) && probe.AtEnd
-                        ? new CssImmediateValue(Panel.ZIndexProperty, 0)
-                        : null;
+                    if (!ident.Equals("auto", StringComparison.OrdinalIgnoreCase) || !probe.AtEnd) return null;
+                    reader = probe;
+                    return new CssImmediateValue(CssCompositingProperties.ZIndexProperty, null);
                 }
 
                 if (!reader.TryReadInteger(out var value) || !reader.AtEnd)
@@ -553,7 +598,7 @@ internal static class CssControlsProperties
                     return null;
                 }
 
-                return new CssImmediateValue(Panel.ZIndexProperty, value);
+                return new CssImmediateValue(CssCompositingProperties.ZIndexProperty, value);
             },
         });
 
@@ -1590,6 +1635,12 @@ internal static class CssControlsProperties
                 cached.ResolvedLengths = resolved;
             }
 
+            if (textShadow && usesCurrentColor && CssSelection.IsProjection(context.Element))
+            {
+                var computedLengths = (double[])resolved.Clone();
+                CssSelection.RememberShadow(context.Element, paintColor =>
+                    CombineTextShadows(factories.Select(factory => factory(paintColor, computedLengths)).ToList()));
+            }
             if (textShadow) sink.Set(CssTextShadowProperties.ValueProperty, cached.Value);
             else if (boxShadow) context.Slots.SetBoxShadow(cached.Value);
             else context.Slots.SetFilter(cached.Value);

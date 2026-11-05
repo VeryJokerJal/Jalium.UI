@@ -1,9 +1,11 @@
 #include "ot_shaper.h"
 #include "ot_layout.h"
+#include "text_bidi.h"
 #include "font_face.h"
 #include "font_data.h"
 
 #include <algorithm>
+#include <unordered_map>
 
 namespace jalium::font {
 
@@ -27,6 +29,18 @@ static bool SingleSubst(const ByteReader& r, uint32_t st, uint16_t gid, uint16_t
         if (ci < count) { newGid = r.U16(st + 6 + static_cast<size_t>(ci) * 2); return true; }
     }
     return false;
+}
+
+// Alternate substitution (type 3) uses the feature's one-based selection index.
+// An index outside the font's list leaves the original glyph in place.
+static bool AlternateSubst(const ByteReader& r, uint32_t st, uint16_t gid, uint32_t index, uint16_t& newGid) {
+    if (r.U16(st) != 1 || index == 0) return false;
+    int covered = CoverageIndex(r, st + r.U16(st + 2), gid);
+    if (covered < 0 || covered >= r.U16(st + 4)) return false;
+    uint32_t set = st + r.U16(st + 6 + static_cast<size_t>(covered) * 2);
+    if (index > r.U16(set)) return false;
+    newGid = r.U16(set + 2 + static_cast<size_t>(index - 1) * 2);
+    return true;
 }
 
 // Ligature substitution (type 4). If glyphs[pos..] starts a ligature, returns
@@ -58,12 +72,30 @@ static bool LigatureSubst(const ByteReader& r, uint32_t st,
     return false;
 }
 
-static void ApplyGsub(const ByteReader& gsub, std::vector<ShapedGlyphItem>& glyphs) {
+static uint32_t FeatureValue(const std::vector<JaliumFontFeature>& features, uint32_t tag, uint32_t fallback) {
+    for (auto it = features.rbegin(); it != features.rend(); ++it) if (it->tag == tag) return it->value;
+    return fallback;
+}
+
+static void ApplyGsub(const ByteReader& gsub, std::vector<ShapedGlyphItem>& glyphs,
+    const std::vector<JaliumFontFeature>& features) {
     LayoutHeader h = ParseLayoutHeader(gsub);
     if (!h.valid) return;
-    const uint32_t wanted[] = { Tag4('c','c','m','p'), Tag4('l','i','g','a'), Tag4('r','l','i','g') };
+    std::vector<uint32_t> wanted;
+    for (auto tag : {Tag4('c','c','m','p'), Tag4('l','i','g','a'), Tag4('c','l','i','g'),
+                    Tag4('c','a','l','t'), Tag4('r','l','i','g')})
+        if (FeatureValue(features, tag, 1)) wanted.push_back(tag);
+    for (const auto& feature : features)
+        if (FeatureValue(features, feature.tag, 0) && std::find(wanted.begin(), wanted.end(), feature.tag) == wanted.end())
+            wanted.push_back(feature.tag);
     std::vector<uint16_t> lookups;
-    CollectFeatureLookups(gsub, h, wanted, 3, lookups);
+    CollectFeatureLookups(gsub, h, wanted.data(), static_cast<uint32_t>(wanted.size()), lookups);
+    std::unordered_map<uint16_t, uint32_t> lookupValues;
+    for (uint32_t tag : wanted) {
+        std::vector<uint16_t> selected;
+        CollectFeatureLookups(gsub, h, &tag, 1, selected);
+        for (uint16_t index : selected) lookupValues[index] = FeatureValue(features, tag, 1);
+    }
 
     for (uint16_t li : lookups) {
         LookupAccess la;
@@ -75,6 +107,14 @@ static void ApplyGsub(const ByteReader& gsub, std::vector<ShapedGlyphItem>& glyp
                     if (SingleSubst(gsub, st, static_cast<uint16_t>(it.glyphIndex), ng)) { it.glyphIndex = ng; break; }
                 }
             }
+        } else if (la.type == 3) {
+            for (auto& item : glyphs) {
+                for (uint32_t st : la.subtables) {
+                    uint16_t alternate;
+                    if (AlternateSubst(gsub, st, static_cast<uint16_t>(item.glyphIndex), lookupValues[li], alternate))
+                    { item.glyphIndex = alternate; break; }
+                }
+            }
         } else if (la.type == 4) {
             size_t i = 0;
             while (i < glyphs.size()) {
@@ -83,6 +123,7 @@ static void ApplyGsub(const ByteReader& gsub, std::vector<ShapedGlyphItem>& glyp
                     uint16_t ligGid; int comps;
                     if (LigatureSubst(gsub, st, glyphs, i, ligGid, comps)) {
                         glyphs[i].glyphIndex = ligGid;
+                        glyphs[i].clusterEnd = glyphs[i + comps - 1].clusterEnd;
                         // cluster stays at the first component; drop the rest.
                         glyphs.erase(glyphs.begin() + i + 1, glyphs.begin() + i + comps);
                         merged = true;
@@ -190,55 +231,46 @@ static void ApplyLegacyKern(const ByteReader& kern, std::vector<ShapedGlyphItem>
     }
 }
 
-// ---- bidi -------------------------------------------------------------------
-
-static bool IsStrongRtl(uint32_t cp) {
-    return (cp >= 0x0590 && cp <= 0x05FF) ||   // Hebrew
-           (cp >= 0x0600 && cp <= 0x06FF) ||   // Arabic
-           (cp >= 0x0700 && cp <= 0x074F) ||   // Syriac
-           (cp >= 0x0750 && cp <= 0x077F) ||   // Arabic Supplement
-           (cp >= 0x08A0 && cp <= 0x08FF) ||   // Arabic Extended-A
-           (cp >= 0xFB1D && cp <= 0xFDFF) ||   // Hebrew/Arabic presentation A
-           (cp >= 0xFE70 && cp <= 0xFEFF);     // Arabic presentation B
-}
-
 // ---- driver -----------------------------------------------------------------
 
 void OtShaper::Shape(const jalium::FontFace& face,
                      const uint32_t* cps, uint32_t count,
                      float fontSizePx, bool isRtl,
-                     std::vector<ShapedGlyphItem>& out) {
+               std::vector<ShapedGlyphItem>& out,
+               const std::vector<JaliumFontFeature>& features) {
     out.clear();
     if (!cps || count == 0) return;
     const float upem = static_cast<float>(face.UnitsPerEm());
     const float scale = upem > 0 ? fontSizePx / upem : 0.0f;
 
     out.reserve(count);
-    int rtlVotes = 0, ltrVotes = 0;
     for (uint32_t i = 0; i < count; ++i) {
+        if (TextBidi::IsFormattingControl(cps[i])) continue;
         ShapedGlyphItem it;
         it.glyphIndex = face.GetGlyphIndex(cps[i]);
         it.cluster = i;
+        it.clusterEnd = i + 1;
         out.push_back(it);
-        if (IsStrongRtl(cps[i])) ++rtlVotes;
-        else if (cps[i] >= 'A') ++ltrVotes;
     }
 
     // GSUB (may merge/replace glyphs, changing count).
     ByteReader gsub = face.GetTable(font::kTag_GSUB);
-    if (gsub.Size() >= 10) ApplyGsub(gsub, out);
+    if (gsub.Size() >= 10) ApplyGsub(gsub, out, features);
 
     // Advances come from the FINAL glyph ids (post-GSUB), unhinted linear scale.
-    for (auto& it : out) it.advanceX = face.GetAdvance(static_cast<uint16_t>(it.glyphIndex)) * scale;
+    for (auto& it : out) it.advanceX = TextBidi::IsLineBreak(cps[it.cluster]) ? 0 : face.GetAdvance(static_cast<uint16_t>(it.glyphIndex)) * scale;
 
     // GPOS kerning, else legacy kern table.
     ByteReader gpos = face.GetTable(font::kTag_GPOS);
     bool gposKern = false;
-    if (gpos.Size() >= 10) gposKern = ApplyGposKern(gpos, out, scale);
-    if (!gposKern) ApplyLegacyKern(face.GetTable(font::kTag_kern), out, scale);
+    if (FeatureValue(features, Tag4('k','e','r','n'), 1)) {
+        if (gpos.Size() >= 10) gposKern = ApplyGposKern(gpos, out, scale);
+        if (!gposKern) ApplyLegacyKern(face.GetTable(font::kTag_kern), out, scale);
+    }
 
-    // BiDi: reverse strongly-RTL runs (approximate — full UAX#9 is above us).
-    if (isRtl || rtlVotes > ltrVotes)
+    // Direction is explicit here. Paragraph resolution and line reordering live
+    // above the OpenType shaper; a majority vote must never reverse Latin words.
+    if (isRtl)
         std::reverse(out.begin(), out.end());
 }
 

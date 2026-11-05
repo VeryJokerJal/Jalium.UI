@@ -281,6 +281,7 @@ public static class FormattedTextOptionsExtensions
         ArgumentNullException.ThrowIfNull(formattedText);
         ArgumentNullException.ThrowIfNull(element);
 
+        formattedText.FlowDirection = (FlowDirection)element.GetValue(FrameworkElement.FlowDirectionProperty)!;
         formattedText.TextRenderingMode  = (int)TextOptions.GetTextRenderingMode(element);
         formattedText.TextFormattingMode = (int)TextOptions.GetTextFormattingMode(element);
         formattedText.TextHintingMode    = (int)TextOptions.GetTextHintingMode(element);

@@ -982,7 +982,12 @@ public partial class Popup : FrameworkElement, Jalium.UI.Input.IInputRouteParent
             ownerRevision == _macOSOwnerRevision && ReferenceEquals(root, _popupRoot) &&
             ReferenceEquals(parent, _parentWindow);
 
-        var popupSize = new Size(root.Width, root.Height);
+        // Assistance and menus can change content while open. Keep the host size
+        // in sync before placing it; the dimensions captured at opening may be stale.
+        var popupSize = MeasurePopupChild(Child);
+        if (!Current()) return;
+        root.Width = popupSize.Width;
+        root.Height = popupSize.Height;
         var windowLocalPos = CalculateWindowLocalPosition(popupSize);
         if (!Current()) return;
         var windowSize = new Size(parent.ActualWidth, parent.ActualHeight);

@@ -1,0 +1,12 @@
+cmake_minimum_required(VERSION 3.20)
+project(StrokeMaskCacheTests LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+enable_testing()
+add_executable(stroke_mask_cache_tests stroke_mask_cache_tests.cpp)
+target_include_directories(stroke_mask_cache_tests PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}/../../../src/native/jalium.native.d3d12/include")
+if(MSVC)
+    target_compile_options(stroke_mask_cache_tests PRIVATE /utf-8)
+endif()
+add_test(NAME stroke_mask_cache_tests COMMAND stroke_mask_cache_tests)

@@ -23,9 +23,14 @@ internal sealed class CountingInputHost : IInputDispatcherHost, IDisposable
 
     public UIElement? HitTarget { get; set; }
     public int HitTestCount { get; private set; }
+    public nint NativeHandle { get; set; }
+    public bool TitleBarVisible { get; set; }
+    public int TrackMouseLeaveRequestCount { get; private set; }
+    public bool TrackMouseLeaveDefaultResult { get; set; } = true;
+    public Queue<bool> TrackMouseLeaveResults { get; } = [];
     public List<Popup> ExternalPopups { get; } = [];
     public Window Self { get; }
-    public nint Handle => nint.Zero;
+    public nint Handle => NativeHandle;
     public OverlayLayer OverlayLayer { get; }
     public IReadOnlyList<Popup> ActiveExternalPopups => ExternalPopups;
     public ContentDialog? ActiveContentDialog => null;
@@ -46,7 +51,7 @@ internal sealed class CountingInputHost : IInputDispatcherHost, IDisposable
     }
 
     public HitTestResult? HitIgnoringOverlay(Point windowPosition) => null;
-    public bool IsTitleBarVisible() => false;
+    public bool IsTitleBarVisible() => TitleBarVisible;
     public TitleBarButton? GetTitleBarButtonAtPoint(Point point, double windowWidth = 0) => null;
     public UIElement GetKeyboardEventTarget() => Self;
     public UIElement? GetTextInputTarget() => null;
@@ -63,7 +68,13 @@ internal sealed class CountingInputHost : IInputDispatcherHost, IDisposable
     public bool OnPreviewWindowMouseWheel(int delta, Point position) => false;
     public void InvalidateWindow() { }
     public void RequestFullInvalidation() { }
-    public void RequestTrackMouseLeave() { }
+    public bool RequestTrackMouseLeave()
+    {
+        TrackMouseLeaveRequestCount++;
+        return TrackMouseLeaveResults.Count > 0
+            ? TrackMouseLeaveResults.Dequeue()
+            : TrackMouseLeaveDefaultResult;
+    }
     public void SetPlatformCursor(int cursorType) { }
     public void UpdateInputMethodAssociation() { }
     public bool IsPopupWindow(nint hwnd) => false;

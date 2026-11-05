@@ -3,8 +3,20 @@ using Jalium.UI.Media;
 
 namespace Jalium.UI.Tests;
 
-public class MenuFlyoutSeparatorThemeTests
+[Collection("Application")]
+public class MenuFlyoutSeparatorThemeTests : IDisposable
 {
+    public MenuFlyoutSeparatorThemeTests() => Reset();
+    public void Dispose() => Reset();
+    private static void Reset()
+    {
+        var flags = System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic;
+        typeof(Application).GetField("_current", flags)!.SetValue(null, null);
+        typeof(Jalium.UI.Controls.Themes.ThemeManager).GetField("_controlThemeDictionaries", flags)!
+            .SetValue(null, Array.Empty<ResourceDictionary>());
+        typeof(Jalium.UI.Controls.Themes.ThemeManager).GetMethod("Reset", flags)!.Invoke(null, null);
+    }
+
     [Fact]
     public void MenuFlyoutSeparator_OnRender_ShouldHonorForegroundBrush()
     {
@@ -16,13 +28,18 @@ public class MenuFlyoutSeparatorThemeTests
             Height = 9
         };
 
+        MenuFlyoutTemplateTestHelper.Apply(separator);
+        separator.Margin = new Thickness(0);
         separator.Measure(new Size(120, 9));
         separator.Arrange(new Rect(0, 0, 120, 9));
 
         var drawingContext = new RecordingDrawingContext();
         separator.Render(drawingContext);
 
-        Assert.Same(brush, drawingContext.LastPen?.Brush);
+        var line = Assert.IsType<Border>(separator.FindName("PART_Line"));
+        Assert.Same(brush, line.Background);
+        Assert.Equal(new Point(12, 4), line.TransformToAncestor(separator));
+        Assert.Equal(new Size(96, 1), line.RenderSize);
     }
 
     private sealed class RecordingDrawingContext : DrawingContextAdapter

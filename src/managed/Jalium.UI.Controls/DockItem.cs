@@ -1,4 +1,4 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Interop.Win32;
@@ -30,7 +30,8 @@ public partial class DockItem : HeaderedContentControl
     private static readonly SolidColorBrush s_fallbackDragDimBrush = new(Color.FromArgb(80, 0, 0, 0));
     private static readonly SolidColorBrush s_fallbackWindowBackgroundBrush = new(Color.FromRgb(0x1E, 0x1E, 0x2E));
 
-    internal DockTabPanel? OwnerPanel { get; set; }
+    private DockTabPanel? _ownerPanel;
+    internal DockTabPanel? OwnerPanel { get => _ownerPanel; set { _ownerPanel = value; UpdateTemplatePresentation(); } }
 
     #region Dependency Properties
 
@@ -112,14 +113,6 @@ public partial class DockItem : HeaderedContentControl
 
     #endregion
 
-    #region Close Button State
-
-    private bool _isCloseButtonHovered;
-    private bool _isCloseButtonPressed;
-    private Rect _closeButtonRect;
-
-    #endregion
-
     #region Drag State
 
     private bool _isMouseDown;
@@ -147,12 +140,6 @@ public partial class DockItem : HeaderedContentControl
     private EventHandler<System.ComponentModel.CancelEventArgs>? _floatingWindowClosingHandler;
     private bool _suppressRestoreOnFloatingWindowClose;
 
-    // Cached pens
-    private Pen? _closeButtonPen;
-    private Brush? _closeButtonPenBrush;
-    private Pen? _dragIndicatorPen;
-    private Brush? _dragIndicatorPenBrush;
-
     #endregion
 
     public DockItem()
@@ -161,7 +148,6 @@ public partial class DockItem : HeaderedContentControl
         AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
         AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler));
         AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler));
-        AddHandler(MouseLeaveEvent, new MouseEventHandler(OnMouseLeaveHandler));
     }
 
     /// <summary>
@@ -180,23 +166,14 @@ public partial class DockItem : HeaderedContentControl
         InvalidateMeasure();
     }
 
-    protected override int VisualChildrenCount => 0;
-
-    protected override Visual? GetVisualChild(int index)
-    {
-        throw new ArgumentOutOfRangeException(nameof(index));
-    }
-
     private static new void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is DockItem item)
-            item.InvalidateVisual();
+        if (d is DockItem item) { item.UpdateTemplatePresentation(); item.InvalidateMeasure(); item.InvalidateVisual(); }
     }
 
     private static void OnIsSelectedChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is DockItem item)
-            item.InvalidateVisual();
+        if (d is DockItem item) { item.UpdateTemplatePresentation(); item.InvalidateMeasure(); item.InvalidateVisual(); }
     }
 
     private bool CanDragFloatingWindow()
@@ -236,21 +213,6 @@ public partial class DockItem : HeaderedContentControl
     {
         if (e.ChangedButton == MouseButton.Left)
         {
-            // Check if clicking the close button
-            if (CanClose && _closeButtonRect.Width > 0)
-            {
-                var pos = e.GetPosition(this);
-                if (_closeButtonRect.Contains(pos))
-                {
-                    _isCloseButtonPressed = true;
-                    _isCloseButtonHovered = true;
-                    CaptureMouse();
-                    InvalidateVisual();
-                    e.Handled = true;
-                    return;
-                }
-            }
-
             // Select tab, activate panel focus, and begin potential drag
             OwnerPanel?.SelectTab(this);
             if (OwnerPanel != null)
@@ -266,25 +228,6 @@ public partial class DockItem : HeaderedContentControl
     {
         if (e.ChangedButton == MouseButton.Left)
         {
-            if (_isCloseButtonPressed)
-            {
-                var pos = e.GetPosition(this);
-                var shouldClose = _closeButtonRect.Contains(pos);
-
-                _isCloseButtonPressed = false;
-                _isCloseButtonHovered = shouldClose;
-                if (IsMouseCaptured)
-                    ReleaseMouseCapture();
-
-                InvalidateVisual();
-
-                if (shouldClose)
-                    OwnerPanel?.CloseItem(this);
-
-                e.Handled = true;
-                return;
-            }
-
             if (_isDraggingFloatingWindow)
             {
                 FinishFloatingWindowDrag();
@@ -363,25 +306,6 @@ public partial class DockItem : HeaderedContentControl
             return;
         }
 
-        // Close button hover tracking
-        if (CanClose && _closeButtonRect.Width > 0)
-        {
-            var pos = e.GetPosition(this);
-            var newHover = _closeButtonRect.Contains(pos);
-            if (newHover != _isCloseButtonHovered)
-            {
-                _isCloseButtonHovered = newHover;
-                InvalidateVisual();
-            }
-
-            // While pressing close, do not enter tab drag/select behavior.
-            if (_isCloseButtonPressed)
-            {
-                e.Handled = true;
-                return;
-            }
-        }
-
         // Initial drag detection (threshold check)
         if (_isMouseDown && OwnerPanel != null)
         {
@@ -424,15 +348,6 @@ public partial class DockItem : HeaderedContentControl
 
                 e.Handled = true;
             }
-        }
-    }
-
-    private void OnMouseLeaveHandler(object sender, MouseEventArgs e)
-    {
-        if (_isCloseButtonHovered)
-        {
-            _isCloseButtonHovered = false;
-            InvalidateVisual();
         }
     }
 
@@ -500,6 +415,7 @@ public partial class DockItem : HeaderedContentControl
         if (index < 0) return;
 
         _isReorderDragging = true;
+        UpdateTemplatePresentation();
         CaptureMouse();
         BeginReorderDragVisual();
 
@@ -513,6 +429,7 @@ public partial class DockItem : HeaderedContentControl
     private void FinishReorderDrag()
     {
         _isReorderDragging = false;
+        UpdateTemplatePresentation();
         EndReorderDragVisual();
         ReleaseMouseCapture();
 
@@ -543,6 +460,7 @@ public partial class DockItem : HeaderedContentControl
     private void CancelReorderDrag()
     {
         _isReorderDragging = false;
+        UpdateTemplatePresentation();
         EndReorderDragVisual();
         ReleaseMouseCapture();
 
@@ -638,8 +556,8 @@ public partial class DockItem : HeaderedContentControl
             Content = null;
 
             // Defensive: ensure content is fully detached from the floating panel
-            if (content is UIElement ce && ce.VisualParent is DockTabPanel oldPanel)
-                oldPanel.ReleaseContentElement(ce);
+            if (content is UIElement ce)
+                DockTabPanel.DetachContentFromDockPanel(ce);
 
             var windowToClose = _floatingDragWindow;
             _floatingDragWindow = null;
@@ -960,7 +878,19 @@ public partial class DockItem : HeaderedContentControl
             null,
             -1,
             GridLength.Star,
-            sourcePanel.VisualParent as ContentControl);
+            FindContentHost(sourcePanel));
+    }
+
+    private static ContentControl? FindContentHost(DockTabPanel sourcePanel)
+    {
+        // Templates may place presenters and borders between the panel and its owner.
+        for (var ancestor = sourcePanel.VisualParent; ancestor != null; ancestor = ancestor.VisualParent)
+        {
+            if (ancestor is ContentControl host && ReferenceEquals(host.Content, sourcePanel))
+                return host;
+        }
+
+        return null;
     }
 
     private void AttachFloatingWindowRestoreHandler(Window floatingWindow, FloatingRestoreContext restoreContext)
@@ -1022,8 +952,8 @@ public partial class DockItem : HeaderedContentControl
         var headerText = Header?.ToString() ?? "Panel";
         Content = null;
 
-        if (content is UIElement contentElement && contentElement.VisualParent is DockTabPanel oldPanel)
-            oldPanel.ReleaseContentElement(contentElement);
+        if (content is UIElement contentElement)
+            DockTabPanel.DetachContentFromDockPanel(contentElement);
 
         var restoredItem = CreateTransferredDockItem(content, headerText);
         var insertIndex = Math.Clamp(restoreContext.SourceTabIndex, 0, targetPanel.Items.Count);
@@ -1083,161 +1013,15 @@ public partial class DockItem : HeaderedContentControl
 
     protected override Size MeasureOverride(Size availableSize)
     {
-        var headerText = Header?.ToString() ?? "";
-        var fontSize = FontSize;
-        double textWidth = 0;
-        if (fontSize > 0 && headerText.Length > 0)
-        {
-            var fontFamily = !string.IsNullOrEmpty(FontFamily?.GetRenderingSource(this)) ? FontFamily.GetRenderingSource(this) : FrameworkElement.DefaultFontFamilyName;
-            var formatted = new FormattedText(headerText, fontFamily, fontSize);
-            TextMeasurement.MeasureText(formatted);
-            textWidth = formatted.Width;
-        }
-
-        var padding = GetEffectivePadding();
-        var desiredWidth = textWidth + padding.Left + padding.Right;
-
-        // Add space for close button
-        if (CanClose)
-            desiredWidth += 20;
-
-        var isVerticalStrip = OwnerPanel?.IsVerticalTabStrip == true;
-        var width = double.IsInfinity(availableSize.Width)
-            ? desiredWidth
-            : isVerticalStrip
-                ? availableSize.Width
-                : Math.Min(desiredWidth, availableSize.Width);
-
-        var minHeight = Math.Max(20, Math.Ceiling(fontSize + 10));
-        var height = double.IsInfinity(availableSize.Height)
-            ? minHeight
-            : Math.Max(minHeight, availableSize.Height);
-
-        return new Size(Math.Max(width, 40), height);
+        var desired = base.MeasureOverride(availableSize);
+        var width = OwnerPanel?.IsVerticalTabStrip == true && double.IsFinite(availableSize.Width) ? availableSize.Width : desired.Width;
+        var height = double.IsFinite(availableSize.Height) ? Math.Max(desired.Height, availableSize.Height) : desired.Height;
+        return new Size(Math.Max(width, 40), Math.Max(height, Math.Max(20, Math.Ceiling(FontSize + 10))));
     }
 
     protected override Size ArrangeOverride(Size finalSize)
     {
-        return finalSize;
-    }
-
-    protected override void OnIsMouseOverChanged(bool oldValue, bool newValue)
-    {
-        InvalidateVisual();
-    }
-
-    protected override void OnRender(DrawingContext drawingContextObj)
-    {
-        var dc = drawingContextObj;
-
-        var bounds = new Rect(0, 0, ActualWidth, ActualHeight);
-        var activeTextBrush = ResolveActiveTextBrush();
-        var inactiveTextBrush = ResolveInactiveTextBrush();
-        var closeButtonHoverBrush = ResolveCloseButtonHoverBrush();
-        var closeButtonPressedBrush = ResolveCloseButtonPressedBrush();
-        var indicatorBrush = ResolveIndicatorBrush();
-        var dragDimBrush = ResolveDragDimBrush();
-        var padding = GetEffectivePadding();
-
-        // Background based on state
-        Brush bgBrush;
-        if (IsSelected)
-            bgBrush = ResolveSelectedBackgroundBrush();
-        else if (IsMouseOver)
-            bgBrush = ResolveHoverBackgroundBrush();
-        else
-            bgBrush = Background ?? s_transparentBrush;
-
-        var placement = OwnerPanel?.TabStripPlacement ?? Dock.Top;
-        var tabCornerRadius = ResolveTabCornerRadius(ActualWidth, ActualHeight + 1);
-        var activeCorners = placement switch
-        {
-            Dock.Bottom => new CornerRadius(0, 0, tabCornerRadius, tabCornerRadius),
-            Dock.Left => new CornerRadius(tabCornerRadius, 0, 0, tabCornerRadius),
-            Dock.Right => new CornerRadius(0, tabCornerRadius, tabCornerRadius, 0),
-            _ => new CornerRadius(tabCornerRadius, tabCornerRadius, 0, 0),
-        };
-
-        if (IsSelected)
-        {
-            var selectedRect = placement switch
-            {
-                Dock.Bottom => new Rect(0, -1, ActualWidth, ActualHeight + 1),
-                Dock.Left => new Rect(0, 0, ActualWidth + 1, ActualHeight),
-                Dock.Right => new Rect(-1, 0, ActualWidth + 1, ActualHeight),
-                _ => new Rect(0, 0, ActualWidth, ActualHeight + 1),
-            };
-            dc.DrawRoundedRectangle(bgBrush, null, selectedRect, activeCorners);
-        }
-        else if (IsMouseOver)
-        {
-            dc.DrawRoundedRectangle(bgBrush, null, bounds, activeCorners);
-        }
-        else
-        {
-            dc.DrawRectangle(bgBrush, null, bounds);
-        }
-
-        // Header text
-        if (CreateHeaderTextLayout(ResolveHeaderTextBrush(activeTextBrush, inactiveTextBrush), ActualWidth, ActualHeight) is FormattedText text)
-        {
-            var textX = padding.Left;
-            var textY = (ActualHeight - text.Height) / 2;
-            dc.PushClip(new RectangleGeometry(bounds));
-            dc.DrawText(text, new Point(textX, textY));
-            dc.Pop();
-        }
-
-        // Close button (X) 閳?only show when selected or hovered
-        if (CanClose && (IsSelected || IsMouseOver))
-        {
-            var closeSize = 14.0;
-            var closeX = ActualWidth - closeSize - 6;
-            var closeY = (ActualHeight - closeSize) / 2;
-            _closeButtonRect = new Rect(closeX - 2, closeY - 2, closeSize + 4, closeSize + 4);
-
-            // Close button background on hover/pressed
-            if (_isCloseButtonPressed || _isCloseButtonHovered)
-            {
-                var closeBg = _isCloseButtonPressed ? closeButtonPressedBrush : closeButtonHoverBrush;
-                dc.DrawRoundedRectangle(closeBg, null, _closeButtonRect, 3, 3);
-            }
-
-            // Draw X
-            var xBrush = (_isCloseButtonHovered || _isCloseButtonPressed) ? activeTextBrush : inactiveTextBrush;
-            if (_closeButtonPen == null || _closeButtonPenBrush != xBrush)
-            {
-                _closeButtonPenBrush = xBrush;
-                _closeButtonPen = new Pen(xBrush, 1);
-            }
-            var xPen = _closeButtonPen;
-            var margin = 3.0;
-            dc.DrawLine(xPen, new Point(closeX + margin, closeY + margin), new Point(closeX + closeSize - margin, closeY + closeSize - margin));
-            dc.DrawLine(xPen, new Point(closeX + closeSize - margin, closeY + margin), new Point(closeX + margin, closeY + closeSize - margin));
-        }
-        else
-        {
-            _isCloseButtonPressed = false;
-            _closeButtonRect = default;
-        }
-
-        // Selected tab border is now drawn by DockTabPanel as part of the unified border path
-
-        // Dragging tab preview: highlight the tab itself instead of drawing an insertion line.
-        if (_isReorderDragging)
-        {
-            if (_dragIndicatorPen == null || _dragIndicatorPenBrush != indicatorBrush)
-            {
-                _dragIndicatorPenBrush = indicatorBrush;
-                _dragIndicatorPen = new Pen(indicatorBrush, 1)
-                {
-                    LineJoin = PenLineJoin.Round
-                };
-            }
-            var dragPen = _dragIndicatorPen;
-            dc.DrawRoundedRectangle(null, dragPen, bounds, activeCorners);
-            dc.DrawRectangle(dragDimBrush, null, bounds);
-        }
+        UpdateTemplatePresentation(finalSize); return base.ArrangeOverride(finalSize);
     }
 
     private Thickness GetEffectivePadding()

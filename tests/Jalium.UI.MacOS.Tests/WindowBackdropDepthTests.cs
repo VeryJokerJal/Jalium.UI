@@ -8,6 +8,129 @@ namespace Jalium.UI.Tests;
 public sealed class WindowBackdropDepthTests
 {
     [Fact]
+    public void PlainTreeIsNotEnumeratedOnReplayChecks()
+    {
+        var root = new CountingPanel();
+        root.Children.Add(Nest(new Border()));
+        root.ChildCountReads = 0;
+        for (int i = 0; i < 100; ++i) Assert.False(RequiresReplay(root));
+        Assert.Equal(0, root.ChildCountReads);
+    }
+
+    [Fact]
+    public void CandidateOwnershipSurvivesReparentingAndOverlappingKinds()
+    {
+        var left = new CountingPanel();
+        var right = new CountingPanel();
+        var leaf = new Border { LiquidGlass = true, BackdropEffect = new AcrylicEffect() };
+        var branch = new StackPanel();
+        branch.Children.Add(leaf);
+        for (int i = 0; i < 4; ++i)
+        {
+            left.Children.Add(branch);
+            Assert.True(RequiresReplay(left));
+            leaf.BackdropEffect = null;
+            Assert.True(RequiresReplay(left));
+            left.Children.Remove(branch);
+            left.ChildCountReads = 0;
+            Assert.False(RequiresReplay(left));
+            Assert.Equal(0, left.ChildCountReads);
+            right.Children.Add(branch);
+            Assert.True(RequiresReplay(right));
+            right.Children.Remove(branch);
+            leaf.BackdropEffect = new AcrylicEffect();
+        }
+        Assert.False(RequiresReplay(left));
+        Assert.False(RequiresReplay(right));
+    }
+
+    [Fact]
+    public void MutableEffectsAndAncestorVisibilityAreCheckedLive()
+    {
+        var effect = new ToggleBackdrop();
+        var parent = new StackPanel();
+        var root = new StackPanel();
+        root.Children.Add(parent);
+        parent.Children.Add(new Border { BackdropEffect = effect });
+        Assert.False(RequiresReplay(root));
+        effect.Enabled = true;
+        Assert.True(RequiresReplay(root));
+        parent.Opacity = 0;
+        Assert.False(RequiresReplay(root));
+        parent.Opacity = 1;
+        parent.Visibility = Visibility.Hidden;
+        Assert.False(RequiresReplay(root));
+        parent.Visibility = Visibility.Visible;
+        Assert.True(RequiresReplay(root));
+        effect.Enabled = false;
+        Assert.False(RequiresReplay(root));
+    }
+
+    [Fact]
+    public void MetadataDefaultsAndNoBaseCallbackRetainBackdropCandidates()
+    {
+        Assert.True(RequiresReplay(new DefaultBackdropBorder()));
+        Assert.True(RequiresReplay(new DefaultGlassBorder()));
+        var root = new StackPanel();
+        var child = new NoBaseBackdropBorder();
+        root.Children.Add(child);
+        child.BackdropEffect = new AcrylicEffect();
+        Assert.True(RequiresReplay(root));
+        child.BackdropEffect = null;
+        Assert.False(RequiresReplay(root));
+    }
+
+    [Fact]
+    public void RuntimeBlendChangesAndClearsAreTrackedOnEveryBackend()
+    {
+        var root = new CountingPanel();
+        var leaf = new Border();
+        root.Children.Add(leaf);
+        var properties = typeof(Window).Assembly.GetType("Jalium.UI.Styling.CssCompositingProperties")!;
+        var mix = (DependencyProperty)properties.GetField("MixProperty", BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null)!;
+        foreach (var backend in new[] { RenderBackend.Metal, RenderBackend.D3D12, RenderBackend.Vulkan })
+        {
+            Assert.False(RequiresReplay(root, backend));
+            leaf.SetValue(mix, CssBlendMode.Multiply);
+            Assert.True(RequiresReplay(root, backend));
+            leaf.Visibility = Visibility.Collapsed;
+            Assert.False(RequiresReplay(root, backend));
+            leaf.Visibility = Visibility.Visible;
+            leaf.ClearValue(mix);
+            root.ChildCountReads = 0;
+            Assert.False(RequiresReplay(root, backend));
+            Assert.Equal(0, root.ChildCountReads);
+        }
+    }
+
+    private sealed class CountingPanel : StackPanel
+    {
+        internal int ChildCountReads;
+        protected override int VisualChildrenCount
+        {
+            get { ++ChildCountReads; return base.VisualChildrenCount; }
+        }
+    }
+    private sealed class ToggleBackdrop : BackdropEffect
+    {
+        internal bool Enabled;
+        public override bool HasEffect => Enabled;
+    }
+    private sealed class DefaultBackdropBorder : Border
+    {
+        static DefaultBackdropBorder() => BackdropEffectProperty.OverrideMetadata(typeof(DefaultBackdropBorder),
+            new PropertyMetadata(new AcrylicEffect()));
+    }
+    private sealed class DefaultGlassBorder : Border
+    {
+        static DefaultGlassBorder() => LiquidGlassProperty.OverrideMetadata(typeof(DefaultGlassBorder), new PropertyMetadata(true));
+    }
+    private sealed class NoBaseBackdropBorder : Border
+    {
+        protected override void OnBackdropEffectChanged(IBackdropEffect? oldValue, IBackdropEffect? newValue) { }
+    }
+
+    [Fact]
     public void BackdropBelowOldDepthLimitRequiresFullMetalReplay()
     {
         var root = Nest(new Border { BackdropEffect = new AcrylicEffect() });

@@ -48,14 +48,25 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         MaxHeightProperty.OverrideMetadata(typeof(Window), new PropertyMetadata(pushConstraints));
         var pushSize = new PropertyChangedCallback(
             static (d, _) => (d as Window)?.UpdatePlatformWindowSize());
-        WidthProperty.OverrideMetadata(typeof(Window), new PropertyMetadata(pushSize));
-        HeightProperty.OverrideMetadata(typeof(Window), new PropertyMetadata(pushSize));
+        WidthProperty.OverrideMetadata(typeof(Window), new PropertyMetadata(800d, pushSize));
+        HeightProperty.OverrideMetadata(typeof(Window), new PropertyMetadata(600d, pushSize));
         // Binding, style and animation updates bypass the CLR setter. Preserve
         // UIElement's composition metadata and forward the effective value.
         OpacityProperty.OverrideMetadata(typeof(Window), new FrameworkPropertyMetadata(OnWindowOpacityChanged));
         if (PlatformFactory.IsMacOS)
+        {
             VisibilityProperty.OverrideMetadata(typeof(Window), new PropertyMetadata(
                 Visibility.Collapsed, OnMacOSWindowVisibilityChanged, CoerceMacOSWindowVisibility));
+            System.ComponentModel.DesignerProperties.IsInDesignModeProperty.OverrideMetadata(typeof(Window),
+                new FrameworkPropertyMetadata(OnMacOSWindowDesignModeChanged));
+        }
+        else if (PlatformFactory.IsLinux)
+        {
+            // Linux retains its logical-root default, while effective binding
+            // and style changes must drive the same native display lifecycle.
+            VisibilityProperty.OverrideMetadata(typeof(Window), new PropertyMetadata(
+                Visibility.Visible, OnMacOSWindowVisibilityChanged, CoerceMacOSWindowVisibility));
+        }
     }
 
     private static readonly bool ForceFullReplayForD3D12 = IsEnvironmentSwitchEnabled("JALIUM_D3D12_FORCE_FULL_REPLAY");
@@ -277,7 +288,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         public (double LayoutMs, double RenderMs) CaptureSplitForDeferredPresent()
             => (_layoutMs, Math.Max(0, _renderMs - _layoutMs));
 
-        public void OnDeferredPresent(double layoutMs, double renderMs, double presentMs, int dirtyElements)
+        public void OnDeferredPresent(double layoutMs, double renderMs, double presentMs, int dirtyElements,
+            long captureTimestampTicks, long replayTimestampTicks)
         {
             if (Volatile.Read(ref _shutdown) != 0) return;
 
@@ -289,7 +301,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             if (total > _worstFrameMs) _worstFrameMs = total;
             Interlocked.Increment(ref _frameCount);
             FrameHistory.Push(new Jalium.UI.Diagnostics.FrameHistory.Sample(
-                layoutMs, renderMs, presentMs, total, dirtyElements));
+                layoutMs, renderMs, presentMs, total, dirtyElements, 0, captureTimestampTicks, replayTimestampTicks));
         }
 
         public void OnEndDraw()
@@ -508,6 +520,21 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     // millisecond, so startup can prove that the hidden first-frame render
     // populated the swap chain before making the native window visible.
     private long _successfulPresentCount;
+    private long _lastSuccessfulPresentTickMs;
+    private long _lastBackendReclaimedPresentCount = -1;
+
+    private void RecordSuccessfulPresent()
+    {
+        Volatile.Write(ref _lastSuccessfulPresentTickMs, Environment.TickCount64);
+        Interlocked.Increment(ref _successfulPresentCount);
+    }
+
+    internal bool BackendResourcesMayBeReclaimed(long nowMs, int idleTimeoutMs)
+    {
+        long frames = Interlocked.Read(ref _successfulPresentCount);
+        return frames > 0 && frames != _lastBackendReclaimedPresentCount &&
+            nowMs - Volatile.Read(ref _lastSuccessfulPresentTickMs) >= idleTimeoutMs;
+    }
     private Timer? _renderThrottleTimer;    // Deferred render when rate-limited or waiting for the GPU
     private long _suppressEscapeUntilTick;
 
@@ -578,7 +605,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private bool _isFullScreen;
     private RECT _fullScreenSavedRect;
     private uint _fullScreenSavedStyle;
-    private uint _fullScreenSavedExStyle;
     private WindowState _fullScreenPreviousState;
     private readonly List<Window> _ownedWindows = [];
     private readonly Jalium.UI.WindowCollection _ownedWindowCollection;
@@ -659,7 +685,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty WindowStateProperty =
         DependencyProperty.Register(nameof(WindowState), typeof(WindowState), typeof(Window),
-            new PropertyMetadata(WindowState.Normal, OnWindowStateChanged));
+            new PropertyMetadata(WindowState.Normal, OnWindowStateChanged, CoercePlatformWindowState));
 
     /// <summary>
     /// Identifies the TitleBarStyle dependency property.
@@ -675,8 +701,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// <remarks>
     /// When set, the value is used as a resource key to look up a <see cref="UI.Style"/>
     /// from the window's resource tree (via <see cref="FrameworkElement.TryFindResource"/>).
-    /// The resolved style is applied to the custom <see cref="TitleBar"/>. Has no effect
-    /// when <see cref="TitleBarStyle"/> is <see cref="WindowTitleBarStyle.Native"/>.
+    /// The resolved style is applied to the application <see cref="TitleBar"/>,
+    /// including the Linux fallback when native decorations are unavailable.
     /// If <see cref="CustomTitleBarStyle"/> is also set, that wins over the keyed lookup.
     /// </remarks>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
@@ -689,8 +715,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     /// <remarks>
     /// Directly assigns a <see cref="UI.Style"/> to the custom <see cref="TitleBar"/>.
-    /// Takes precedence over <see cref="TitleBarStyleKey"/>. Has no effect when
-    /// <see cref="TitleBarStyle"/> is <see cref="WindowTitleBarStyle.Native"/>.
+    /// Takes precedence over <see cref="TitleBarStyleKey"/> and applies to the
+    /// Linux native-decoration fallback as well.
     /// </remarks>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty CustomTitleBarStyleProperty =
@@ -914,7 +940,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// Gets or sets a resource key used to look up the <see cref="UI.Style"/> applied to
     /// the custom <see cref="TitleBar"/>. The key is resolved against this window's
     /// resource tree; common choices are a string key or <c>typeof(TitleBar)</c>.
-    /// Ignored when <see cref="TitleBarStyle"/> is <see cref="WindowTitleBarStyle.Native"/>,
+    /// Ignored when the window system supplies native decorations,
     /// and overridden when <see cref="CustomTitleBarStyle"/> is set.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
@@ -927,7 +953,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// <summary>
     /// Gets or sets the <see cref="UI.Style"/> directly applied to the custom
     /// <see cref="TitleBar"/>. Takes precedence over <see cref="TitleBarStyleKey"/>.
-    /// Ignored when <see cref="TitleBarStyle"/> is <see cref="WindowTitleBarStyle.Native"/>.
+    /// Ignored when the window system supplies native decorations.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Style? CustomTitleBarStyle
@@ -962,6 +988,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private PlatformImeContext _lastPlatformImeContext;
     private bool _hasLastPlatformImeContext;
     private UIElement? _lastMacOSImeTarget;
+    private UIElement? _lastLinuxImeTarget;
+    private int _linuxImeRefreshGeneration;
     private bool _pendingMacOSTitleBarDoubleClick;
     private ContextMenu? _fallbackSystemMenu;
 
@@ -993,8 +1021,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             native.SetDragEffect(sessionId, effect);
     }
 
-    internal byte[]? GetPlatformDragData(ulong sessionId, string mimeType, int maxBytes) =>
-        _platformWindow is NativePlatformWindow native ? native.GetMacOSDragData(sessionId, mimeType, maxBytes) : null;
+    internal byte[]? GetPlatformDragData(ulong sessionId, string mimeType) =>
+        _platformWindow is NativePlatformWindow native ? native.GetMacOSDragData(sessionId, mimeType) : null;
 
     internal nint GetPlatformDragSource(ulong sessionId) =>
         _platformWindow is NativePlatformWindow native ? native.GetMacOSDragSource(sessionId) : 0;
@@ -1409,7 +1437,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             for (var ancestor = value; ancestor != null; ancestor = ancestor.Owner)
                 if (ReferenceEquals(ancestor, this))
                     throw new ArgumentException("A window cannot own itself or one of its owners.", nameof(value));
-            if (OperatingSystem.IsMacOS() && _isModal && Handle != nint.Zero && !_nativeWindowHidden)
+            if (IsDesktopModalPlatform && _isModal && Handle != nint.Zero && !_nativeWindowHidden)
                 throw new InvalidOperationException("The owner of a visible dialog cannot be changed.");
             _owner?.RemoveOwnedWindow(this);
             _owner = value;
@@ -1554,13 +1582,23 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         InvalidateMeasure();
     }
 
+    /// <inheritdoc />
+    protected override void OnTemplateChanged(ControlTemplate oldTemplate, ControlTemplate newTemplate)
+    {
+        base.OnTemplateChanged(oldTemplate, newTemplate);
+        if (newTemplate != null)
+            UseTemplateContentManagement();
+        else
+            UseDirectContentManagement();
+    }
+
     protected override void OnIsEnabledChanged(bool oldValue, bool newValue)
     {
-        if (OperatingSystem.IsMacOS() && !_updatingMacOSModalEnabled &&
-            _macOSModalEnabledStates.ContainsKey(this))
+        if (IsDesktopModalPlatform && !_updatingDesktopModalEnabled &&
+            _desktopModalEnabledStates.ContainsKey(this))
         {
-            _macOSModalEnabledStates[this] = newValue;
-            ApplyMacOSModalEnabled(this);
+            _desktopModalEnabledStates[this] = newValue;
+            ApplyDesktopModalEnabled(this);
             if (IsEnabled != newValue) return;
         }
         base.OnIsEnabledChanged(oldValue, newValue);
@@ -1601,7 +1639,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     protected override void OnIsMouseOverChanged(bool oldValue, bool newValue)
     {
         base.OnIsMouseOverChanged(oldValue, newValue);
-        if (!newValue && TitleBarStyle == WindowTitleBarStyle.Custom)
+        if (!newValue && UsesManagedTitleBar)
             ClearTitleBarInteractionState();
     }
 
@@ -1618,8 +1656,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         {
             base.Visibility = value;
             // Effective property updates, including binding and style changes,
-            // use the metadata callback on macOS.
-            if (PlatformFactory.IsMacOS) return;
+            // use the metadata callback on desktop platform windows.
+            if (PlatformFactory.IsMacOS || PlatformFactory.IsLinux) return;
             if (Handle == nint.Zero)
             {
                 if (value != Visibility.Visible) EndMacOSDialogOnHide();
@@ -1639,7 +1677,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             }
             else
             {
-                _ = ShowWindow(Handle, value == Visibility.Visible
+                _ = ShowWin32WindowState(value == Visibility.Visible
                     ? (ShowActivated ? SW_SHOW : SW_SHOWNA)
                     : SW_HIDE);
             }
@@ -1647,6 +1685,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // Keep the global frame timer in step with the surface's
             // visibility — see UpdateRenderableRegistration.
             _nativeWindowHidden = value != Visibility.Visible;
+            UpdateAppBarRegistration();
             UpdateRenderableRegistration();
             if (_nativeWindowHidden) EndMacOSDialogOnHide();
         }
@@ -1654,6 +1693,32 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private Visibility? _macOSVisibilityBeingUpdated;
     private DispatcherOperation? _pendingMacOSVisibilityShow;
+    private bool _macOSDesignDefaultVisibility;
+
+    private static void OnMacOSWindowDesignModeChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        var window = (Window)d;
+        window.CancelPendingMacOSVisibilityShow();
+        if (window._managedTeardownStarted || window._managedTeardownCompleted) return;
+        var source = DependencyPropertyHelper.GetValueSource(window, VisibilityProperty);
+        if (e.NewValue is true)
+        {
+            // A designer's logical Window is part of its canvas, rather than an unshown
+            // AppKit surface. Keep explicitly authored visibility and its value source.
+            if (source.BaseValueSource == BaseValueSource.Default && window.Visibility == Visibility.Collapsed)
+            {
+                window._macOSDesignDefaultVisibility = true;
+                window.SetCurrentValue(VisibilityProperty, Visibility.Visible);
+            }
+        }
+        else
+        {
+            if (window._macOSDesignDefaultVisibility && source.BaseValueSource == BaseValueSource.Default)
+                window.SetCurrentValue(VisibilityProperty, Visibility.Collapsed);
+            window._macOSDesignDefaultVisibility = false;
+            window.ApplyMacOSWindowVisibility(window.Visibility);
+        }
+    }
 
     private static object? CoerceMacOSWindowVisibility(DependencyObject d, object? value)
     {
@@ -1690,6 +1755,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private void ApplyMacOSWindowVisibility(Visibility visibility)
     {
         CancelPendingMacOSVisibilityShow();
+        if (System.ComponentModel.DesignerProperties.GetIsInDesignMode(this)) return;
         if (visibility != Visibility.Visible) NativeDropTarget.RevokeWindow(this);
         if (base.Visibility != visibility) return;
         if (_managedTeardownStarted || _managedTeardownCompleted) return;
@@ -1710,11 +1776,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 if (!IsLoaded || _platformWindow == null) Show();
                 else
                 {
-                    TrackMacOSModalWindow(this);
+                    TrackDesktopModalWindow(this);
                     var shownPlatform = _platformWindow;
                     ApplyMacOSWindowOwner(shownPlatform);
                     if (!CanContinueMacOSDisplay(shownPlatform, Visibility.Visible)) return;
-                    TrackMacOSModalWindow(this);
+                    TrackDesktopModalWindow(this);
                     if (!CanContinueMacOSDisplay(shownPlatform, Visibility.Visible)) return;
                     shownPlatform.Show(ShowActivated);
                     if (!CanContinueMacOSDisplay(shownPlatform, Visibility.Visible)) return;
@@ -1729,6 +1795,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             {
                 _pendingMacOSVisibilityShow = null;
                 if (!_isClosing && !_managedTeardownStarted && !_managedTeardownCompleted &&
+                    !System.ComponentModel.DesignerProperties.GetIsInDesignMode(this) &&
                     base.Visibility == Visibility.Visible)
                     Show();
             });
@@ -1771,7 +1838,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     protected override void OnLostMouseCapture()
     {
         base.OnLostMouseCapture();
-        if (TitleBarStyle == WindowTitleBarStyle.Custom)
+        if (UsesManagedTitleBar)
             ClearTitleBarInteractionState();
     }
 
@@ -1797,7 +1864,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
 
     /// <summary>
-    /// Gets the title bar control. Only available when TitleBarStyle is Custom.
+    /// Gets the application title bar, including the Linux native-decoration fallback.
     /// </summary>
     public TitleBar? TitleBar { get; private set; }
 
@@ -1846,9 +1913,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         if (PlatformFactory.IsWindows || PlatformFactory.IsLinux || PlatformFactory.IsMacOS)
             DragDropPlatform.EnsureInitialized();
-
-        Width = 800;
-        Height = 600;
 
         if (OperatingSystem.IsMacOS())
         {
@@ -2003,7 +2067,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void CreateTitleBar()
     {
-        if (TitleBarStyle != WindowTitleBarStyle.Custom)
+        if (!UsesManagedTitleBar || TitleBar != null)
         {
             return;
         }
@@ -2074,17 +2138,20 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // NoResize hides both minimize and maximize; CanMinimize hides maximize
         // (WPF grays it — this framework's TitleBar has no disabled state, so it is
         // collapsed instead). CanResize/CanResizeWithGrip show both.
-        TitleBar.ShowMinimizeButton = IsShowMinimizeButton && ResizeMode != ResizeMode.NoResize;
-        TitleBar.ShowMaximizeButton = IsShowMaximizeButton && CanUserResize;
-        TitleBar.ShowCloseButton = IsShowCloseButton;
+        TitleBar.ShowMinimizeButton = IsShowMinimizeButton && ResizeMode != ResizeMode.NoResize &&
+            IsLinuxCapabilityAvailable(PlatformWindowCapabilities.Minimize);
+        TitleBar.ShowMaximizeButton = IsShowMaximizeButton && CanUserResize &&
+            (WindowState == WindowState.Maximized || IsLinuxCapabilityAvailable(PlatformWindowCapabilities.Maximize));
+        TitleBar.ShowCloseButton = IsShowCloseButton && IsLinuxCapabilityAvailable(PlatformWindowCapabilities.Close);
         TitleBar.LeftWindowCommands = LeftWindowCommands;
         TitleBar.RightWindowCommands = RightWindowCommands;
         TitleBar.IsShowIcon = IsShowIcon;
         TitleBar.IsShowTitle = IsShowTitle;
         TitleBar.WindowIcon = WindowIcon;
-        TitleBar.Visibility = IsShowTitleBar ? Visibility.Visible : Visibility.Collapsed;
+        bool showTitleBar = IsShowTitleBar && WindowState != WindowState.FullScreen;
+        TitleBar.Visibility = showTitleBar ? Visibility.Visible : Visibility.Collapsed;
 
-        if (!IsShowTitleBar)
+        if (!showTitleBar)
         {
             ClearTitleBarInteractionState();
         }
@@ -2093,6 +2160,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private void ClearTitleBarInteractionState()
     {
         _nonClientMouseLeaveWindow = nint.Zero;
+        UpdateNativeCaptionForSnapHover(false);
         _inputDispatcher.ClearTitleBarInteractionState();
     }
 
@@ -2246,7 +2314,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // a NoResize / CanMinimize window cannot be maximized from the title bar
             // (button click or caption double-click). Programmatic WindowState changes
             // are unaffected — this only gates the interactive path.
-            if (!CanUserResize)
+            if (!CanUserResize || !IsLinuxCapabilityAvailable(PlatformWindowCapabilities.Maximize))
             {
                 return;
             }
@@ -2331,13 +2399,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         if (canResize)
         {
-            // A custom title bar extends the client rect to the outer top edge, so
-            // ScreenToClient reports the top resize strip at y >= 0. A completely
-            // borderless window owns every edge in the same way. Framed edges that
-            // remain native are still reported outside the half-open client rect.
-            bool clientOwnsAllResizeEdges = WindowStyle == WindowStyle.None;
+            // Custom chrome covers all four edges. Keep its resize strips inside
+            // the client rect; native chrome still sizes from outside that rect.
+            bool clientOwnsAllResizeEdges = WindowStyle == WindowStyle.None ||
+                TitleBarStyle == WindowTitleBarStyle.Custom;
             bool clientOwnsTopResizeEdge =
-                clientOwnsAllResizeEdges || TitleBarStyle == WindowTitleBarStyle.Custom;
+                clientOwnsAllResizeEdges || UsesManagedTitleBar;
 
             isLeft = clientOwnsAllResizeEdges
                 ? x >= 0 && x < resizeBorder
@@ -2431,7 +2498,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private bool IsTitleBarVisible()
     {
-        return TitleBarStyle == WindowTitleBarStyle.Custom &&
+        return UsesManagedTitleBar &&
                IsShowTitleBar &&
                TitleBar != null &&
                TitleBar.Visibility == Visibility.Visible;
@@ -2482,108 +2549,36 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return null;
         }
 
-        var titleBarBounds = TitleBar.VisualBounds;
-
-        // Convert to TitleBar-local coordinates so they can be compared with button VisualBounds.
-        var localPoint = new Point(point.X - titleBarBounds.X, point.Y - titleBarBounds.Y);
-
         var closeButton = GetTitleBarButtonByKind(TitleBarButtonKind.Close);
-        if (IsTitleBarButtonHit(localPoint, closeButton))
+        if (IsTitleBarButtonHit(point, closeButton, windowWidth))
         {
             return closeButton;
         }
 
         var maximizeButton = GetTitleBarButtonByKind(TitleBar.IsMaximized ? TitleBarButtonKind.Restore : TitleBarButtonKind.Maximize);
-        if (IsTitleBarButtonHit(localPoint, maximizeButton))
+        if (IsTitleBarButtonHit(point, maximizeButton, windowWidth))
         {
             return maximizeButton;
         }
 
         var minimizeButton = GetTitleBarButtonByKind(TitleBarButtonKind.Minimize);
-        if (IsTitleBarButtonHit(localPoint, minimizeButton))
+        if (IsTitleBarButtonHit(point, minimizeButton, windowWidth))
         {
             return minimizeButton;
         }
 
-        // Fallback for cases before first arrange: use current button widths,
-        // not a hardcoded value, so hit-test math stays aligned with layout.
-        var titleBarWidth = windowWidth > 0
-            ? windowWidth
-            : (TitleBar.ActualWidth > 0 ? TitleBar.ActualWidth : Width);
-
-        return GetTitleBarButtonByWidthFallback(localPoint, titleBarWidth, closeButton, maximizeButton, minimizeButton);
-    }
-
-    private static bool IsTitleBarButtonHit(Point localPoint, TitleBarButton? button)
-    {
-        if (button == null || button.Visibility != Visibility.Visible)
-        {
-            return false;
-        }
-
-        var bounds = button.VisualBounds;
-        if (bounds.Width <= 0 || bounds.Height <= 0)
-        {
-            return false;
-        }
-
-        // Use the largest known dimension so styled Width/Height can expand NC hit-testing
-        // even when layout is temporarily constrained to native caption metrics.
-        double width = Math.Max(bounds.Width, GetTitleBarButtonHitWidth(button));
-        double height = Math.Max(bounds.Height, GetTitleBarButtonHitHeight(button));
-
-        return localPoint.X >= bounds.X &&
-               localPoint.X < bounds.X + width &&
-               localPoint.Y >= bounds.Y &&
-               localPoint.Y < bounds.Y + height;
-    }
-
-    private TitleBarButton? GetTitleBarButtonByWidthFallback(
-        Point localPoint,
-        double titleBarWidth,
-        TitleBarButton? closeButton,
-        TitleBarButton? maximizeButton,
-        TitleBarButton? minimizeButton)
-    {
-        double buttonX = titleBarWidth;
-
-        if (TitleBar!.ShowCloseButton && closeButton != null)
-        {
-            var closeWidth = GetTitleBarButtonHitWidth(closeButton);
-            var closeHeight = GetTitleBarButtonHitHeight(closeButton);
-            buttonX -= closeWidth;
-            if (localPoint.X >= buttonX && localPoint.X < buttonX + closeWidth &&
-                localPoint.Y >= 0 && localPoint.Y < closeHeight)
-            {
-                return closeButton;
-            }
-        }
-
-        if (TitleBar.ShowMaximizeButton && maximizeButton != null)
-        {
-            var maximizeWidth = GetTitleBarButtonHitWidth(maximizeButton);
-            var maximizeHeight = GetTitleBarButtonHitHeight(maximizeButton);
-            buttonX -= maximizeWidth;
-            if (localPoint.X >= buttonX && localPoint.X < buttonX + maximizeWidth &&
-                localPoint.Y >= 0 && localPoint.Y < maximizeHeight)
-            {
-                return maximizeButton;
-            }
-        }
-
-        if (TitleBar.ShowMinimizeButton && minimizeButton != null)
-        {
-            var minimizeWidth = GetTitleBarButtonHitWidth(minimizeButton);
-            var minimizeHeight = GetTitleBarButtonHitHeight(minimizeButton);
-            buttonX -= minimizeWidth;
-            if (localPoint.X >= buttonX && localPoint.X < buttonX + minimizeWidth &&
-                localPoint.Y >= 0 && localPoint.Y < minimizeHeight)
-            {
-                return minimizeButton;
-            }
-        }
-
         return null;
+    }
+
+    private bool IsTitleBarButtonHit(Point point, TitleBarButton? button, double windowWidth)
+    {
+        if (!TryGetTitleBarButtonClientBoundsDip(button, out var bounds, windowWidth))
+        {
+            return false;
+        }
+
+        return point.X >= bounds.left && point.X < bounds.right &&
+               point.Y >= bounds.top && point.Y < bounds.bottom;
     }
 
     private static double GetTitleBarButtonHitWidth(TitleBarButton button)
@@ -2668,6 +2663,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // either — the popup owns the pointer until it is dismissed.
         if (!IsTitleBarVisible() || HasOpenLightDismissPopup())
         {
+            UpdateNativeCaptionForSnapHover(false);
             _inputDispatcher.UpdateTitleBarButtonHover(null);
             return;
         }
@@ -2678,6 +2674,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         _ = ScreenToClient(Handle, ref pt);
 
         var button = GetTitleBarButtonAtPoint(new Point(pt.X / _dpiScale, pt.Y / _dpiScale));
+        UpdateNativeCaptionForSnapHover(button?.Kind is TitleBarButtonKind.Maximize or TitleBarButtonKind.Restore);
         _inputDispatcher.UpdateTitleBarButtonHover(button);
 
         // Only request TME_LEAVE so the button hover state can be cleared when
@@ -2702,6 +2699,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private void OnNcMouseLeave()
     {
         _nonClientMouseLeaveWindow = nint.Zero;
+        UpdateNativeCaptionForSnapHover(false);
         _inputDispatcher.UpdateTitleBarButtonHover(null);
     }
 
@@ -2770,7 +2768,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
 
         var maxButton = GetTitleBarButtonByKind(TitleBar.IsMaximized ? TitleBarButtonKind.Restore : TitleBarButtonKind.Maximize);
-        if (!TryGetCustomMaxButtonClientBoundsDip(maxButton, out var customMaxClientRectDip))
+        if (!TryGetTitleBarButtonClientBoundsDip(maxButton, out var customMaxClientRectDip))
         {
             return false;
         }
@@ -2784,18 +2782,19 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         return TryGetCustomMaxButtonScreenBounds(customMaxClientRectDip, _dpiScale, (clientOrigin.X, clientOrigin.Y), out customMaxRect);
     }
 
-    private bool TryGetCustomMaxButtonClientBoundsDip(
-        TitleBarButton? maxButton,
-        out (double left, double top, double right, double bottom) clientRect)
+    private bool TryGetTitleBarButtonClientBoundsDip(
+        TitleBarButton? button,
+        out (double left, double top, double right, double bottom) clientRect,
+        double windowWidth = 0)
     {
         clientRect = default;
-        if (TitleBar == null || maxButton == null || maxButton.Visibility != Visibility.Visible)
+        if (TitleBar == null || button == null || button.Visibility != Visibility.Visible)
         {
             return false;
         }
 
         var titleBarBounds = TitleBar.VisualBounds;
-        var buttonBounds = maxButton.VisualBounds;
+        var buttonBounds = button.VisualBounds;
         double left;
         double top;
         double width;
@@ -2803,23 +2802,34 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         if (buttonBounds.Width > 0 && buttonBounds.Height > 0)
         {
+            width = Math.Max(buttonBounds.Width, GetTitleBarButtonHitWidth(button));
+            height = Math.Max(buttonBounds.Height, GetTitleBarButtonHitHeight(button));
+            if (TitleBar.IsAncestorOf(button))
+            {
+                // Template parts may sit inside padded or offset containers. Their
+                // VisualBounds are parent-relative, not title-bar-relative.
+                var bounds = Rect.Transform(new Rect(0, 0, width, height), button.GetRenderMatrixTo(this));
+                clientRect = (bounds.Left, bounds.Top, bounds.Right, bounds.Bottom);
+                return bounds.Width > 0 && bounds.Height > 0;
+            }
+
             left = titleBarBounds.X + buttonBounds.X;
             top = titleBarBounds.Y + buttonBounds.Y;
-            width = buttonBounds.Width;
-            height = buttonBounds.Height;
         }
         else
         {
-            double titleBarWidth = TitleBar.ActualWidth > 0
-                ? TitleBar.ActualWidth
-                : (TitleBar.DesiredSize.Width > 0 ? TitleBar.DesiredSize.Width : Width);
+            // Only unarranged buttons use a width fallback. An arranged button
+            // must not leave a second, invisible hit region at its old position.
+            double titleBarWidth = windowWidth > 0 ? windowWidth :
+                (TitleBar.ActualWidth > 0 ? TitleBar.ActualWidth :
+                    (TitleBar.DesiredSize.Width > 0 ? TitleBar.DesiredSize.Width : Width));
             if (titleBarWidth <= 0)
             {
                 return false;
             }
 
             double buttonX = titleBarBounds.X + titleBarWidth;
-            if (TitleBar.ShowCloseButton)
+            if (button.Kind != TitleBarButtonKind.Close && TitleBar.ShowCloseButton)
             {
                 var closeButton = GetTitleBarButtonByKind(TitleBarButtonKind.Close);
                 if (closeButton != null && closeButton.Visibility == Visibility.Visible)
@@ -2828,8 +2838,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 }
             }
 
-            width = GetTitleBarButtonHitWidth(maxButton);
-            height = GetTitleBarButtonHitHeight(maxButton);
+            if (button.Kind == TitleBarButtonKind.Minimize && TitleBar.ShowMaximizeButton)
+            {
+                var maximizeButton = GetTitleBarButtonByKind(TitleBarButtonKind.Maximize);
+                if (maximizeButton != null && maximizeButton.Visibility == Visibility.Visible)
+                {
+                    buttonX -= GetTitleBarButtonHitWidth(maximizeButton);
+                }
+            }
+
+            width = GetTitleBarButtonHitWidth(button);
+            height = GetTitleBarButtonHitHeight(button);
             buttonX -= width;
             left = buttonX;
             top = titleBarBounds.Y;
@@ -3031,6 +3050,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
+        // Root windows never acquire a visual parent to initialize their style.
+        // Resolve the theme before applying the template on the first measure.
+        UpdateDefaultStyle();
+        ApplyTemplate();
         double titleBarHeight = 0;
 
         // Apply safe area insets and soft keyboard on mobile platforms
@@ -3049,7 +3072,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         {
             double effectiveTitleBarHeight = GetEffectiveTitleBarHeightDip();
             TitleBar.Measure(new Size(contentWidth, effectiveTitleBarHeight));
-            titleBarHeight = GetElementHeightDip(TitleBar, effectiveTitleBarHeight);
+            // ActualHeight still belongs to the previous arrange pass here.
+            titleBarHeight = TitleBar.DesiredSize.Height;
         }
         if (_macOSWindowCommands != null)
         {
@@ -3059,7 +3083,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
 
         // Measure content with remaining space
-        var contentElement = ContentElement;
+        var contentElement = TemplateRootInternal ?? ContentElement;
         if (contentElement != null)
         {
             Size contentAvailable = new(
@@ -3094,7 +3118,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // Arrange title bar at top (offset by safe area)
         if (IsTitleBarVisible() && TitleBar != null)
         {
-            titleBarHeight = GetCurrentTitleBarHeightDip();
+            titleBarHeight = TitleBar.DesiredSize.Height;
             Rect titleBarRect = new(safeLeft, safeTop, contentWidth, titleBarHeight);
             TitleBar.Arrange(titleBarRect);
             // Note: Do NOT call SetVisualBounds here - ArrangeCore already handles margin
@@ -3108,7 +3132,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
 
         // Arrange content below title bar (offset by safe area)
-        var contentElement = ContentElement;
+        var contentElement = TemplateRootInternal ?? ContentElement;
         if (contentElement is FrameworkElement contentFe)
         {
             Rect contentRect = new(
@@ -3154,13 +3178,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     public virtual void Show()
     {
+        if (System.ComponentModel.DesignerProperties.GetIsInDesignMode(this)) return;
         EnsureHostedApplicationCanDisplay();
         if (_isClosing || _managedTeardownStarted || _managedTeardownCompleted)
             throw new InvalidOperationException("A closing or closed window cannot be shown again.");
 
-        if (OperatingSystem.IsMacOS())
+        if (IsDesktopModalPlatform)
         {
-            TrackMacOSModalWindow(this);
+            TrackDesktopModalWindow(this);
             CancelPendingMacOSVisibilityShow();
             SetMacOSVisibilityForDisplay(Visibility.Visible);
             if (_isClosing || _managedTeardownStarted || _managedTeardownCompleted) return;
@@ -3210,9 +3235,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         using (StartupDiagnostics.Begin("Window.EnsureHandle", blocksUiThread: true))
         {
-            UpdateMacOSSizeToContent();
+            UpdatePlatformSizeToContent();
             if (!CanContinueShow(showGeneration)) return;
-            EnsureHandle();
+            _isApplyingWindowState = true;
+            try { EnsureHandle(); }
+            finally { _isApplyingWindowState = false; }
         }
         // SourceInitialized may close or hide the newly created window.
         if (!CanContinueShow(showGeneration) || Handle == nint.Zero) return;
@@ -3302,31 +3329,28 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             {
                 ApplyMacOSWindowOwner(platformWindow);
                 if (!CanContinueShow(showGeneration)) return;
-                if (OperatingSystem.IsMacOS())
+                if (IsDesktopModalPlatform)
                 {
-                    TrackMacOSModalWindow(this);
+                    TrackDesktopModalWindow(this);
                     if (!CanContinueShow(showGeneration)) return;
-                    _hasShownMacOSWindow = true;
+                    if (OperatingSystem.IsMacOS()) _hasShownMacOSWindow = true;
                 }
                 platformWindow.Show(ShowActivated);
                 if (!CanContinueShow(showGeneration)) return;
+                RefreshLinuxWindowChrome();
                 RefreshMacOSShowStateRequest(ref desiredState, ref desiredStateRequestVersion);
                 if (desiredState != WindowState.Normal)
                     platformWindow.SetState(desiredState);
             }
             else
             {
-                _ = ShowWindow(Handle, showCmd);
                 if (!CanContinueShow(showGeneration)) return;
                 // Fullscreen needs a second step on Win32: strip the frame + resize
                 // to cover the monitor. Done AFTER ShowWindow so the HWND has valid
                 // window rect / monitor assignment.  The pre-show background frame
                 // above already covered the target monitor dimensions, so
                 // EnterFullScreen's WM_SIZE arrives at the correct size.
-                if (desiredState == WindowState.FullScreen)
-                {
-                    EnterFullScreen();
-                }
+                ShowInitialWin32Window(showCmd, desiredState);
             }
         }
         if (!CanContinueShow(showGeneration)) return;
@@ -3338,6 +3362,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // HWND may not produce a WindowState change (Normal → Normal is a no-op
         // for OnStateChanged), so we cannot rely on the state-changed path here.
         _nativeWindowHidden = false;
+        UpdateAppBarRegistration();
         UpdateRenderableRegistration();
         _platformTaskbarIntegration?.Refresh();
 
@@ -3395,11 +3420,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private bool CanContinueShow(int generation) =>
         IsRenderLifecycleCurrent(generation) &&
-        (!OperatingSystem.IsMacOS() || base.Visibility == Visibility.Visible);
+        (!IsDesktopModalPlatform || base.Visibility == Visibility.Visible);
 
     private void ApplyMacOSWindowOwner(IPlatformWindow platformWindow)
     {
-        if (!OperatingSystem.IsMacOS()) return;
+        if (!IsDesktopModalPlatform) return;
         // AppKit removes a hidden child from its parent's list. Every display
         // entry point must bind the current modal/explicit owner again; an
         // ordinary display clears the previous implicit dialog owner.
@@ -3582,12 +3607,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     public virtual void Hide()
     {
         OnHiding(EventArgs.Empty);
-        if (OperatingSystem.IsMacOS())
+        if (IsDesktopModalPlatform)
         {
             CancelPendingMacOSVisibilityShow();
             SetMacOSVisibilityForDisplay(Visibility.Hidden);
             if (base.Visibility != Visibility.Hidden || _managedTeardownStarted || _managedTeardownCompleted) return;
         }
+        EndLiveResizeCaptionSuppression();
 
         if (Handle != nint.Zero)
         {
@@ -3601,13 +3627,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // Other backends retain their existing Hide() property semantics.
         _nativeWindowHidden = true;
         _platformTaskbarIntegration?.Refresh();
+        UpdateAppBarRegistration();
         UpdateRenderableRegistration();
         EndMacOSDialogOnHide();
     }
 
     private void EndMacOSDialogOnHide()
     {
-        if (!OperatingSystem.IsMacOS() || !_isModal) return;
+        if (!IsDesktopModalPlatform || !_isModal) return;
         // Hiding preserves the window for another Show/ShowDialog, but ends
         // this modal pump so its finally block can re-enable the owner.
         _dialogResult ??= false;
@@ -3661,7 +3688,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // Win32 path
         if (WindowState == WindowState.Minimized)
         {
-            _ = ShowWindow(Handle, SW_RESTORE);
+            _ = ShowWin32WindowState(SW_RESTORE);
         }
 
         return SetForegroundWindow(Handle);
@@ -3762,11 +3789,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     public virtual bool? ShowDialog()
     {
-        if (OperatingSystem.IsMacOS())
+        if (IsDesktopModalPlatform)
         {
             if (_isClosing || _managedTeardownStarted || _managedTeardownCompleted)
                 throw new InvalidOperationException("A closing or closed window cannot be shown as a dialog.");
-            if (_isModal || _macOSModalSessions.Any(session => ReferenceEquals(session.Dialog, this)))
+            if (_isModal || _desktopModalSessions.Any(session => ReferenceEquals(session.Dialog, this)))
                 throw new InvalidOperationException("The window is already shown as a dialog.");
             if (Handle != nint.Zero && !_nativeWindowHidden)
                 throw new InvalidOperationException("A visible window cannot be shown as a dialog.");
@@ -3787,22 +3814,23 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             ownerHandle = nint.Zero;
 
         bool restorePlatformOwnerEnabled = false;
-        MacOSModalSession? macOSSession = null;
-        Window? previouslyActiveWindow = OperatingSystem.IsMacOS()
+        DesktopModalSession? desktopSession = null;
+        UIElement? previouslyFocusedElement = Keyboard.FocusedElement as UIElement;
+        Window? previouslyActiveWindow = IsDesktopModalPlatform
             ? _windows.Values.FirstOrDefault(window => !ReferenceEquals(window, this) && window.IsActive)
             : null;
         _modalOwner = ownerWindow;
         _isModal = true;
         try
         {
-            if (OperatingSystem.IsMacOS())
+            if (IsDesktopModalPlatform)
             {
-                macOSSession = new MacOSModalSession(this);
-                _macOSModalSessions.Add(macOSSession);
-                foreach (var window in _windows.Values.ToList()) TrackMacOSModalWindow(window);
-                if (ownerWindow != null) TrackMacOSModalWindow(ownerWindow);
-                TrackMacOSModalWindow(this);
-                RefreshMacOSModalWindows();
+                desktopSession = new DesktopModalSession(this);
+                _desktopModalSessions.Add(desktopSession);
+                foreach (var window in _windows.Values.ToList()) TrackDesktopModalWindow(window);
+                if (ownerWindow != null) TrackDesktopModalWindow(ownerWindow);
+                TrackDesktopModalWindow(this);
+                RefreshDesktopModalWindows();
             }
             else if (platformDialog && ownerWindow != null)
             {
@@ -3832,15 +3860,25 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             _isModal = false;
             try
             {
-                if (OperatingSystem.IsMacOS())
+                if (IsDesktopModalPlatform)
                 {
-                    if (macOSSession != null) _macOSModalSessions.Remove(macOSSession);
-                    RefreshMacOSModalWindows();
-                    var activate = _macOSModalSessions.LastOrDefault()?.Dialog ??
+                    if (desktopSession != null) _desktopModalSessions.Remove(desktopSession);
+                    RefreshDesktopModalWindows();
+                    var activate = _desktopModalSessions.LastOrDefault()?.Dialog ??
                         (previouslyActiveWindow is { IsEnabled: true, IsCloseRequestedForPlatformTermination: false } &&
                          !previouslyActiveWindow._managedTeardownStarted ? previouslyActiveWindow : ownerWindow);
                     if (activate is { IsEnabled: true, IsCloseRequestedForPlatformTermination: false } &&
-                        !activate._managedTeardownStarted) _ = activate.Activate();
+                        !activate._managedTeardownStarted)
+                    {
+                        _ = activate.Activate();
+                        // Wayland may have no activation protocol/token or
+                        // keyboard seat in a headless compositor. Preserve the
+                        // managed target independently of the focus request.
+                        if (previouslyFocusedElement == null ||
+                            !activate.IsMacOSInputTargetValid(previouslyFocusedElement) ||
+                            !previouslyFocusedElement.Focus())
+                            activate.RestorePlatformKeyboardFocus();
+                    }
                 }
                 else if (platformDialog && ownerWindow != null)
                 {
@@ -3868,45 +3906,46 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     // The top session owns input. Baselines belong to the whole stack, so an
     // inner session cannot restore a window still blocked by its outer session.
-    private sealed class MacOSModalSession(Window dialog)
+    private sealed class DesktopModalSession(Window dialog)
     {
         public Window Dialog { get; } = dialog;
     }
-    private static readonly List<MacOSModalSession> _macOSModalSessions = [];
-    private static readonly Dictionary<Window, bool> _macOSModalEnabledStates = [];
-    private bool _updatingMacOSModalEnabled;
+    private static readonly List<DesktopModalSession> _desktopModalSessions = [];
+    private static readonly Dictionary<Window, bool> _desktopModalEnabledStates = [];
+    private bool _updatingDesktopModalEnabled;
+    private static bool IsDesktopModalPlatform => OperatingSystem.IsMacOS() || OperatingSystem.IsLinux();
 
-    private static void TrackMacOSModalWindow(Window window)
+    private static void TrackDesktopModalWindow(Window window)
     {
-        if (_macOSModalSessions.Count == 0 || window.IsCloseRequestedForPlatformTermination ||
+        if (_desktopModalSessions.Count == 0 || window.IsCloseRequestedForPlatformTermination ||
             window._managedTeardownStarted) return;
-        _macOSModalEnabledStates.TryAdd(window, window.IsEnabled);
-        ApplyMacOSModalEnabled(window);
+        _desktopModalEnabledStates.TryAdd(window, window.IsEnabled);
+        ApplyDesktopModalEnabled(window);
     }
 
-    private static void ApplyMacOSModalEnabled(Window window)
+    private static void ApplyDesktopModalEnabled(Window window)
     {
-        if (!_macOSModalEnabledStates.TryGetValue(window, out bool enabled)) return;
+        if (!_desktopModalEnabledStates.TryGetValue(window, out bool enabled)) return;
         if (window.IsCloseRequestedForPlatformTermination || window._managedTeardownStarted)
         {
-            _macOSModalEnabledStates.Remove(window);
+            _desktopModalEnabledStates.Remove(window);
             return;
         }
-        var session = _macOSModalSessions.LastOrDefault();
-        if (session == null) _macOSModalEnabledStates.Remove(window);
+        var session = _desktopModalSessions.LastOrDefault();
+        if (session == null) _desktopModalEnabledStates.Remove(window);
         else enabled &= ReferenceEquals(session.Dialog, window.MacOSInputOwner);
-        bool updating = window._updatingMacOSModalEnabled;
-        window._updatingMacOSModalEnabled = true;
+        bool updating = window._updatingDesktopModalEnabled;
+        window._updatingDesktopModalEnabled = true;
         try { window.IsEnabled = enabled; }
-        finally { window._updatingMacOSModalEnabled = updating; }
+        finally { window._updatingDesktopModalEnabled = updating; }
     }
 
-    private static void RefreshMacOSModalWindows()
+    private static void RefreshDesktopModalWindows()
     {
         Exception? failure = null;
-        foreach (var window in _macOSModalEnabledStates.Keys.ToList())
+        foreach (var window in _desktopModalEnabledStates.Keys.ToList())
         {
-            try { ApplyMacOSModalEnabled(window); }
+            try { ApplyDesktopModalEnabled(window); }
             catch (Exception ex) { failure ??= ex; }
         }
         if (failure != null) ExceptionDispatchInfo.Capture(failure).Throw();
@@ -3969,6 +4008,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         bool shouldBe = Handle != nint.Zero
                         && !_isClosing
                         && !_nativeWindowHidden
+                        && !_linuxRenderingSuspended
                         && WindowState != WindowState.Minimized
                         && base.Visibility == Visibility.Visible;
 
@@ -4020,7 +4060,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
             // Exit ShowDialog only after Closing accepted the close. A cancelled
             // modal close must leave its nested dispatcher frame running.
-            if (OperatingSystem.IsMacOS() && _isModal) _dialogResult ??= false;
+            if (IsDesktopModalPlatform && _isModal) _dialogResult ??= false;
             _isModal = false;
             Styling.CssPresentationState.NotifyModalChange(this);
 
@@ -4035,19 +4075,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     }
 
     internal bool IsCloseRequestedForPlatformTermination => _isClosing || _managedTeardownCompleted;
-    internal bool IsCloseDecisionPendingForPlatformTermination => _isClosing && !_managedTeardownStarted;
     internal bool IsClosedForPlatformTermination => _managedTeardownCompleted && Handle == nint.Zero;
     internal Window? OwnerForPlatformTermination => _owner ?? _modalOwner;
     internal event EventHandler? PlatformTeardownCompleted;
-    internal event EventHandler? PlatformCloseRequestCompleted;
 
-    private void CloseOwnedMacOSWindow()
+    private void CloseOwnedDesktopWindow()
     {
         if (_managedTeardownCompleted) return;
         // Owned windows follow their accepted owner close without another
         // cancellable Closing event, matching the Window ownership contract.
         _isClosing = true;
-        if (OperatingSystem.IsMacOS() && _isModal) _dialogResult ??= false;
+        if (IsDesktopModalPlatform && _isModal) _dialogResult ??= false;
         _isModal = false;
         Styling.CssPresentationState.NotifyModalChange(this);
         SetFrameStartingSubscription(false);
@@ -4084,7 +4122,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     private void CompleteManagedTeardown(nint nativeHandle, bool nativeDestroyed)
     {
-        if (OperatingSystem.IsMacOS())
+        if (IsDesktopModalPlatform)
         {
             CancelPendingMacOSVisibilityShow();
             if (!_managedTeardownStarted && !_managedTeardownCompleted)
@@ -4107,7 +4145,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             }
 
             _isClosing = true;
-            if (OperatingSystem.IsMacOS() && _isModal) _dialogResult ??= false;
+            if (IsDesktopModalPlatform && _isModal) _dialogResult ??= false;
             _isModal = false;
             if (nativeHandle != nint.Zero)
             {
@@ -4136,6 +4174,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private void CompleteManagedTeardownCore(nint nativeHandle, bool nativeDestroyed)
     {
         DetachPlatformTaskbarIntegration();
+        ReleaseAppBarRegistration(restoreBounds: false);
 
         if (!nativeDestroyed)
         {
@@ -4188,12 +4227,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         ActiveExternalPopups.Clear();
 
         // Close all owned windows
-        foreach (var owned in _ownedWindows.ToList())
+        foreach (var owned in _ownedWindows.Concat(_windows.Values.Where(window =>
+                     OperatingSystem.IsLinux() && ReferenceEquals(window._modalOwner, this))).Distinct().ToList())
         {
-            if (OperatingSystem.IsMacOS())
+            if (IsDesktopModalPlatform)
             {
-                try { owned.CloseOwnedMacOSWindow(); }
-                catch (Exception ex) { Debug.WriteLine($"Owned macOS Window closing handler failed: {ex.Message}"); }
+                try { owned.CloseOwnedDesktopWindow(); }
+                catch (Exception ex) { Debug.WriteLine($"Owned Window closing handler failed: {ex.Message}"); }
             }
             else owned.Close();
         }
@@ -4221,7 +4261,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         _macOSAccessibility?.Dispose();
         _macOSAccessibility = null;
-        _macOSModalEnabledStates.Remove(this);
+        _desktopModalEnabledStates.Remove(this);
         var managedHandle = Handle;
         Handle = nint.Zero;
 
@@ -4354,6 +4394,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private void OnNativeDestroyed(nint nativeHandle)
     {
         _nonClientMouseLeaveWindow = nint.Zero;
+        ReleaseAppBarRegistration(restoreBounds: false);
         // WM_DESTROY still has a valid HWND. Clear the Shell's window properties
         // now, even when an in-flight render defers the remaining managed teardown.
         ReleaseTaskbarRelaunchProperties(nativeHandle);
@@ -4564,10 +4605,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // Register window class if needed
         RegisterWindowClass();
 
-        // Determine window style based on WindowStyle/ResizeMode/TitleBarStyle.
-        // For custom title bar we keep standard caption style bits and remove the
-        // visible caption via NCCALCSIZE; for WindowStyle=None we use WS_POPUP so
-        // the window has no native frame or caption at all.
+        // Keep the native caption for normal window behavior and animations.
+        // Custom chrome only removes it while hovering its maximize button.
         uint dwStyle;
         if (WindowStyle == WindowStyle.None)
         {
@@ -4693,6 +4732,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 needsDpiAdjust ? (flags | SWP_NOMOVE) : flags);
         }
 
+        // Creation messages arrive before _windows contains the HWND, so
+        // WM_GETMINMAXINFO cannot enforce our constraints yet. Check the live
+        // client size after DPI and custom-frame setup, before the first frame.
+        ApplyInitialWin32SizeConstraints();
+
         // Create render target for this window.
         // During GPU switching this can fail transiently; defer to render-loop recovery.
         try
@@ -4739,6 +4783,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         int physicalWidth = Math.Max(1, (int)Math.Round((double.IsFinite(Width) ? Width : 800) * _dpiScale));
         int physicalHeight = Math.Max(1, (int)Math.Round((double.IsFinite(Height) ? Height : 600) * _dpiScale));
+        int constrainedWidth = ConstrainClientSizeInPixels(physicalWidth, MinWidth, MaxWidth, _dpiScale);
+        int constrainedHeight = ConstrainClientSizeInPixels(physicalHeight, MinHeight, MaxHeight, _dpiScale);
+        if (constrainedWidth != physicalWidth && constrainedWidth > 0)
+            Width = constrainedWidth / _dpiScale;
+        if (constrainedHeight != physicalHeight && constrainedHeight > 0)
+            Height = constrainedHeight / _dpiScale;
+        physicalWidth = constrainedWidth;
+        physicalHeight = constrainedHeight;
         var startupPixels = PlatformFactory.IsMacOS ? GetMacOSStartupPixelPosition() : null;
         int x = startupPixels.HasValue ? (int)startupPixels.Value.X : double.IsNaN(Left) ? -1 : (int)(Left * _dpiScale);
         int y = startupPixels.HasValue ? (int)startupPixels.Value.Y : double.IsNaN(Top) ? -1 : (int)(Top * _dpiScale);
@@ -4777,14 +4829,25 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         finally { _isSyncingPosition = false; }
 
         _platformWindow.SetEventHandler(OnPlatformEvent);
+        if (OperatingSystem.IsLinux())
+        {
+            string applicationId = Application.Current?.LockDesktopApplicationId() ??
+                Application.CreateDefaultDesktopApplicationId(System.Reflection.Assembly.GetEntryAssembly()?.GetName().Name);
+            if (!_platformWindow.SetDesktopApplicationId(applicationId))
+                throw new InvalidOperationException("Failed to set the Linux desktop application identity.");
+        }
+        RefreshLinuxWindowCapabilities();
+        RefreshLinuxRenderingAvailability();
+        RefreshLinuxResizeConstraints();
+        RefreshLinuxWindowChrome();
         if (PlatformFactory.IsMacOS && _platformWindow is NativePlatformWindow nativeEditingWindow)
             nativeEditingWindow.SetMacOSEditingCommandQuery(CanExecuteMacOSEditingCommand);
-        if (OperatingSystem.IsMacOS()) TrackMacOSModalWindow(this);
+        if (IsDesktopModalPlatform) TrackDesktopModalWindow(this);
         _ = _platformWindow.SetEnabled(IsEnabled);
         _ = _platformWindow.SetShowInTaskbar(ShowInTaskbar);
         if (platformOwnerHandle != nint.Zero)
             _ = _platformWindow.SetOwner(platformOwnerHandle);
-        if (AllowsTransparency || PlatformFactory.IsMacOS)
+        if (AllowsTransparency || IsDesktopModalPlatform)
             _ = _platformWindow.SetOpacity(Opacity);
         if (PlatformFactory.IsMacOS)
             _ = _platformWindow.SetSystemBackdrop((int)SystemBackdrop);
@@ -4923,20 +4986,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             dwExStyle &= ~WS_EX_APPWINDOW;
         }
 
-        if (allowsTransparency && supportsDirectComposition)
+        if (supportsDirectComposition &&
+            (allowsTransparency || titleBarStyle == WindowTitleBarStyle.Custom))
         {
-            // Use WS_EX_NOREDIRECTIONBITMAP so the HWND has no redirection
-            // surface and the render backend can present through DirectComposition
-            // for real per-pixel transparency. WS_EX_LAYERED would only support
-            // uniform GDI alpha and does not composite D3D12 swap chains, which
-            // made layered fullscreen windows appear click-through.
-            //
-            // Gated on the backend: only D3D12 implements the DirectComposition
-            // path. Vulkan and the software rasterizer present INTO the redirection
-            // surface, so setting this style there means DWM has nothing to
-            // composite and the window never shows anything at all. Those backends
-            // keep the surface and get per-pixel alpha from
-            // CompositionSurfacePolicy.EnableRedirectionSurfaceAlpha instead.
+            // Custom GPU windows present through composition alone. A second
+            // redirected HWND bitmap can expose the native caption during fast
+            // resize, even though WM_NCCALCSIZE makes the frame client-owned.
+            // The same style also enables per-pixel composition transparency.
+            // Initial Software/Vulkan windows retain their redirection surface;
+            // later fallback on this HWND uses a captionless presentation child.
             dwExStyle |= WS_EX_NOREDIRECTIONBITMAP;
         }
 
@@ -5022,19 +5080,20 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     // publishing effective changes through the binding's normal mode/trigger.
     private void SetCurrentWindowGeometryValue(DependencyProperty property, object value)
     {
-        var previous = GetValue(property);
         SetCurrentValue(property, value);
-        if (!Equals(previous, GetValue(property)))
-            Jalium.UI.Data.BindingOperations.GetBindingExpressionBase(this, property)?.OnTargetValueChanged();
     }
 
     private bool _isSyncingPlatformSize;
     private bool _isUpdatingSizeToContent;
 
-    private void UpdateMacOSSizeToContent()
+    private void UpdatePlatformSizeToContent()
     {
-        if (!OperatingSystem.IsMacOS() || SizeToContent == SizeToContent.Manual ||
-            WindowState != WindowState.Normal || _isUpdatingSizeToContent || ContentElement == null) return;
+        if ((!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux()) || SizeToContent == SizeToContent.Manual ||
+            WindowState != WindowState.Normal || _isUpdatingSizeToContent ||
+            (OperatingSystem.IsLinux() && _platformWindow?.IsTiled == true)) return;
+        ApplyTemplate();
+        var contentElement = TemplateRootInternal ?? ContentElement;
+        if (contentElement == null) return;
         _isUpdatingSizeToContent = true;
         try
         {
@@ -5044,9 +5103,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             double currentHeight = double.IsFinite(Height) ? Height : 600;
             double titleHeight = IsTitleBarVisible() || _macOSWindowCommands != null
                 ? GetEffectiveTitleBarHeightDip() : 0;
-            ContentElement.Measure(new Size(autoWidth ? double.PositiveInfinity : currentWidth,
+            contentElement.Measure(new Size(autoWidth ? double.PositiveInfinity : currentWidth,
                 autoHeight ? double.PositiveInfinity : Math.Max(0, currentHeight - titleHeight)));
-            Size desired = ContentElement.DesiredSize;
+            Size desired = contentElement.DesiredSize;
             if (_macOSWindowCommands != null)
             {
                 _macOSWindowCommands.Measure(new Size(autoWidth ? double.PositiveInfinity : currentWidth, titleHeight));
@@ -5068,7 +5127,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void UpdatePlatformWindowSize()
     {
-        if (!OperatingSystem.IsMacOS() || _platformWindow == null ||
+        if ((!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux()) || _platformWindow == null ||
             _isSyncingPlatformSize || WindowState != WindowState.Normal ||
             !double.IsFinite(Width) || !double.IsFinite(Height)) return;
         int width = Math.Max(1, (int)Math.Round(Math.Clamp(Width, MinWidth, Math.Max(MinWidth, MaxWidth)) * _dpiScale));
@@ -5176,8 +5235,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     private bool TryShowSystemMenuAtClient(Point clientPosition)
     {
-        if ((!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS()) || _platformWindow == null ||
-            Handle == nint.Zero || !IsSystemMenuCaptionPoint(clientPosition))
+        if (!CanShowPlatformSystemMenu || !IsSystemMenuCaptionPoint(clientPosition))
         {
             return false;
         }
@@ -5191,13 +5249,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     internal bool TryShowSystemMenuAtScreen(Point screenLocation)
     {
-        if ((!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS()) || _platformWindow == null ||
-            Handle == nint.Zero || !HasSystemMenu)
+        if (!CanShowPlatformSystemMenu)
         {
             return false;
         }
 
-        if (!_platformWindow.TryGetClientOrigin(out int originX, out int originY)) return false;
+        if (!_platformWindow!.TryGetClientOrigin(out int originX, out int originY)) return false;
         double scale = _dpiScale > 0 && double.IsFinite(_dpiScale) ? _dpiScale : 1.0;
         var clientPosition = new Point(
             (screenLocation.X - originX) / scale,
@@ -5205,15 +5262,20 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         return ShowPlatformOrFallbackSystemMenu(clientPosition);
     }
 
+    private bool CanShowPlatformSystemMenu =>
+        (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS()) && _platformWindow != null &&
+        Handle != nint.Zero && HasSystemMenu && IsEnabled && Visibility == Visibility.Visible &&
+        !_isClosing && !_managedTeardownStarted;
+
     private bool ShowPlatformOrFallbackSystemMenu(Point clientPosition)
     {
-        if (_platformWindow == null)
+        if (!CanShowPlatformSystemMenu)
             return false;
 
         double scale = _dpiScale > 0 && double.IsFinite(_dpiScale) ? _dpiScale : 1.0;
         int physicalX = ToSystemMenuPhysicalPixel(clientPosition.X, scale);
         int physicalY = ToSystemMenuPhysicalPixel(clientPosition.Y, scale);
-        if (_platformWindow.ShowSystemMenu(physicalX, physicalY))
+        if (_platformWindow!.ShowSystemMenu(physicalX, physicalY))
             return true;
         if (OperatingSystem.IsMacOS()) return false;
 
@@ -5235,12 +5297,39 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void ShowFallbackSystemMenu(Point clientPosition)
     {
-        _fallbackSystemMenu?.Close();
+        var previousFocus = Keyboard.FocusedElement as UIElement;
+        _fallbackSystemMenu?.CloseImmediately();
+        var menu = CreateFallbackSystemMenu();
 
+        _fallbackSystemMenu = menu;
+        menu.Closed += (_, _) =>
+        {
+            if (ReferenceEquals(_fallbackSystemMenu, menu))
+                _fallbackSystemMenu = null;
+            if (previousFocus != null)
+                Dispatcher.BeginInvokeCritical(() =>
+                {
+                    if (!_isClosing && !_managedTeardownStarted && IsLinuxInputTargetValid(previousFocus))
+                        previousFocus.Focus();
+                });
+        };
+        menu.Open(clientPosition);
+        Dispatcher.BeginInvokeCritical(() =>
+        {
+            if (!ReferenceEquals(_fallbackSystemMenu, menu) || !menu.IsOpen) return;
+            foreach (var item in menu.Items.OfType<MenuItem>())
+                if (item.IsEnabled && item.IsVisible && item.Focus()) break;
+        });
+    }
+
+    private ContextMenu CreateFallbackSystemMenu()
+    {
         bool isMaximized = WindowState == WindowState.Maximized;
         bool isMinimized = WindowState == WindowState.Minimized;
-        bool canResize = ResizeMode is ResizeMode.CanResize or ResizeMode.CanResizeWithGrip;
-        bool canMinimize = ResizeMode != ResizeMode.NoResize;
+        bool canMaximize = (ResizeMode is ResizeMode.CanResize or ResizeMode.CanResizeWithGrip) &&
+            IsLinuxCapabilityAvailable(PlatformWindowCapabilities.Maximize);
+        bool canMinimize = ResizeMode != ResizeMode.NoResize &&
+            IsLinuxCapabilityAvailable(PlatformWindowCapabilities.Minimize);
 
         var menu = new ContextMenu
         {
@@ -5248,29 +5337,25 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             StaysOpen = false
         };
 
-        var restore = new MenuItem { Header = "Restore", IsEnabled = isMaximized || isMinimized };
-        restore.Click += (_, _) => WindowState = WindowState.Normal;
+        var restore = new MenuItem { Header = "Restore", IsEnabled = WindowState != WindowState.Normal };
+        restore.Click += (_, _) => SetCurrentValue(WindowStateProperty, WindowState.Normal);
         menu.Items.Add(restore);
 
+        AddLinuxSystemMenuKeyboardOperations(menu);
+
         var minimize = new MenuItem { Header = "Minimize", IsEnabled = canMinimize && !isMinimized };
-        minimize.Click += (_, _) => WindowState = WindowState.Minimized;
+        minimize.Click += (_, _) => SetCurrentValue(WindowStateProperty, WindowState.Minimized);
         menu.Items.Add(minimize);
 
-        var maximize = new MenuItem { Header = "Maximize", IsEnabled = canResize && !isMaximized };
-        maximize.Click += (_, _) => WindowState = WindowState.Maximized;
+        var maximize = new MenuItem { Header = "Maximize", IsEnabled = canMaximize && !isMaximized && WindowState != WindowState.FullScreen };
+        maximize.Click += (_, _) => SetCurrentValue(WindowStateProperty, WindowState.Maximized);
         menu.Items.Add(maximize);
 
-        var close = new MenuItem { Header = "Close" };
+        var close = new MenuItem { Header = "Close", IsEnabled = IsLinuxCapabilityAvailable(PlatformWindowCapabilities.Close) };
         close.Click += (_, _) => Close();
         menu.Items.Add(close);
 
-        _fallbackSystemMenu = menu;
-        menu.Closed += (_, _) =>
-        {
-            if (ReferenceEquals(_fallbackSystemMenu, menu))
-                _fallbackSystemMenu = null;
-        };
-        menu.Open(clientPosition);
+        return menu;
     }
 
     private long _lastAndroidPointingRefreshTick;
@@ -5310,13 +5395,18 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 break;
 
             case PlatformEventType.Resize:
-                if (OperatingSystem.IsMacOS() && evt.IsUserInitiatedResize)
+                if (OperatingSystem.IsLinux()) _linuxFocusVisibilityPending = true;
+                if ((OperatingSystem.IsMacOS() || OperatingSystem.IsLinux()) && evt.IsUserInitiatedResize)
                     SetCurrentWindowGeometryValue(SizeToContentProperty, SizeToContent.Manual);
                 OnSizeChanged(evt.Width, evt.Height);
                 break;
 
             case PlatformEventType.PointingDevicesChanged:
                 Jalium.UI.Styling.CssMediaQuery.RefreshPointingDevices();
+                break;
+
+            case PlatformEventType.MouseCancel:
+                _inputDispatcher.HandleMouseCancel();
                 break;
 
             case PlatformEventType.ScrollBarSettingsChanged:
@@ -5326,6 +5416,23 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     if (!IsCloseRequestedForPlatformTermination && !_managedTeardownStarted)
                         RaisePlatformSystemSettingsChanged();
                 }
+                break;
+
+            case PlatformEventType.DecorationsChanged:
+                RefreshLinuxWindowChrome();
+                break;
+
+            case PlatformEventType.CapabilitiesChanged:
+                RefreshLinuxWindowCapabilities();
+                RefreshLinuxWindowChrome();
+                break;
+
+            case PlatformEventType.RenderingAvailabilityChanged:
+                RefreshLinuxRenderingAvailability();
+                break;
+
+            case PlatformEventType.ResizeConstraintsChanged:
+                RefreshLinuxResizeConstraints();
                 break;
 
             case PlatformEventType.Paint:
@@ -5338,7 +5445,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 {
                     if (IsActive && _macOSResponderFocusRestore == null)
                     {
-                        RestoreMacOSKeyboardFocus();
+                        RestorePlatformKeyboardFocus();
                         _inputDispatcher.HandleSetFocus();
                     }
                     UpdateInputMethodAssociation();
@@ -5349,6 +5456,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     HandleMacOSPlatformActivation(active: true);
                     break;
                 }
+                if (OperatingSystem.IsLinux()) RestorePlatformKeyboardFocus();
+                if (OperatingSystem.IsLinux()) _inputDispatcher.HandleSetFocus();
                 Jalium.UI.Styling.CssMediaQuery.RefreshPointingDevices();
                 if (!IsActive)
                 {
@@ -5409,7 +5518,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 var button = MapPlatformMouseButton(evt.Button);
                 var modifiers = MapPhysicalPlatformModifiers(evt.Modifiers);
                 var buttons = GetPlatformMouseButtons(evt).WithButton(button, MouseButtonState.Pressed);
-                if (TryHandleMacOSWindowChrome(button, position, evt.ClickCount))
+                if (TryHandleMacOSWindowChrome(button, position, evt.ClickCount) ||
+                    TryHandleLinuxWindowChrome(button, position, evt.ClickCount))
                     break;
                 _macOSTextMenuConsumedPointer = false;
                 long precedingPressEpoch = Mouse.PressEpoch;
@@ -5441,6 +5551,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
             case PlatformEventType.KeyDown:
             {
+                if (OperatingSystem.IsLinux()) _linuxSuppressHandledSpace = false;
                 Key key = KeyInterop.KeyFromVirtualKey(evt.KeyCode);
                 var modifiers = MapPlatformModifiers(evt.Modifiers);
                 bool isRepeat = evt.IsRepeat != 0;
@@ -5473,6 +5584,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     ReferenceEquals(commandPlatform, _platformWindow) && commandHandle == Handle;
                 bool handled = _inputDispatcher.HandlePlatformKeyDown(key, modifiers, isRepeat, timestamp,
                     physicalModifiers, keyboardPacketLifetime);
+                // X11/Wayland can emit a character after a consumed Space
+                // command, before queued menu focus has moved off the editor.
+                if (OperatingSystem.IsLinux()) _linuxSuppressHandledSpace = handled && key == Key.Space;
                 // AppKit edit actions also arrive as key events. Let custom
                 // routed commands handle them after the control's own handlers.
                 if (!handled && IsCommandTargetCurrent())
@@ -5489,6 +5603,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             case PlatformEventType.KeyUp:
             {
                 Key key = KeyInterop.KeyFromVirtualKey(evt.KeyCode);
+                if (OperatingSystem.IsLinux() && key == Key.Space) _linuxSuppressHandledSpace = false;
                 var modifiers = MapPlatformModifiers(evt.Modifiers);
                 _inputDispatcher.HandlePlatformKeyUp(key, modifiers, Environment.TickCount,
                     MapPhysicalPlatformModifiers(evt.Modifiers));
@@ -5497,6 +5612,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
             case PlatformEventType.CharInput:
             {
+                if (OperatingSystem.IsLinux())
+                {
+                    bool suppress = _linuxSuppressHandledSpace && evt.Codepoint == 0x20;
+                    _linuxSuppressHandledSpace = false;
+                    if (suppress) break;
+                }
                 string? text = NativePlatformWindow.CodepointToText(evt.Codepoint);
                 if (text != null)
                     _inputDispatcher.HandleCharInput(text, Environment.TickCount);
@@ -5509,20 +5630,30 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     BeginMacOSKeyboardInput();
                     if (!TryGetImeTarget(out _, out _)) break;
                 }
+                if (OperatingSystem.IsLinux() && !TryGetImeTarget(out _, out _)) break;
                 if (!InputMethod.IsComposing)
                     InputMethod.StartComposition();
                 break;
 
             case PlatformEventType.CompositionUpdate:
+            {
                 var compositionUpdateLifetime = OperatingSystem.IsMacOS() ? BeginMacOSKeyboardInput() : null;
                 if (OperatingSystem.IsMacOS() && !TryGetImeTarget(out _, out _)) break;
+                Func<bool>? linuxUpdateLifetime = null;
+                if (OperatingSystem.IsLinux())
+                {
+                    if (!TryGetImeTarget(out UIElement? target, out _) || target == null) break;
+                    linuxUpdateLifetime = CaptureLinuxImeInputLifetime(target);
+                }
                 if (!InputMethod.IsComposing)
                     InputMethod.StartComposition();
                 if (compositionUpdateLifetime?.Invoke() == false) break;
+                if (linuxUpdateLifetime?.Invoke() == false || OperatingSystem.IsLinux() && !InputMethod.IsComposing) break;
                 InputMethod.UpdateComposition(
                     evt.CompositionText ?? string.Empty,
                     Math.Max(0, evt.CompositionCursor));
                 break;
+            }
 
             case PlatformEventType.CompositionEnd:
             {
@@ -5531,6 +5662,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     !IsMacOSInputTargetValid(composingTarget)) break;
                 string result = evt.CompositionText ?? string.Empty;
                 UIElement? commitTarget = null;
+                Func<bool>? linuxCommitLifetime = null;
+                if (OperatingSystem.IsLinux())
+                {
+                    if (TryGetImeTarget(out commitTarget, out _) && commitTarget != null &&
+                        (!InputMethod.IsComposing || ReferenceEquals(InputMethod.CurrentTarget, commitTarget)))
+                        linuxCommitLifetime = CaptureLinuxImeInputLifetime(commitTarget);
+                    else linuxCommitLifetime = () => false;
+                }
                 if (OperatingSystem.IsMacOS() && result.Length != 0 &&
                     (!TryGetImeTarget(out commitTarget, out _) ||
                      (InputMethod.IsComposing && !ReferenceEquals(InputMethod.CurrentTarget, commitTarget)))) break;
@@ -5540,7 +5679,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 if (compositionEndLifetime?.Invoke() == false) break;
                 // Composition-ended callbacks may move focus. Never send the
                 // old editor's commit into the editor they just focused.
-                if (result.Length != 0 && commitLifetime?.Invoke() != false && (!OperatingSystem.IsMacOS() ||
+                if (result.Length != 0 && commitLifetime?.Invoke() != false && linuxCommitLifetime?.Invoke() != false &&
+                    (!OperatingSystem.IsLinux() || !InputMethod.IsComposing) && (!OperatingSystem.IsMacOS() ||
                     (TryGetImeTarget(out UIElement? currentTarget, out _) && ReferenceEquals(currentTarget, commitTarget))))
                     _inputDispatcher.HandleCharInput(result, Environment.TickCount);
                 break;
@@ -5626,8 +5766,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 var oldDpi = new DpiScale(_dpiScale, _dpiScale);
                 _dpiScale = evt.DpiX / 96.0;
                 FrameworkElement.LayoutDpiScale = _dpiScale;
-                int physicalWidth = (int)(Width * _dpiScale);
-                int physicalHeight = (int)(Height * _dpiScale);
+                int physicalWidth = Math.Max(1, (int)Math.Round(Width * _dpiScale, MidpointRounding.AwayFromZero));
+                int physicalHeight = Math.Max(1, (int)Math.Round(Height * _dpiScale, MidpointRounding.AwayFromZero));
                 RenderTarget?.SetDpi((float)evt.DpiX, (float)evt.DpiY);
                 TryResizeRenderTarget(physicalWidth, physicalHeight, "DpiChanged");
                 UpdatePlatformSizeConstraints();
@@ -5665,8 +5805,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 _isSyncingPosition = true;
                 try
                 {
-                    Left = evt.X / _dpiScale;
-                    Top = evt.Y / _dpiScale;
+                    SetCurrentWindowGeometryValue(LeftProperty, evt.X / _dpiScale);
+                    SetCurrentWindowGeometryValue(TopProperty, evt.Y / _dpiScale);
                 }
                 finally
                 {
@@ -5685,7 +5825,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     var newState = MapPlatformWindowState(evt.NewState);
                     if (WindowState != newState)
                     {
-                        WindowState = newState;
+                        SetCurrentValue(WindowStateProperty, newState);
                     }
                 }
                 finally
@@ -5841,7 +5981,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         _hasPendingResize = false;
         _pendingResizeRequiresNativeSameSize = false;
-        lock (_rtChannelLock) { _rtPendingFrame = null; }
+        ClearPendingRenderThreadCapture();
 
         // Android currently renders inline, but retain a hard join boundary in
         // case a platform render worker is enabled later.  Returning while that
@@ -5859,7 +5999,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             {
                 stalledRenderThread.Join();
                 _ = Interlocked.CompareExchange(ref _renderThread, null, stalledRenderThread);
-                lock (_rtChannelLock) { _rtPendingFrame = null; }
+                ClearPendingRenderThreadCapture();
             }
             catch (Exception ex)
             {
@@ -6415,17 +6555,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
 
         MARGINS margins = new() { Left = 0, Right = 0, Top = topMarginPhysical, Bottom = 0 };
-        _ = DwmExtendFrameIntoClientArea(Handle, ref margins);
-        _appliedDwmTopMarginPhysical = topMarginPhysical;
+        if (DwmExtendFrameIntoClientArea(Handle, ref margins) >= 0)
+        {
+            _appliedDwmTopMarginPhysical = topMarginPhysical;
+        }
     }
 
-    // DWM uses the Top margin to decide where the caption frame starts and
-    // whether to arm the Windows 11 Snap Layouts flyout over the maximize
-    // button. If we pass 0/1 here the flyout stops appearing entirely; if
-    // we pass the full custom title-bar height DWM still anchors the caption
-    // button rect to the system height at the top of that region. So mirror
-    // the title-bar height (or at least enough to cover it) to keep DWM's
-    // caption semantics aligned with our custom chrome.
+    // Cover the current title bar and any caption buttons extending below it.
+    // Use the same client bounds as NC hit testing, converted to physical pixels.
     private int GetCustomTitleBarTopMarginPhysical()
     {
         if (!IsTitleBarVisible())
@@ -6433,13 +6570,19 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return 0;
         }
 
-        double titleBarHeightDip = GetEffectiveTitleBarHeightDip();
-        if (TitleBar != null)
-        {
-            titleBarHeightDip = GetElementHeightDip(TitleBar, titleBarHeightDip);
-        }
+        double bottomDip = TitleBar!.VisualBounds.Y + GetCurrentTitleBarHeightDip();
+        IncludeButton(GetTitleBarButtonByKind(TitleBarButtonKind.Minimize));
+        IncludeButton(GetTitleBarButtonByKind(TitleBarButtonKind.Maximize));
+        IncludeButton(GetTitleBarButtonByKind(TitleBarButtonKind.Close));
+        return Math.Max((int)Math.Ceiling(bottomDip * _dpiScale), 1);
 
-        return Math.Max((int)Math.Ceiling(titleBarHeightDip * _dpiScale), 1);
+        void IncludeButton(TitleBarButton? button)
+        {
+            if (TryGetTitleBarButtonClientBoundsDip(button, out var bounds))
+            {
+                bottomDip = Math.Max(bottomDip, bounds.bottom);
+            }
+        }
     }
 
     private static double GetElementHeightDip(FrameworkElement element, double fallback)
@@ -6581,6 +6724,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 IsShowCloseButton, IsShowMinimizeButton, IsShowMaximizeButton);
             if (_platformWindow.SetStyle(ApplyMacOSPopupStyle(platformStyle)))
             {
+                RefreshLinuxWindowChrome();
                 UpdatePlatformSizeConstraints();
                 return;
             }
@@ -6598,6 +6742,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             }
 
             UpdatePlatformSizeConstraints();
+            RefreshLinuxWindowChrome();
             return;
         }
 
@@ -6627,9 +6772,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
         else if (TitleBarStyle == WindowTitleBarStyle.Custom)
         {
-            // Keep WS_CAPTION so the OS preserves native caption semantics
-            // (Snap, system menu, NC button behavior). We remove the visual
-            // caption in WM_NCCALCSIZE instead.
             style |= WS_CAPTION | WS_SYSMENU;
             if (ResizeMode != ResizeMode.NoResize)
             {
@@ -6689,9 +6831,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return;
         }
 
+        // Do not save the temporary Snap-hover style for fullscreen restoration.
+        EndLiveResizeCaptionSuppression();
         // Snapshot current style + bounds so we can restore on exit.
         _fullScreenSavedStyle = (uint)GetWindowLong(Handle, GWL_STYLE);
-        _fullScreenSavedExStyle = (uint)GetWindowLong(Handle, GWL_EXSTYLE);
         if (!GetWindowRect(Handle, out _fullScreenSavedRect))
         {
             return;
@@ -6736,8 +6879,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         _isFullScreen = false;
 
-        _ = SetWindowLong(Handle, GWL_STYLE, _fullScreenSavedStyle);
-        _ = SetWindowLong(Handle, GWL_EXSTYLE, _fullScreenSavedExStyle);
+        // Restore only the frame. Live visibility/enabled/minimized flags may
+        // have changed since entry (e.g. Hide followed by a fullscreen toggle).
+        const uint FrameMask = WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX
+            | WS_SYSMENU | WS_OVERLAPPEDWINDOW | WS_POPUP;
+        long style = GetWindowLong(Handle, GWL_STYLE);
+        _ = SetWindowLong(Handle, GWL_STYLE,
+            (style & ~(long)FrameMask) | (_fullScreenSavedStyle & FrameMask));
 
         var rc = _fullScreenSavedRect;
         _ = SetWindowPos(
@@ -6748,6 +6896,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             rc.right - rc.left,
             rc.bottom - rc.top,
             SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOOWNERZORDER);
+        // Apply frame settings changed while fullscreen; extended styles were
+        // never removed and may contain live topmost/taskbar/opacity changes.
+        UpdateWindowStyle();
     }
 
     private static uint GetWindowStyleForTitleBarStyle(WindowTitleBarStyle titleBarStyle)
@@ -7079,21 +7230,26 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return context.CreateRenderTarget(surface, width, height);
         }
 
-        if (context.Backend == RenderBackend.D3D12 &&
-            (_preserveGdiPresentation || ShouldPreserveGdiPresentation(
-                PlatformFactory.IsWindows, context.Backend,
-                RenderContext.IsBackendSelectionAutomatic(context))))
+        if (PlatformFactory.IsWindows && context.Backend == RenderBackend.D3D12)
         {
+            Dispatcher.CoreDispatcher.EnsureWindowsCompositionQueue();
             var target = context.CreateRenderTargetForComposition(Handle, width, height);
-            _preserveGdiPresentation = true;
+            _preserveGdiPresentation |= ShouldPreserveGdiPresentation(
+                true, context.Backend, RenderContext.IsBackendSelectionAutomatic(context));
             return target;
         }
 
-        // Other opaque targets use the backend's native HWND surface. Automatic
-        // D3D12 above preserves GDI compatibility through detachable composition;
-        // transparency and embedded composition content use the existing path.
+        // D3D12 uses a compositor-relative surface so the stationary resize edge
+        // does not wait for the next recorded viewport. Other opaque targets keep
+        // their native HWND surface; transparency uses the existing backend gate.
         // On Vulkan, asking for a composition surface also selects a compatible
         // premultiplied-alpha WSI format while retaining the HWND redirection surface.
+        // Opaque GDI/WSI targets use a captionless presentation child when the
+        // parent is composition-only. Its HWND remains stable across Auto transitions.
+        if (PlatformFactory.IsWindows && context.Backend != RenderBackend.D3D12 &&
+            !AllowsTransparency && SystemBackdrop == WindowBackdropType.None)
+            return context.CreateRenderTarget(Handle, width, height);
+
         if (ShouldUseCompositionRenderTarget())
             return context.CreateRenderTargetForComposition(Handle, width, height);
 
@@ -7267,13 +7423,20 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // Consume the native-update marker for this property change only.
             // Keep it consumed for subsequent property listeners and derived
             // overrides too; their requests must reach the native queue.
-            if (macOS) window._isSyncingWindowState = false;
+            if (macOS || OperatingSystem.IsLinux()) window._isSyncingWindowState = false;
             if (macOS && !nativeStateUpdate)
             {
                 unchecked { window._macOSWindowStateRequestVersion++; }
                 window._macOSRequestedWindowState = newState;
             }
             var oldState = e.OldValue is WindowState os ? os : WindowState.Normal;
+
+            if (newState == WindowState.FullScreen && oldState != WindowState.FullScreen
+                && (!window._isSyncingWindowState || oldState != WindowState.Minimized))
+            {
+                window._fullScreenPreviousState = oldState == WindowState.Maximized
+                    ? WindowState.Maximized : WindowState.Normal;
+            }
 
             // Capture restore bounds when leaving Normal state
             if (oldState == WindowState.Normal && newState != WindowState.Normal
@@ -7283,55 +7446,18 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             }
 
             window.ApplyTitleBarPresentation();
+            if (newState != WindowState.Normal)
+                window.UpdateAppBarRegistration();
+            window.UpdateCustomTitleBarFrameMargins();
 
             // Sync the native window state when set programmatically.
             // Skip if we're already syncing from WM_SIZE to avoid infinite loop.
             if (!nativeStateUpdate && window.Handle != nint.Zero)
             {
-                if (window._platformWindow != null)
-                {
-                    // X11 and xdg-shell both expose a native fullscreen state.
-                    window._platformWindow.SetState(newState);
-                }
-                else
-                {
-                    // Leaving fullscreen: restore pre-fullscreen frame + bounds first.
-                    if (oldState == WindowState.FullScreen && newState != WindowState.FullScreen)
-                    {
-                        window.ExitFullScreen();
-                    }
-
-                    if (newState == WindowState.FullScreen)
-                    {
-                        window._fullScreenPreviousState = oldState == WindowState.FullScreen
-                            ? WindowState.Normal
-                            : oldState;
-                        // Ensure the window is visible and in a restored state before
-                        // capturing bounds/style for fullscreen.
-                        if (oldState == WindowState.Minimized)
-                        {
-                            _ = ShowWindow(window.Handle, SW_RESTORE);
-                        }
-                        else if (oldState == WindowState.Maximized)
-                        {
-                            _ = ShowWindow(window.Handle, SW_RESTORE);
-                        }
-                        window.EnterFullScreen();
-                        _ = ShowWindow(window.Handle, SW_SHOW);
-                    }
-                    else
-                    {
-                        var cmd = newState switch
-                        {
-                            WindowState.Maximized => SW_MAXIMIZE,
-                            WindowState.Minimized => SW_MINIMIZE,
-                            _ => SW_RESTORE
-                        };
-                        _ = ShowWindow(window.Handle, cmd);
-                    }
-                }
+                window.ApplyNativeWindowState(oldState, newState);
             }
 
+            window.UpdateAppBarRegistration();
             window.OnStateChanged(EventArgs.Empty);
             // Fullscreen can change display-mode queries without changing CSS viewport metrics.
             if (Jalium.UI.Styling.CssEngine.IsActive)
@@ -7376,7 +7502,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
             if (e.NewValue is WindowTitleBarStyle windowTitleBarStyle)
             {
-                if (windowTitleBarStyle == WindowTitleBarStyle.Custom)
+                if (window.UsesManagedTitleBar)
                 {
                     window.CreateTitleBar();
                 }
@@ -7731,6 +7857,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         bool isMaximized,
         (int left, int top, int right, int bottom)? workAreaRect)
     {
+        // Cover the native side and bottom frame as well as the caption.
+        // A constant full-window client rect also survives WS_CAPTION changes.
+        if (!isMaximized) return originalRect;
+
         if (isMaximized && workAreaRect.HasValue)
         {
             return workAreaRect.Value;
@@ -7741,9 +7871,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return originalRect;
         }
 
-        // ControlzEx-style NCCALCSIZE behavior:
-        // keep DefWindowProc's side/bottom frame math, but restore original top
-        // so the visual system caption is removed while preserving NC semantics.
+        // Fall back to the native maximized frame if the work area is unavailable.
         return (defClientRect.left, originalRect.top, defClientRect.right, defClientRect.bottom);
     }
 
@@ -7764,6 +7892,33 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 0,
                 (windowRect.bottom - windowRect.top) -
                 (clientRect.bottom - clientRect.top)));
+    }
+
+    private void ApplyInitialWin32SizeConstraints()
+    {
+        if (!GetClientRect(Handle, out RECT clientRect))
+            return;
+
+        int clientWidth = clientRect.right - clientRect.left;
+        int clientHeight = clientRect.bottom - clientRect.top;
+        int constrainedWidth = ConstrainClientSizeInPixels(clientWidth, MinWidth, MaxWidth, _dpiScale);
+        int constrainedHeight = ConstrainClientSizeInPixels(clientHeight, MinHeight, MaxHeight, _dpiScale);
+        if (constrainedWidth == clientWidth && constrainedHeight == clientHeight)
+            return;
+
+        var frame = GetNonClientFrameSize(Handle);
+        _ = SetWindowPos(Handle, nint.Zero, 0, 0,
+            ComputeWindowTrackSizeFromClientDip(constrainedWidth, 1, frame.width, isMinimum: true),
+            ComputeWindowTrackSizeFromClientDip(constrainedHeight, 1, frame.height, isMinimum: true),
+            SWP_NOMOVE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE);
+    }
+
+    internal static int ConstrainClientSizeInPixels(
+        int clientSizePixels, double minimumDip, double maximumDip, double dpiScale)
+    {
+        int minimum = ComputeWindowTrackSizeFromClientDip(minimumDip, dpiScale, 0, isMinimum: true);
+        int maximum = ComputeWindowTrackSizeFromClientDip(maximumDip, dpiScale, 0, isMinimum: false);
+        return Math.Clamp(clientSizePixels, minimum, Math.Max(minimum, maximum));
     }
 
     internal static int ComputeWindowTrackSizeFromClientDip(
@@ -8074,6 +8229,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         if (window != null)
         {
+            if (window._appBarRegistration?.HandleMessage(msg, wParam, lParam) == true)
+                return nint.Zero;
+
             switch (msg)
             {
                 case WM_GETMINMAXINFO:
@@ -8090,7 +8248,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     // expressed relative to that monitor's origin, so (0,0) is its
                     // top-left corner.  Bordered windows are left untouched here, so
                     // their maximize keeps respecting the taskbar (work area).
-                    if (window.WindowStyle == WindowStyle.None)
+                    if (window._isFullScreen || window.WindowStyle == WindowStyle.None)
                     {
                         var maximizeMonitor = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
                         MONITORINFO maximizeMonitorInfo = new() { cbSize = (uint)Marshal.SizeOf<MONITORINFO>() };
@@ -8157,24 +8315,65 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     break;
                 }
 
+                case WM_SYSCOMMAND:
+                {
+                    int command = (int)(wParam.ToInt64() & 0xFFF0);
+                    if (command is SC_SIZE or SC_MOVE)
+                    {
+                        window._nativeSizingCommand = command == SC_SIZE;
+                        if (command == SC_SIZE)
+                            window.PublishLiveResizeEdge((int)(wParam.ToInt64() & 0xF));
+                        else
+                            window.ClearLiveResizeEdge();
+                    }
+                    if (command is SC_MAXIMIZE or SC_MINIMIZE or SC_RESTORE)
+                    {
+                        window.EndLiveResizeCaptionSuppression();
+                        return DefWindowProc(hWnd, msg, wParam, lParam);
+                    }
+                    break;
+                }
+
                 case WM_CLOSE:
                     // Route through Close() so Closing event can cancel
                     window.Close();
                     return nint.Zero;
 
                 case WM_DESTROY:
+                    window.ClearLiveResizeEdge();
                     Controls.Automation.Uia.UiaAccessibilityBridge.NotifyWindowDestroyed(hWnd);
                     // Native destruction can bypass Close. Release the same managed
                     // resources, but do not recursively destroy the HWND or post quit.
                     window.OnNativeDestroyed(hWnd);
                     return nint.Zero;
 
+                case WM_NCPAINT:
+                case WM_NCUAHDRAWCAPTION:
+                case WM_NCUAHDRAWFRAME:
+                    if (window.TitleBarStyle == WindowTitleBarStyle.Custom)
+                    {
+                        // Jalium paints this caption. Default themed NC drawing
+                        // leaves native buttons in the HWND bitmap that Windows
+                        // can expose when an interactive resize outruns a frame.
+                        return nint.Zero;
+                    }
+                    break;
+
+                case WM_NCACTIVATE:
+                    if (window.TitleBarStyle == WindowTitleBarStyle.Custom)
+                    {
+                        // Preserve native activation while suppressing its paint.
+                        // WS_CAPTION stays available for system animations.
+                        return DefWindowProc(hWnd, msg, wParam, new nint(-1));
+                    }
+                    break;
+
                 case WM_NCCALCSIZE:
                     // WindowStyle=None: swallow the entire non-client area so there's
                     // no DWM-drawn frame strip (otherwise WS_THICKFRAME leaves a thin
                     // white bar at the top on Win11). Edge resize is still available
                     // via WM_NCHITTEST below.
-                    if (window.WindowStyle == WindowStyle.None)
+                    if (window._isFullScreen || window.WindowStyle == WindowStyle.None)
                     {
                         bool hasNcCalcSizeParams = wParam != nint.Zero;
                         if (hasNcCalcSizeParams)
@@ -8195,7 +8394,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     }
                     // For custom title bar:
                     // 1) call DefWindowProc first to keep native NC contract intact
-                    // 2) remove only the native caption inset in normal state
+                    // 2) cover the complete window with the custom client area in normal state
                     // 3) in maximized state, clamp to monitor work area
                     if (window.TitleBarStyle == WindowTitleBarStyle.Custom)
                     {
@@ -8208,11 +8407,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                         // Save pre-DefWindowProc rect before NC calculations mutate it.
                         var ncParams = Marshal.PtrToStructure<NCCALCSIZE_PARAMS>(lParam);
                         var originalRect = (ncParams.rgrc0.left, ncParams.rgrc0.top, ncParams.rgrc0.right, ncParams.rgrc0.bottom);
+                        var oldClientRect = (ncParams.rgrc2.left, ncParams.rgrc2.top, ncParams.rgrc2.right, ncParams.rgrc2.bottom);
 
                         // Let DefWindowProc compute default non-client metrics first.
                         // Its return flags describe the default preservation policy;
                         // Jalium owns the final client rectangle and deliberately
-                        // replaces those flags with WVR_REDRAW below.
+                        // selects its own client-image preservation policy below.
                         _ = DefWindowProc(hWnd, msg, wParam, lParam);
 
                         // Re-read DefWindowProc-computed rect and only apply minimal fixups.
@@ -8241,11 +8441,19 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                         Marshal.StructureToPtr(ncParams, lParam, false);
                         window.RequestFullInvalidation();
                         window.InvalidateWindow();
+                        if (window._isSizing && !isMaximized &&
+                            window.RenderTarget is { Backend: RenderBackend.D3D12, IsCompositionTarget: true })
+                        {
+                            return ComputeLiveResizePreservation(oldClientRect, computedRect);
+                        }
                         return ComputeNcCalcSizeResult(hasNcCalcSizeParams: true);
                     }
                     break;
 
                 case WM_NCHITTEST:
+                    if (window._isFullScreen)
+                        return HTCLIENT;
+
                     // WindowStyle=None (with a native title bar style): provide edge
                     // resize hit-testing ourselves since DefWindowProc won't — the
                     // frame area has been swallowed by WM_NCCALCSIZE.
@@ -8257,27 +8465,29 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     }
                     if (window.TitleBarStyle == WindowTitleBarStyle.Custom)
                     {
+                        window.UpdateCustomTitleBarFrameMargins();
                         var customHitResult = window.HandleNcHitTest(lParam);
+                        window.UpdateNativeCaptionForSnapHover(customHitResult == HTMAXBUTTON);
 
-                        // WM_NCCALCSIZE deliberately extends a custom title bar into
-                        // the native top frame. Resolve our client-owned resize strip
-                        // before DWM can classify those pixels as caption or client.
+                        // Custom chrome owns the resize strips inside every client
+                        // edge. Resolve them before DWM classifies caption pixels.
                         if (IsResizeHitTestResult(customHitResult))
                         {
                             return customHitResult;
                         }
 
-                        // DWM still gets the non-resize hit before our custom result.
-                        // This primes the Windows 11 Snap Layouts state machine for
-                        // HTMAXBUTTON and preserves native caption-button behavior.
-                        if (DwmDefWindowProc(hWnd, msg, wParam, lParam, out nint dwmHit) && dwmHit != nint.Zero)
-                        {
-                            return dwmHit;
-                        }
+                        // Keep DWM informed, but the current custom layout owns the
+                        // button hit regions. DWM's system-sized caption bounds can
+                        // overlap a different custom button after a size/style change.
+                        bool dwmHandled = DwmDefWindowProc(hWnd, msg, wParam, lParam, out nint dwmHit);
 
                         if (customHitResult != HTNOWHERE)
                         {
                             return customHitResult;
+                        }
+                        if (dwmHandled)
+                        {
+                            return dwmHit;
                         }
                     }
                     break;
@@ -8389,6 +8599,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     }
                     break;
 
+                case WM_WINDOWPOSCHANGING:
+                    window.UpdateLiveResizeImagePreservation(lParam);
+                    break;
+
                 case WM_WINDOWPOSCHANGED:
                     // DefWindowProc translates this sent message into WM_SIZE.
                     // Keep the matching D3D12 viewport change queued until this
@@ -8416,10 +8630,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     // This handles system-forced state changes (Win+Down, taskbar click, etc.)
                     // Use _isSyncingWindowState to prevent OnWindowStateChanged from
                     // calling ShowWindow again (which would cause infinite WM_SIZE loop).
+                    bool wasSyncingWindowState = window._isSyncingWindowState;
                     window._isSyncingWindowState = true;
                     try
                     {
-                        switch (sizeType)
+                        if (!window._isApplyingWindowState) switch (sizeType)
                         {
                             case SIZE_MAXIMIZED:
                                 if (window.WindowState != WindowState.Maximized)
@@ -8431,9 +8646,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                                 // While in fullscreen we intentionally resize to the
                                 // monitor bounds, which produces a SIZE_RESTORED
                                 // message. Do NOT drop the FullScreen state in that case.
-                                if (!window._isFullScreen && window.WindowState != WindowState.Normal)
+                                var restoredState = window._isFullScreen ? WindowState.FullScreen : WindowState.Normal;
+                                if (window.WindowState != restoredState)
                                 {
-                                    window.WindowState = WindowState.Normal;
+                                    window.WindowState = restoredState;
                                 }
                                 break;
                             case SIZE_MINIMIZED:
@@ -8446,8 +8662,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     }
                     finally
                     {
-                        window._isSyncingWindowState = false;
+                        window._isSyncingWindowState = wasSyncingWindowState;
                     }
+
+                    if (sizeType == SIZE_MINIMIZED)
+                        return nint.Zero;
 
                     window.OnSizeChanged(width, height);
 
@@ -8492,6 +8711,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 case WM_DISPLAYCHANGE:
                     // Display settings changed (resolution, refresh rate, etc.)
                     window.UpdateRefreshRateForCurrentMonitor(force: true);
+                    window.ResizeFullScreenToMonitor();
                     return nint.Zero;
 
                 case WM_DPICHANGED:
@@ -8526,6 +8746,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                         new DpiScale(oldDpiScale, oldDpiScale),
                         new DpiScale(window._dpiScale, window._dpiScale)));
 
+                    window.ResizeFullScreenToMonitor();
+                    window.UpdateAppBarRegistration();
+
                     return nint.Zero;
                 }
 
@@ -8544,8 +8767,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     }
                     return nint.Zero;
 
+                case WM_SIZING:
+                    if (window._nativeSizingCommand)
+                        window.PublishLiveResizeEdge((int)wParam.ToInt64());
+                    break;
+
                 case WM_ENTERSIZEMOVE:
+                    window.BeginLiveResizeCaptionSuppression();
                     window._isSizing = true;
+                    window.PrepareLiveResize();
                     // Disable VSync during resize for faster frame updates.
                     // FIX #2: drain the render thread around the swap-chain param
                     // change — Present is not safe against a concurrent sync-interval
@@ -8570,6 +8800,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     return nint.Zero;
 
                 case WM_EXITSIZEMOVE:
+                    window.EndLiveResizeCaptionSuppression();
                     window._isSizing = false;
                     // Re-enable VSync after resize (honour the JALIUM_DISABLE_VSYNC
                     // opt-out so a benchmark session that disabled it stays disabled).
@@ -8799,7 +9030,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
                 case WM_CAPTURECHANGED:
                     // lParam = 即将拿到捕获的窗口；等于自己时不算丢捕获，理由见 HandleNativeCaptureChanged。
-                    if (lParam != hWnd) window._nonClientMouseLeaveWindow = nint.Zero;
+                    if (lParam != hWnd)
+                    {
+                        window._nonClientMouseLeaveWindow = nint.Zero;
+                        window.UpdateNativeCaptionForSnapHover(false);
+                    }
                     window._inputDispatcher.HandleNativeCaptureChanged(lParam, hWnd);
                     return nint.Zero;
 
@@ -8912,15 +9147,21 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         _latestPhysicalClientWidth = physicalWidth;
         _latestPhysicalClientHeight = physicalHeight;
 
-        var previousWidth = Width;
-        var previousHeight = Height;
+        // Width/Height can already contain a programmatic or automatic size
+        // request. Compare accepted logical sizes so its native acknowledgement
+        // still publishes one event, with stable DIPs across scale changes.
+        var previousSize = _lastAcceptedClientSize ?? new Size(
+            ActualWidth > 0 ? ActualWidth : double.IsFinite(Width) ? Width : 0,
+            ActualHeight > 0 ? ActualHeight : double.IsFinite(Height) ? Height : 0);
+        var acceptedSize = new Size(physicalWidth / _dpiScale, physicalHeight / _dpiScale);
+        _lastAcceptedClientSize = acceptedSize;
 
         // Convert physical pixels to DIPs for layout
         _isSyncingPlatformSize = true;
         try
         {
-            SetCurrentWindowGeometryValue(WidthProperty, physicalWidth / _dpiScale);
-            SetCurrentWindowGeometryValue(HeightProperty, physicalHeight / _dpiScale);
+            SetCurrentWindowGeometryValue(WidthProperty, acceptedSize.Width);
+            SetCurrentWindowGeometryValue(HeightProperty, acceptedSize.Height);
         }
         finally { _isSyncingPlatformSize = false; }
 
@@ -8933,12 +9174,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // discard their images, so partial dirty rendering is never sufficient here.
         RequestFullInvalidation();
 
-        bool widthChanged = previousWidth != Width;
-        bool heightChanged = previousHeight != Height;
+        bool widthChanged = previousSize.Width != acceptedSize.Width;
+        bool heightChanged = previousSize.Height != acceptedSize.Height;
         if (widthChanged || heightChanged)
         {
-            OnSizeChanged(new SizeChangedEventArgs(
-                new SizeChangedInfo(this, new Size(previousWidth, previousHeight), widthChanged, heightChanged)));
+            OnSizeChanged(new SizeChangedEventArgs(previousSize, acceptedSize, widthChanged, heightChanged));
         }
     }
 
@@ -8974,6 +9214,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private bool _pendingResizeRequiresNativeSameSize;
     private int _latestPhysicalClientWidth;
     private int _latestPhysicalClientHeight;
+    private Size? _lastAcceptedClientSize;
 
     private (int Width, int Height) GetFinalPhysicalResizeSize()
     {
@@ -9042,7 +9283,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         QueueLatestRenderTargetResize(
             physicalWidth,
             physicalHeight,
-            stage == "ExitSizeMove");
+            stage is "EnterSizeMove" or "ExitSizeMove");
 
         // The render worker owns the D3D12 target for its entire lifetime. Keep
         // WM_SIZE fully real-time (managed Width/Height and layout are already
@@ -9281,7 +9522,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // on the publishing (UI) thread, so discard that queued capture before
             // retiring the old target. Recovery already requests a full repaint;
             // the next capture is rebuilt entirely against the replacement device.
-            lock (_rtChannelLock) { _rtPendingFrame = null; }
+            ClearPendingRenderThreadCapture();
 
             RenderBackend failedBackend = RenderTarget?.Backend ?? RenderBackend.Auto;
             if (failedBackend == RenderBackend.Auto &&
@@ -9383,7 +9624,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         {
             // See the exception overload above: no pre-recovery command stream
             // may be replayed after its creating device has been retired.
-            lock (_rtChannelLock) { _rtPendingFrame = null; }
+            ClearPendingRenderThreadCapture();
 
             RenderBackend failedBackend = RenderTarget?.Backend ?? RenderBackend.Auto;
 
@@ -9889,7 +10130,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         JaliumResult endResult = renderTarget.TryEndDraw();
         if (endResult == JaliumResult.Ok)
         {
-            Interlocked.Increment(ref _successfulPresentCount);
+            RecordSuccessfulPresent();
             ScheduleEmptyStorageCompaction(renderTarget);
             _debugHud.OnEndDraw();
             // This frame's BeginDraw blocking wait (swap-chain frame-latency
@@ -10191,6 +10432,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     private void OnPaint()
     { _debugHud.OnPaint();
+        // A composition-only parent has no paint DC. Preserve its OS damage
+        // before BeginPaint empties rcPaint; Software presents in its child HWND.
+        bool softwarePaintPending = _isSizing && RenderTarget?.Backend == RenderBackend.Software &&
+            GetUpdateRect(Handle, nint.Zero, false);
         PAINTSTRUCT ps = new();
         _ = BeginPaint(Handle, out ps);
         if (_isSizing)
@@ -10202,7 +10447,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // A full Software frame can have validated this region after the
             // OS queued WM_PAINT. An empty paint must not create another full
             // invalidation; already pending framework work keeps its own wake.
-            if (ps.rcPaint.right > ps.rcPaint.left && ps.rcPaint.bottom > ps.rcPaint.top)
+            if (softwarePaintPending || (ps.rcPaint.right > ps.rcPaint.left && ps.rcPaint.bottom > ps.rcPaint.top))
             {
                 if (!TryPresentUnchangedSoftwareResizeFrame())
                 {
@@ -10229,6 +10474,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     private void ProcessRender()
     {
+        _rtPipelineTrace?.Mark(RenderPipelineStage.ProcessRender, detail: Volatile.Read(ref _renderState));
         ClearRenderFlag(RenderFlag_Scheduled);
         if (_isClosing || Handle == nint.Zero) return;
         CancelDeferredRender();
@@ -10317,7 +10563,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     // which is what finally takes the ~110ms iGPU present off the message pump.
     // D3D12 defaults to a dedicated render worker on Windows. WM_SIZE and layout
     // remain synchronous on the UI thread, while native Resize/Replay/Present run
-    // on the worker and consume a latest-frame-wins mailbox. An explicit
+    // on the worker. Capture requests coalesce until the worker is ready for
+    // the latest UI state. An explicit
     // JALIUM_RENDER_THREAD=0 retains the inline path for diagnostics and the
     // device-loss harness; =1 still forces the worker as before.
     private static readonly bool EnableRenderThread = ResolveRenderThreadEnabled();
@@ -10352,39 +10599,40 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return;
         }
 
-        object drawing;
+        object? drawing = null;
         try
         {
-            Render(recorder);                          // walk tree → command list
-        }
-        finally
-        {
-            // Always exit the whole-frame recording scope, even if the tree walk
-            // throws — otherwise s_wholeFrameRecording would leak true on this thread.
-            drawing = host.FinishRecord(recorder);     // immutable Drawing
-        }
+            try
+            {
+                Render(recorder);                     // walk tree → command list
+            }
+            finally
+            {
+                // Always exit the whole-frame recording scope, even if the tree walk throws.
+                drawing = host.FinishRecord(recorder);
+            }
 
-        // schema-gap: if the capture hit content it can't represent (windowless
-        // WebView punch, video surface, ink-layer blit, transition shader …),
-        // discard it and direct-render so nothing is silently dropped.
-        if (drawing is Jalium.UI.Media.Rendering.RecordedDrawing dr && !dr.IsFullyRecordable)
-        {
-            Render(ctx);
-            return;
-        }
+            // Schema gaps need direct rendering, but the discarded capture still owns buffers.
+            if (drawing is Jalium.UI.Media.Rendering.RecordedDrawing dr && !dr.IsFullyRecordable)
+            {
+                Render(ctx);
+                return;
+            }
 
-        var savedOffset = ctx.Offset;
-        ctx.Offset = Point.Zero;                       // whole-frame Drawing is absolute from 0
-        host.Replay(drawing, ctx);                     // issue native draws
-        ctx.Offset = savedOffset;
+            var savedOffset = ctx.Offset;
+            ctx.Offset = Point.Zero;                   // whole-frame Drawing is absolute from 0
+            try { host.Replay(drawing, ctx); }
+            finally { ctx.Offset = savedOffset; }
+        }
+        finally { DrawingLifetime.Release(drawing); }
     }
 
     // ── Render thread (Increment 2) ─────────────────────────────────────
     // When EnableRenderThread is on AND the window is a non-composition HWND, the
     // GPU-blocking work (BeginDraw waitable+fence, Replay, EndDraw/Present) runs on
     // this dedicated thread instead of the UI/message-pump thread. The UI thread
-    // records the whole frame into a Drawing and publishes it (latest-frame-wins
-    // mailbox) then returns to GetMessage immediately — so the ~110ms iGPU present
+    // records the latest state when the worker is ready, then returns to the
+    // message pump immediately — so the ~110ms iGPU present
     // no longer blocks input/animation. FULL render only in this first version
     // (no dirty-rect partial present): on iGPU the present cost is dominated by the
     // DWM flip release regardless of dirty area, so full-frame is the simpler, safe
@@ -10401,6 +10649,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         public long ResizeVersion;
         public bool RequireNativeSameSize;
         public bool SimplifyEffects;
+        public RenderCaptureScheduler? Scheduler;
+        public long SchedulerTicket;
+        public bool Requeued;
+        public long CaptureTimestampTicks;
+        public long UiStartedTimestampTicks;
+        public long RecordedTimestampTicks;
+        public long ReplayStartedTimestampTicks;
+        public bool DeferCaptureCompletion;
+        public bool PresentedSuccessfully;
         // HUD/FrameHistory split measured on the UI thread while producing this capture.
         // The worker adds its own present time and pushes the completed sample.
         public double HudLayoutMs;
@@ -10413,6 +10670,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private volatile bool _renderThreadStop;
     private readonly object _rtChannelLock = new();
     private FrameCapture? _rtPendingFrame;
+    private RenderCaptureScheduler? _rtCaptureScheduler;
+    private RenderPipelineTrace? _rtPipelineTrace;
+    private Jalium.UI.Core.Platform.IFrameTimer? _rtCaptureTimer;
+    private RenderCaptureTiming _rtCaptureTiming;
+    private volatile bool _rtPhaseCaptureEnabled;
+    private long _rtUiFrameStartTimestamp;
+    private long _rtRecordedFrameCount;
     private AutoResetEvent? _rtFrameAvailable;
     private volatile bool _rtPause;
     private ManualResetEventSlim? _rtIdle;
@@ -10421,19 +10685,31 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     // UI-owned pending resize fields are cleared only after observing this ack,
     // so a later animation capture cannot overwrite and lose an unconsumed resize.
     private long _rtCommittedResizeVersion;
+    // Published only after EndDraw succeeds, including its composition placement.
+    private long _rtPresentedResizeVersion;
     private bool _renderThreadDisabledForSchemaGap;  // latched after un-recordable content; do not resurrect the render thread on RT recreate
     // Serializes every direct native draw session that can run outside the UI
     // render lifecycle. In particular, the pre-show background frame and the
     // dedicated render worker must never record into the same command list.
     private readonly object _renderTargetUseGate = new();
 
-    internal void ReclaimIdleBackendResources()
+    internal void ReclaimIdleBackendResources(long nowMs, int idleTimeoutMs)
     {
+        // Backend reclamation clears entire text/path/shadow caches and may
+        // wait for GPU fences. A process-wide scan interval does not establish
+        // that this window is idle: keep its hot caches throughout scrolling.
+        if (!BackendResourcesMayBeReclaimed(nowMs, idleTimeoutMs)) return;
         // A volatile IsDrawing check alone races the dedicated worker opening
         // its next frame. Use the same gate as background/native replay, and
         // skip this scan rather than blocking the UI on a busy renderer.
         if (!Monitor.TryEnter(_renderTargetUseGate)) return;
-        try { RenderTarget?.ReclaimIdleResources(); }
+        try
+        {
+            if (!BackendResourcesMayBeReclaimed(nowMs, idleTimeoutMs) || RenderTarget is not { IsValid: true, IsDrawing: false } target)
+                return;
+            target.ReclaimIdleResources();
+            _lastBackendReclaimedPresentCount = Interlocked.Read(ref _successfulPresentCount);
+        }
         finally { Monitor.Exit(_renderTargetUseGate); }
     }
 
@@ -10459,6 +10735,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         _renderThreadStop = false;
         _rtFrameAvailable ??= new AutoResetEvent(false);
         _rtIdle ??= new ManualResetEventSlim(false);
+        _rtCaptureScheduler = new RenderCaptureScheduler();
+        _rtPipelineTrace = RenderPipelineTrace.TryCreate();
         var t = new Thread(RenderThreadLoop) { IsBackground = true, Name = "Jalium.Render" };
         _renderThread = t;
         _rtActive = true;
@@ -10494,6 +10772,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private bool StopRenderThread()
     {
+        _rtCaptureScheduler?.Stop();
         var t = _renderThread;
         if (t == null) return true;
         _rtActive = false;
@@ -10512,7 +10791,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
 
         _ = Interlocked.CompareExchange(ref _renderThread, null, t);
-        lock (_rtChannelLock) { _rtPendingFrame = null; }
+        ClearPendingRenderThreadCapture();
         return true;
     }
 
@@ -10617,7 +10896,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 if (Interlocked.CompareExchange(
                         ref _renderThread, null, stalledRenderThread) == stalledRenderThread)
                 {
-                    lock (_rtChannelLock) { _rtPendingFrame = null; }
+                    ClearPendingRenderThreadCapture();
                     ReleaseRenderResourcesAfterRenderThreadStopped();
                 }
             }
@@ -10658,6 +10937,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     {
         try
         {
+            _rtCaptureTiming = default;
+            string? phaseSetting = Environment.GetEnvironmentVariable("JALIUM_RENDER_THREAD_PHASE_CAPTURE");
+            if (!VSyncDisabledByEnv &&
+                (string.IsNullOrWhiteSpace(phaseSetting) || IsEnvironmentSwitchEnabled("JALIUM_RENDER_THREAD_PHASE_CAPTURE")))
+            {
+                try { _rtCaptureTimer = new Jalium.UI.Core.Platform.NativeFrameTimer(); }
+                catch { }
+            }
+            _rtPhaseCaptureEnabled = _rtCaptureTimer != null;
             var wake = _rtFrameAvailable;
             while (!_renderThreadStop)
             {
@@ -10667,26 +10955,45 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 FrameCapture? cap;
                 lock (_rtChannelLock) { cap = _rtPendingFrame; _rtPendingFrame = null; }
                 if (cap == null) continue;
-                try { PresentCaptureOnRenderThread(cap); }
-                catch (RenderPipelineException ex) { MarshalRenderRecovery(ex); }
-                catch (Exception ex)
+                _rtPipelineTrace?.Mark(RenderPipelineStage.WorkerClaim, cap.SchedulerTicket);
+                try
                 {
-                    if (IsEnvironmentSwitchEnabled("JALIUM_RENDER_THREAD_DIAGNOSTICS"))
+                    if (ShouldRefreshRenderThreadCapture(cap))
                     {
-                        Console.Error.WriteLine($"[Jalium.Render] Frame replay failed: {ex}");
+                        CompleteRenderThreadCapture(cap);
+                        continue;
                     }
-                    // The capture is lost and dirty was already cleared at publish
-                    // time — without re-invalidation a static scene would keep the
-                    // stale frame on screen until the next external invalidation.
-                    // Marshal a full invalidation back to the UI thread so the
-                    // scene re-records and re-publishes.
-                    try { _dispatcher?.BeginInvokeCritical(() => { RequestFullInvalidation(); InvalidateWindow(); }); }
-                    catch { /* shutting down */ }
+                    cap.Requeued = false;
+                    cap.PresentedSuccessfully = false;
+                    try
+                    {
+                        PresentCaptureOnRenderThread(cap);
+                        WaitForRenderCaptureDeadline(cap);
+                    }
+                    catch (RenderPipelineException ex) { MarshalRenderRecovery(ex); }
+                    catch (Exception ex)
+                    {
+                        if (IsEnvironmentSwitchEnabled("JALIUM_RENDER_THREAD_DIAGNOSTICS"))
+                        {
+                            Console.Error.WriteLine($"[Jalium.Render] Frame replay failed: {ex}");
+                        }
+                        // The capture is lost and dirty was already cleared at publish
+                        // time — without re-invalidation a static scene would keep the
+                        // stale frame on screen until the next external invalidation.
+                        // Marshal a full invalidation back to the UI thread so the
+                        // scene re-records and re-publishes.
+                        try { _dispatcher?.BeginInvokeCritical(() => { RequestFullInvalidation(); InvalidateWindow(); }); }
+                        catch { /* shutting down */ }
+                    }
+                    finally { CompleteRenderThreadCapture(cap); }
                 }
+                finally { DrawingLifetime.Release(cap.Drawing); }
             }
         }
         finally
         {
+            StopRenderCaptureTimer(reason: 0);
+            _rtPipelineTrace?.Export();
             // DrawingContext inherits DispatcherObject and implicitly registers
             // a dispatcher on this dedicated worker. Its global registry holds
             // the Thread strongly, even after Join succeeds. Retire that private
@@ -10710,16 +11017,127 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
     }
 
+    private void WaitForRenderCaptureDeadline(FrameCapture cap)
+    {
+        if (!cap.DeferCaptureCompletion || !cap.PresentedSuccessfully || _rtCaptureTimer is not { } timer) return;
+        // Keep the recording slot until its phase deadline even when no request
+        // is pending yet. Input/frame-clock work arriving during this interval
+        // coalesces into the newest capture at that deadline.
+        bool traced = false;
+        while (!_renderThreadStop && !_rtPause)
+        {
+            long delay = _rtCaptureTiming.GetCaptureDelayMicroseconds(
+                cap.ReplayStartedTimestampTicks, Stopwatch.GetTimestamp(), Stopwatch.Frequency, CompositionTarget.RefreshRate);
+            if (delay <= 0) break;
+            if (!traced) { _rtPipelineTrace?.Mark(RenderPipelineStage.CaptureDelayStart, cap.SchedulerTicket); traced = true; }
+            uint timeout = (uint)Math.Clamp((delay + 999) / 1000 + 5, 10, 1000);
+            bool fired;
+            try
+            {
+                timer.Arm(delay);
+                fired = timer.Wait(timeout);
+            }
+            catch
+            {
+                StopRenderCaptureTimer(reason: 2);
+                break;
+            }
+            if (!fired)
+            {
+                StopRenderCaptureTimer(reason: 1);
+                break;
+            }
+            // Recheck QPC after each timer wake before releasing the slot.
+        }
+        if (traced) _rtPipelineTrace?.Mark(RenderPipelineStage.CaptureDelayEnd, cap.SchedulerTicket);
+    }
+
+    private void StopRenderCaptureTimer(int reason)
+    {
+        _rtPhaseCaptureEnabled = false;
+        var timer = _rtCaptureTimer;
+        _rtCaptureTimer = null;
+        if (timer == null) return;
+        _rtPipelineTrace?.Mark(RenderPipelineStage.CaptureTimerStopped, detail: reason);
+        try { timer.Dispose(); } catch { }
+    }
+
+    private static bool ShouldRefreshRenderThreadCapture(FrameCapture cap)
+    {
+        if (cap.Scheduler?.HasPendingCapture(cap.SchedulerTicket) != true) return false;
+        // A stalled compositor must not leave a superseded capture waiting in
+        // front of newer input. Quiet/static captures remain retryable.
+        return cap.Requeued || (cap.CaptureTimestampTicks != 0 &&
+            Stopwatch.GetElapsedTime(cap.CaptureTimestampTicks).TotalMilliseconds > CompositionTarget.FrameIntervalMs * 2);
+    }
+
     private void RequeueRenderThreadCaptureUnlessSuperseded(FrameCapture cap)
     {
+        cap.Requeued = true;
         lock (_rtChannelLock)
         {
-            // The UI may already have published a newer layout while this frame
-            // was waiting on the GPU. Never replace that newer state with stale
-            // geometry; otherwise retry this exact capture.
-            _rtPendingFrame ??= cap;
+            // Keep static scenes retryable. Completion replaces this capture
+            // when the UI has requested newer state while the GPU was busy.
+            if (_rtPendingFrame is null)
+            {
+                // The worker still owns its reference until its finally block.
+                // A queued retry needs a separate reference to the same drawing.
+                DrawingLifetime.Retain(cap.Drawing);
+                _rtPendingFrame = cap;
+            }
         }
         _rtFrameAvailable?.Set();
+    }
+
+    private void CompleteRenderThreadCapture(FrameCapture cap)
+    {
+        var scheduler = cap.Scheduler;
+        if (scheduler is null) return;
+        var completion = scheduler.Complete(cap.SchedulerTicket, cap.Requeued);
+        _rtPipelineTrace?.Mark(RenderPipelineStage.SlotCompleted, cap.SchedulerTicket, (int)completion);
+        if (completion != RenderCaptureCompletion.CaptureRequested) return;
+        FrameCapture? dropped = null;
+        lock (_rtChannelLock)
+        {
+            if (ReferenceEquals(_rtPendingFrame, cap))
+            {
+                dropped = _rtPendingFrame;
+                _rtPendingFrame = null;
+            }
+        }
+        DrawingLifetime.Release(dropped?.Drawing);
+        ScheduleLatestRenderThreadCapture(scheduler, cap.SchedulerTicket, cap.LifecycleGeneration, cap.Target);
+    }
+
+    private void ClearPendingRenderThreadCapture()
+    {
+        FrameCapture? dropped;
+        lock (_rtChannelLock) { dropped = _rtPendingFrame; _rtPendingFrame = null; }
+        DrawingLifetime.Release(dropped?.Drawing);
+    }
+
+    private void ScheduleLatestRenderThreadCapture(
+        RenderCaptureScheduler scheduler, long ticket, int lifecycleGeneration, RenderTarget renderTarget)
+    {
+        _rtPipelineTrace?.Mark(RenderPipelineStage.RefreshPosted, ticket);
+        try
+        {
+            _dispatcher?.BeginInvokeCritical(() =>
+            {
+                _rtPipelineTrace?.Mark(RenderPipelineStage.RefreshDispatch, ticket);
+                if (!ReferenceEquals(_rtCaptureScheduler, scheduler) || !_rtActive ||
+                    !scheduler.IsAwaitingCapture(ticket) ||
+                    !IsRenderLifecycleCurrent(lifecycleGeneration, renderTarget)) return;
+                if (_rtPhaseCaptureEnabled && (_nativeWindowHidden || base.Visibility != Visibility.Visible ||
+                    WindowState == WindowState.Minimized || CompositionTarget.IsRenderingSuspended)) return;
+
+                // 等待期间输入与布局照常更新，此时只录制当前状态，不回放过期快照。
+                RequestFullInvalidation();
+                ClearRenderFlag(RenderFlag_DirtyBetween);
+                if (TrySetRenderFlag(RenderFlag_Scheduled)) ProcessRender();
+            });
+        }
+        catch { /* dispatcher shutting down */ }
     }
 
     private void PresentCaptureOnRenderThreadCore(FrameCapture cap)
@@ -10776,6 +11194,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         rt.SetFullInvalidation();
         long presentStartTimestamp = Stopwatch.GetTimestamp();
+        _rtPipelineTrace?.Mark(RenderPipelineStage.BeforeBegin, cap.SchedulerTicket, timestampTicks: presentStartTimestamp);
         if (!rt.TryBeginDraw())
         {
             // GPU/swap-chain busy. Do NOT silently drop the capture: dirty was
@@ -10792,11 +11211,22 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
 
         bool ended = false;
+        long replayTimestampTicks = Stopwatch.GetTimestamp();
+        cap.ReplayStartedTimestampTicks = replayTimestampTicks;
+        cap.DeferCaptureCompletion = _rtPhaseCaptureEnabled && !_rtCaptureTiming.OverlapRecording;
+        _rtPipelineTrace?.Mark(RenderPipelineStage.AfterBegin, cap.SchedulerTicket, timestampTicks: replayTimestampTicks);
         try
         {
             ClearBackground(rt);
             dc.Offset = Point.Zero;
+            // The worker keeps its immutable drawing alive through replay and
+            // present. Release the recording slot now so at most one newer
+            // capture can overlap this work. Superseded captures that outlive
+            // the refresh budget are refreshed before replay (see the loop).
+            if (!cap.DeferCaptureCompletion) CompleteRenderThreadCapture(cap);
+            _rtPipelineTrace?.Mark(RenderPipelineStage.ReplayStart, cap.SchedulerTicket);
             host.Replay(cap.Drawing, dc);
+            _rtPipelineTrace?.Mark(RenderPipelineStage.ReplayEnd, cap.SchedulerTicket);
             if (!IsRenderLifecycleCurrent(cap.LifecycleGeneration, rt) ||
                 !ReferenceEquals(rt.OwnerContext, cap.OwnerContext))
             {
@@ -10808,11 +11238,21 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             {
                 return;
             }
+            _rtPipelineTrace?.Mark(RenderPipelineStage.BeforeEnd, cap.SchedulerTicket);
             JaliumResult endResult = rt.TryEndDraw();   // non-throwing; Ok or failure result
+            _rtPipelineTrace?.Mark(RenderPipelineStage.Submitted, cap.SchedulerTicket, (int)endResult);
             ended = endResult == JaliumResult.Ok;
+            cap.PresentedSuccessfully = ended;
             if (ended)
             {
-                Interlocked.Increment(ref _successfulPresentCount);
+                if (_rtPhaseCaptureEnabled)
+                    _rtCaptureTiming.Observe(
+                        cap.RecordedTimestampTicks - cap.UiStartedTimestampTicks,
+                        Stopwatch.GetTimestamp() - replayTimestampTicks,
+                        Stopwatch.Frequency, CompositionTarget.RefreshRate);
+                Interlocked.Exchange(ref _rtPresentedResizeVersion,
+                    Interlocked.Read(ref _rtCommittedResizeVersion));
+                RecordSuccessfulPresent();
                 // Interlocked + plain bool store — safe from this worker (see
                 // ResetEndDrawInvalidStateTracking for the ordering argument).
                 ResetEndDrawInvalidStateTracking();
@@ -10822,7 +11262,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     cap.HudLayoutMs,
                     cap.HudRecordMs,
                     Stopwatch.GetElapsedTime(presentStartTimestamp).TotalMilliseconds,
-                    cap.HudDirtyElements);
+                    cap.HudDirtyElements,
+                    cap.CaptureTimestampTicks,
+                    replayTimestampTicks);
             }
             // Per-frame draw-API counters are accumulated per THREAD, so this worker owns
             // the ones it just produced: publish (or drop, when another window is the
@@ -10868,6 +11310,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 }
                 Jalium.UI.Diagnostics.RenderDiagnostics.PublishAndResetApiStats(
                     publishWorkerDiagnostics, beginBlockingWaitNs, presentBlockNs);
+                if (publishWorkerDiagnostics)
+                {
+                    // Worker-owned presents bypass inline EndDraw. Publish the
+                    // native path counters here too, so DevTools does not keep
+                    // displaying the pre-show frame while the canvas is moving.
+                    PublishPathCacheStatsFromNative();
+                }
                 // The inline EndDraw path publishes the previous completed
                 // frame's hardware timestamps, but render-thread frames used
                 // to publish only Draw-API counters. Query here while this
@@ -11005,17 +11454,39 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
     }
 
-    // UI thread: record the whole tree into a Drawing and hand it to the render
-    // thread (overwriting any un-consumed pending frame = latest-frame-wins), then
-    // return immediately. Never blocks on the present.
+    // UI thread: coalesce recording requests while the worker owns a capture.
+    // Completion asks for the newest UI state without blocking the message pump.
     private void PublishFrameToRenderThread(int lifecycleGeneration, RenderTarget renderTarget)
     {
-        if (!IsRenderLifecycleCurrent(lifecycleGeneration, renderTarget)) return;
+        _rtPipelineTrace?.Mark(RenderPipelineStage.CaptureRequested);
+        var scheduler = _rtCaptureScheduler;
+        if (scheduler is null || !IsRenderLifecycleCurrent(lifecycleGeneration, renderTarget)) return;
+        if (!scheduler.TryBeginCapture(out long ticket))
+        {
+            _rtPipelineTrace?.Mark(RenderPipelineStage.CaptureCoalesced);
+            return;
+        }
+        _rtPipelineTrace?.Mark(RenderPipelineStage.CaptureAcquired, ticket);
 
-        // Snapshot the exact native viewport that belongs to this layout. Keep
-        // recording while the worker is busy: publishing overwrites the mailbox,
-        // so every render opportunity contains the newest responsive layout and
-        // never waits for a resize quiet period.
+        bool published = false;
+        try
+        {
+            published = RecordAndPublishFrameToRenderThread(lifecycleGeneration, renderTarget, scheduler, ticket);
+        }
+        finally
+        {
+            if (!published && scheduler.Complete(ticket, retryPending: false) == RenderCaptureCompletion.CaptureRequested)
+                ScheduleLatestRenderThreadCapture(scheduler, ticket, lifecycleGeneration, renderTarget);
+        }
+    }
+
+    private bool RecordAndPublishFrameToRenderThread(int lifecycleGeneration, RenderTarget renderTarget, RenderCaptureScheduler scheduler, long ticket)
+    {
+        if (!IsRenderLifecycleCurrent(lifecycleGeneration, renderTarget)) return false;
+
+        // Snapshot the native viewport belonging to the newest settled layout.
+        // Input/layout keep advancing while a previous capture is on the worker;
+        // this method runs as soon as it is ready, without a resize quiet period.
         long captureResizeVersion = _pendingResizeVersion;
         bool captureHasPendingResize = _hasPendingResize;
         int capturePhysicalWidth = captureHasPendingResize
@@ -11042,97 +11513,125 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // (StartRenderThreadIfSupported won't resurrect the thread: the latch
             // blocks it), so a slow compositor can't pin the UI thread here either.
             ScheduleDeferredRender(1);
-            return;
+            return false;
         }
 
+        _rtRecordedFrameCount++;
+        long captureTimestampTicks = Stopwatch.GetTimestamp();
+        long recordedTimestampTicks = 0;
+        _rtPipelineTrace?.Mark(RenderPipelineStage.RecordStart, ticket, timestampTicks: captureTimestampTicks);
         object drawing;
+        bool recorded = false;
         try
         {
             Render(recorder);
             try { DevToolsOverlay?.DrawOverlay(recorder); } catch { }
+            recorded = true;
         }
         finally
         {
             // Always exit the whole-frame scope even if the tree walk throws.
             drawing = host.FinishRecord(recorder);
+            recordedTimestampTicks = _rtPhaseCaptureEnabled ? Stopwatch.GetTimestamp() : 0;
+            _rtPipelineTrace?.Mark(RenderPipelineStage.RecordEnd, ticket, timestampTicks: recordedTimestampTicks);
+            if (!recorded) DrawingLifetime.Release(drawing);
         }
 
-        // Render(recorder) walks user-extensible visuals. A callback can close
-        // or externally destroy the window; never publish that stale capture to
-        // the render thread after its lifecycle token has been invalidated.
-        if (!IsRenderLifecycleCurrent(lifecycleGeneration, renderTarget)) return;
-        if (_pendingResizeVersion != captureResizeVersion)
+        bool transferred = false;
+        FrameCapture? replaced = null;
+        try
         {
-            // A re-entrant WM_SIZE superseded the layout while user rendering was
-            // being recorded. Drop only this stale capture and immediately render
-            // the already-current managed size on the next frame-clock turn.
-            RequestFullInvalidation();
-            InvalidateWindow();
-            return;
-        }
-
-        // schema-gap (render-thread path): the capture hit content it can't
-        // represent (windowless WebView punch, video surface, ink-layer blit, …).
-        // Don't publish a lossy frame — permanently fall back to the inline UI
-        // path for this window (latch so RT recreation can't resurrect the lossy
-        // path) and STOP+JOIN the render thread before the UI resumes RT ownership.
-        // Dirty state is preserved so the rescheduled inline frame repaints.
-        if (drawing is Jalium.UI.Media.Rendering.RecordedDrawing d && !d.IsFullyRecordable)
-        {
-            _renderThreadDisabledForSchemaGap = true;
-            _ = TryCompleteRenderThreadSchemaFallback();
-            // Same as the host-null latch above: the inline path this window
-            // falls back to gets event-driven present pacing.
-            ScheduleDeferredRender(1);   // repaint inline (dirty intact)
-            return;
-        }
-
-        // Close the UI-thread half of the frame clock here: everything after this point
-        // (BeginDraw wait, Replay, Present) is the worker's, and it reports that back.
-        _debugHud.MarkRender();
-        var (hudLayoutMs, hudRecordMs) = _debugHud.CaptureSplitForDeferredPresent();
-
-        var cap = new FrameCapture
-        {
-            Drawing = drawing,
-            Target = renderTarget,
-            OwnerContext = renderTarget.OwnerContext,
-            ContextGeneration = renderTarget.OwnerContextGeneration,
-            LifecycleGeneration = lifecycleGeneration,
-            PhysicalWidth = capturePhysicalWidth,
-            PhysicalHeight = capturePhysicalHeight,
-            ResizeVersion = captureHasPendingResize ? captureResizeVersion : 0,
-            RequireNativeSameSize = captureRequiresNativeSameSize,
-            SimplifyEffects = captureSimplifiesEffects,
-            HudLayoutMs = hudLayoutMs,
-            HudRecordMs = hudRecordMs,
-            HudDirtyElements = _dirtyElements.Count,
-        };
-
-        // Publish and consume dirty state as one lifecycle transaction. If
-        // teardown, recovery, or schema fallback won the race after recording,
-        // leave dirty intact and never expose this stale capture to the worker.
-        lock (_renderLifecycleGate)
-        {
-            if (!IsRenderLifecycleCurrent(lifecycleGeneration, renderTarget) ||
-                !_rtActive || _renderThread == null || _renderThreadStop ||
-                !ReferenceEquals(renderTarget.OwnerContext, cap.OwnerContext))
+            // Render(recorder) walks user-extensible visuals. A callback can close
+            // or externally destroy the window; never publish that stale capture to
+            // the render thread after its lifecycle token has been invalidated.
+            if (!IsRenderLifecycleCurrent(lifecycleGeneration, renderTarget)) return false;
+            if (_pendingResizeVersion != captureResizeVersion)
             {
-                return;
+                // A re-entrant WM_SIZE superseded the layout while user rendering was
+                // being recorded. Drop only this stale capture and immediately render
+                // the already-current managed size on the next frame-clock turn.
+                RequestFullInvalidation();
+                InvalidateWindow();
+                return false;
             }
 
-            lock (_rtChannelLock)
+            // schema-gap (render-thread path): the capture hit content it can't
+            // represent (windowless WebView punch, video surface, ink-layer blit, …).
+            // Don't publish a lossy frame — permanently fall back to the inline UI
+            // path for this window (latch so RT recreation can't resurrect the lossy
+            // path) and STOP+JOIN the render thread before the UI resumes RT ownership.
+            // Dirty state is preserved so the rescheduled inline frame repaints.
+            if (drawing is Jalium.UI.Media.Rendering.RecordedDrawing d && !d.IsFullyRecordable)
             {
-                _rtPendingFrame = cap;
-                lock (_dirtyLock)
+                _renderThreadDisabledForSchemaGap = true;
+                _ = TryCompleteRenderThreadSchemaFallback();
+                // Same as the host-null latch above: the inline path this window
+                // falls back to gets event-driven present pacing.
+                ScheduleDeferredRender(1);   // repaint inline (dirty intact)
+                return false;
+            }
+
+            // Close the UI-thread half of the frame clock here: everything after this point
+            // (BeginDraw wait, Replay, Present) is the worker's, and it reports that back.
+            _debugHud.MarkRender();
+            var (hudLayoutMs, hudRecordMs) = _debugHud.CaptureSplitForDeferredPresent();
+
+            var cap = new FrameCapture
+            {
+                Drawing = drawing,
+                CaptureTimestampTicks = captureTimestampTicks,
+                UiStartedTimestampTicks = _rtUiFrameStartTimestamp != 0 ? _rtUiFrameStartTimestamp : captureTimestampTicks,
+                RecordedTimestampTicks = recordedTimestampTicks,
+                Scheduler = scheduler,
+                SchedulerTicket = ticket,
+                Target = renderTarget,
+                OwnerContext = renderTarget.OwnerContext,
+                ContextGeneration = renderTarget.OwnerContextGeneration,
+                LifecycleGeneration = lifecycleGeneration,
+                PhysicalWidth = capturePhysicalWidth,
+                PhysicalHeight = capturePhysicalHeight,
+                ResizeVersion = captureHasPendingResize ? captureResizeVersion : 0,
+                RequireNativeSameSize = captureRequiresNativeSameSize,
+                SimplifyEffects = captureSimplifiesEffects,
+                HudLayoutMs = hudLayoutMs,
+                HudRecordMs = hudRecordMs,
+                HudDirtyElements = _dirtyElements.Count,
+            };
+
+            // Publish and consume dirty state as one lifecycle transaction. If
+            // teardown, recovery, or schema fallback won the race after recording,
+            // leave dirty intact and never expose this stale capture to the worker.
+            lock (_renderLifecycleGate)
+            {
+                if (!IsRenderLifecycleCurrent(lifecycleGeneration, renderTarget) ||
+                    !_rtActive || _renderThread == null || _renderThreadStop ||
+                    !ReferenceEquals(renderTarget.OwnerContext, cap.OwnerContext))
                 {
-                    _dirtyElements.Clear();
-                    _dirtyFreeRects.Clear();
-                    _fullInvalidation = false;
+                    return false;
+                }
+
+                lock (_rtChannelLock)
+                {
+                    replaced = _rtPendingFrame;
+                    _rtPendingFrame = cap;
+                    _rtPipelineTrace?.Mark(RenderPipelineStage.Published, ticket);
+                    transferred = true;
+                    lock (_dirtyLock)
+                    {
+                        _dirtyElements.Clear();
+                        _dirtyFreeRects.Clear();
+                        _fullInvalidation = false;
+                    }
                 }
             }
+            _rtFrameAvailable?.Set();
+            return true;
         }
-        _rtFrameAvailable?.Set();
+        finally
+        {
+            DrawingLifetime.Release(replaced?.Drawing);
+            if (!transferred) DrawingLifetime.Release(drawing);
+        }
     }
 
     private void StartFramePacerIfSupported()
@@ -11588,6 +12087,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void RenderFrame()
     { _debugHud.OnRenderFrame();
+        _rtPipelineTrace?.Mark(RenderPipelineStage.RenderFrame, detail: Volatile.Read(ref _renderState));
         Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.RF);
         int frameLifecycleGeneration;
         lock (_renderLifecycleGate)
@@ -11598,6 +12098,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // Close/WM_DESTROY both invalidate the lifecycle through
             // _managedTeardownStarted, so that is the authoritative teardown gate.
             if (_managedTeardownStarted || _isClosing) return;
+            if (_linuxRenderingSuspended) return;
             if (PlatformFactory.IsAndroid && !_androidSurfaceAvailable) return;
             if (HasRenderFlag(RenderFlag_Rendering)) return;
             // A swap-chain resize is mid-flight (native ResizeBuffers can pump a
@@ -11609,6 +12110,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             ClearRenderFlag(RenderFlag_Requested);
             frameLifecycleGeneration = _renderLifecycleGeneration;
         }
+        _rtUiFrameStartTimestamp = _rtPhaseCaptureEnabled ? Stopwatch.GetTimestamp() : 0;
 
         // RC4-a 帧事务状态：swapped=true 表示本帧已把活动脏集捕获为帧独占集且尚未
         // 收尾（Discard/RetainOrDrop 会把它翻回 false）；finally 兜底对仍未收尾的
@@ -12768,15 +13270,22 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return;
         if (AllowsTransparency || SystemBackdrop != WindowBackdropType.None)
             return;
-        if (Background is not SolidColorBrush solid || solid.Color.A != 255)
-            return;
+        // Match ClearBackground: an unspecified/non-solid opaque background
+        // starts black. Leaving this bitmap unwritten retains the system caption
+        // that was painted before our HWND was registered for custom NC layout.
+        uint backgroundColor = 0;
+        if (Background is SolidColorBrush solid)
+        {
+            if (solid.Color.A != 255) return;
+            var color = solid.Color;
+            backgroundColor = (uint)(color.R | (color.G << 8) | (color.B << 16));
+        }
         if (!GetClientRect(Handle, out RECT clientRect))
             return;
         if (clientRect.right <= clientRect.left || clientRect.bottom <= clientRect.top)
             return;
 
-        var color = solid.Color;
-        nint brush = CreateSolidBrush((uint)(color.R | (color.G << 8) | (color.B << 16)));
+        nint brush = CreateSolidBrush(backgroundColor);
         if (brush == nint.Zero)
             return;
         try
@@ -12939,7 +13448,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     private new void UpdateLayout()
     {
-        UpdateMacOSSizeToContent();
+        UpdatePlatformSizeToContent();
         Size availableSize = new(Width, Height);
 
         if (_isFirstLayout)
@@ -12959,6 +13468,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 measureTicks: fMeasureEnd - fMeasureStart,
                 arrangeTicks: fEnd - fMeasureEnd,
                 measureCount: 1, arrangeCount: 1, iterations: 1);
+            UpdateCustomTitleBarFrameMargins();
             return;
         }
 
@@ -12966,6 +13476,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         PublishLayoutPassStatsFromTicks(
             result.TotalTicks, result.MeasureTicks, result.ArrangeTicks,
             result.MeasureCount, result.ArrangeCount, result.Iterations);
+        // A queued layout can arrange just a template subtree, skipping Window.ArrangeOverride.
+        UpdateCustomTitleBarFrameMargins();
     }
 
     private void UpdateLayoutForRender()
@@ -12980,6 +13492,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         try
         {
             UpdateLayout();
+            if (RestoreLinuxFocusedElementVisibilityAfterLayout()) UpdateLayout();
         }
         finally
         {
@@ -13083,6 +13596,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     private void OnFrameStarting()
     {
+        _rtPipelineTrace?.Mark(RenderPipelineStage.FrameClock, detail: Volatile.Read(ref _renderState));
         if (_isClosing || Handle == nint.Zero) return;
 
         ProcessPendingInputDetachesForFrame();
@@ -13094,6 +13608,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // (RequestFullInvalidation runs on resize anyway). Holding the dirty
         // flag avoids dropping invalidations that arrived during minimize.
         if (WindowState == WindowState.Minimized) return;
+        if (_rtPhaseCaptureEnabled && _rtActive && (_nativeWindowHidden || base.Visibility != Visibility.Visible)) return;
 
         // A window whose render-target creation failed otherwise depends on the
         // DispatcherTimer retry chain, which bottoms out in the thread pool and
@@ -13228,6 +13743,24 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // a 125 Hz hover burst still coalesces to one render per refresh interval.
         SetRenderFlag(RenderFlag_DirtyBetween);
         Jalium.UI.Media.CompositionTarget.RequestFrame();
+        if (_rtPhaseCaptureEnabled && _rtActive && CheckAccess() && !_nativeWindowHidden && base.Visibility == Visibility.Visible && WindowState != WindowState.Minimized &&
+            !CompositionTarget.IsRenderingSuspended && _rtCaptureScheduler is { } scheduler &&
+            scheduler.RequestCapture() && TrySetRenderFlag(RenderFlag_Scheduled))
+        {
+            _dispatcher?.BeginInvokeCritical(ProcessPhaseInvalidation);
+        }
+    }
+
+    private void ProcessPhaseInvalidation()
+    {
+        if (_nativeWindowHidden || base.Visibility != Visibility.Visible || WindowState == WindowState.Minimized ||
+            CompositionTarget.IsRenderingSuspended)
+        {
+            ClearRenderFlag(RenderFlag_Scheduled);
+            return;
+        }
+        if (_rtActive && _rtPhaseCaptureEnabled) ClearRenderFlag(RenderFlag_DirtyBetween);
+        ProcessRender();
     }
 
     /// <summary>
@@ -13433,19 +13966,23 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         if (OperatingSystem.IsMacOS() && IsMacOSPopupHost) return MacOSInputOwner.GetKeyboardEventTarget();
         if (OperatingSystem.IsMacOS() && TryGetMacOSOwnedPopupInputTarget(out var popupTarget)) return popupTarget!;
         var focusedElement = Keyboard.FocusedElement as UIElement;
-        if (OperatingSystem.IsMacOS() && focusedElement != null && !IsMacOSInputTargetValid(focusedElement))
+        if (focusedElement != null &&
+            (OperatingSystem.IsMacOS() && !IsMacOSInputTargetValid(focusedElement) ||
+             OperatingSystem.IsLinux() && !IsLinuxInputTargetValid(focusedElement)))
             focusedElement = null;
         var dialogRoot = ActiveContentDialog;
 
         // Keep keyboard routing inside the active modal dialog whenever focus escaped it.
-        return dialogRoot != null && (focusedElement == null || !IsDescendantOf(focusedElement, dialogRoot))
+        return dialogRoot != null && (focusedElement == null ||
+            !IsDescendantOf(focusedElement, dialogRoot) &&
+            !(OperatingSystem.IsLinux() && IsOwnedLinuxPopupInputTarget(focusedElement, dialogRoot)))
             ? dialogRoot
             : focusedElement ?? this;
     }
 
-    private void RestoreMacOSKeyboardFocus()
+    private void RestorePlatformKeyboardFocus()
     {
-        if (IsMacOSPopupHost) { MacOSInputOwner.RestoreMacOSKeyboardFocus(); return; }
+        if (IsMacOSPopupHost) { MacOSInputOwner.RestorePlatformKeyboardFocus(); return; }
         if (_macOSAccessibilityFocusActivationDepth != 0 || _macOSKeyboardFocusAcquisitionDepth != 0) return;
         if (_isClosing || _managedTeardownStarted) return;
         if (Keyboard.FocusedElement is UIElement current && current.Focusable && current.IsEnabled
@@ -13492,13 +14029,16 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         if (OperatingSystem.IsMacOS() && IsMacOSPopupHost) return MacOSInputOwner.GetTextInputTarget();
         if (OperatingSystem.IsMacOS() && TryGetMacOSOwnedPopupInputTarget(out var popupTarget)) return popupTarget;
         var focusedElement = Keyboard.FocusedElement as UIElement;
-        if (OperatingSystem.IsMacOS() && focusedElement != null && !IsMacOSInputTargetValid(focusedElement))
+        if (focusedElement != null &&
+            (OperatingSystem.IsMacOS() && !IsMacOSInputTargetValid(focusedElement) ||
+             OperatingSystem.IsLinux() && !IsLinuxInputTargetValid(focusedElement)))
             focusedElement = null;
         var dialogRoot = ActiveContentDialog;
 
         if (dialogRoot != null)
         {
-            return focusedElement != null && IsDescendantOf(focusedElement, dialogRoot)
+            return focusedElement != null && (IsDescendantOf(focusedElement, dialogRoot) ||
+                OperatingSystem.IsLinux() && IsOwnedLinuxPopupInputTarget(focusedElement, dialogRoot))
                 ? focusedElement
                 : dialogRoot;
         }
@@ -13618,6 +14158,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         if (activateState == WA_INACTIVE)
         {
             _nonClientMouseLeaveWindow = nint.Zero;
+            UpdateNativeCaptionForSnapHover(false);
             if (IsActive)
             {
                 SetIsActive(false);
@@ -13646,6 +14187,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private void OnCancelMode()
     {
         _nonClientMouseLeaveWindow = nint.Zero;
+        EndLiveResizeCaptionSuppression();
         _inputDispatcher.HandleCancelMode();
     }
 
@@ -13760,7 +14302,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         UIElement.ForceReleaseMouseCapture();
         ClearPressedChains();
 
-        if (TitleBarStyle == WindowTitleBarStyle.Custom)
+        if (UsesManagedTitleBar)
         {
             ClearTitleBarInteractionState();
         }
@@ -13942,7 +14484,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private bool TryGetImeTarget(out UIElement? target, out IImeSupport? imeSupport)
     {
-        target = OperatingSystem.IsMacOS() ? GetTextInputTarget() : Keyboard.FocusedElement as UIElement;
+        target = OperatingSystem.IsMacOS() || OperatingSystem.IsLinux() ? GetTextInputTarget() : Keyboard.FocusedElement as UIElement;
         if (target is not IImeSupport support)
         {
             imeSupport = null;
@@ -14149,11 +14691,28 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             if (UpdateMacOSTextServicesTarget() || _macOSTextServicesTarget is { } servicesTarget &&
                 MacOSWritingToolsPresentation.IsPresenting(servicesTarget)) _hasLastPlatformImeContext = false;
         }
-        int refresh = OperatingSystem.IsMacOS() ? unchecked(++_macOSImeRefreshGeneration) : 0;
-        var refreshTarget = OperatingSystem.IsMacOS() ? GetTextInputTarget() : null;
-        var refreshLifetime = refreshTarget == null ? null : CaptureMacOSInputLifetime(refreshTarget, textInput: true);
+        int refresh = OperatingSystem.IsMacOS() ? unchecked(++_macOSImeRefreshGeneration) : unchecked(++_linuxImeRefreshGeneration);
+        var refreshTarget = GetTextInputTarget();
+        var refreshLifetime = refreshTarget == null ? null : OperatingSystem.IsMacOS()
+            ? CaptureMacOSInputLifetime(refreshTarget, textInput: true) : CaptureLinuxImeInputLifetime(refreshTarget);
         bool IsCurrent() => ReferenceEquals(platform, _platformWindow) &&
-            (!OperatingSystem.IsMacOS() || refresh == _macOSImeRefreshGeneration) && refreshLifetime?.Invoke() != false;
+            (OperatingSystem.IsMacOS() ? refresh == _macOSImeRefreshGeneration : refresh == _linuxImeRefreshGeneration) &&
+            refreshLifetime?.Invoke() != false;
+
+        if (OperatingSystem.IsLinux())
+        {
+            UIElement? currentTarget = TryGetImeTarget(out UIElement? target, out _) ? target : null;
+            if (!ReferenceEquals(currentTarget, _lastLinuxImeTarget))
+            {
+                bool hadTarget = _lastLinuxImeTarget != null;
+                _lastLinuxImeTarget = currentTarget;
+                _hasLastPlatformImeContext = false;
+                // Retire the previous editor even if both editors expose the
+                // same surrounding text/caret snapshot to this native surface.
+                if (hadTarget) platform.UpdateImeContext(PlatformImeContext.Disabled);
+                if (!IsCurrent()) return;
+            }
+        }
 
         if (OperatingSystem.IsMacOS())
         {
@@ -14195,6 +14754,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return;
 
         _lastMacOSImeTarget = null;
+        _lastLinuxImeTarget = null;
         PlatformImeContext context = PlatformImeContext.Disabled;
         if (!force && _hasLastPlatformImeContext && context == _lastPlatformImeContext)
             return;
@@ -14594,6 +15154,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void OnMouseMove(nint wParam, nint lParam)
     {
+        UpdateNativeCaptionForSnapHover(false);
         var position = GetMousePosition(lParam);
         var (left, middle, right, xButton1, xButton2) = GetMouseButtonStates(wParam);
         var modifiers = GetModifierKeys();
@@ -15832,7 +16393,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     bool IInputDispatcherHost.IsTitleBarVisible() => IsTitleBarVisible();
     TitleBarButton? IInputDispatcherHost.GetTitleBarButtonAtPoint(Point point, double windowWidth) => GetTitleBarButtonAtPoint(point, windowWidth);
-    WindowTitleBarStyle IInputDispatcherHost.TitleBarStyle => TitleBarStyle;
+    WindowTitleBarStyle IInputDispatcherHost.TitleBarStyle => UsesManagedTitleBar
+        ? WindowTitleBarStyle.Custom : WindowTitleBarStyle.Native;
     TitleBar? IInputDispatcherHost.TitleBar => TitleBar;
 
     UIElement IInputDispatcherHost.GetKeyboardEventTarget() => GetKeyboardEventTarget();
@@ -15923,7 +16485,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         => RenderTarget?.Backend ?? Jalium.UI.Interop.RenderBackend.Auto;
 
     bool IInputDispatcherHost.OnPreviewWindowKeyDown(Key key, ModifierKeys modifiers, bool isRepeat) => IsMacOSPopupHost
-        ? MacOSInputOwner.OnPreviewWindowKeyDown(key, modifiers, isRepeat) : OnPreviewWindowKeyDown(key, modifiers, isRepeat);
+        ? MacOSInputOwner.OnPreviewWindowKeyDown(key, modifiers, isRepeat) : OnPreviewWindowKeyDown(key, modifiers, isRepeat) || TryHandleLinuxWindowSystemKey(key, modifiers, isRepeat);
     bool IInputDispatcherHost.OnPreviewWindowKeyUp(Key key, ModifierKeys modifiers) => IsMacOSPopupHost
         ? MacOSInputOwner.OnPreviewWindowKeyUp(key, modifiers) : OnPreviewWindowKeyUp(key, modifiers);
     bool IInputDispatcherHost.OnPreviewWindowMouseDown(MouseButton button, Point position, int clickCount) => IsMacOSPopupHost
@@ -15959,6 +16521,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     {
         _platformWindow?.SetCursor(MapCursorTypeToPlatformShape((CursorType)cursorType));
     }
+
+    Cursor? IInputDispatcherHost.GetWindowChromeCursor(Point position) => GetLinuxWindowChromeCursor(position);
 
     /// <summary>
     /// Translates the managed <see cref="CursorType"/> enum (28 WPF-parity values)
@@ -16791,7 +17355,8 @@ public enum WindowState
 public enum WindowTitleBarStyle
 {
     /// <summary>
-    /// Use the native Windows title bar.
+    /// Request a native title bar. Linux uses application chrome when the
+    /// compositor does not provide server-side decorations.
     /// </summary>
     Native,
 

@@ -4,6 +4,7 @@ using System.Windows.Input;
 using Jalium.UI.Input;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Media;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI.Controls;
 
@@ -39,7 +40,6 @@ public enum ContentDialogPlacement
 public class ContentDialog : ContentControl
 {
     private const double DefaultDialogMargin = 24.0;
-    private const double DefaultDialogCardMinWidth = 320.0;
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty TitleProperty =
@@ -134,12 +134,16 @@ public class ContentDialog : ContentControl
     private FrameworkElement? _titleHost;
     private FrameworkElement? _buttonPanel;
     private Border? _dialogCard;
+    private double _templateCardMinWidth;
+    private double _templateCardMinHeight;
+    private double _templateCardMaxHeight = double.PositiveInfinity;
     private ScrollViewer? _contentScrollViewer;
     private Button? _primaryButton;
     private Button? _secondaryButton;
     private Button? _closeButton;
     private ContentDialogOverlayHost? _popupHost;
     private Window? _hostWindow;
+    private UIElement? _returnFocus;
     private TaskCompletionSource<ContentDialogResult>? _showTaskSource;
     internal bool IsModalForCss => _showTaskSource != null;
     internal object? AccessibilityPresentationToken => _showTaskSource;
@@ -147,6 +151,14 @@ public class ContentDialog : ContentControl
     private ContentDialogPlacement _activePlacement;
     private Size _layoutViewport;
     private readonly List<(UIElement Element, bool WasEnabled)> _disabledSiblings = new();
+    private IEffect? _forwardedCardShadow;
+
+    // ContentDialog covers the viewport to block input. Its material belongs to
+    // PART_DialogCard, not to that full-window overlay. Keep custom templates
+    // without the card part on the ordinary element backdrop path.
+    internal override bool RendersBackdropEffectInTemplate => _dialogCard != null;
+    internal override bool RendersEffectInTemplate => _forwardedCardShadow != null &&
+        ReferenceEquals(_dialogCard?.Effect, _forwardedCardShadow);
 
     public ContentDialog()
     {
@@ -331,6 +343,9 @@ public class ContentDialog : ContentControl
             }
         }
 
+        // Capture before opening/closing transient popups can move or clear focus.
+        _returnFocus = Keyboard.FocusedElement is UIElement focused &&
+            ReferenceEquals(Window.GetWindow(focused), _hostWindow) ? focused : null;
         _activePlacement = effectivePlacement;
         _showTaskSource = new TaskCompletionSource<ContentDialogResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         Styling.CssPresentationState.NotifyModalChange(this);
@@ -344,6 +359,7 @@ public class ContentDialog : ContentControl
             _hostWindow.ActiveContentDialog = this;
         }
         _hostWindow.OverlayLayer.CloseLightDismissPopups();
+        ToolTipService.HideForWindow(_hostWindow);
 
         if (_activePlacement == ContentDialogPlacement.Popup || _activePlacement == ContentDialogPlacement.UnconstrainedPopup)
         {
@@ -387,7 +403,7 @@ public class ContentDialog : ContentControl
             return;
         }
 
-        CompleteClose(ContentDialogResult.None);
+        CompleteClose(ContentDialogResult.None, restoreFocus: false);
     }
 
     protected override Size MeasureCore(Size availableSize)
@@ -413,6 +429,12 @@ public class ContentDialog : ContentControl
         UpdateCardLayout();
 
         var contentSize = MeasureOverride(overlayAvailable);
+        // The title and wrapping actions now have their measured height. Reserve
+        // that chrome before measuring the scrollable body a second time.
+        var previousContentMaximum = _contentScrollViewer?.MaxHeight;
+        UpdateCardLayout();
+        if (_contentScrollViewer?.MaxHeight != previousContentMaximum)
+            contentSize = MeasureOverride(overlayAvailable);
 
         if (_activePlacement == ContentDialogPlacement.UnconstrainedPopup)
         {
@@ -448,14 +470,33 @@ public class ContentDialog : ContentControl
         return overlaySize;
     }
 
+    protected override void OnTemplateChanging()
+    {
+        ReleaseTemplateParts();
+        base.OnTemplateChanging();
+    }
+
+    private void ReleaseTemplateParts()
+    {
+        ClearForwardedCardShadow();
+        DetachButtonHandlers();
+        _titleHost = _buttonPanel = null;
+        _dialogCard = null;
+        _contentScrollViewer = null;
+        _primaryButton = _secondaryButton = _closeButton = null;
+    }
+
     public override void OnApplyTemplate()
     {
-        DetachButtonHandlers();
+        ReleaseTemplateParts();
         base.OnApplyTemplate();
 
         _titleHost = GetTemplateChild("PART_TitleHost") as FrameworkElement;
         _buttonPanel = GetTemplateChild("PART_ButtonPanel") as FrameworkElement;
         _dialogCard = GetTemplateChild("PART_DialogCard") as Border;
+        _templateCardMinWidth = _dialogCard?.MinWidth ?? 0;
+        _templateCardMinHeight = _dialogCard?.MinHeight ?? 0;
+        _templateCardMaxHeight = _dialogCard?.MaxHeight ?? double.PositiveInfinity;
         _contentScrollViewer = GetTemplateChild("PART_ContentScrollViewer") as ScrollViewer;
         _primaryButton = GetTemplateChild("PART_PrimaryButton") as Button;
         _secondaryButton = GetTemplateChild("PART_SecondaryButton") as Button;
@@ -470,6 +511,9 @@ public class ContentDialog : ContentControl
     {
         base.OnPropertyChanged(e);
 
+        if (e.Property == EffectProperty)
+            UpdateCardShadowState();
+
         if (e.Property == WidthProperty ||
             e.Property == HeightProperty ||
             e.Property == MinWidthProperty ||
@@ -479,6 +523,12 @@ public class ContentDialog : ContentControl
         {
             UpdateCardLayout();
         }
+    }
+
+    protected override void OnBackdropEffectChanged(IBackdropEffect? oldValue, IBackdropEffect? newValue)
+    {
+        base.OnBackdropEffectChanged(oldValue, newValue);
+        UpdateBackdropState();
     }
 
     private static void OnDialogVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -690,7 +740,7 @@ public class ContentDialog : ContentControl
         }
     }
 
-    private void CompleteClose(ContentDialogResult result)
+    private void CompleteClose(ContentDialogResult result, bool restoreFocus = true)
     {
         var showTaskSource = _showTaskSource;
         if (showTaskSource == null)
@@ -698,6 +748,13 @@ public class ContentDialog : ContentControl
             return;
         }
 
+        var currentFocus = Keyboard.FocusedElement as UIElement;
+        var returnFocus = _returnFocus;
+        _returnFocus = null;
+        // An explicit focus transfer (for example to another window) wins over
+        // automatic restoration. Test ancestry before detaching the overlay.
+        var restoreOriginalInput = restoreFocus &&
+            (currentFocus == null || IsDialogDescendant(currentFocus));
         _showTaskSource = null;
         Styling.CssPresentationState.NotifyModalChange(this);
 
@@ -721,8 +778,40 @@ public class ContentDialog : ContentControl
         _hostWindow = null;
         _activePlacement = ContentDialogPlacement.Popup;
 
+        if (restoreOriginalInput && hostWindow is { IsCloseRequestedForPlatformTermination: false } &&
+            hostWindow.ActiveContentDialog == null && returnFocus is { IsVisible: true } &&
+            ReferenceEquals(Window.GetWindow(returnFocus), hostWindow))
+        {
+            if (!returnFocus.IsEnabled || !returnFocus.Focus())
+            {
+                // Async commands re-enable their source after ShowAsync completes.
+                // Give those continuations one turn, without retaining an event
+                // subscription or taking focus from another control or window.
+                Dispatcher.BeginInvoke(DispatcherPriority.ContextIdle, () =>
+                {
+                    var focused = Keyboard.FocusedElement as UIElement;
+                    if (focused != null && !ReferenceEquals(focused, hostWindow) &&
+                        !ReferenceEquals(focused, returnFocus) && !IsDialogDescendant(focused)) return;
+                    if (hostWindow.IsCloseRequestedForPlatformTermination || hostWindow.ActiveContentDialog != null ||
+                        !returnFocus.IsVisible || !returnFocus.IsEnabled ||
+                        !ReferenceEquals(Window.GetWindow(returnFocus), hostWindow)) return;
+                    if (hostWindow.Handle != 0 && !hostWindow.IsActive) return;
+                    returnFocus.Focus();
+                });
+            }
+        }
+
         Closed?.Invoke(this, new ContentDialogClosedEventArgs(result));
         showTaskSource.TrySetResult(result);
+    }
+
+    private bool IsDialogDescendant(UIElement element)
+    {
+        for (Visual? node = element; node != null; node = node.VisualParent)
+        {
+            if (ReferenceEquals(node, this)) return true;
+        }
+        return false;
     }
 
     private void AttachToPopupOverlay(Window hostWindow)
@@ -820,6 +909,7 @@ public class ContentDialog : ContentControl
         UpdateTitleState();
         UpdateButtonState();
         UpdateBackdropState();
+        UpdateCardShadowState();
         UpdateCardLayout();
     }
 
@@ -831,6 +921,32 @@ public class ContentDialog : ContentControl
         }
 
         _dialogCard.BackdropEffect = BackdropEffect;
+    }
+
+    private void ClearForwardedCardShadow()
+    {
+        if (_forwardedCardShadow != null && ReferenceEquals(_dialogCard?.Effect, _forwardedCardShadow))
+            _dialogCard!.ClearValue(EffectProperty);
+        _forwardedCardShadow = null;
+    }
+
+    private void UpdateCardShadowState()
+    {
+        if (_dialogCard == null) return;
+
+        // CSS box-shadow describes the dialog's visible box, not the input-blocking
+        // viewport. Capture only the card. Filters and authored element effects
+        // retain their subtree semantics, and a custom card effect keeps ownership.
+        var shadow = Effect is Jalium.UI.Media.Effects.Effect { CssBoxShadowLayer: true } &&
+            Effect is not Jalium.UI.Media.Effects.EffectGroup { CssCombinedShadowAndFilter: true }
+            ? Effect : null;
+        if (!ReferenceEquals(shadow, _forwardedCardShadow))
+            ClearForwardedCardShadow();
+        if (shadow != null && (_dialogCard.Effect == null || ReferenceEquals(_dialogCard.Effect, _forwardedCardShadow)))
+        {
+            _forwardedCardShadow = shadow;
+            _dialogCard.Effect = shadow;
+        }
     }
 
     private void UpdateTitleState()
@@ -934,6 +1050,7 @@ public class ContentDialog : ContentControl
             _dialogCard.MinHeight = 0;
             _dialogCard.MaxWidth = double.PositiveInfinity;
             _dialogCard.MaxHeight = double.PositiveInfinity;
+            if (_contentScrollViewer != null) _contentScrollViewer.MaxHeight = double.PositiveInfinity;
             return;
         }
 
@@ -956,32 +1073,19 @@ public class ContentDialog : ContentControl
         _dialogCard.Width = hasExplicitWidth ? explicitWidth : double.NaN;
         _dialogCard.Height = hasExplicitHeight ? explicitHeight : double.NaN;
 
-        // 关键修复：仅在用户显式在 <ContentDialog> 上设置 Min/Max 尺寸时才下推到 PART_DialogCard，
-        // 否则尊重模板里声明的默认值（Themes/Controls/Dialogs.jalxaml 里 Card 自带 MinWidth=320 /
-        // MaxWidth=560）。早期实现无条件把 MaxWidth/MaxHeight 设为"viewport-48"，导致 Card 被
-        // 无上限拉到接近整个窗口宽，视觉上像撑满 viewport — 这是设计 bug 不是预期行为。
-        //
-        // 当 viewport 比模板上限还小时，Card 的 measure 阶段会自然受 parent availableSize 限制，
-        // 不会真的渲染到 560 宽，所以无需在这里手动 clamp 到 viewport。ClipToBounds=true 仅作为
-        // 兜底防御。
-        if (MinWidth > 0)
-        {
-            _dialogCard.MinWidth = MinWidth;
-        }
-        if (MinHeight > 0)
-        {
-            _dialogCard.MinHeight = MinHeight;
-        }
-        // The template's 560px maximum is a compact default, not a hard cap:
+        // Template minimums are preferences: a narrow embedded host must still
+        // fit. Explicit caller minimums remain authoritative. Recompute from the
+        // captured template values so resizing and FullSizeDesired are reversible.
+        _dialogCard.MinWidth = MinWidth > 0 ? MinWidth : Math.Min(_templateCardMinWidth, availableCardWidth);
+        _dialogCard.MinHeight = MinHeight > 0 ? MinHeight : Math.Min(_templateCardMinHeight, availableCardHeight);
+        // The template's maximum is a compact default, not a hard cap:
         // explicit dialog Width and naturally wider content may grow up to the
         // host viewport. A caller-supplied MaxWidth remains authoritative.
         _dialogCard.MaxWidth = HasExplicitMaximum(MaxWidth)
             ? ClampMaximumToAvailable(MaxWidth, availableCardWidth)
             : availableCardWidth;
-        if (HasExplicitMaximum(MaxHeight))
-        {
-            _dialogCard.MaxHeight = ClampMaximumToAvailable(MaxHeight, availableCardHeight);
-        }
+        _dialogCard.MaxHeight = HasExplicitMaximum(MaxHeight)
+            ? ClampMaximumToAvailable(MaxHeight, availableCardHeight) : _templateCardMaxHeight;
 
         // 内容滚动区封顶：把 PART_ContentScrollViewer 的 MaxHeight 限到"可用窗口高 − 标题/按钮/内边距"。
         // 这样任意高内容（如分类很多的设置面板、长列表）在对话框内滚动，而不会把卡片撑出屏幕；
@@ -995,8 +1099,12 @@ public class ContentDialog : ContentControl
             }
             else
             {
-                var chrome = (_titleHost?.ActualHeight ?? 0) + (_buttonPanel?.ActualHeight ?? 0) + 56;
-                _contentScrollViewer.MaxHeight = Math.Max(160, availableCardHeight - chrome);
+                var bodyMargin = _contentScrollViewer.Margin;
+                var padding = _dialogCard.Padding;
+                var stroke = _dialogCard.BorderThickness;
+                var chrome = (_titleHost?.DesiredSize.Height ?? 0) + (_buttonPanel?.DesiredSize.Height ?? 0) +
+                    bodyMargin.Top + bodyMargin.Bottom + padding.Top + padding.Bottom + stroke.Top + stroke.Bottom;
+                _contentScrollViewer.MaxHeight = Math.Max(0, availableCardHeight - chrome);
             }
         }
 

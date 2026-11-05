@@ -11,7 +11,7 @@ inline constexpr const char* kMetalCoreShaderSource = R"METAL(
 using namespace metal;
 
 struct VertexIn { packed_float4 data; };
-kernel void jalium_core_abi_v5() {}
+kernel void jalium_core_abi_v7() {}
 struct VertexOut {
     float4 position [[position]];
     float2 uv [[user(locn0)]];
@@ -43,9 +43,54 @@ float spread_value(float t, uint spread)
     return clamp(t, 0.0, 1.0);
 }
 
+float3 gradient_decode(float3 c) {
+    return select(c / 12.92, pow(max((c + 0.055) / 1.055, float3(0.0)), float3(2.4)), c > 0.04045);
+}
+float3 gradient_encode(float3 c) {
+    return select(c * 12.92, 1.055 * pow(max(c, float3(0.0)), float3(1.0/2.4)) - 0.055, c > 0.0031308);
+}
+
+float svg_radial_parameter(float2 point, float2 center, float2 origin,
+    float2 radius, float fr, uint flags)
+{
+    radius=abs(radius);
+    if ((radius.x==0.0)!=(radius.y==0.0)) return NAN;
+    float sx=radius.x>0.0?radius.x:max(1.0,max(fr,max(abs(origin.x-center.x),abs(origin.y-center.y))));
+    float sy=radius.y>0.0?radius.y:sx;
+    float2 focal=(origin-center)/float2(sx,sy);
+    float start=fr/sx,dr=(radius.x>0.0?1.0:0.0)-start;
+    if(all(focal==float2(0.0))&&dr==0.0)return NAN;
+    float2 q=(point-center)/float2(sx,sy)-focal;
+    bool boundary=(flags&2u)!=0u;
+    float a=(flags&6u)?0.0:dot(focal,focal)-dr*dr;
+    if(a<0.0){
+        float limit=-fr/(radius.x-fr);
+        float2 apex=origin+limit*(center-origin);
+        float tolerance=8.0*1.1920928955078125e-7*max(1.0,max(max(abs(apex.x),abs(apex.y)),max(radius.x,radius.y)));
+        // A shrinking nonnegative circle has limit >= 1. Move one IEEE-754
+        // step toward the valid-radius side without a nextafter MSL builtin.
+        if(all(abs(point-apex)<=float2(tolerance)))return dr<0.0?as_type<float>(as_type<uint>(limit)-1u):limit;
+    }
+    float b=2.0*(dot(q,focal)-start*dr),c=dot(q,q)-start*start;
+    float t=NAN;
+    if(a==0.0){
+        if(b!=0.0){float root=-c/b;if(isfinite(root)&&start+root*dr>0.0)t=root;}
+    }else{
+        float discriminant=b*b-4.0*a*c;
+        if(discriminant>=0.0){
+            float v=-0.5*(b+copysign(sqrt(discriminant),b));
+            float r0=v/a;
+            if(isfinite(r0)&&start+r0*dr>0.0)t=r0;
+            if(v!=0.0){float r1=c/v;if(isfinite(r1)&&start+r1*dr>0.0&&(isnan(t)||r1>t))t=r1;}
+        }
+    }
+    return isnan(t)&&boundary?INFINITY:t;
+}
+
 float4 sample_gradient(constant float* p, const device float* stops, float2 local)
 {
     const uint type = uint(max(p[3], 0.0));
+    local=float2(p[47]*local.x+p[49]*local.y+p[51],p[48]*local.x+p[50]*local.y+p[52]);
     float t = 0.0;
     if (type == 1u) {
         float2 a = float2(p[36], p[37]);
@@ -54,6 +99,11 @@ float4 sample_gradient(constant float* p, const device float* stops, float2 loca
         t = dot(local - a, d) / max(dot(d, d), 1e-6);
     } else {
         float2 center = float2(p[36], p[37]);
+        if (uint(p[53])&1u) {
+            t=svg_radial_parameter(local,center,float2(p[40],p[41]),float2(p[38],p[39]),p[54],uint(p[53]));
+            if(isnan(t))return float4(0.0);
+            if(isinf(t)&&p[44]>0.5)return float4(p[55],p[56],p[57],p[58]);
+        } else {
         float2 radius = max(abs(float2(p[38], p[39])), float2(1e-4));
         float2 origin = float2(p[40], p[41]);
         float2 focal = (origin - center) / radius;
@@ -64,6 +114,7 @@ float4 sample_gradient(constant float* p, const device float* stops, float2 loca
         float a = dot(q, q), b = dot(focal, q);
         float hit = -b + sqrt(max(b*b + a*(1.0-dot(focal,focal)), 0.0));
         t = a > 1e-12 ? a / max(hit, 1e-12) : 0.0;
+        }
     }
     t = spread_value(t, uint(max(p[44], 0.0)));
 
@@ -80,8 +131,14 @@ float4 sample_gradient(constant float* p, const device float* stops, float2 loca
     uint a = left*5u, b = right*5u;
     float4 ca = float4(stops[a+1u],stops[a+2u],stops[a+3u],stops[a+4u]);
     float4 cb = float4(stops[b+1u],stops[b+2u],stops[b+3u],stops[b+4u]);
-    float u = (t-stops[a])/max(stops[b]-stops[a],1e-6);
-    return mix(ca,cb,clamp(u,0.0,1.0));
+    float span = stops[b] - stops[a];
+    float u = span > 0.0 ? clamp((t-stops[a])/span,0.0,1.0) : 0.0;
+    bool linearLight = p[46] < 0.5;
+    if (linearLight) { ca.rgb = gradient_decode(ca.rgb); cb.rgb = gradient_decode(cb.rgb); }
+    float4 color = mix(ca,cb,u);
+    if (linearLight) color.rgb = gradient_encode(color.rgb);
+    color.rgb = clamp(color.rgb,0.0,1.0);
+    return color;
 }
 
 float2 to_local(constant float* p, float2 pixel)
@@ -265,6 +322,62 @@ fragment float4 jalium_texture_fragment(VertexOut in [[stage_in]],
     }
     color *= p[17] * clip_coverage(p, in.pixel, pathClip);
     return color;
+}
+
+float blend_lum(float3 c) { return dot(c, float3(.3, .59, .11)); }
+float blend_min(float3 c) { return min(c.r, min(c.g, c.b)); }
+float blend_max(float3 c) { return max(c.r, max(c.g, c.b)); }
+float3 blend_set_lum(float3 c, float l) {
+    c += l-blend_lum(c);
+    float lum=blend_lum(c), n=blend_min(c), x=blend_max(c);
+    if (n<0) c=lum+(c-lum)*lum/(lum-n);
+    if (x>1) c=lum+(c-lum)*(1-lum)/(x-lum);
+    return c;
+}
+float3 blend_set_sat(float3 c, float s) {
+    float n=blend_min(c), x=blend_max(c);
+    return x==n ? float3(0) : (c-n)*s/(x-n);
+}
+float blend_channel(float b, float s, uint mode) {
+    switch(mode) {
+    case 1: return b*s;
+    case 2: return b+s-b*s;
+    case 3: return b<=.5 ? 2*b*s : 1-2*(1-b)*(1-s);
+    case 4: return min(b,s);
+    case 5: return max(b,s);
+    case 6: return b==0 ? 0 : s==1 ? 1 : min(1.f,b/(1-s));
+    case 7: return b==1 ? 1 : s==0 ? 0 : 1-min(1.f,(1-b)/s);
+    case 8: return s<=.5 ? 2*b*s : 1-2*(1-b)*(1-s);
+    case 9: return s<=.5 ? b-(1-2*s)*b*(1-b)
+        : b+(2*s-1)*((b<=.25 ? ((16*b-12)*b+4)*b : sqrt(b))-b);
+    case 10: return abs(b-s);
+    case 11: return b+s-2*b*s;
+    default: return s;
+    }
+}
+fragment float4 jalium_blend_fragment(VertexOut in [[stage_in]],
+    constant float* p [[buffer(0)]], texture2d<float> source [[texture(0)]],
+    texture2d<float> backdrop [[texture(1)]], sampler sourceSampler [[sampler(0)]],
+    texture2d<float> pathClip [[texture(30)]])
+{
+    // Render textures are premultiplied. Source alpha includes the restored
+    // parent opacity and clipping; the captured descendants are already grouped.
+    float4 s=source.sample(sourceSampler,in.uv);
+    float4 b=backdrop.sample(sourceSampler,in.uv);
+    s *= p[17]*clip_coverage(p,in.pixel,pathClip);
+    uint mode=uint(p[180]);
+    if(mode==16) return min(float4(1),s+b);
+    float3 cs=s.a>0 ? s.rgb/s.a : float3(0);
+    float3 cb=b.a>0 ? b.rgb/b.a : float3(0);
+    float3 mixed;
+    switch(mode) {
+    case 12: mixed=blend_set_lum(blend_set_sat(cs,blend_max(cb)-blend_min(cb)),blend_lum(cb)); break;
+    case 13: mixed=blend_set_lum(blend_set_sat(cb,blend_max(cs)-blend_min(cs)),blend_lum(cb)); break;
+    case 14: mixed=blend_set_lum(cs,blend_lum(cb)); break;
+    case 15: mixed=blend_set_lum(cb,blend_lum(cs)); break;
+    default: mixed=float3(blend_channel(cb.r,cs.r,mode),blend_channel(cb.g,cs.g,mode),blend_channel(cb.b,cs.b,mode));
+    }
+    return float4((1-b.a)*s.rgb+s.a*b.a*mixed+(1-s.a)*b.rgb,s.a+b.a*(1-s.a));
 }
 
 fragment float4 jalium_yuv_fragment(VertexOut in [[stage_in]],

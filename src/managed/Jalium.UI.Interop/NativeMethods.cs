@@ -62,6 +62,18 @@ public struct TextMetrics
     public float WidthIncludingTrailingWhitespace;
 }
 
+[StructLayout(LayoutKind.Sequential)]
+internal struct NativeFontFaceMetrics
+{
+    internal uint StructSize;
+    internal double SizeAdjust, Ascent, Descent, LineGap, VerticalAscent, VerticalDescent, VerticalLineGap;
+    internal static NativeFontFaceMetrics From(Jalium.UI.Styling.CssFontFaceMetrics metrics) => new()
+    {
+        StructSize = 64, SizeAdjust = metrics.SizeAdjust, Ascent = metrics.Ascent, Descent = metrics.Descent,
+        LineGap = metrics.LineGap, VerticalAscent = metrics.VerticalAscent, VerticalDescent = metrics.VerticalDescent, VerticalLineGap = metrics.VerticalLineGap,
+    };
+}
+
 /// <summary>Font and single-glyph rulers in device-independent pixels.</summary>
 [StructLayout(LayoutKind.Sequential)]
 public struct FontUnitMetrics
@@ -298,6 +310,12 @@ internal static partial class NativeMethods
     /// </summary>
     [DllImport(CoreLib, EntryPoint = "jalium_context_create", ExactSpelling = true)]
     internal static extern nint ContextCreate(RenderBackend backend);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_context_create_rasterizer")]
+    internal static partial nint ContextCreateRasterizer();
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_create_offscreen")]
+    internal static partial nint RenderTargetCreateOffscreen(nint context, int width, int height);
 
     /// <summary>
     /// Destroys a Jalium rendering context.
@@ -1172,6 +1190,25 @@ internal static partial class NativeMethods
     [LibraryImport(CoreLib, EntryPoint = "jalium_effect_end_capture")]
     internal static partial void EffectEndCapture(nint renderTarget);
 
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_supports_alpha_masks")]
+    internal static partial int SupportsAlphaMasks(nint renderTarget);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_supports_blend_modes")]
+    internal static partial int SupportsBlendModes(nint renderTarget);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_draw_blend_effect")]
+    internal static partial JaliumResult DrawBlendEffect(nint renderTarget,
+        uint mode, float x, float y, float w, float h);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_alpha_mask_begin_capture")]
+    internal static partial JaliumResult BeginAlphaMaskCapture(nint renderTarget, float x, float y, float w, float h);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_draw_alpha_mask_effect")]
+    internal static partial JaliumResult DrawAlphaMaskEffect(nint renderTarget,
+        ReadOnlySpan<byte> pixels, uint bytes, uint width, uint height, uint stride,
+        float maskX, float maskY, float maskW, float maskH,
+        float captureX, float captureY, float captureW, float captureH);
+
     /// <summary>
     /// Applies a Gaussian blur effect to the captured element content and draws it.
     /// </summary>
@@ -1469,6 +1506,15 @@ internal static partial class NativeMethods
         float[] stops, uint stopCount,
         uint extendMode);
 
+    [LibraryImport(CoreLib, EntryPoint = "jalium_brush_set_color_interpolation_mode")]
+    internal static partial JaliumResult BrushSetColorInterpolationMode(nint brush, uint mode);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_brush_set_paint_transform")]
+    internal static partial JaliumResult BrushSetPaintTransform(nint brush, float[] matrix);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_brush_set_radial_geometry")]
+    internal static partial JaliumResult BrushSetRadialGeometry(nint brush, float focalRadius, uint flags);
+
     /// <summary>
     /// Destroys a brush.
     /// </summary>
@@ -1491,6 +1537,51 @@ internal static partial class NativeMethods
 
     [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_set_font_fallbacks")]
     internal static unsafe partial int TextFormatSetFontFallbacks(nint format, nint* fallbacks, uint count);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_set_font_size_adjust")]
+    internal static unsafe partial int TextFormatSetFontSizeAdjust(nint format, uint metric, double aspect, uint opticalMode, Styling.FontVariation* axes, uint count, out float usedSize);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_set_font_face_metrics")]
+    internal static partial int TextFormatSetFontFaceMetrics(nint format, in NativeFontFaceMetrics metrics, out float usedSize);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_get_font_ink_bounds", StringMarshalling = StringMarshalling.Utf16)]
+    internal static partial int TextFormatGetFontInkBounds(nint format, string text, uint length, out TextRangeMetrics bounds);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_get_font_aspect_metric")]
+    internal static partial int TextFormatGetFontAspectMetric(nint format, uint metric, out double aspect);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_set_font_optical_variations")]
+    internal static unsafe partial int TextFormatSetFontOpticalVariations(nint format, Styling.FontVariation* axes, uint count, uint mode);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_set_font_variations")]
+    internal static unsafe partial int TextFormatSetFontVariations(nint format, Styling.FontVariation* axes, uint count);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_set_direction")]
+    internal static partial int TextFormatSetDirection(nint format, int direction);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_set_font_features")]
+    internal static unsafe partial int TextFormatSetFontFeatures(nint format, Media.FontFeature* features, uint count);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_get_font_feature_support")]
+    internal static unsafe partial int TextFormatGetFontFeatureSupport(nint format, uint tables, uint* tags, uint count, byte* supported);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_set_font_caps")]
+    internal static unsafe partial int TextFormatSetFontCaps(nint format, uint variant, int synthesize, byte* language, uint languageLength);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_set_font_caps_context")]
+    internal static partial int TextFormatSetFontCapsContext(nint format, uint boundaries);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_set_font_caps_continuation")]
+    internal static partial int TextFormatSetFontCapsContinuation(nint format, uint operation);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_set_orientation")]
+    internal static partial int TextFormatSetOrientation(nint format, int orientation, int baseline);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_set_font_emoji")]
+    internal static partial int TextFormatSetFontEmoji(nint format, uint variant, uint after);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_set_font_position")]
+    internal static partial int TextFormatSetFontPosition(nint format, uint variant, uint flags, uint runMode);
 
     [StructLayout(LayoutKind.Sequential)]
     internal struct UnicodeRange { internal uint First, Last; }
@@ -1624,6 +1715,27 @@ internal static partial class NativeMethods
         internal float R, G, B, A;
     }
     [StructLayout(LayoutKind.Sequential)]
+    internal struct ParagraphSpacingUnit
+    {
+        internal uint TextPosition, Length;
+        internal float Spacing;
+        internal uint Flags;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct ParagraphAdvanceUnit
+    {
+        internal uint TextPosition, Length;
+        internal float Spacing, Leading, Trailing;
+        internal uint Flags;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct ParagraphCombineUnit
+    {
+        internal uint TextPosition, Length;
+        internal float Em;
+        internal int Direction;
+    }
+    [StructLayout(LayoutKind.Sequential)]
     internal struct ParagraphLineMetrics
     {
         internal TextLineMetrics Line;
@@ -1646,9 +1758,44 @@ internal static partial class NativeMethods
     [LibraryImport(CoreLib, EntryPoint = "jalium_text_paragraph_create", StringMarshalling = StringMarshalling.Utf16)]
     internal static unsafe partial nint TextParagraphCreate(nint format, string text, uint length,
         ParagraphSpan* spans, uint spanCount, float width, float minLineHeight, int alignment, int direction);
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_paragraph_create_spaced", StringMarshalling = StringMarshalling.Utf16)]
+    internal static unsafe partial nint TextParagraphCreateSpaced(nint format, string text, uint length,
+        ParagraphSpan* spans, uint spanCount, ParagraphSpacingUnit* units, uint unitCount,
+        float width, float minLineHeight, int direction);
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_paragraph_create_context_spaced", StringMarshalling = StringMarshalling.Utf16)]
+    internal static unsafe partial nint TextParagraphCreateContextSpaced(nint format, string text, uint length,
+        ParagraphSpan* spans, uint spanCount, ParagraphSpacingUnit* units, uint unitCount,
+        float width, float minLineHeight, int direction);
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_paragraph_create_advanced", StringMarshalling = StringMarshalling.Utf16)]
+    internal static unsafe partial nint TextParagraphCreateAdvanced(nint format, string text, uint length,
+        ParagraphSpan* spans, uint spanCount, ParagraphAdvanceUnit* units, uint unitCount,
+        float width, float minLineHeight, int direction);
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_paragraph_create_context_advanced", StringMarshalling = StringMarshalling.Utf16)]
+    internal static unsafe partial nint TextParagraphCreateContextAdvanced(nint format, string text, uint length,
+        ParagraphSpan* spans, uint spanCount, ParagraphAdvanceUnit* units, uint unitCount,
+        float width, float minLineHeight, int direction);
     [LibraryImport(CoreLib, EntryPoint = "jalium_text_paragraph_create_with_wrapping", StringMarshalling = StringMarshalling.Utf16)]
     internal static unsafe partial nint TextParagraphCreateWithWrapping(nint format, string text, uint length,
         ParagraphSpan* spans, uint spanCount, float width, float minLineHeight, int alignment, int direction, int wrapping);
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_paragraph_create_vertical", StringMarshalling = StringMarshalling.Utf16)]
+    internal static unsafe partial nint TextParagraphCreateVertical(nint format, string text, uint length,
+        ParagraphSpan* spans, uint spanCount, float inlineSize, float minColumnWidth, int alignment, int direction, int wrapping);
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_paragraph_create_vertical_advanced", StringMarshalling = StringMarshalling.Utf16)]
+    internal static unsafe partial nint TextParagraphCreateVerticalAdvanced(nint format, string text, uint length,
+        ParagraphSpan* spans, uint spanCount, ParagraphAdvanceUnit* units, uint unitCount,
+        float inlineSize, float minColumnWidth, int direction, int contextPaint);
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_paragraph_create_upright", StringMarshalling = StringMarshalling.Utf16)]
+    internal static unsafe partial nint TextParagraphCreateUpright(nint format, string text, uint length,
+        ParagraphSpan* spans, uint spanCount, float inlineSize, float minColumnWidth, int alignment, int direction, int wrapping);
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_paragraph_create_upright_advanced", StringMarshalling = StringMarshalling.Utf16)]
+    internal static unsafe partial nint TextParagraphCreateUprightAdvanced(nint format, string text, uint length,
+        ParagraphSpan* spans, uint spanCount, ParagraphAdvanceUnit* units, uint unitCount,
+        float inlineSize, float minColumnWidth, int direction, int contextPaint);
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_paragraph_create_combined", StringMarshalling = StringMarshalling.Utf16)]
+    internal static unsafe partial nint TextParagraphCreateCombined(nint format, string text, uint length,
+        ParagraphSpan* spans, uint spanCount, ParagraphCombineUnit* combined, uint combinedCount,
+        ParagraphAdvanceUnit* advances, uint advanceCount, float inlineSize, float minColumnWidth,
+        int alignment, int direction, int wrapping, int orientation, int contextPaint);
     [LibraryImport(CoreLib, EntryPoint = "jalium_text_paragraph_destroy")]
     internal static partial void TextParagraphDestroy(nint paragraph);
     [LibraryImport(CoreLib, EntryPoint = "jalium_text_paragraph_line_count")]
@@ -1666,12 +1813,25 @@ internal static partial class NativeMethods
     [LibraryImport(CoreLib, EntryPoint = "jalium_text_paragraph_get_selection")]
     internal static unsafe partial int TextParagraphGetSelection(nint paragraph, uint line, uint start,
         uint length, TextRangeMetrics* results, uint capacity, out uint count);
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_paragraph_get_source_bounds")]
+    internal static partial int TextParagraphGetSourceBounds(nint paragraph, uint line, uint start,
+        uint length, out TextRangeMetrics result);
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_paragraph_get_caps_operations")]
+    internal static unsafe partial int TextParagraphGetCapsOperations(nint paragraph, byte* operations, uint length);
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_paragraph_get_position_modes")]
+    internal static unsafe partial int TextParagraphGetPositionModes(nint paragraph, byte* modes, uint length);
     [LibraryImport(CoreLib, EntryPoint = "jalium_text_paragraph_navigate_word", StringMarshalling = StringMarshalling.Utf16)]
     internal static unsafe partial int TextParagraphNavigateWord(nint* paragraphs, uint* offsets, uint count,
         string text, uint length, uint position, uint selectionStart, uint selectionLength,
         int direction, int backwardAffinity, out ParagraphCaret result);
     [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_draw_paragraph_line")]
     internal static partial int DrawParagraphLine(nint target, nint paragraph, uint line, float x, float y, float opacity);
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_draw_paragraph_slice")]
+    internal static partial int DrawParagraphSlice(nint target, nint paragraph, uint line, float x, float y,
+        uint start, uint length, float r, float g, float b, float a);
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_draw_paragraph_brush")]
+    internal static partial int DrawParagraphBrush(nint target, nint paragraph, uint line, float x, float y,
+        uint start, uint length, nint brush);
 
     [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_measure_text", StringMarshalling = StringMarshalling.Utf16)]
     internal static partial int TextFormatMeasureText(nint textFormat, string text, int textLength, float maxWidth, float maxHeight, out TextMetrics metrics);

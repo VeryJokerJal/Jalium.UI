@@ -145,7 +145,7 @@ public sealed class MessageBoxBehaviorTests : MacOSGeometryTestBase
         Assert.Same(fixture.Buttons[1], Keyboard.FocusedElement);
         fixture.Key(Key.Tab);
         Assert.Same(fixture.Buttons[0], Keyboard.FocusedElement);
-        var scroll = Assert.Single(Descendants(fixture.Dialog.Content as Visual).OfType<ScrollViewer>());
+        var scroll = Assert.Single(Descendants(fixture.Dialog.FindName("PART_MessageBoxRoot") as Visual).OfType<ScrollViewer>());
         Assert.False(scroll.Focusable);
     }
 
@@ -157,7 +157,7 @@ public sealed class MessageBoxBehaviorTests : MacOSGeometryTestBase
     public void AlignmentAndReadingDirectionApplyIndependentlyToTheMessage(MessageBoxOptions options, TextAlignment alignment, FlowDirection direction)
     {
         using var fixture = new Fixture(MessageBoxButton.OKCancel, MessageBoxResult.OK, options);
-        var text = Descendants(fixture.Dialog.Content as Visual).OfType<TextBlock>().Single(x => x.Text == Fixture.Message);
+        var text = Descendants(fixture.Dialog.FindName("PART_MessageBoxRoot") as Visual).OfType<TextBlock>().Single(x => x.Text == Fixture.Message);
         Assert.Equal(alignment, text.TextAlignment);
         Assert.Equal(direction, text.FlowDirection);
         Assert.All(fixture.Buttons, button => Assert.Equal(FlowDirection.LeftToRight, button.FlowDirection));
@@ -168,7 +168,7 @@ public sealed class MessageBoxBehaviorTests : MacOSGeometryTestBase
     {
         string message = string.Join("\n", Enumerable.Repeat("中文记录🙂，请检查长文本的换行与末尾。", 100));
         using var fixture = new Fixture(MessageBoxButton.OKCancel, MessageBoxResult.OK, message: message);
-        var scroll = Assert.Single(Descendants(fixture.Dialog.Content as Visual).OfType<ScrollViewer>());
+        var scroll = Assert.Single(Descendants(fixture.Dialog.FindName("PART_MessageBoxRoot") as Visual).OfType<ScrollViewer>());
         Assert.True(scroll.ViewportHeight > 0);
         Assert.True(scroll.ExtentHeight > scroll.ViewportHeight);
         Assert.True(scroll.ViewportWidth <= 360);
@@ -197,6 +197,19 @@ public sealed class MessageBoxBehaviorTests : MacOSGeometryTestBase
     private static void SetField(Window window, string name, object value) => typeof(Window).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, value);
     private sealed class Fixture : IDisposable
     {
+        private static readonly Lazy<ResourceDictionary> Defaults = new(() =>
+        {
+            Jalium.UI.Markup.ThemeLoader.Initialize();
+            using var stream = new MemoryStream();
+            var resources = Jalium.UI.Controls.Themes.ThemeManager.XamlLoader!(stream,
+                "Themes/Generic.jalxaml", typeof(Control).Assembly)
+                ?? throw new InvalidOperationException("The default framework themes could not be loaded.");
+            Assert.True(resources.ContainsKey(typeof(MessageBoxDialog)), "The compiled default message-box theme is missing.");
+            // The fixture mounts these defaults on its own dialog below. A
+            // global registration would leak the whole theme into later tests
+            // and retain this worker's dispatcher in deferred style entries.
+            return resources;
+        });
         internal const string Message = "مرحبا بالعالم\n中文短行🙂";
         internal MessageBoxDialog Dialog { get; }
         internal Button[] Buttons { get; }
@@ -204,13 +217,17 @@ public sealed class MessageBoxBehaviorTests : MacOSGeometryTestBase
         internal int Closed { get; private set; }
         internal Fixture(MessageBoxButton buttons, MessageBoxResult requested, MessageBoxOptions options = MessageBoxOptions.None, string message = Message)
         {
+            var defaults = Defaults.Value;
             Dialog = new MessageBoxDialog(message, "Owned message", buttons, MessageBoxImage.Information, requested, options)
                 { TitleBarStyle = WindowTitleBarStyle.Native };
+            Dialog.Resources.MergedDictionaries.Add(defaults);
+            Dialog.UpdateDefaultStyle();
+            Dialog.ApplyTemplate();
             if (OperatingSystem.IsMacOS())
                 typeof(Window).GetMethod("SetMacOSVisibilityForDisplay", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(Dialog, [Visibility.Visible]);
             Dialog.Measure(new Size(400, 10000));
             Dialog.Arrange(new Rect(0, 0, 400, Dialog.DesiredSize.Height));
-            Buttons = Descendants(Dialog.Content as Visual).OfType<Button>().ToArray();
+            Buttons = Descendants(Dialog.FindName("PART_MessageBoxRoot") as Visual).OfType<Button>().Where(button => button.Visibility == Visibility.Visible).ToArray();
             Dialog.Closed += (_, _) => Closed++;
             SetField(Dialog, "_isModal", true);
             _input = new WindowInputDispatcher(Dialog);
@@ -223,7 +240,7 @@ public sealed class MessageBoxBehaviorTests : MacOSGeometryTestBase
         public void Dispose()
         {
             Keyboard.ClearFocus();
-            if (!Dialog.IsClosedForPlatformTermination) Buttons.Last().PerformClick();
+            if (!Dialog.IsClosedForPlatformTermination) Buttons.LastOrDefault()?.PerformClick();
             Dialog.Close();
         }
     }

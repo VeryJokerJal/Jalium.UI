@@ -7,13 +7,19 @@ namespace Jalium.UI.Controls;
 internal static class CssBorderAdornment
 {
     internal static void Draw(FrameworkElement owner, DrawingContext drawingContext,
-        ref Border? painter, Rect? bounds = null, bool drawNative = false)
+        ref Border? painter, Rect? bounds = null, bool drawNative = false,
+        Thickness? borderThickness = null, CssUsedBorderRadii? fragmentRadii = null)
     {
+        if (CssTableLayout.SuppressBorder(owner) || CssRubyBoxMetrics.IsStructural(owner)) return;
+        var imageBox = bounds ?? new Rect(owner.RenderSize);
+        var imageBorder = borderThickness ?? CssBoxMetrics.BackgroundInsets(owner,
+            owner.CssLayout?.ContainingWidthCache ?? owner.RenderSize.Width).Border;
+        if (CssBorderImagePainter.Active(owner, imageBox, imageBorder)) return;
         var colors = CssBorderPaintProperties.Get(owner);
         if (colors is null && (!drawNative || owner is not Control { BorderBrush: not null }))
             return;
         var box = bounds ?? new Rect(owner.RenderSize);
-        var border = CssBoxMetrics.BackgroundInsets(owner,
+        var border = borderThickness ?? CssBoxMetrics.BackgroundInsets(owner,
             owner.CssLayout?.ContainingWidthCache ?? owner.RenderSize.Width).Border;
         if (border.Left <= 0 && border.Top <= 0 && border.Right <= 0 && border.Bottom <= 0)
             return;
@@ -24,7 +30,7 @@ internal static class CssBorderAdornment
             painter.SetRootDpi(owner.DpiScale);
             painter.DrawCssSideColorsFor(drawingContext, colors,
                 CssBorderStyleProperties.Get(owner), box, border,
-                CssBorderRadiusProperties.Get(owner)?.Resolve(new Size(box.Width, box.Height)));
+                fragmentRadii ?? CssBorderRadiusProperties.Get(owner)?.Resolve(new Size(box.Width, box.Height)));
             return;
         }
 

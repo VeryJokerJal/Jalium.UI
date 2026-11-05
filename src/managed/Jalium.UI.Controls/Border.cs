@@ -15,6 +15,15 @@ namespace Jalium.UI.Controls;
 [Jalium.UI.Markup.ContentProperty("Child")]
 public partial class Border : Decorator
 {
+    public Border()
+    {
+        if (LiquidGlassProperty.GetMetadata(GetType()).DefaultValue is true)
+            SetBackdropReplayCandidate(BackdropReplayGlass, true);
+    }
+
+    protected override bool SupportsCssContentLayout => true;
+    protected override bool SupportsCssInlineContentLayout => GetType() == typeof(Border) && !LiquidGlass && Shape == BorderShape.RoundedRectangle;
+    private Border? _cssInlineBorderPainter;
     private const float DefaultGlassTintChannel = 0.08f;
     private const float DefaultGlassTintOpacity = 0.3f;
 
@@ -363,6 +372,8 @@ public partial class Border : Decorator
 
     private Thickness GetSnappedBorderThickness()
     {
+        if (CssRubyBoxMetrics.IsStructural(this)) return default;
+        if (CssTableLayout.TryCollapsedBorder(this, out var collapsed)) return collapsed;
         var border = BorderThickness;
         return new Thickness(
             RoundLayoutValue(SnapLayoutValue(border.Left)),
@@ -430,11 +441,16 @@ public partial class Border : Decorator
         var childSize = default(Size);
 
         UIElement? child = Child;
-        if (child != null)
+        if (child != null && child is not FrameworkElement { CssLayout.IsOutOfFlow: true })
         {
-            child.Measure(childAvailable);
+            if (child is FrameworkElement { CssLayout: not null })
+                Styling.CssLayoutBox.MeasureWithContainingBlock(child, childAvailable, CssChildContainingSize(childAvailable));
+            else
+                child.Measure(childAvailable);
             childSize = child.DesiredSize;
         }
+
+        MeasureCssLayoutAbsoluteChildren(availableSize);
 
         // Negative Padding/BorderThickness are legal (Thickness deliberately does not
         // validate); the Size constructor is not — clamp at the summation sink.
@@ -450,7 +466,7 @@ public partial class Border : Decorator
         var padding = Padding;
 
         UIElement? child = Child;
-        if (child != null)
+        if (child != null && child is not FrameworkElement { CssLayout.IsOutOfFlow: true })
         {
             // Snap each side of BorderThickness independently before computing
             // the inner rect so the child's _visualBounds lines up exactly
@@ -491,6 +507,7 @@ public partial class Border : Decorator
             // Note: Do NOT call SetVisualBounds here - ArrangeCore already handles margin
         }
 
+        ArrangeCssLayoutAbsoluteChildren(finalSize);
         return finalSize;
     }
 
@@ -732,6 +749,7 @@ public partial class Border : Decorator
 
     protected override void OnRender(DrawingContext drawingContext)
     {
+        if (CssInlineBoxPainter.Background(this, BackgroundProperty, Background, drawingContext)) return;
         if (TryGetCssRadius(out var cssRadius))
         {
             if (BackdropEffect is { HasEffect: true } backdrop)
@@ -1126,6 +1144,8 @@ public partial class Border : Decorator
     /// </remarks>
     protected override void OnPostRender(DrawingContext drawingContext)
     {
+        if (CssRubyBoxMetrics.IsStructural(this)) return;
+        if (CssInlineBoxPainter.Border(this, drawingContext, ref _cssInlineBorderPainter)) return;
         if (drawingContext is DrawingContext dc)
         {
             // 1. Re-draw stroke on top of children, still under the
@@ -1163,6 +1183,8 @@ public partial class Border : Decorator
     /// </summary>
     private void DrawStrokeAboveChildren(DrawingContext dc)
     {
+        if (CssBorderImagePainter.Active(this, new Rect(RenderSize),
+                CssBoxMetrics.BackgroundInsets(this, CssLayout?.ContainingWidthCache ?? RenderSize.Width).Border)) return;
         var sideColors = CssBorderPaintProperties.Get(this);
         var sideStyles = CssBorderStyleProperties.Get(this);
         if (sideColors is not null && (!sideColors.IsUniform || sideStyles is { AllSolid: false }))
@@ -1490,6 +1512,7 @@ public partial class Border : Decorator
             if (e.Property == LiquidGlassProperty)
             {
                 border._liquidGlassForDirtyBounds = e.NewValue is true;
+                border.SetBackdropReplayCandidate(BackdropReplayGlass, e.NewValue is true);
             }
 
             // Invalidate pen cache if BorderBrush changed

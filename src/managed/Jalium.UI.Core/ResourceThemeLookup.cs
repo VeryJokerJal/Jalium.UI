@@ -2,6 +2,7 @@ namespace Jalium.UI;
 
 public partial class ResourceDictionary
 {
+    internal IReadOnlyDictionary<object, ResourceDictionary>? ThemeDictionariesOrNull => _themeDictionaries;
     internal bool HasLookupResources => _innerDictionary.Count != 0 || _mergedDictionaries.Count != 0 ||
         _themeDictionaries is { Count: > 0 };
 
@@ -48,13 +49,14 @@ public partial class ResourceDictionary
         }
     }
 
-    private readonly struct ThemeLookupVisit(ResourceDictionary dictionary, object? theme) : IEquatable<ThemeLookupVisit>
+    private readonly struct ThemeLookupVisit(ResourceDictionary dictionary, object? theme, object resourceKey) : IEquatable<ThemeLookupVisit>
     {
         private readonly ResourceDictionary _dictionary = dictionary;
         private readonly object? _theme = theme;
-        public bool Equals(ThemeLookupVisit other) => ReferenceEquals(_dictionary, other._dictionary) && Equals(_theme, other._theme);
+        private readonly object _resourceKey = resourceKey;
+        public bool Equals(ThemeLookupVisit other) => ReferenceEquals(_dictionary, other._dictionary) && Equals(_theme, other._theme) && Equals(_resourceKey, other._resourceKey);
         public override bool Equals(object? obj) => obj is ThemeLookupVisit other && Equals(other);
-        public override int GetHashCode() => HashCode.Combine(System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(_dictionary), _theme);
+        public override int GetHashCode() => HashCode.Combine(System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(_dictionary), _theme, _resourceKey);
     }
 }
 

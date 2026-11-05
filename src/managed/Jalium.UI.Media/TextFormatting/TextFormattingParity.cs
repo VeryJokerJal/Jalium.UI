@@ -199,6 +199,10 @@ public class TextSimpleMarkerProperties : TextMarkerProperties
     private readonly double _offset;
     private readonly TextSource? _textSource;
 
+    /// <summary>The same ordinal algorithms as list markers, without their punctuation.</summary>
+    internal static string CounterRepresentation(TextMarkerStyle style, int number)
+        => number <= 0 ? number.ToString(CultureInfo.InvariantCulture) : MarkerTextSource.CounterRepresentation(style, number);
+
     public TextSimpleMarkerProperties(
         TextMarkerStyle style,
         double offset,
@@ -271,6 +275,15 @@ public class TextSimpleMarkerProperties : TextMarkerProperties
 
         private readonly char[] _characters;
         private readonly TextRunProperties _textRunProperties;
+
+        internal static string CounterRepresentation(TextMarkerStyle style, int number) => style switch
+        {
+            TextMarkerStyle.LowerLatin => new string(ConvertNumberToString(number, true, LowerLatinNumerics, suffix: false)),
+            TextMarkerStyle.UpperLatin => new string(ConvertNumberToString(number, true, UpperLatinNumerics, suffix: false)),
+            TextMarkerStyle.LowerRoman => ConvertNumberToRomanString(number, false, suffix: false),
+            TextMarkerStyle.UpperRoman => ConvertNumberToRomanString(number, true, suffix: false),
+            _ => number.ToString(CultureInfo.InvariantCulture),
+        };
 
         internal MarkerTextSource(
             TextParagraphProperties textParagraphProperties,
@@ -366,7 +379,7 @@ public class TextSimpleMarkerProperties : TextMarkerProperties
             int textSourceCharacterIndex)
             => throw new NotSupportedException();
 
-        private static char[] ConvertNumberToString(int number, bool oneBased, string numericSymbols)
+        private static char[] ConvertNumberToString(int number, bool oneBased, string numericSymbols, bool suffix = true)
         {
             if (oneBased)
             {
@@ -376,7 +389,7 @@ public class TextSimpleMarkerProperties : TextMarkerProperties
             int numberBase = numericSymbols.Length;
             if (number < numberBase)
             {
-                return [numericSymbols[number], NumberSuffix];
+                return suffix ? [numericSymbols[number], NumberSuffix] : [numericSymbols[number]];
             }
 
             int disjoint = oneBased ? 1 : 0;
@@ -387,8 +400,8 @@ public class TextSimpleMarkerProperties : TextMarkerProperties
                 limit = power + (limit * disjoint);
             }
 
-            var result = new char[digits + 1];
-            result[digits] = NumberSuffix;
+            var result = new char[digits + (suffix ? 1 : 0)];
+            if (suffix) result[digits] = NumberSuffix;
             for (int index = digits - 1; index >= 0; index--)
             {
                 result[index] = numericSymbols[number % numberBase];
@@ -398,7 +411,7 @@ public class TextSimpleMarkerProperties : TextMarkerProperties
             return result;
         }
 
-        private static string ConvertNumberToRomanString(int number, bool uppercase)
+        private static string ConvertNumberToRomanString(int number, bool uppercase, bool suffix = true)
         {
             if (number > 3999)
             {
@@ -414,7 +427,7 @@ public class TextSimpleMarkerProperties : TextMarkerProperties
             AddRomanNumeric(builder, number / 10, numerics[2]);
             number %= 10;
             AddRomanNumeric(builder, number, numerics[3]);
-            builder.Append(NumberSuffix);
+            if (suffix) builder.Append(NumberSuffix);
             return builder.ToString();
         }
 

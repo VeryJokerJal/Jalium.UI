@@ -1058,6 +1058,17 @@ internal static class MarkupExtensionParser
         if (extension == null)
             return false;
 
+        // Attached-property setters must recognize the installed expression.
+        // TemplateBindingExtension otherwise returns null after attaching it,
+        // which would be converted to a literal default and overwrite the binding.
+        if (extension is TemplateBindingExtension templateBinding &&
+            !string.IsNullOrEmpty(templateBinding.Property) &&
+            targetObject is DependencyObject dependencyObject && targetProperty != null)
+        {
+            result = dependencyObject.SetBinding(targetProperty, new DeferredTemplateBinding(templateBinding.Property));
+            return true;
+        }
+
         result = ProvideExtensionValueForDependencyProperty(
             extension,
             targetObject,
@@ -1327,7 +1338,7 @@ internal static class MarkupExtensionParser
                 extension.Source = ResolveNestedValue(value, ambientProvider) ?? value;
                 break;
             case "relativesource":
-                extension.RelativeSource = ParseRelativeSource(value);
+                extension.RelativeSource = ParseRelativeSource(value, (ambientProvider as XamlParserContext)?.CaptureMarkupTypeResolver());
                 break;
             case "validatesondataerrors":
                 if (bool.TryParse(value, out var validatesOnDataErrors))
@@ -1416,7 +1427,7 @@ internal static class MarkupExtensionParser
         return nestedExtension?.ProvideValue(serviceProvider);
     }
 
-    private static RelativeSource? ParseRelativeSource(string value)
+    private static RelativeSource? ParseRelativeSource(string value, Func<string, Type?>? typeResolver = null)
     {
         // Handle nested markup extension: {RelativeSource AncestorType=ComboBox}
         var trimmed = value.Trim();
@@ -1428,15 +1439,15 @@ internal static class MarkupExtensionParser
             if (content.StartsWith("RelativeSource", StringComparison.OrdinalIgnoreCase))
             {
                 var parameters = content.Substring("RelativeSource".Length).Trim();
-                return CreateRelativeSourceFromParameters(parameters);
+                return CreateRelativeSourceFromParameters(parameters, typeResolver);
             }
         }
 
         // Handle simple values like "Self" or "TemplatedParent"
-        return CreateRelativeSourceFromParameters(value);
+        return CreateRelativeSourceFromParameters(value, typeResolver);
     }
 
-    private static RelativeSource? CreateRelativeSourceFromParameters(string parameters)
+    private static RelativeSource? CreateRelativeSourceFromParameters(string parameters, Func<string, Type?>? typeResolver)
     {
         if (string.IsNullOrWhiteSpace(parameters))
             return null;
@@ -1479,7 +1490,10 @@ internal static class MarkupExtensionParser
                         mode = modeVal;
                     break;
                 case "ancestortype":
-                    ancestorType = ResolveType(paramValue);
+                    var typeName = paramValue.Trim('"', '\'');
+                    if (typeName.StartsWith("{x:Type", StringComparison.OrdinalIgnoreCase) && typeName.EndsWith('}'))
+                        typeName = typeName[7..^1].Trim();
+                    ancestorType = typeResolver != null ? typeResolver(typeName) : ResolveType(typeName);
                     break;
                 case "ancestorlevel":
                     if (int.TryParse(paramValue, out var level))

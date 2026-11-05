@@ -491,13 +491,28 @@ public partial class Storyboard : ParallelTimeline
             throw new ArgumentOutOfRangeException(nameof(origin));
         }
 
-        foreach (IAnimationClock clock in _clocks)
+        foreach (IAnimationClock clock in _clocks.ToArray())
         {
+            bool paused = clock.IsPaused;
             clock.Seek(
                 offset,
                 origin == TimeSeekOrigin.Duration
                     ? AnimationSeekOrigin.Duration
                     : AnimationSeekOrigin.BeginTime);
+            clock.Tick(AnimationManager.CurrentFrameTimestampOrNow);
+            if (paused) clock.Pause();
+        }
+        // Paused clocks do not participate in the frame pump. A seek must still
+        // publish their current value immediately, including in designer previews.
+        foreach (var (clock, target, property, originalValue, elementDriven) in _activeAnimations.ToArray())
+        {
+            if (elementDriven && target is UIElement element)
+                element.RefreshStoryboardAnimationValue(property, clock);
+            else if (!clock.IsCompleted && clock.Timeline is IAnimationTimeline animation)
+            {
+                object value = originalValue ?? GetDefaultValue(property);
+                target.SetValue(property, animation.GetCurrentValue(value, value, clock));
+            }
         }
         EnsureFrameSourcesAfterClockRestart();
         OnCurrentTimeInvalidated();

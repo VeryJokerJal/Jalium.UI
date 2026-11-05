@@ -1,0 +1,98 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Style x:Key="{x:Static DataGridTextColumn.DefaultElementStyleKey}" TargetType="TextBlock">
+        <Setter Property="VerticalAlignment" Value="Center" />
+        <Setter Property="Margin" Value="2,0" />
+        <Setter Property="FontFamily" Value="{Binding FontFamily, RelativeSource={RelativeSource AncestorType=DataGridCell}}" />
+        <Setter Property="FontSize" Value="{Binding FontSize, RelativeSource={RelativeSource AncestorType=DataGridCell}}" />
+        <Setter Property="FontStyle" Value="{Binding FontStyle, RelativeSource={RelativeSource AncestorType=DataGridCell}}" />
+        <Setter Property="FontWeight" Value="{Binding FontWeight, RelativeSource={RelativeSource AncestorType=DataGridCell}}" />
+        <Setter Property="Foreground" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=DataGridCell}}" />
+    </Style>
+    <Style x:Key="{x:Static DataGridTextColumn.DefaultEditingElementStyleKey}" TargetType="TextBox">
+        <Setter Property="MinWidth" Value="0" />
+        <Setter Property="MinHeight" Value="0" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="FontFamily" Value="{Binding FontFamily, RelativeSource={RelativeSource AncestorType=DataGridCell}}" />
+        <Setter Property="FontSize" Value="{Binding FontSize, RelativeSource={RelativeSource AncestorType=DataGridCell}}" />
+        <Setter Property="FontStyle" Value="{Binding FontStyle, RelativeSource={RelativeSource AncestorType=DataGridCell}}" />
+        <Setter Property="FontWeight" Value="{Binding FontWeight, RelativeSource={RelativeSource AncestorType=DataGridCell}}" />
+        <Setter Property="Foreground" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=DataGridCell}}" />
+    </Style>
+    <Style x:Key="{x:Static DataGridCheckBoxColumn.DefaultElementStyleKey}" TargetType="CheckBox">
+        <Setter Property="IsEnabled" Value="False" />
+        <Setter Property="IsHitTestVisible" Value="False" />
+        <Setter Property="Focusable" Value="False" />
+        <Setter Property="MinWidth" Value="0" />
+        <Setter Property="MinHeight" Value="0" />
+        <Setter Property="HorizontalAlignment" Value="Center" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <Style x:Key="{x:Static DataGridCheckBoxColumn.DefaultEditingElementStyleKey}" TargetType="CheckBox">
+        <Setter Property="MinWidth" Value="0" />
+        <Setter Property="MinHeight" Value="0" />
+        <Setter Property="HorizontalAlignment" Value="Center" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <Style x:Key="{x:Static DataGridComboBoxColumn.DefaultElementStyleKey}" TargetType="ComboBox">
+        <Setter Property="IsSynchronizedWithCurrentItem" Value="False" />
+        <Setter Property="IsHitTestVisible" Value="False" />
+        <Setter Property="Focusable" Value="False" />
+        <Setter Property="MinWidth" Value="0" />
+        <Setter Property="MinHeight" Value="0" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+        <Setter Property="Padding" Value="2,0" />
+        <Setter Property="FontFamily" Value="{Binding FontFamily, RelativeSource={RelativeSource AncestorType=DataGridCell}}" />
+        <Setter Property="FontSize" Value="{Binding FontSize, RelativeSource={RelativeSource AncestorType=DataGridCell}}" />
+        <Setter Property="FontWeight" Value="{Binding FontWeight, RelativeSource={RelativeSource AncestorType=DataGridCell}}" />
+        <Setter Property="Foreground" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=DataGridCell}}" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="ComboBox">
+                <ContentPresenter Name="PART_SelectionPresenter" Content="{TemplateBinding SelectionBoxItem}"
+                                  ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                  ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
+                                  ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}"
+                                  Margin="{TemplateBinding Padding}" VerticalAlignment="Center" />
+            </ControlTemplate>
+        </Setter>
+    </Style>
+    <Style x:Key="{x:Static DataGridComboBoxColumn.TextBlockComboBoxStyleKey}" TargetType="ComboBox"
+           BasedOn="{StaticResource {x:Static DataGridComboBoxColumn.DefaultElementStyleKey}}" />
+    <Style x:Key="{x:Static DataGridComboBoxColumn.DefaultEditingElementStyleKey}" TargetType="ComboBox">
+        <Setter Property="IsSynchronizedWithCurrentItem" Value="False" />
+        <Setter Property="MinWidth" Value="0" />
+        <Setter Property="MinHeight" Value="0" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Padding" Value="2,0" />
+        <Setter Property="FontFamily" Value="{Binding FontFamily, RelativeSource={RelativeSource AncestorType=DataGridCell}}" />
+        <Setter Property="FontSize" Value="{Binding FontSize, RelativeSource={RelativeSource AncestorType=DataGridCell}}" />
+        <Setter Property="FontWeight" Value="{Binding FontWeight, RelativeSource={RelativeSource AncestorType=DataGridCell}}" />
+        <Setter Property="Foreground" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=DataGridCell}}" />
+    </Style>
+    <Style x:Key="{x:Static DataGridHyperlinkColumn.DefaultElementStyleKey}" TargetType="HyperlinkButton">
+        <Setter Property="MinWidth" Value="0" />
+        <Setter Property="MinHeight" Value="0" />
+        <Setter Property="Margin" Value="2,0" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+        <Setter Property="FontFamily" Value="{Binding FontFamily, RelativeSource={RelativeSource AncestorType=DataGridCell}}" />
+        <Setter Property="FontSize" Value="{Binding FontSize, RelativeSource={RelativeSource AncestorType=DataGridCell}}" />
+        <Setter Property="FontWeight" Value="{Binding FontWeight, RelativeSource={RelativeSource AncestorType=DataGridCell}}" />
+    </Style>
+    <Style x:Key="{x:Static DataGridHyperlinkColumn.DefaultEditingElementStyleKey}" TargetType="TextBox"
+           BasedOn="{StaticResource {x:Static DataGridTextColumn.DefaultEditingElementStyleKey}}" />
+
+    <DataTemplate x:Key="DataGridTextColumn.DisplayTemplate"><TextBlock /></DataTemplate>
+    <DataTemplate x:Key="DataGridTextColumn.EditingTemplate"><TextBox /></DataTemplate>
+    <DataTemplate x:Key="DataGridCheckBoxColumn.DisplayTemplate"><CheckBox /></DataTemplate>
+    <DataTemplate x:Key="DataGridCheckBoxColumn.EditingTemplate"><CheckBox /></DataTemplate>
+    <DataTemplate x:Key="DataGridComboBoxColumn.DisplayTemplate"><ComboBox /></DataTemplate>
+    <DataTemplate x:Key="DataGridComboBoxColumn.EditingTemplate"><ComboBox /></DataTemplate>
+    <DataTemplate x:Key="DataGridHyperlinkColumn.DisplayTemplate"><HyperlinkButton /></DataTemplate>
+    <DataTemplate x:Key="DataGridHyperlinkColumn.EditingTemplate"><TextBox /></DataTemplate>
+</ResourceDictionary>

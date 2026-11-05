@@ -2,6 +2,7 @@
 using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Editor;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
 
@@ -648,12 +649,40 @@ public class EditControlTests
         editor.RaiseEvent(CreateMouseMove(topPoint, MouseButtonState.Released));
         int topLine = editor.MinimapTooltipLineForTesting;
         Assert.True(editor.IsMinimapTooltipVisibleForTesting);
+        Assert.True(editor.IsMinimapTooltipPopupOpenForTesting);
+        Assert.Equal(PlacementMode.MousePoint, editor.MinimapTooltipPlacementForTesting);
+        var pointerOffset = editor.MinimapTooltipOffsetForTesting;
+        Assert.NotNull(pointerOffset);
+        Assert.Equal(new Point(12, 20), pointerOffset.Value);
         Assert.InRange(topLine, 1, editor.Document.LineCount);
 
         editor.RaiseEvent(CreateMouseMove(bottomPoint, MouseButtonState.Released));
         int bottomLine = editor.MinimapTooltipLineForTesting;
         Assert.True(editor.IsMinimapTooltipVisibleForTesting);
         Assert.True(bottomLine > topLine);
+    }
+
+    [Fact]
+    public void MinimapTooltip_MouseLeave_ShouldClosePointerPopup()
+    {
+        var editor = new EditControl { ShowMinimap = true };
+        editor.LoadText(string.Join("\n", Enumerable.Range(1, 500).Select(i => $"line{i}")));
+        editor.Arrange(new Rect(0, 0, 320, 180));
+        editor.UpdateScrollBarsForTesting(new Size(320, 180));
+
+        var minimapRect = editor.MinimapRectForTesting;
+        Assert.False(minimapRect.IsEmpty);
+        var hoverPoint = new Point(
+            minimapRect.X + minimapRect.Width * 0.5,
+            minimapRect.Y + minimapRect.Height * 0.5);
+
+        editor.RaiseEvent(CreateMouseMove(hoverPoint, MouseButtonState.Released));
+        Assert.True(editor.IsMinimapTooltipPopupOpenForTesting);
+
+        editor.RaiseEvent(CreateMouseLeave(hoverPoint));
+
+        Assert.False(editor.IsMinimapTooltipVisibleForTesting);
+        Assert.False(editor.IsMinimapTooltipPopupOpenForTesting);
     }
 
     [Fact]
@@ -1214,6 +1243,20 @@ public class EditControlTests
             timestamp: 2);
     }
 
+    private static MouseEventArgs CreateMouseLeave(Point position)
+    {
+        return new MouseEventArgs(
+            UIElement.MouseLeaveEvent,
+            position,
+            MouseButtonState.Released,
+            middleButton: MouseButtonState.Released,
+            rightButton: MouseButtonState.Released,
+            xButton1: MouseButtonState.Released,
+            xButton2: MouseButtonState.Released,
+            modifiers: ModifierKeys.None,
+            timestamp: 3);
+    }
+
     private static MouseWheelEventArgs CreateMouseWheel(Point position, int delta, ModifierKeys modifiers)
     {
         return new MouseWheelEventArgs(
@@ -1226,6 +1269,6 @@ public class EditControlTests
             xButton1: MouseButtonState.Released,
             xButton2: MouseButtonState.Released,
             modifiers,
-            timestamp: 3);
+            timestamp: 4);
     }
 }

@@ -16,6 +16,8 @@
          RID-specific native payload (libjalium.native.*.so) copied next to
          the app by Jalium.UI.Interop's build targets. -->
     <ProjectReference Include="..\..\src\packaging\Jalium.UI.Linux\Jalium.UI.Linux.csproj" />
+    <ProjectReference Include="..\..\src\managed\Jalium.UI.Xaml.SourceGenerator\Jalium.UI.Xaml.SourceGenerator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" UndefineProperties="PublishAot;PublishTrimmed;PublishSingleFile;PublishReadyToRun;SelfContained;RuntimeIdentifier;RuntimeIdentifiers" />
+    <AdditionalFiles Include="Themes\LinuxDemo.jalxaml" />
   </ItemGroup>
 
 </Project>

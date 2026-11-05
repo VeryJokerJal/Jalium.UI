@@ -10,7 +10,7 @@ namespace Jalium.UI.Controls;
 /// Used within <see cref="DockSplitPanel"/> or <see cref="DockLayout"/>.
 /// </summary>
 [Jalium.UI.Markup.ContentProperty("Items")]
-public class DockTabPanel : Selector
+public partial class DockTabPanel : Selector
 {
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
@@ -131,13 +131,14 @@ public class DockTabPanel : Selector
 
     #endregion
 
-    private readonly TransitioningContentControl _selectedContentHost;
+    private ContentControl? _selectedContentHost;
     private bool _isDockHighlighted;
-    private readonly ScrollBar _tabStripScrollBar;
+    private ScrollBar? _tabStripScrollBar;
     private double _tabStripScrollOffset;
     private double _tabStripExtent;
     private double _tabStripViewport;
     private bool _isTabStripScrollable;
+    private bool _ensureSelectedTabVisible;
     private Rect _tabStripRect;
     private Rect _tabHeaderViewportRect;
     private Rect _tabScrollBarRect;
@@ -151,13 +152,13 @@ public class DockTabPanel : Selector
 
     internal bool IsVerticalTabStrip => TabStripPlacement is Dock.Left or Dock.Right;
 
-    internal Rect TabHeadersViewportRect => _tabHeaderViewportRect;
+    internal Rect TabHeadersViewportRect => ToOwnerRect(_tabHeaderViewportRect);
 
     internal double TabStripScrollOffsetForTesting => _tabStripScrollOffset;
 
-    internal bool IsTabStripScrollableForTesting => _tabStripScrollBar.Visibility == Visibility.Visible;
+    internal bool IsTabStripScrollableForTesting => _tabStripScrollBar?.Visibility == Visibility.Visible;
 
-    internal Rect TabStripScrollBarRectForTesting => _tabScrollBarRect;
+    internal Rect TabStripScrollBarRectForTesting => ToOwnerRect(_tabScrollBarRect);
 
     internal void SetTabStripScrollOffsetForTesting(double offset)
     {
@@ -248,27 +249,7 @@ public class DockTabPanel : Selector
     public DockTabPanel()
     {
         SetCurrentValue(UIElement.TransitionPropertyProperty, TransitionPropertyCollection.None());
-        MinWidth = 100;
-        MinHeight = 100;
-        ClipToBounds = true;
-        _selectedContentHost = new TransitioningContentControl
-        {
-            ClipToBounds = true,
-            TransitionMode = SelectedContentTransitionMode
-        };
-        AddVisualChild(_selectedContentHost);
-
-        _tabStripScrollBar = new ScrollBar
-        {
-            Orientation = Orientation.Horizontal,
-            Visibility = Visibility.Collapsed,
-            IsThumbSlim = true,
-            SmallChange = 32,
-            LargeChange = 120,
-            Focusable = false
-        };
-        _tabStripScrollBar.Scroll += OnTabStripScroll;
-        AddVisualChild(_tabStripScrollBar);
+        DefaultStyleKey = typeof(DockTabPanel);
         AddHandler(PreviewMouseWheelEvent, new MouseWheelEventHandler(OnMouseWheelHandler));
 
         ((System.Collections.Specialized.INotifyCollectionChanged)Items).CollectionChanged += OnDockItemsChanged;
@@ -346,22 +327,24 @@ public class DockTabPanel : Selector
         }
 
         EnsureItemsHostOrientation();
-        InvalidateMeasure();
-        InvalidateVisual();
+        InvalidateDockMeasure();
+        InvalidateDockVisual();
     }
 
-    internal Rect GetTabStripInteractionRect()
+    internal Rect GetTabStripInteractionRect() => ToOwnerRect(GetLocalTabStripRect());
+
+    private Rect GetLocalTabStripRect()
     {
         if (_tabHeaderViewportRect.Width > 0 && _tabHeaderViewportRect.Height > 0)
             return _tabHeaderViewportRect;
-
-        var stripThickness = GetEffectiveTabStripThickness(new Size(ActualWidth, ActualHeight));
+        var size = DockAreaSize;
+        var stripThickness = GetEffectiveTabStripThickness(size);
         return TabStripPlacement switch
         {
-            Dock.Bottom => new Rect(0, Math.Max(0, ActualHeight - stripThickness), ActualWidth, stripThickness),
-            Dock.Left => new Rect(0, 0, stripThickness, ActualHeight),
-            Dock.Right => new Rect(Math.Max(0, ActualWidth - stripThickness), 0, stripThickness, ActualHeight),
-            _ => new Rect(0, 0, ActualWidth, stripThickness),
+            Dock.Bottom => new Rect(0, Math.Max(0, size.Height - stripThickness), size.Width, stripThickness),
+            Dock.Left => new Rect(0, 0, stripThickness, size.Height),
+            Dock.Right => new Rect(Math.Max(0, size.Width - stripThickness), 0, stripThickness, size.Height),
+            _ => new Rect(0, 0, size.Width, stripThickness),
         };
     }
 
@@ -382,7 +365,7 @@ public class DockTabPanel : Selector
         Items.RemoveAt(index);
 
         // Always clear old selected content first so same-index reselection still refreshes the host.
-        _selectedContentHost.Content = null;
+        SetHostedContent(null);
 
         // Adjust selection
         if (Items.Count == 0)
@@ -434,9 +417,9 @@ public class DockTabPanel : Selector
     /// </summary>
     internal void ReleaseContentElement(UIElement element)
     {
-        if (ReferenceEquals(_selectedContentHost.Content, element))
+        if (ReferenceEquals(_selectedContentHost?.Content, element))
         {
-            _selectedContentHost.Content = null;
+            SetHostedContent(null);
         }
     }
 
@@ -449,20 +432,15 @@ public class DockTabPanel : Selector
         // Only adopt if this item is actually the selected one
         if (Items.IndexOf(item) != SelectedIndex) return;
 
+        if (item.Content is UIElement contentElement)
+            DetachContentFromDockPanel(contentElement, this);
         SetValue(SelectedContentProperty, item.Content);
 
-        if (item.Content is UIElement contentElement)
-        {
-            // Force-detach from old panel if still attached
-            if (contentElement.VisualParent is DockTabPanel oldPanel && oldPanel != this)
-                oldPanel.ReleaseContentElement(contentElement);
-        }
+        SetHostedContent(item.Content);
 
-        _selectedContentHost.Content = item.Content;
-
-        InvalidateMeasure();
-        InvalidateArrange();
-        InvalidateVisual();
+        InvalidateDockMeasure();
+        InvalidateDockArrange();
+        InvalidateDockVisual();
     }
 
     protected override void UpdateContainerSelection()
@@ -474,7 +452,7 @@ public class DockTabPanel : Selector
                 dockItem.IsSelected = (i == SelectedIndex);
         }
 
-        _selectedContentHost.Content = null;
+        SetHostedContent(null);
 
         // Update selected content
         if (SelectedIndex >= 0 && SelectedIndex < Items.Count)
@@ -482,28 +460,24 @@ public class DockTabPanel : Selector
             var selectedItem = Items[SelectedIndex];
             if (selectedItem is DockItem dockItem)
             {
+                if (dockItem.Content is UIElement contentElement)
+                    DetachContentFromDockPanel(contentElement, this);
                 SetValue(SelectedContentProperty, dockItem.Content);
 
-                if (dockItem.Content is UIElement contentElement)
-                {
-                    // Force-detach from old panel if still attached (e.g. after dock-back transfer)
-                    if (contentElement.VisualParent is DockTabPanel oldPanel && oldPanel != this)
-                        oldPanel.ReleaseContentElement(contentElement);
-                }
-
-                _selectedContentHost.Content = dockItem.Content;
+                SetHostedContent(dockItem.Content);
             }
         }
         else
         {
             SetValue(SelectedContentProperty, null);
-            _selectedContentHost.Content = null;
+            SetHostedContent(null);
         }
 
+        _ensureSelectedTabVisible = true;
         EnsureSelectedTabVisibleCore();
-        InvalidateMeasure();
-        InvalidateArrange();
-        InvalidateVisual();
+        InvalidateDockMeasure();
+        InvalidateDockArrange();
+        InvalidateDockVisual();
     }
 
     private static void OnTabStripPlacementChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -511,26 +485,29 @@ public class DockTabPanel : Selector
         if (d is DockTabPanel panel)
         {
             panel._tabStripScrollOffset = 0;
+            panel._ensureSelectedTabVisible = true;
+            foreach (var item in panel.Items.OfType<DockItem>().Concat(panel.ItemsHost?.Children.OfType<DockItem>() ?? Enumerable.Empty<DockItem>()).Distinct())
+                item.RefreshDockPlacement();
             panel.EnsureItemsHostOrientation();
-            panel.InvalidateMeasure();
-            panel.InvalidateArrange();
-            panel.InvalidateVisual();
+            panel.InvalidateDockMeasure();
+            panel.InvalidateDockArrange();
+            panel.InvalidateDockVisual();
         }
     }
 
     private static new void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is DockTabPanel panel)
-            panel.InvalidateVisual();
+            panel.InvalidateDockVisual();
     }
 
     private static void OnLayoutPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is DockTabPanel panel)
         {
-            panel.InvalidateMeasure();
-            panel.InvalidateArrange();
-            panel.InvalidateVisual();
+            panel.InvalidateDockMeasure();
+            panel.InvalidateDockArrange();
+            panel.InvalidateDockVisual();
         }
     }
 
@@ -538,31 +515,30 @@ public class DockTabPanel : Selector
     {
         if (d is DockTabPanel panel)
         {
-            panel._selectedContentHost.TransitionMode = e.NewValue is TransitionMode mode ? mode : null;
-            panel.InvalidateVisual();
+            if (panel._selectedContentHost is TransitioningContentControl host)
+                host.SetCurrentValue(TransitioningContentControl.TransitionModeProperty, e.NewValue);
+            panel.InvalidateDockVisual();
         }
     }
 
     private void OnTabStripScroll(object? sender, ScrollEventArgs e)
     {
-        SetTabStripScrollOffsetInternal(_tabStripScrollBar.Value, invalidateLayout: true);
+        if (ReferenceEquals(sender, _tabStripScrollBar) && _tabStripScrollBar is { } bar)
+            SetTabStripScrollOffsetInternal(bar.Value, invalidateLayout: true);
     }
 
     private void OnMouseWheelHandler(object sender, MouseWheelEventArgs e)
     {
-        if (_tabStripScrollBar.Visibility != Visibility.Visible)
-            return;
-
-        if (!double.IsFinite(e.VerticalDelta) || e.VerticalDelta == 0)
+        if (_tabStripScrollBar is not { Visibility: Visibility.Visible } bar)
             return;
 
         var pos = e.GetPosition(this);
         if (!GetTabStripInteractionRect().Contains(pos))
             return;
 
-        var delta = e.VerticalDelta > 0
-            ? -Math.Max(12, _tabStripScrollBar.SmallChange * 2)
-            : Math.Max(12, _tabStripScrollBar.SmallChange * 2);
+        var delta = e.Delta > 0
+            ? -Math.Max(12, bar.SmallChange * 2)
+            : Math.Max(12, bar.SmallChange * 2);
 
         SetTabStripScrollOffsetInternal(_tabStripScrollOffset + delta, invalidateLayout: true);
         e.Handled = true;
@@ -579,7 +555,7 @@ public class DockTabPanel : Selector
                 stackPanel.ClipToBounds = true;
         }
 
-        _tabStripScrollBar.Orientation = IsVerticalTabStrip ? Orientation.Vertical : Orientation.Horizontal;
+        _tabStripScrollBar?.SetCurrentValue(ScrollBar.OrientationProperty, IsVerticalTabStrip ? Orientation.Vertical : Orientation.Horizontal);
     }
 
     private double GetEffectiveTabStripThickness(Size size)
@@ -647,6 +623,8 @@ public class DockTabPanel : Selector
 
     private void RefreshTabStripScrollMetrics(Size size)
     {
+        var previousViewport = _tabStripViewport;
+        var selectedWasVisible = IsSelectedTabFullyVisible();
         _tabStripExtent = ComputeTabStripExtent();
 
         var viewport = IsVerticalTabStrip ? size.Height : size.Width;
@@ -660,6 +638,20 @@ public class DockTabPanel : Selector
 
         ClampTabStripScrollOffset();
         UpdateTabStripScrollBarMetrics();
+        if (_ensureSelectedTabVisible || (selectedWasVisible && Math.Abs(previousViewport - _tabStripViewport) > 0.5))
+            EnsureSelectedTabVisibleCore();
+        _ensureSelectedTabVisible = false;
+    }
+
+    private bool IsSelectedTabFullyVisible()
+    {
+        if (_tabStripViewport <= 0 || SelectedIndex < 0 || SelectedIndex >= Items.Count ||
+            Items[SelectedIndex] is not DockItem selectedItem) return false;
+        double start = 0;
+        for (var i = 0; i < SelectedIndex; i++)
+            if (Items[i] is DockItem item) start += GetTabPrimaryLength(item);
+        return start >= _tabStripScrollOffset - 0.5 &&
+            start + GetTabPrimaryLength(selectedItem) <= _tabStripScrollOffset + _tabStripViewport + 0.5;
     }
 
     private void ClampTabStripScrollOffset()
@@ -689,34 +681,35 @@ public class DockTabPanel : Selector
 
         if (invalidateLayout)
         {
-            InvalidateArrange();
-            InvalidateVisual();
+            InvalidateDockArrange();
+            InvalidateDockVisual();
         }
     }
 
     private void SyncTabStripScrollBarValue()
     {
-        if (Math.Abs(_tabStripScrollBar.Value - _tabStripScrollOffset) > 0.1)
-            _tabStripScrollBar.Value = _tabStripScrollOffset;
+        if (_tabStripScrollBar is { } bar && Math.Abs(bar.Value - _tabStripScrollOffset) > 0.1)
+            bar.SetCurrentValue(RangeBase.ValueProperty, _tabStripScrollOffset);
     }
 
     private void UpdateTabStripScrollBarMetrics()
     {
         var maxOffset = Math.Max(0, _tabStripExtent - _tabStripViewport);
         var show = _isTabStripScrollable && _tabStripViewport > 0 && maxOffset > 0.5;
-
-        _tabStripScrollBar.Orientation = IsVerticalTabStrip ? Orientation.Vertical : Orientation.Horizontal;
-        _tabStripScrollBar.Minimum = 0;
-        _tabStripScrollBar.Maximum = maxOffset;
-        _tabStripScrollBar.ViewportSize = Math.Max(0, _tabStripViewport);
-        _tabStripScrollBar.LargeChange = Math.Max(1, Math.Min(_tabStripViewport, maxOffset));
-        _tabStripScrollBar.SmallChange = Math.Max(8, _tabStripScrollBar.LargeChange / 8);
-        _tabStripScrollBar.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
-
-        if (!show)
-            _tabStripScrollOffset = 0;
-
+        if (!show) _tabStripScrollOffset = 0;
+        if (_tabStripScrollBar is { } bar)
+        {
+            bar.SetCurrentValue(ScrollBar.OrientationProperty, IsVerticalTabStrip ? Orientation.Vertical : Orientation.Horizontal);
+            bar.SetCurrentValue(RangeBase.MinimumProperty, 0d);
+            bar.SetCurrentValue(RangeBase.MaximumProperty, maxOffset);
+            bar.SetCurrentValue(ScrollBar.ViewportSizeProperty, Math.Max(0, _tabStripViewport));
+            var largeChange = Math.Max(1, Math.Min(_tabStripViewport, maxOffset));
+            bar.SetCurrentValue(RangeBase.LargeChangeProperty, largeChange);
+            bar.SetCurrentValue(RangeBase.SmallChangeProperty, Math.Max(8, largeChange / 8));
+            bar.SetCurrentValue(VisibilityProperty, show ? Visibility.Visible : Visibility.Collapsed);
+        }
         SyncTabStripScrollBarValue();
+        UpdateDockVisualStates();
     }
 
     private void EnsureSelectedTabVisibleCore()
@@ -777,11 +770,11 @@ public class DockTabPanel : Selector
         var headerViewportRect = stripRect;
         Rect scrollBarRect = Rect.Empty;
 
-        if (_tabStripScrollBar.Visibility == Visibility.Visible)
+        if (_tabStripScrollBar?.Visibility == Visibility.Visible)
         {
             if (IsVerticalTabStrip)
             {
-                var width = Math.Min(TabStripScrollBarThickness, stripRect.Width);
+                var width = Math.Min(GetTabScrollBarThickness(), stripRect.Width);
                 if (width > 0)
                 {
                     scrollBarRect = TabStripPlacement == Dock.Left
@@ -791,7 +784,7 @@ public class DockTabPanel : Selector
             }
             else
             {
-                var height = Math.Min(TabStripScrollBarThickness, stripRect.Height);
+                var height = Math.Min(GetTabScrollBarThickness(), stripRect.Height);
                 if (height > 0)
                 {
                     scrollBarRect = TabStripPlacement == Dock.Top
@@ -804,116 +797,62 @@ public class DockTabPanel : Selector
         return (stripRect, contentRect, headerViewportRect, scrollBarRect);
     }
 
-    protected override Size MeasureOverride(Size availableSize)
+    internal Size MeasureDockArea(Size availableSize)
     {
-        if (ItemsHost == null)
-            RefreshItems();
-
-        EnsureItemsHostOrientation();
-
+        // Materialize the template-owned items panel before reading header extents.
         var stripThickness = GetEffectiveTabStripThickness(availableSize);
+        var headerSize = IsVerticalTabStrip
+            ? new Size(stripThickness, double.PositiveInfinity)
+            : new Size(double.PositiveInfinity, stripThickness);
+        _headerPresenter?.Measure(headerSize);
+        EnsureItemsHostOrientation();
         MeasureTabHeaders(stripThickness);
-
         var stripViewport = IsVerticalTabStrip
             ? new Size(stripThickness, availableSize.Height)
             : new Size(availableSize.Width, stripThickness);
         RefreshTabStripScrollMetrics(stripViewport);
-
-        if (_tabStripScrollBar.Visibility == Visibility.Visible)
-        {
-            var scrollMeasureSize = IsVerticalTabStrip
-                ? new Size(Math.Min(stripThickness, TabStripScrollBarThickness), availableSize.Height)
-                : new Size(availableSize.Width, Math.Min(stripThickness, TabStripScrollBarThickness));
-            _tabStripScrollBar.Measure(scrollMeasureSize);
-        }
-        else
-        {
-            _tabStripScrollBar.Measure(default);
-        }
-
+        if (_tabStripScrollBar is { } bar)
+            bar.Measure(bar.Visibility == Visibility.Visible
+                ? IsVerticalTabStrip
+                    ? new Size(Math.Min(stripThickness, TabStripScrollBarThickness), availableSize.Height)
+                    : new Size(availableSize.Width, Math.Min(stripThickness, TabStripScrollBarThickness))
+                : default);
         var contentWidth = Math.Max(0, availableSize.Width - (IsVerticalTabStrip ? stripThickness + 1 : 2));
         var contentHeight = Math.Max(0, availableSize.Height - (IsVerticalTabStrip ? 2 : stripThickness + 1));
-        if (_selectedContentHost.Content != null)
-        {
-            if (contentWidth <= 0 && ActualWidth > 2)
-                contentWidth = Math.Max(0, ActualWidth - (IsVerticalTabStrip ? stripThickness + 1 : 2));
-            if (contentHeight <= 0 && ActualHeight > 2)
-                contentHeight = Math.Max(0, ActualHeight - (IsVerticalTabStrip ? 2 : stripThickness + 1));
-
-            _selectedContentHost.Measure(new Size(contentWidth, contentHeight));
-        }
-
-        return availableSize;
+        _selectedContentHost?.Measure(new Size(contentWidth, contentHeight));
+        _backgroundChrome?.Measure(availableSize);
+        _overlayChrome?.Measure(availableSize);
+        return new Size(double.IsFinite(availableSize.Width) ? availableSize.Width : Math.Max(ItemsHost?.DesiredSize.Width ?? 0, _selectedContentHost?.DesiredSize.Width ?? 0),
+            double.IsFinite(availableSize.Height) ? availableSize.Height : stripThickness + (_selectedContentHost?.DesiredSize.Height ?? 0));
     }
 
-    protected override Size ArrangeOverride(Size finalSize)
+    internal Size ArrangeDockArea(Size finalSize)
     {
         EnsureItemsHostOrientation();
-
         var stripThickness = GetEffectiveTabStripThickness(finalSize);
-        var stripViewport = IsVerticalTabStrip
+        RefreshTabStripScrollMetrics(IsVerticalTabStrip
             ? new Size(stripThickness, finalSize.Height)
-            : new Size(finalSize.Width, stripThickness);
-        RefreshTabStripScrollMetrics(stripViewport);
-
+            : new Size(finalSize.Width, stripThickness));
         var (stripRect, contentRect, headerViewportRect, scrollBarRect) = ComputeLayoutRects(finalSize);
-        _tabStripRect = stripRect;
-        _contentRect = contentRect;
-        _tabHeaderViewportRect = headerViewportRect;
-        _tabScrollBarRect = scrollBarRect;
-
-        if (ItemsHost != null)
+        _tabStripRect = stripRect; _contentRect = contentRect;
+        _tabHeaderViewportRect = headerViewportRect; _tabScrollBarRect = scrollBarRect;
+        if (_headerPresenter is { } presenter)
         {
-            Rect hostRect;
-            if (IsVerticalTabStrip)
-            {
-                var hostHeight = Math.Max(_tabStripExtent, headerViewportRect.Height);
-                hostRect = new Rect(headerViewportRect.X, headerViewportRect.Y - _tabStripScrollOffset, headerViewportRect.Width, hostHeight);
-            }
-            else
-            {
-                var hostWidth = Math.Max(_tabStripExtent, headerViewportRect.Width);
-                hostRect = new Rect(headerViewportRect.X - _tabStripScrollOffset, headerViewportRect.Y, hostWidth, headerViewportRect.Height);
-            }
-
-            ItemsHost.Arrange(hostRect);
+            var hostRect = IsVerticalTabStrip
+                ? new Rect(headerViewportRect.X, headerViewportRect.Y - _tabStripScrollOffset,
+                    headerViewportRect.Width, Math.Max(_tabStripExtent, headerViewportRect.Height))
+                : new Rect(headerViewportRect.X - _tabStripScrollOffset, headerViewportRect.Y,
+                    Math.Max(_tabStripExtent, headerViewportRect.Width), headerViewportRect.Height);
+            presenter.Arrange(hostRect);
         }
-
-        if (_tabStripScrollBar.Visibility == Visibility.Visible && scrollBarRect.Width > 0 && scrollBarRect.Height > 0)
-            _tabStripScrollBar.Arrange(scrollBarRect);
-        else
-            _tabStripScrollBar.Arrange(new Rect(0, 0, 0, 0));
-
-        _selectedContentHost.Measure(new Size(contentRect.Width, contentRect.Height));
-        _selectedContentHost.Arrange(contentRect);
-
+        _tabStripScrollBar?.Arrange(_tabStripScrollBar.Visibility == Visibility.Visible
+            ? scrollBarRect : default);
+        _selectedContentHost?.Measure(contentRect.Size);
+        _selectedContentHost?.Arrange(contentRect);
+        var fullRect = new Rect(0, 0, finalSize.Width, finalSize.Height);
+        _backgroundChrome?.Arrange(fullRect); _overlayChrome?.Arrange(fullRect);
+        InvalidateDockVisual();
         return finalSize;
-    }
-
-    protected override int VisualChildrenCount
-    {
-        get
-        {
-            int count = 0;
-            if (ItemsHost != null) count++;
-            count++;
-            count++;
-            return count;
-        }
-    }
-
-    protected override Visual? GetVisualChild(int index)
-    {
-        int current = 0;
-        if (ItemsHost != null)
-        {
-            if (index == current) return ItemsHost;
-            current++;
-        }
-        if (index == current) return _selectedContentHost;
-        current++;
-        if (index == current) return _tabStripScrollBar;
-        throw new ArgumentOutOfRangeException(nameof(index));
     }
 
     private bool TryGetSelectedTabBounds(out double selectedTabX, out double selectedTabWidth)
@@ -928,7 +867,7 @@ public class DockTabPanel : Selector
         if (selectedItem.ActualWidth <= 0)
             return false;
 
-        var pos = selectedItem.TransformToAncestor(this);
+        var pos = selectedItem.TransformToAncestor((FrameworkElement?)_dockLayoutPanel ?? this);
         selectedTabX = pos.X;
         selectedTabWidth = selectedItem.ActualWidth;
         return true;
@@ -1042,7 +981,7 @@ public class DockTabPanel : Selector
         return gapRight > gapLeft;
     }
 
-    protected override void OnRender(DrawingContext drawingContextObj)
+    internal void RenderDockBackground(DrawingContext drawingContextObj)
     {
         var dc = drawingContextObj;
 
@@ -1052,21 +991,21 @@ public class DockTabPanel : Selector
 
         // Paint a full backdrop first so anti-aliased rounded edges do not blend with
         // an uninitialized/parent surface (which can appear as white halos).
-        dc.DrawRectangle(panelBackground, null, new Rect(0, 0, ActualWidth, ActualHeight));
+        dc.DrawRectangle(panelBackground, null, new Rect(0, 0, DockAreaSize.Width, DockAreaSize.Height));
 
         var stripRect = _tabStripRect.Width > 0 && _tabStripRect.Height > 0
             ? _tabStripRect
-            : GetTabStripInteractionRect();
+            : GetLocalTabStripRect();
 
         if (TabStripPlacement == Dock.Top)
         {
-            var topY = Math.Clamp(stripRect.Bottom, 0, ActualHeight);
-            var contentHeight = Math.Max(0, ActualHeight - topY);
+            var topY = Math.Clamp(stripRect.Bottom, 0, DockAreaSize.Height);
+            var contentHeight = Math.Max(0, DockAreaSize.Height - topY);
             if (contentHeight > 0)
             {
                 var contentRect = _contentRect.Width > 0 && _contentRect.Height > 0
                     ? _contentRect
-                    : new Rect(0, topY, ActualWidth, contentHeight);
+                    : new Rect(0, topY, DockAreaSize.Width, contentHeight);
                 var contentCornerRadius = ResolveChromeCornerRadius(contentRect.Width, contentRect.Height);
                 dc.DrawRoundedRectangle(
                     panelBackground,
@@ -1095,16 +1034,16 @@ public class DockTabPanel : Selector
             switch (TabStripPlacement)
             {
                 case Dock.Bottom:
-                    dc.DrawLine(separatorPen, new Point(0, stripRect.Y), new Point(ActualWidth, stripRect.Y));
+                    dc.DrawLine(separatorPen, new Point(0, stripRect.Y), new Point(DockAreaSize.Width, stripRect.Y));
                     break;
                 case Dock.Left:
-                    dc.DrawLine(separatorPen, new Point(stripRect.Right, 0), new Point(stripRect.Right, ActualHeight));
+                    dc.DrawLine(separatorPen, new Point(stripRect.Right, 0), new Point(stripRect.Right, DockAreaSize.Height));
                     break;
                 case Dock.Right:
-                    dc.DrawLine(separatorPen, new Point(stripRect.X, 0), new Point(stripRect.X, ActualHeight));
+                    dc.DrawLine(separatorPen, new Point(stripRect.X, 0), new Point(stripRect.X, DockAreaSize.Height));
                     break;
                 default:
-                    dc.DrawLine(separatorPen, new Point(0, stripRect.Bottom), new Point(ActualWidth, stripRect.Bottom));
+                    dc.DrawLine(separatorPen, new Point(0, stripRect.Bottom), new Point(DockAreaSize.Width, stripRect.Bottom));
                     break;
             }
         }
@@ -1118,24 +1057,24 @@ public class DockTabPanel : Selector
                 _highlightPen = new Pen(accentBrush, 2);
             }
             var highlightPen = _highlightPen;
-            var highlightRect = new Rect(1, 1, Math.Max(0, ActualWidth - 2), Math.Max(0, ActualHeight - 2));
+            var highlightRect = new Rect(1, 1, Math.Max(0, DockAreaSize.Width - 2), Math.Max(0, DockAreaSize.Height - 2));
             var highlightCornerRadius = ResolveChromeCornerRadius(highlightRect.Width, highlightRect.Height);
             dc.DrawRoundedRectangle(null, highlightPen, highlightRect, highlightCornerRadius, highlightCornerRadius);
         }
 
-        base.OnRender(drawingContextObj);
+
     }
 
-    protected override void OnPostRender(DrawingContext drawingContextObj)
+    internal void RenderDockOverlay(DrawingContext drawingContextObj)
     {
         var dc = drawingContextObj;
         if (TabStripPlacement == Dock.Top)
         {
             var stripRect = _tabStripRect.Width > 0 && _tabStripRect.Height > 0
                 ? _tabStripRect
-                : GetTabStripInteractionRect();
-            var topY = Math.Clamp(stripRect.Bottom, 0, ActualHeight);
-            if (Math.Max(0, ActualHeight - topY) <= 0)
+                : GetLocalTabStripRect();
+            var topY = Math.Clamp(stripRect.Bottom, 0, DockAreaSize.Height);
+            if (Math.Max(0, DockAreaSize.Height - topY) <= 0)
                 return;
 
             var topBorderBrush = ResolveTabStripBorderBrush();
@@ -1151,8 +1090,8 @@ public class DockTabPanel : Selector
             var halfStroke = topBorderPen.Thickness * 0.5;
             var leftEdge = halfStroke;
             var topEdge = halfStroke;
-            var rightEdge = Math.Max(leftEdge, ActualWidth - halfStroke);
-            var bottomEdge = Math.Max(topEdge, ActualHeight - halfStroke);
+            var rightEdge = Math.Max(leftEdge, DockAreaSize.Width - halfStroke);
+            var bottomEdge = Math.Max(topEdge, DockAreaSize.Height - halfStroke);
             var contentRightEdge = rightEdge;
             var contentBottomEdge = bottomEdge;
             if (_contentRect.Width > 0 && _contentRect.Height > 0)
@@ -1400,7 +1339,7 @@ public class DockTabPanel : Selector
         SetValue(IsPanelFocusedPropertyKey, focused);
         _topBorderPen = null;
         _topBorderPenBrush = null;
-        InvalidateVisual();
+        InvalidateDockVisual();
         foreach (var child in Items)
         {
             if (child is DockItem item)

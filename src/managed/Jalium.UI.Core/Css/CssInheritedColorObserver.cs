@@ -9,6 +9,7 @@ internal sealed class CssInheritedColorObserver : IDisposable
     private readonly DependencyProperty? _fallbackProperty;
     private readonly DependencyProperty? _styleProperty;
     private readonly DependencyProperty? _autoColorProperty;
+    private readonly DependencyProperty? _expressionProperty;
     private readonly Action<DependencyProperty, object?, object?> _handler;
     private bool _disposed;
 
@@ -19,6 +20,7 @@ internal sealed class CssInheritedColorObserver : IDisposable
         _child = new(child);
         _property = property;
         _fallbackProperty = fallbackProperty;
+        if(name=="text-emphasis-color")_expressionProperty=CssTextEmphasis.ColorExpressionProperty;
         if (name == "outline-color")
         {
             _styleProperty = FrameworkElement.OutlineStyleProperty;
@@ -39,11 +41,15 @@ internal sealed class CssInheritedColorObserver : IDisposable
         };
         if (child.CssRuntimeState is not { } state)
             return;
-        var property = name == "text-decoration-color"
-            ? CssTextDecorationProperties.ColorProperty
-            : nativeName is null ? null : CssDependencyPropertyLookup.Find(parent.GetType(), nativeName);
+        var property = name switch
+        {
+            "column-rule-color" => CssMultiColumnProperties.RuleColorProperty,
+            "text-decoration-color" => CssTextDecorationProperties.ColorProperty,
+            "text-emphasis-color" => CssTextEmphasis.ColorProperty,
+            _ => nativeName is null ? null : CssDependencyPropertyLookup.Find(parent.GetType(), nativeName),
+        };
         if (property is null) return;
-        var fallbackProperty = name == "text-decoration-color"
+        var fallbackProperty = name is "text-decoration-color" or "text-emphasis-color"
             ? CssDependencyPropertyLookup.Find(parent.GetType(), "Foreground") : null;
 
         (state.ObservedInheritedColors ??= new(StringComparer.Ordinal)).Add(name);
@@ -76,6 +82,7 @@ internal sealed class CssInheritedColorObserver : IDisposable
         if (!ReferenceEquals(property, _property) &&
             !ReferenceEquals(property, _fallbackProperty) &&
             !ReferenceEquals(property, _styleProperty) &&
+            !ReferenceEquals(property, _expressionProperty) &&
             !ReferenceEquals(property, _autoColorProperty)) return;
         if (!_child.TryGetTarget(out var child)) { Dispose(); return; }
         for (var current = CssMatcher.CssAncestor(child); current is not null;

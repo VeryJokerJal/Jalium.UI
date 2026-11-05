@@ -11,6 +11,56 @@
         <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
     </Style>
 
+    <Style TargetType="WindowCommandBar">
+        <Setter Property="Background" Value="{ThemeResource TitleBarBackground}" />
+        <Setter Property="Foreground" Value="{ThemeResource TitleBarText}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
+        <Setter Property="BorderThickness" Value="0,0,0,1" />
+        <Setter Property="ClipToBounds" Value="True" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="WindowCommandBar">
+                    <Border x:Name="PART_Border" Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
+                            Padding="{TemplateBinding Padding}" CornerRadius="{TemplateBinding CornerRadius}">
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" /><VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                            <VisualStateGroup x:Name="TitleStates">
+                                <VisualState x:Name="TitleVisible" /><VisualState x:Name="TitleHidden" />
+                            </VisualStateGroup>
+                            <VisualStateGroup x:Name="LeftCommandStates">
+                                <VisualState x:Name="HasLeftCommands" /><VisualState x:Name="NoLeftCommands" />
+                            </VisualStateGroup>
+                            <VisualStateGroup x:Name="RightCommandStates">
+                                <VisualState x:Name="HasRightCommands" /><VisualState x:Name="NoRightCommands" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock x:Name="PART_TitleText" Text="{TemplateBinding Title}"
+                                       Focusable="False" IsHitTestVisible="False"
+                                       Foreground="{TemplateBinding Foreground}" FontFamily="{TemplateBinding FontFamily}"
+                                       FontSize="{TemplateBinding FontSize}" FontWeight="{TemplateBinding FontWeight}"
+                                       TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                                       Margin="0,0,8,0" Visibility="Collapsed" />
+                            <ContentPresenter x:Name="PART_LeftCommandsHost" Content="{TemplateBinding LeftCommands}" />
+                            <ContentPresenter x:Name="PART_RightCommandsHost" Grid.Column="1" Content="{TemplateBinding RightCommands}" />
+                        </Grid>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsTitleVisible" Value="True">
+                            <Setter TargetName="PART_TitleText" Property="Visibility" Value="Visible" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <!-- ============================================== -->
     <!-- Page Style -->
     <!-- ============================================== -->

@@ -11,27 +11,75 @@ namespace Jalium.UI;
 /// </summary>
 public static class SystemFonts
 {
+    internal static event Action? FontsChanged;
     private const uint SpiGetIconTitleLogFont = 0x001F;
     private const uint SpiGetNonClientMetrics = 0x0029;
     private const int LogPixelsY = 90;
 
     private static Lazy<SystemFontSet> s_fonts = CreateFontCache();
+    private static Lazy<SystemFontSet> s_cssFonts = CreateCssFontCache();
     private static readonly object s_keyLock = new();
     private static readonly Dictionary<string, ResourceKey> s_keyCache = new(StringComparer.Ordinal);
 
     static SystemFonts()
     {
         if (!OperatingSystem.IsLinux())
+        {
+            SystemParameters.StaticPropertyChanged += static (_, e) =>
+            {
+                if (string.IsNullOrEmpty(e.PropertyName)) InvalidateCache();
+            };
             return;
+        }
 
-        LinuxDesktopSettings.SettingsChanged += static (_, _) =>
-            Interlocked.Exchange(ref s_fonts, CreateFontCache());
+        LinuxDesktopSettings.SettingsChanged += static (_, _) => InvalidateCache();
         LinuxDesktopSettings.EnsureMonitoring();
     }
 
     private static Lazy<SystemFontSet> CreateFontCache() => new(
         ReadSystemFonts,
         LazyThreadSafetyMode.ExecutionAndPublication);
+
+    private static Lazy<SystemFontSet> CreateCssFontCache() => new(() =>
+    {
+        var fallback = OperatingSystem.IsWindows() ? ReadSystemFonts() : s_fonts.Value;
+        // The explicit CSS system-font request uses platform UI roles. Keep
+        // existing native-control defaults and public resource identities intact.
+        return OperatingSystem.IsMacOS()
+            ? new(Mac(15, fallback.Caption), Mac(17, fallback.SmallCaption), Mac(12, fallback.Menu),
+                Mac(19, fallback.Status), Mac(23, fallback.Message), Mac(2, fallback.Icon))
+            : fallback;
+    }, LazyThreadSafetyMode.ExecutionAndPublication);
+
+    internal static void InvalidateCache()
+    {
+        if (OperatingSystem.IsLinux()) Interlocked.Exchange(ref s_fonts, CreateFontCache());
+        Interlocked.Exchange(ref s_cssFonts, CreateCssFontCache());
+        FontsChanged?.Invoke();
+    }
+
+    // Read a complete role from one cache generation, including when a desktop
+    // preference refresh races CSS evaluation on another dispatcher.
+    internal static (FontFamily Family, double Size, FontStyle Style, FontWeight Weight) CssFont(string role)
+        => CssFont(s_cssFonts.Value, role);
+
+    internal static Func<string, (FontFamily Family, double Size, FontStyle Style, FontWeight Weight)> CaptureCssFonts()
+    {
+        var fonts = s_cssFonts.Value;
+        return role => CssFont(fonts, role);
+    }
+
+    private static (FontFamily Family, double Size, FontStyle Style, FontWeight Weight) CssFont(SystemFontSet fonts, string role)
+    {
+        var font = role switch
+        {
+            "caption" => fonts.Caption, "small-caption" => fonts.SmallCaption,
+            "menu" => fonts.Menu, "status-bar" => fonts.Status,
+            "message-box" => fonts.Message, "icon" => fonts.Icon,
+            _ => throw new ArgumentOutOfRangeException(nameof(role)),
+        };
+        return (font.Family, font.Size, font.Style, font.Weight);
+    }
 
     #region System font values
 
@@ -253,6 +301,11 @@ public static class SystemFonts
 
         return new SystemFontSet(caption, smallCaption, menu, status, message, icon);
     }
+
+    private static SystemFontInfo Mac(uint role, SystemFontInfo fallback)
+        => MacOSSystemFonts.Read(role) is { } font
+            ? new(new FontFamily(font.Family), font.Size, font.Style, font.Weight, CreateFrozenTextDecorations())
+            : fallback;
 
     private static SystemFontSet CreateFallbackFonts()
     {

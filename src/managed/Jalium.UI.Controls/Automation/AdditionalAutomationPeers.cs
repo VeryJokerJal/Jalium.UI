@@ -114,7 +114,7 @@ public sealed class TextBlockAutomationPeer : FrameworkElementAutomationPeer
     protected override string GetClassNameCore() => nameof(TextBlock);
 
     protected override string GetNameCore()
-        => TextBlockOwner.Text ?? base.GetNameCore();
+        => TextBlockOwner.DisplayExposedText;
 }
 
 /// <summary>
@@ -247,18 +247,18 @@ public class RichTextBoxAutomationPeer : TextAutomationPeer, IAutomationTextProv
     protected override object? GetPatternCore(PatternInterface patternInterface)
         => patternInterface == PatternInterface.Text ? _textProvider : base.GetPatternCore(patternInterface);
 
-    string IAutomationTextProviderSource.Text => RichTextBoxOwner.GetPlainText();
-    int IAutomationTextProviderSource.SelectionStart => RichTextBoxOwner.Selection.Start.DocumentOffset;
+    string IAutomationTextProviderSource.Text => RichTextBoxOwner.AutomationDocumentText;
+    int IAutomationTextProviderSource.SelectionStart => RichTextBoxOwner.AutomationDocumentOffset(RichTextBoxOwner.Selection.Start.DocumentOffset);
     int IAutomationTextProviderSource.SelectionLength =>
-        RichTextBoxOwner.Selection.End.DocumentOffset - RichTextBoxOwner.Selection.Start.DocumentOffset;
+        RichTextBoxOwner.AutomationDocumentOffset(RichTextBoxOwner.Selection.End.DocumentOffset) - RichTextBoxOwner.AutomationDocumentOffset(RichTextBoxOwner.Selection.Start.DocumentOffset);
     bool IAutomationTextProviderSource.IsReadOnly => RichTextBoxOwner.IsReadOnly;
     SupportedTextSelection IAutomationTextProviderSource.SupportedTextSelection => SupportedTextSelection.Single;
     void IAutomationTextProviderSource.Select(int start, int length)
-        => ((IImeSupport)RichTextBoxOwner).TrySetImeSelection(start, length);
+        => RichTextBoxOwner.SelectAutomationDocumentText(start, length);
     void IAutomationTextProviderSource.ScrollIntoView(int start, int length)
         => RichTextBoxOwner.ScrollToAutomationOffset(start);
 
-    int IAutomationTextViewSource.CaretIndex => RichTextBoxOwner.CaretPosition?.DocumentOffset ?? 0;
+    int IAutomationTextViewSource.CaretIndex => RichTextBoxOwner.AutomationDocumentOffset(RichTextBoxOwner.CaretPosition?.DocumentOffset ?? 0);
     bool IAutomationTextViewSource.CaretHasBackwardAffinity => RichTextBoxOwner.CaretPosition?.LogicalDirection == Documents.LogicalDirection.Backward;
     Rect IAutomationTextViewSource.TextViewport => RichTextBoxOwner.AutomationTextViewport;
     IReadOnlyList<AutomationTextLine> IAutomationTextViewSource.GetTextLines() => RichTextBoxOwner.GetAutomationTextLines();
@@ -276,9 +276,12 @@ public class RichTextBoxAutomationPeer : TextAutomationPeer, IAutomationTextProv
     private IReadOnlyList<Rect> GetTextBounds(int start, int length)
     {
         var support = (IImeSupport)RichTextBoxOwner;
-        string text = RichTextBoxOwner.GetPlainText();
+        string text = RichTextBoxOwner.AutomationDocumentText;
         if (!ImeTextEncoding.TryNormalizeUtf16Range(text, start, length, out start, out length))
             return Array.Empty<Rect>();
+        if (RichTextBoxOwner.CssAutomationBounds(start, length) is { } css)
+            return css.Select(rect => Rect.Intersect(rect, RichTextBoxOwner.AutomationTextViewport))
+                .Where(rect => !rect.IsEmpty && rect.Width > 0 && rect.Height > 0).ToArray();
         var rectangles = new List<Rect>();
         if (text.Length == 0)
         {
@@ -721,7 +724,7 @@ public sealed class TimePickerAutomationPeer : FrameworkElementAutomationPeer, I
         if (!IsEnabled())
             throw new InvalidOperationException("Cannot set value on a disabled TimePicker.");
         if (TimeSpan.TryParse(value, out var time))
-            TimePickerOwner.SelectedTime = time;
+            TimePickerOwner.SetCurrentValue(TimePicker.SelectedTimeProperty, time);
     }
 }
 
@@ -765,20 +768,22 @@ public sealed class NavigationViewAutomationPeer : FrameworkElementAutomationPee
     public void Expand()
     {
         if (!IsEnabled()) throw new InvalidOperationException("Cannot expand a disabled NavigationView.");
-        NavViewOwner.IsPaneOpen = true;
+        NavViewOwner.SetCurrentValue(NavigationView.IsPaneOpenProperty, true);
     }
 
     public void Collapse()
     {
         if (!IsEnabled()) throw new InvalidOperationException("Cannot collapse a disabled NavigationView.");
-        NavViewOwner.IsPaneOpen = false;
+        NavViewOwner.SetCurrentValue(NavigationView.IsPaneOpenProperty, false);
     }
 
-    public AutomationPeer[] GetSelection() => Array.Empty<AutomationPeer>();
+    public AutomationPeer[] GetSelection() => NavViewOwner.SelectedItem is FrameworkElement selected &&
+        FrameworkElementAutomationPeer.CreatePeerForElement(selected) is { } peer ? [peer] : [];
     public bool IsSelectionRequired => false;
     public bool CanSelectMultiple => false;
 
-    Jalium.UI.Automation.Provider.IRawElementProviderSimple[] ISelectionProvider.GetSelection() => [];
+    Jalium.UI.Automation.Provider.IRawElementProviderSimple[] ISelectionProvider.GetSelection() =>
+        GetSelection().Select(ProviderFromPeer).OfType<Jalium.UI.Automation.Provider.IRawElementProviderSimple>().ToArray();
 }
 
 /// <summary>
@@ -813,33 +818,48 @@ public sealed class NavigationViewItemAutomationPeer : FrameworkElementAutomatio
 
     public bool IsSelected => ItemOwner.IsSelected;
 
-    public AutomationPeer SelectionContainer
+    private NavigationView? NavigationOwner
     {
         get
         {
             var parent = ItemOwner.VisualParent;
             while (parent != null)
             {
-                if (parent is NavigationView nav)
-                    return nav.GetAutomationPeer() ?? new NavigationViewAutomationPeer(nav);
+                if (parent is NavigationView navigation) return navigation;
                 parent = (parent as FrameworkElement)?.VisualParent;
             }
-            return null!;
+            return null;
         }
     }
+
+    public AutomationPeer SelectionContainer => NavigationOwner is { } navigation
+        ? navigation.GetAutomationPeer() ?? new NavigationViewAutomationPeer(navigation)
+        : null!;
 
     Jalium.UI.Automation.Provider.IRawElementProviderSimple? ISelectionItemProvider.SelectionContainer =>
         SelectionContainer is AutomationPeer peer ? ProviderFromPeer(peer) : null;
 
-    public void Select() => ItemOwner.IsSelected = true;
-    public void AddToSelection() => ItemOwner.IsSelected = true;
+    public void Select()
+    {
+        EnsureEnabled();
+        if (NavigationOwner is { } navigation) navigation.SelectedItem = ItemOwner;
+        else ItemOwner.IsSelected = true;
+    }
+    public void AddToSelection() => Select();
     public void RemoveFromSelection() => ItemOwner.IsSelected = false;
 
     public void Invoke()
     {
-        if (!IsEnabled()) throw new InvalidOperationException("Cannot invoke a disabled NavigationViewItem.");
-        ItemOwner.IsSelected = true;
+        EnsureEnabled();
+        ItemOwner.Focus();
+        if (NavigationOwner is { } navigation) navigation.HandleItemClicked(ItemOwner);
+        else ItemOwner.Invoke();
         RaiseAutomationEvent(AutomationEvents.InvokePatternOnInvoked);
+    }
+
+    private void EnsureEnabled()
+    {
+        if (!IsEnabled()) throw new InvalidOperationException("Cannot activate a disabled NavigationViewItem.");
     }
 }
 
@@ -863,9 +883,17 @@ public sealed class NumberBoxAutomationPeer : FrameworkElementAutomationPeer, IR
 
     protected override string GetNameCore()
     {
-        var header = NumberBoxOwner.Header;
-        if (header is string text) return text;
-        return header?.ToString() ?? base.GetNameCore();
+        var owner = NumberBoxOwner;
+        if (owner.FindName("PART_HeaderPresenter") is ContentPresenter)
+        {
+            var names = ItemContentAutomation.Children(owner, owner.Header, includeDefaultText: true)
+                .Select(peer => peer.GetName()).Where(name => !string.IsNullOrEmpty(name));
+            var presented = string.Join(" ", names);
+            if (!string.IsNullOrEmpty(presented)) return presented;
+        }
+        if (owner.Header is UIElement element && element.GetAutomationPeer() is { } headerPeer)
+            return headerPeer.GetName();
+        return owner.Header?.ToString() ?? base.GetNameCore();
     }
 
     protected override object? GetPatternCore(PatternInterface patternInterface)
@@ -880,12 +908,12 @@ public sealed class NumberBoxAutomationPeer : FrameworkElementAutomationPeer, IR
     public double Maximum => NumberBoxOwner.Maximum;
     public double SmallChange => NumberBoxOwner.SmallChange;
     public double LargeChange => NumberBoxOwner.LargeChange;
-    public bool IsReadOnly => !IsEnabled();
+    public bool IsReadOnly => NumberBoxOwner.IsReadOnly || !IsEnabled();
 
     public void SetValue(double value)
     {
-        if (!IsEnabled())
-            throw new InvalidOperationException("Cannot set value on a disabled NumberBox.");
+        if (IsReadOnly)
+            throw new InvalidOperationException("Cannot set value on a read-only or disabled NumberBox.");
         if (value < Minimum || value > Maximum)
             throw new ArgumentOutOfRangeException(nameof(value));
         NumberBoxOwner.Value = value;
@@ -940,8 +968,35 @@ public sealed class ToggleSwitchAutomationPeer : FrameworkElementAutomationPeer,
 #region ColorPicker / InfoBar
 
 /// <summary>
-/// Exposes ColorPicker types to UI Automation.
+/// Exposes ColorSpectrum types to UI Automation.
 /// </summary>
+public sealed class ColorSpectrumAutomationPeer : FrameworkElementAutomationPeer, IValueProvider
+{
+    public ColorSpectrumAutomationPeer(ColorSpectrum owner) : base(owner) { }
+
+    private ColorSpectrum SpectrumOwner => (ColorSpectrum)Owner;
+    protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.Custom;
+    protected override string GetClassNameCore() => nameof(ColorSpectrum);
+    protected override object? GetPatternCore(PatternInterface patternInterface)
+        => patternInterface == PatternInterface.Value ? this : base.GetPatternCore(patternInterface);
+
+    public string Value => SpectrumOwner.SelectedColor.ToString();
+    public bool IsReadOnly => !IsEnabled();
+
+    public void SetValue(string value)
+    {
+        if (!IsEnabled())
+            throw new InvalidOperationException("Cannot set value on a disabled ColorSpectrum.");
+        if (!ColorPickerColorMath.TryParseHex(value, 255, out var color))
+            throw new ArgumentException("Expected #RRGGBB or #AARRGGBB.", nameof(value));
+        var hsv = ColorPickerColorMath.ToHsv(color, SpectrumOwner.Hue);
+        SpectrumOwner.SetCurrentValue(ColorSpectrum.HueProperty, hsv.Hue);
+        SpectrumOwner.SetCurrentValue(ColorSpectrum.SaturationProperty, hsv.Saturation);
+        SpectrumOwner.SetCurrentValue(ColorSpectrum.ValueProperty, hsv.Value);
+    }
+}
+
+/// <summary>Exposes ColorPicker types to UI Automation.</summary>
 public sealed class ColorPickerAutomationPeer : FrameworkElementAutomationPeer, IValueProvider
 {
     public ColorPickerAutomationPeer(ColorPicker owner) : base(owner) { }
@@ -967,6 +1022,8 @@ public sealed class ColorPickerAutomationPeer : FrameworkElementAutomationPeer, 
     {
         if (!IsEnabled())
             throw new InvalidOperationException("Cannot set value on a disabled ColorPicker.");
+        if (!PickerOwner.TrySetColor(value))
+            throw new ArgumentException("Expected #RRGGBB or #AARRGGBB.", nameof(value));
     }
 }
 
@@ -1026,34 +1083,29 @@ public sealed class ToastNotificationHostAutomationPeer : FrameworkElementAutoma
 /// <summary>
 /// Exposes AutoCompleteBox types to UI Automation.
 /// </summary>
-public sealed class AutoCompleteBoxAutomationPeer : FrameworkElementAutomationPeer, IValueProvider
+public sealed class AutoCompleteBoxAutomationPeer : TextBoxAutomationPeer, IExpandCollapseProvider
 {
     public AutoCompleteBoxAutomationPeer(AutoCompleteBox owner) : base(owner) { }
-
     private AutoCompleteBox AutoCompleteOwner => (AutoCompleteBox)Owner;
-
-    protected override AutomationControlType GetAutomationControlTypeCore()
-        => AutomationControlType.Edit;
-
     protected override string GetClassNameCore() => nameof(AutoCompleteBox);
-
-    protected override object? GetPatternCore(PatternInterface patternInterface)
+    protected override string GetNameCore()
     {
-        if (patternInterface == PatternInterface.Value)
-            return this;
-        return base.GetPatternCore(patternInterface);
+        var name = Jalium.UI.Automation.AutomationProperties.GetName(Owner);
+        return !string.IsNullOrEmpty(name) ? name : base.GetNameCore();
     }
-
-    public string Value => AutoCompleteOwner.Text ?? string.Empty;
-    public bool IsReadOnly => AutoCompleteOwner.IsReadOnly;
-
-    public void SetValue(string value)
+    protected override object? GetPatternCore(PatternInterface patternInterface)
+        => patternInterface == PatternInterface.ExpandCollapse ? this : base.GetPatternCore(patternInterface);
+    public ExpandCollapseState ExpandCollapseState => AutoCompleteOwner.IsDropDownOpen && AutoCompleteOwner.HasSuggestions
+        ? ExpandCollapseState.Expanded : ExpandCollapseState.Collapsed;
+    public void Expand()
     {
-        if (!IsEnabled())
-            throw new InvalidOperationException("Cannot set value on a disabled AutoCompleteBox.");
-        if (IsReadOnly)
-            throw new InvalidOperationException("Cannot set value on a read-only AutoCompleteBox.");
-        AutoCompleteOwner.Text = value ?? string.Empty;
+        if (!IsEnabled()) throw new InvalidOperationException("Cannot expand a disabled AutoCompleteBox.");
+        AutoCompleteOwner.SetCurrentValue(AutoCompleteBox.IsDropDownOpenProperty, true);
+    }
+    public void Collapse()
+    {
+        if (!IsEnabled()) throw new InvalidOperationException("Cannot collapse a disabled AutoCompleteBox.");
+        AutoCompleteOwner.SetCurrentValue(AutoCompleteBox.IsDropDownOpenProperty, false);
     }
 }
 
@@ -1620,7 +1672,7 @@ public sealed class MenuFlyoutItemAutomationPeer : FrameworkElementAutomationPee
     protected override object? GetPatternCore(PatternInterface patternInterface)
         => patternInterface == PatternInterface.Invoke ? this : base.GetPatternCore(patternInterface);
 
-    public void Invoke() => MenuFlyoutItemOwner.Command?.Execute(MenuFlyoutItemOwner.CommandParameter);
+    public void Invoke() => MenuFlyoutItemOwner.InvokeFromAutomation();
 }
 
 #endregion

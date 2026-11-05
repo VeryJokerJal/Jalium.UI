@@ -239,7 +239,8 @@ public sealed class ListBoxParityTests
         Assert.True(host.VerticalOffset > 0);
         host.Measure(new Size(320, 120));
         host.Arrange(new Rect(0, 0, 320, 120));
-        Assert.NotNull(listBox.ItemContainerGenerator.ContainerFromIndex(400));
+        Assert.True(listBox.ItemContainerGenerator.ContainerFromIndex(400) != null,
+            $"offset={host.VerticalOffset}; extent={host.ExtentHeight}; realized={string.Join(',', Enumerable.Range(0, 500).Where(i => listBox.ItemContainerGenerator.ContainerFromIndex(i) != null))}");
 
         double offset = host.VerticalOffset;
         listBox.ScrollIntoView("not-an-item");

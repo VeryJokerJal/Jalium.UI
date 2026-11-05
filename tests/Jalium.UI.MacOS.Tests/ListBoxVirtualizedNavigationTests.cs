@@ -3,7 +3,6 @@ using Jalium.UI.Input;
 
 namespace Jalium.UI.Tests;
 
-// Staged until Core342 finishes; regression candidates, not a confirmed defect.
 // These are managed input/layout contracts, not physical desktop acceptance.
 [Collection("macOS Window globals")]
 public sealed class ListBoxVirtualizedNavigationTests
@@ -38,6 +37,34 @@ public sealed class ListBoxVirtualizedNavigationTests
         host.Key(Key.Space, primary);
         Assert.Equal(new object[] { "item-0", "item-498" }, host.List.SelectedItems.Cast<object>());
         Assert.Equal(498, host.List.SelectedIndex);
+    }
+
+    [Theory]
+    [InlineData(ModifierKeys.Control)]
+    [InlineData(ModifierKeys.Windows)]
+    public void FocusOnlyEndProgressesWhileNormalWorkRequeuesItself(ModifierKeys primary)
+    {
+        using var host = new Host();
+        var dispatcher = host.List.Dispatcher;
+        bool running = true;
+        void ContinueWork()
+        {
+            if (running) dispatcher.BeginInvoke(Jalium.UI.Threading.DispatcherPriority.Normal, ContinueWork);
+        }
+        dispatcher.BeginInvoke(Jalium.UI.Threading.DispatcherPriority.Normal, ContinueWork);
+        try
+        {
+            host.Key(Key.End, primary);
+            host.Layout();
+            var last = Assert.IsType<ListBoxItem>(host.List.ItemContainerGenerator.ContainerFromIndex(499));
+            Assert.Same(last, Keyboard.FocusedElement);
+            Assert.Equal(new object[] { "item-0" }, host.List.SelectedItems.Cast<object>());
+        }
+        finally
+        {
+            running = false;
+            dispatcher.ProcessQueue();
+        }
     }
 
     private sealed class InputList : ListBox { public Panel? HostPanel => ItemsHost; }

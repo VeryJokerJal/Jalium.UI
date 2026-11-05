@@ -2,7 +2,6 @@ using Jalium.UI.Controls;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
-using Jalium.UI.Media.Animation;
 using Jalium.UI.Threading;
 
 using static Jalium.UI.Input.Cursors;
@@ -13,7 +12,7 @@ namespace Jalium.UI.Controls.Primitives;
 /// <summary>
 /// Base class for text editing controls.
 /// </summary>
-public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
+public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost, Styling.ICssUsedForegroundSource
 {
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
@@ -260,15 +259,8 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
     private int _clickCount;
     private Point _lastClickPosition;
 
-    // Context menu
-    private Popup? _contextMenuPopup;
-    private DispatcherTimer? _contextMenuAnimTimer;
-    private bool _isContextMenuCloseAnimating;
-
-    private const double ContextMenuOpenMs = 200;
-    private const double ContextMenuCloseMs = 150;
-    private static readonly CubicEase ContextMenuOpenEase = new() { EasingMode = EasingMode.EaseOut };
-    private static readonly CubicEase ContextMenuCloseEase = new() { EasingMode = EasingMode.EaseIn };
+    // The editing menu uses the same templated controls and service as caller menus.
+    private ContextMenu? _editingContextMenu;
 
     private static readonly SolidColorBrush s_defaultSelectionBrush = new(Color.FromArgb(180, 0x1E, 0x79, 0x3F));
     private static readonly SolidColorBrush s_defaultCaretBrush = new(Color.White);
@@ -276,16 +268,6 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
     private SolidColorBrush? _selectionOpacityBrush;
     private SolidColorBrush? _selectionOpacitySource;
     private double _selectionOpacityCache = double.NaN;
-
-    // Static brushes for context menu rendering
-    private static readonly SolidColorBrush s_ctxMenuBgBrush = new(Color.FromRgb(45, 45, 48));
-    private static readonly SolidColorBrush s_ctxMenuBorderBrush = new(Color.FromRgb(67, 67, 70));
-    private static readonly SolidColorBrush s_ctxMenuEnabledTextBrush = new(Color.White);
-    private static readonly SolidColorBrush s_ctxMenuDisabledTextBrush = new(Color.FromRgb(90, 90, 90));
-    private static readonly SolidColorBrush s_ctxMenuShortcutBrush = new(Color.FromRgb(140, 140, 140));
-    private static readonly SolidColorBrush s_ctxMenuTransparentBrush = new(Color.Transparent);
-    private static readonly SolidColorBrush s_ctxMenuHoverBrush = new(Color.FromRgb(60, 60, 60));
-    private static readonly SolidColorBrush s_ctxMenuSeparatorBrush = new(Color.FromRgb(67, 67, 70));
 
     #endregion
 
@@ -866,13 +848,13 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
 
         _lastCaretBlink = DateTime.Now;
         _lastClickTime = DateTime.MinValue;
+        Unloaded += (_, _) => CloseContextMenuImmediate();
 
         if (UsesDefaultTextInputHandlers)
         {
             AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
             AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler));
             AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler));
-            AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
             AddHandler(TextInputEvent, new TextCompositionEventHandler(OnTextInputHandler));
             AddHandler(MouseWheelEvent, new MouseWheelEventHandler(OnMouseWheelHandler));
         }
@@ -887,13 +869,7 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
     {
         base.OnApplyTemplate();
 
-        // Clean up previous content host
-        if (_contentHost != null && _textBoxContentHost != null)
-        {
-            RemoveContentHostChild(_contentHost, _textBoxContentHost);
-            _textBoxContentHost = null;
-            _contentHost = null;
-        }
+        ReleaseContentHost();
 
         // Find PART_ContentHost in the template
         if (GetTemplateChild("PART_ContentHost") is FrameworkElement contentHost)
@@ -906,6 +882,22 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
             // Insert into the content host
             AddContentHostChild(_contentHost, _textBoxContentHost);
         }
+    }
+
+    protected override void OnTemplateChanging()
+    {
+        ReleaseContentHost();
+        base.OnTemplateChanging();
+    }
+
+    private void ReleaseContentHost()
+    {
+        var host = _contentHost;
+        var renderer = _textBoxContentHost;
+        _contentHost = null;
+        _textBoxContentHost = null;
+        _textContentSize = Size.Empty;
+        if (host != null && renderer != null) RemoveContentHostChild(host, renderer);
     }
 
     /// <summary>
@@ -1243,6 +1235,12 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
             return;
         }
 
+        AppendTextCore(textData);
+    }
+
+    /// <summary>Appends through the control's native text container.</summary>
+    protected virtual void AppendTextCore(string textData)
+    {
         string text = GetText() + textData;
         SetText(text);
         _caretIndex = text.Length;
@@ -2249,19 +2247,19 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
 
     #region Input Handling
 
-    private void OnKeyDownHandler(object sender, KeyEventArgs e)
-    {
-        if (e.Handled)
-            return;
-
-        OnKeyDown(e);
-    }
-
     /// <summary>
     /// Handles key down events.
     /// </summary>
     protected override void OnKeyDown(KeyEventArgs e)
     {
+        if ((e.Key == Key.Apps && e.KeyboardModifiers == ModifierKeys.None) ||
+            (e.Key == Key.F10 && e.KeyboardModifiers == ModifierKeys.Shift))
+        {
+            e.Handled = ShowContextMenu(keyboardRequest: true);
+            if (e.Handled)
+                return;
+        }
+
         var shift = e.IsShiftDown;
         var editingKey = MacOSTextKeyBehavior.ResolveEditingKey(e);
         var ctrl = e.IsControlDown && editingKey == e.Key;
@@ -2418,8 +2416,6 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
         {
             _caretHasBackwardAffinity = false;
             // Close context menu if open
-            _contextMenuAnimTimer?.Stop();
-            _isContextMenuCloseAnimating = false;
             CloseContextMenuImmediate();
 
             Focus();
@@ -3330,11 +3326,18 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
 
     protected Brush ResolveTextForegroundBrush()
     {
-        if (HasLocalValue(Control.ForegroundProperty) && Foreground != null)
-            return Foreground;
+        // CSS, triggers, styles and inherited values already participate in DP
+        // precedence. Only an unassigned metadata default needs the native
+        // theme fallback; checking Local alone discarded the computed ink.
+        if (Foreground is { } foreground &&
+            (HasValueAboveInherited(Control.ForegroundProperty) ||
+             GetUncoercedBaseValueInternal(Control.ForegroundProperty).source != BaseValueSource.Default))
+            return foreground;
 
         return ResolveThemeBrush("TextPrimary", s_defaultCaretBrush, "TextFillColorPrimaryBrush");
     }
+
+    Brush Styling.ICssUsedForegroundSource.GetUsedForeground() => ResolveTextForegroundBrush();
 
     private Brush ResolveThemeBrush(string primaryKey, Brush fallback, string? secondaryKey = null)
     {
@@ -3349,262 +3352,84 @@ public abstract class TextBoxBase : Control, Styling.ICssCaretAnimationHost
 
     #region Context Menu
 
-    private Brush ResolveContextMenuBackgroundBrush()
+    private bool ShowContextMenu(bool keyboardRequest = false)
     {
-        return ResolveThemeBrush("MenuFlyoutPresenterBackground", s_ctxMenuBgBrush, "SurfaceBackground");
-    }
+        if (!IsEnabled || !ContextMenuService.GetIsEnabled(this) ||
+            (OperatingSystem.IsMacOS() && Platform.PlatformTextContextMenus.Show != null))
+            return false;
 
-    private Brush ResolveContextMenuBorderBrush()
-    {
-        return ResolveThemeBrush("MenuFlyoutPresenterBorderBrush", s_ctxMenuBorderBrush, "ControlBorder");
-    }
-
-    private Brush ResolveContextMenuForegroundBrush()
-    {
-        return ResolveThemeBrush("TextPrimary", s_ctxMenuEnabledTextBrush, "TextFillColorPrimaryBrush");
-    }
-
-    private Brush ResolveContextMenuDisabledForegroundBrush()
-    {
-        return ResolveThemeBrush("TextDisabled", s_ctxMenuDisabledTextBrush, "TextFillColorDisabledBrush");
-    }
-
-    private Brush ResolveContextMenuShortcutForegroundBrush()
-    {
-        return ResolveThemeBrush("TextSecondary", s_ctxMenuShortcutBrush, "TextFillColorSecondaryBrush");
-    }
-
-    private Brush ResolveContextMenuHoverBackgroundBrush()
-    {
-        return ResolveThemeBrush("MenuFlyoutItemBackgroundHover", s_ctxMenuHoverBrush, "HighlightBackground");
-    }
-
-    private Brush ResolveContextMenuSeparatorBrush()
-    {
-        return ResolveThemeBrush("MenuFlyoutPresenterBorderBrush", s_ctxMenuSeparatorBrush, "ControlBorder");
-    }
-
-    private void ShowContextMenu()
-    {
-        // If close animation is in progress, stop it and close immediately
-        if (_isContextMenuCloseAnimating)
+        // Explicit caller menus use the normal service path. A local null disables
+        // the built-in editing menu, matching the standard ContextMenu contract.
+        for (Visual? current = this; current != null; current = current.VisualParent)
         {
-            _contextMenuAnimTimer?.Stop();
-            _isContextMenuCloseAnimating = false;
+            if (current is UIElement owner && ContextMenuService.GetContextMenu(owner) is { } supplied)
+            {
+                if (keyboardRequest)
+                    ContextMenuService.Open(owner, supplied);
+                return keyboardRequest && supplied.IsOpen;
+            }
         }
+        if (HasLocalValue(FrameworkElement.ContextMenuProperty))
+            return false;
+
         CloseContextMenuImmediate();
-
         var hasSelection = _selectionLength > 0;
-        var hasText = GetText().Length > 0;
-        var hasClipboard = !string.IsNullOrEmpty(WpfClipboard.GetText());
-
-        var panel = new StackPanel { MinWidth = 140 };
-
+        var menu = new ContextMenu();
         if (!IsReadOnly)
         {
-            AddContextMenuItem(panel, "Undo", "Ctrl+Z", CanUndo, () => AnimateCloseContextMenu(() => Undo()));
-            AddContextMenuItem(panel, "Redo", "Ctrl+Y", CanRedo, () => AnimateCloseContextMenu(() => Redo()));
-            AddContextMenuSeparator(panel);
-            AddContextMenuItem(panel, "Cut", "Ctrl+X", hasSelection, () => AnimateCloseContextMenu(() => Cut()));
+            AddEditingMenuItem(menu, "Undo", "Ctrl+Z", CanUndo, () => Undo());
+            AddEditingMenuItem(menu, "Redo", "Ctrl+Y", CanRedo, () => Redo());
+            menu.Items.Add(new Separator());
+            AddEditingMenuItem(menu, "Cut", "Ctrl+X", hasSelection, Cut);
         }
-        AddContextMenuItem(panel, "Copy", "Ctrl+C", hasSelection, () => AnimateCloseContextMenu(() => Copy()));
+        AddEditingMenuItem(menu, "Copy", "Ctrl+C", hasSelection, Copy);
         if (!IsReadOnly)
-        {
-            AddContextMenuItem(panel, "Paste", "Ctrl+V", hasClipboard, () => AnimateCloseContextMenu(() => Paste()));
-        }
-        AddContextMenuSeparator(panel);
-        AddContextMenuItem(panel, "Select All", "Ctrl+A", hasText, () => AnimateCloseContextMenu(() => SelectAll()));
-
-        var border = new Border
-        {
-            Background = ResolveContextMenuBackgroundBrush(),
-            BorderBrush = ResolveContextMenuBorderBrush(),
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(4),
-            Child = panel
-        };
-
-        _contextMenuPopup = new Popup
-        {
-            StaysOpen = false,
-            Placement = PlacementMode.MousePoint,
-            PlacementTarget = this,
-            Child = border
-        };
-
-        // Set initial animation state: invisible + shifted up
-        border.Opacity = 0;
-        border.RenderOffset = new Point(0, -6);
-
-        _contextMenuPopup.IsOpen = true;
-        _contextMenuPopup.RequestHostRender();
-
-        // Animate open: fade in + slide down
-        AnimateOpenContextMenu(border);
+            AddEditingMenuItem(menu, "Paste", "Ctrl+V", !string.IsNullOrEmpty(WpfClipboard.GetText()), Paste);
+        menu.Items.Add(new Separator());
+        AddEditingMenuItem(menu, "Select All", "Ctrl+A", GetText().Length > 0, SelectAll);
+        _editingContextMenu = menu;
+        menu.Closed += OnEditingMenuClosed;
+        if (keyboardRequest)
+            ContextMenuService.Open(this, menu);
+        else
+            ContextMenuService.Open(this, menu, Input.Mouse.GetPosition(null));
+        return menu.IsOpen;
     }
 
-    private void AnimateOpenContextMenu(FrameworkElement target)
+    private void AddEditingMenuItem(ContextMenu menu, string text, string shortcut, bool enabled, Action action)
     {
-        _contextMenuAnimTimer?.Stop();
-
-        var startTime = Environment.TickCount64;
-        _contextMenuAnimTimer = new DispatcherTimer { Interval = CompositionTarget.FrameInterval };
-        _contextMenuAnimTimer.Tick += (s, e) =>
+        var item = new MenuItem
         {
-            var elapsed = Environment.TickCount64 - startTime;
-            var progress = Math.Min(1.0, elapsed / ContextMenuOpenMs);
-            var eased = ContextMenuOpenEase.Ease(progress);
-
-            target.Opacity = eased;
-            target.RenderOffset = new Point(0, -6 * (1.0 - eased));
-
-            if (progress >= 1.0)
-            {
-                _contextMenuAnimTimer!.Stop();
-                target.Opacity = 1;
-                target.RenderOffset = default;
-            }
-
-            _contextMenuPopup?.RequestHostRender();
+            Header = text,
+            InputGestureText = shortcut,
+            IsEnabled = enabled
         };
-        _contextMenuAnimTimer.Start();
-    }
-
-    private void AnimateCloseContextMenu(Action? onComplete = null)
-    {
-        if (_contextMenuPopup == null) return;
-
-        var target = _contextMenuPopup.Child as FrameworkElement;
-        if (target == null)
+        item.Click += (_, e) =>
         {
-            onComplete?.Invoke();
             CloseContextMenuImmediate();
-            return;
-        }
-
-        _contextMenuAnimTimer?.Stop();
-        _isContextMenuCloseAnimating = true;
-
-        var startOpacity = target.Opacity;
-        var startOffsetY = target.RenderOffset.Y;
-        var startTime = Environment.TickCount64;
-
-        _contextMenuAnimTimer = new DispatcherTimer { Interval = CompositionTarget.FrameInterval };
-        _contextMenuAnimTimer.Tick += (s, e) =>
-        {
-            var elapsed = Environment.TickCount64 - startTime;
-            var progress = Math.Min(1.0, elapsed / ContextMenuCloseMs);
-            var eased = ContextMenuCloseEase.Ease(progress);
-
-            target.Opacity = startOpacity * (1.0 - eased);
-            target.RenderOffset = new Point(0, startOffsetY + (-6 - startOffsetY) * eased);
-            _contextMenuPopup?.RequestHostRender();
-
-            if (progress >= 1.0)
-            {
-                _contextMenuAnimTimer!.Stop();
-                _isContextMenuCloseAnimating = false;
-                onComplete?.Invoke();
-                CloseContextMenuImmediate();
-            }
+            Focus();
+            action();
+            e.Handled = true;
         };
-        _contextMenuAnimTimer.Start();
+        menu.Items.Add(item);
     }
 
-    private void CloseContextMenu()
+    private void OnEditingMenuClosed(object? sender, EventArgs e)
     {
-        if (_isContextMenuCloseAnimating) return; // Animation will handle it
-        if (_contextMenuPopup != null)
-        {
-            AnimateCloseContextMenu();
-        }
+        if (sender is ContextMenu menu)
+            menu.Closed -= OnEditingMenuClosed;
+        if (ReferenceEquals(sender, _editingContextMenu))
+            _editingContextMenu = null;
     }
 
     private void CloseContextMenuImmediate()
     {
-        if (_contextMenuPopup != null)
-        {
-            _contextMenuPopup.IsOpen = false;
-            _contextMenuPopup = null;
-        }
-    }
-
-    private void AddContextMenuItem(StackPanel panel, string text, string shortcut, bool isEnabled, Action onClick)
-    {
-        var foregroundBrush = isEnabled
-            ? ResolveContextMenuForegroundBrush()
-            : ResolveContextMenuDisabledForegroundBrush();
-        var shortcutBrush = isEnabled
-            ? ResolveContextMenuShortcutForegroundBrush()
-            : ResolveContextMenuDisabledForegroundBrush();
-        var hoverBrush = ResolveContextMenuHoverBackgroundBrush();
-
-        var itemPanel = new Grid();
-        itemPanel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        itemPanel.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-
-        var label = new TextBlock
-        {
-            Text = text,
-            FontSize = 13,
-            Foreground = foregroundBrush,
-            VerticalAlignment = VerticalAlignment.Center
-        };
-        Grid.SetColumn(label, 0);
-        itemPanel.Children.Add(label);
-
-        var shortcutLabel = new TextBlock
-        {
-            Text = shortcut,
-            FontSize = 12,
-            Foreground = shortcutBrush,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(24, 0, 0, 0)
-        };
-        Grid.SetColumn(shortcutLabel, 1);
-        itemPanel.Children.Add(shortcutLabel);
-
-        var itemBorder = new Border
-        {
-            Background = s_ctxMenuTransparentBrush,
-            CornerRadius = new CornerRadius(4),
-            Padding = new Thickness(10, 6, 10, 6),
-            Child = itemPanel
-        };
-
-        if (isEnabled)
-        {
-            itemBorder.AddHandler(MouseEnterEvent, new Input.MouseEventHandler((s, e) =>
-            {
-                itemBorder.Background = hoverBrush;
-            }));
-            itemBorder.AddHandler(MouseLeaveEvent, new Input.MouseEventHandler((s, e) =>
-            {
-                itemBorder.Background = s_ctxMenuTransparentBrush;
-            }));
-            itemBorder.AddHandler(MouseUpEvent, new Input.MouseButtonEventHandler((s, e) =>
-            {
-                if (e is MouseButtonEventArgs { ChangedButton: MouseButton.Left })
-                {
-                    onClick();
-                    e.Handled = true;
-                }
-            }));
-        }
-
-        panel.Children.Add(itemBorder);
-    }
-
-    private void AddContextMenuSeparator(StackPanel panel)
-    {
-        var separator = new Border
-        {
-            Height = 1,
-            Background = ResolveContextMenuSeparatorBrush(),
-            Margin = new Thickness(8, 4, 8, 4)
-        };
-        panel.Children.Add(separator);
+        var menu = _editingContextMenu;
+        _editingContextMenu = null;
+        if (menu == null)
+            return;
+        menu.Closed -= OnEditingMenuClosed;
+        menu.IsOpen = false;
     }
 
     #endregion

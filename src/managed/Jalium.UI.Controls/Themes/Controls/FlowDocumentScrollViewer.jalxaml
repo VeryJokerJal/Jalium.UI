@@ -1,0 +1,43 @@
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="clr-namespace:Jalium.UI.Controls;assembly=Jalium.UI.Controls"
+    xmlns:input="clr-namespace:Jalium.UI.Input;assembly=Jalium.UI.Core"
+    xmlns:automation="clr-namespace:Jalium.UI.Automation;assembly=Jalium.UI.Core">
+    <Style TargetType="controls:FlowDocumentScrollViewer">
+        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="controls:FlowDocumentScrollViewer">
+                <Border x:Name="PART_Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}" CornerRadius="{TemplateBinding CornerRadius}">
+                    <VisualStateManager.VisualStateGroups>
+                        <VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Normal" /><VisualState x:Name="Disabled" /></VisualStateGroup>
+                        <VisualStateGroup x:Name="DocumentStates"><VisualState x:Name="Empty" /><VisualState x:Name="Ready" /></VisualStateGroup>
+                        <VisualStateGroup x:Name="FindStates"><VisualState x:Name="FindClosed" /><VisualState x:Name="FindOpen" /></VisualStateGroup>
+                    </VisualStateManager.VisualStateGroups>
+                    <Grid RowDefinitions="Auto,Auto,*">
+                        <ToolBar x:Name="PART_ToolBar" Visibility="Collapsed" automation:AutomationProperties.Name="Document">
+                            <Button Content="Find" Command="{x:Static input:ApplicationCommands.Find}" CommandTarget="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type controls:FlowDocumentScrollViewer}}}" />
+                            <Button Content="Print" Command="{x:Static input:ApplicationCommands.Print}" CommandTarget="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type controls:FlowDocumentScrollViewer}}}" />
+                            <Button Content="−" Command="{x:Static input:NavigationCommands.DecreaseZoom}" CommandTarget="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type controls:FlowDocumentScrollViewer}}}" automation:AutomationProperties.Name="Decrease zoom" />
+                            <TextBlock MinWidth="48" TextAlignment="Center" VerticalAlignment="Center" Text="{Binding Zoom, RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type controls:FlowDocumentScrollViewer}}, StringFormat='{}{0:0}%'}" />
+                            <Button Content="+" Command="{x:Static input:NavigationCommands.IncreaseZoom}" CommandTarget="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type controls:FlowDocumentScrollViewer}}}" automation:AutomationProperties.Name="Increase zoom" />
+                        </ToolBar>
+                        <Grid x:Name="PART_FindBar" Grid.Row="1" ColumnDefinitions="*,Auto,Auto" Visibility="Collapsed" Margin="4">
+                            <TextBox x:Name="PART_FindTextBox" Text="{Binding SearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged, RelativeSource={RelativeSource TemplatedParent}}" automation:AutomationProperties.Name="Find in document" />
+                            <Button Grid.Column="1" Content="Next" Margin="6,0,0,0" Command="{x:Static controls:FlowDocumentScrollViewer.FindNextCommand}" CommandTarget="{Binding RelativeSource={RelativeSource TemplatedParent}}" />
+                            <Button Grid.Column="2" Content="Close" Margin="6,0,0,0" Command="{x:Static controls:FlowDocumentScrollViewer.CloseFindCommand}" CommandTarget="{Binding RelativeSource={RelativeSource TemplatedParent}}" />
+                        </Grid>
+                        <ScrollViewer x:Name="PART_ContentHost" Grid.Row="2" Content="{TemplateBinding DocumentView}" HorizontalScrollBarVisibility="{TemplateBinding HorizontalScrollBarVisibility}" VerticalScrollBarVisibility="{TemplateBinding VerticalScrollBarVisibility}" />
+                    </Grid>
+                </Border>
+                <ControlTemplate.Triggers>
+                    <Trigger Property="IsToolBarVisible" Value="True"><Setter TargetName="PART_ToolBar" Property="Visibility" Value="Visible" /></Trigger>
+                    <Trigger Property="IsFindToolBarVisible" Value="True"><Setter TargetName="PART_FindBar" Property="Visibility" Value="Visible" /></Trigger>
+                </ControlTemplate.Triggers>
+            </ControlTemplate>
+        </Setter>
+    </Style>
+</ResourceDictionary>

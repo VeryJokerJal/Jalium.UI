@@ -7,10 +7,17 @@ namespace Jalium.UI.Controls.Primitives;
 /// <summary>
 /// Represents an item in a StatusBar control.
 /// </summary>
+[TemplatePart(Name = "PART_ContentPresenter", Type = typeof(ContentPresenter))]
+[TemplateVisualState(Name = "Normal", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Disabled", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "SeparatorVisible", GroupName = "SeparatorStates")]
+[TemplateVisualState(Name = "SeparatorCollapsed", GroupName = "SeparatorStates")]
 public class StatusBarItem : ContentControl
 {
-    private UIElement? _contentVisual;
+    private UIElement? _contentVisual => ContentElement;
     private Border? _cssBorderPainter;
+    protected override bool SupportsSelfDrawnCssContentAdapter => true;
+    internal override Brush? ResolveCssAdapterForeground() => ResolveForegroundBrush();
 
     #region Static Brushes & Pens
 
@@ -30,6 +37,13 @@ public class StatusBarItem : ContentControl
             new PropertyMetadata(false, OnSeparatorChanged));
 
     #endregion
+
+    private static readonly DependencyPropertyKey SeparatorVisibilityPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(SeparatorVisibility), typeof(Visibility), typeof(StatusBarItem), new PropertyMetadata(Visibility.Collapsed));
+    /// <summary>Identifies the read-only visibility of the optional internal separator.</summary>
+    public static readonly DependencyProperty SeparatorVisibilityProperty = SeparatorVisibilityPropertyKey.DependencyProperty;
+    /// <summary>Gets the visibility of the optional internal separator.</summary>
+    public Visibility SeparatorVisibility => (Visibility)GetValue(SeparatorVisibilityProperty)!;
 
     #region CLR Properties
 
@@ -52,7 +66,7 @@ public class StatusBarItem : ContentControl
     public StatusBarItem()
     {
         IsTabStop = false;
-        UseTemplateContentManagement();
+        DefaultStyleKey = typeof(StatusBarItem);
     }
 
     /// <inheritdoc />
@@ -66,41 +80,12 @@ public class StatusBarItem : ContentControl
     #region Layout
 
     /// <inheritdoc />
-    protected override void OnContentChanged(object? oldContent, object? newContent)
-    {
-        if (_contentVisual != null)
-        {
-            var visual = _contentVisual;
-            _contentVisual = null;
-            RemoveVisualChild(visual);
-        }
-
-        if (newContent is UIElement element)
-        {
-            _contentVisual = element;
-            AddVisualChild(element);
-        }
-
-        InvalidateMeasure();
-    }
-
-    /// <inheritdoc />
-    protected override int VisualChildrenCount => _contentVisual != null ? 1 : 0;
-
-    /// <inheritdoc />
-    protected override Visual? GetVisualChild(int index)
-    {
-        if (index == 0 && _contentVisual != null)
-        {
-            return _contentVisual;
-        }
-
-        throw new ArgumentOutOfRangeException(nameof(index));
-    }
-
-    /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
+        UpdateDefaultStyle();
+        EnsureCssContentAdapter();
+        if (Template is not null) return base.MeasureOverride(availableSize);
+
         var padding = Padding;
         var border = BorderThickness;
         var separatorWidth = Separator ? 9 : 0;
@@ -134,6 +119,7 @@ public class StatusBarItem : ContentControl
     /// <inheritdoc />
     protected override Size ArrangeOverride(Size finalSize)
     {
+        if (Template is not null) return base.ArrangeOverride(finalSize);
         if (_contentVisual != null)
         {
             var padding = Padding;
@@ -156,6 +142,14 @@ public class StatusBarItem : ContentControl
     /// <inheritdoc />
     protected override void OnRender(DrawingContext drawingContext)
     {
+        if (Template is not null && !UsesCssContentAdapter)
+        {
+            base.OnRender(drawingContext);
+            return;
+        }
+        if (CssInlineBoxPainter.Background(this, BackgroundProperty, Background, drawingContext))
+            return;
+
         var dc = drawingContext;
 
         var rect = new Rect(RenderSize);
@@ -175,7 +169,7 @@ public class StatusBarItem : ContentControl
         }
 
         // Draw content
-        if (Content is string text && FontSize > 0)
+        if (!UsesCssContentAdapter && Content is string text && FontSize > 0)
         {
             var fgBrush = ResolveForegroundBrush();
             var formattedText = new FormattedText(text, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
@@ -204,6 +198,9 @@ public class StatusBarItem : ContentControl
     protected override void OnPostRender(DrawingContext drawingContext)
     {
         base.OnPostRender(drawingContext);
+        if (Template is not null && !UsesCssContentAdapter) return;
+        if (CssInlineBoxPainter.Border(this, drawingContext, ref _cssBorderPainter))
+            return;
         var border = BorderThickness;
         if (CssBorderPaintProperties.Get(this) is null && BorderBrush is { } brush && border.Left > 0)
         {
@@ -226,10 +223,31 @@ public class StatusBarItem : ContentControl
             ?? s_defaultFgBrush;
     }
 
+    public override void OnApplyTemplate()
+    {
+        base.OnApplyTemplate();
+        UpdatePresentation();
+    }
+
+    protected override void OnIsEnabledChanged(bool oldValue, bool newValue)
+    {
+        base.OnIsEnabledChanged(oldValue, newValue);
+        UpdatePresentation();
+    }
+
+    private void UpdatePresentation()
+    {
+        SetValue(SeparatorVisibilityPropertyKey, Separator ? Visibility.Visible : Visibility.Collapsed);
+        if (TemplateRootInternal is null) return;
+        VisualStateManager.GoToState(this, IsEnabled ? "Normal" : "Disabled", false);
+        VisualStateManager.GoToState(this, Separator ? "SeparatorVisible" : "SeparatorCollapsed", false);
+    }
+
     private static void OnSeparatorChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is StatusBarItem item)
         {
+            item.UpdatePresentation();
             item.InvalidateMeasure();
             item.InvalidateVisual();
         }

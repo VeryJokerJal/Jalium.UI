@@ -1,17 +1,22 @@
-using Jalium.UI.Interop;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Charts;
 
-/// <summary>
-/// A tooltip control for displaying chart data point information.
-/// </summary>
+/// <summary>Template-driven series data tooltip with optional consumer content.</summary>
+[TemplatePart(Name="PART_Content",Type=typeof(ContentPresenter))]
+[TemplateVisualState(Name="Normal",GroupName="CommonStates")]
+[TemplateVisualState(Name="Disabled",GroupName="CommonStates")]
+[TemplateVisualState(Name="HasTitle",GroupName="TitleStates")]
+[TemplateVisualState(Name="NoTitle",GroupName="TitleStates")]
+[TemplateVisualState(Name="HasXValue",GroupName="XValueStates")]
+[TemplateVisualState(Name="NoXValue",GroupName="XValueStates")]
+[TemplateVisualState(Name="HasYValue",GroupName="YValueStates")]
+[TemplateVisualState(Name="NoYValue",GroupName="YValueStates")]
+[TemplateVisualState(Name="HasSeriesBrush",GroupName="MarkerStates")]
+[TemplateVisualState(Name="NoSeriesBrush",GroupName="MarkerStates")]
 public class ChartTooltip : ContentControl
 {
-    private static readonly SolidColorBrush s_defaultBackground = new(Color.FromArgb(230, 40, 40, 40));
-    private static readonly SolidColorBrush s_defaultBorder = new(Color.FromRgb(80, 80, 80));
-    private static readonly SolidColorBrush s_defaultForeground = new(Color.FromRgb(240, 240, 240));
-
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()=>new Jalium.UI.Automation.Peers.GenericAutomationPeer(this,Jalium.UI.Automation.Peers.AutomationControlType.ToolTip);
     #region Dependency Properties
 
     /// <summary>
@@ -20,7 +25,7 @@ public class ChartTooltip : ContentControl
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty SeriesTitleProperty =
         DependencyProperty.Register(nameof(SeriesTitle), typeof(string), typeof(ChartTooltip),
-            new PropertyMetadata(null, OnVisualPropertyChanged));
+            new PropertyMetadata(null, OnPresentationChanged));
 
     /// <summary>
     /// Identifies the XValue dependency property.
@@ -28,7 +33,7 @@ public class ChartTooltip : ContentControl
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty XValueProperty =
         DependencyProperty.Register(nameof(XValue), typeof(string), typeof(ChartTooltip),
-            new PropertyMetadata(null, OnVisualPropertyChanged));
+            new PropertyMetadata(null, OnPresentationChanged));
 
     /// <summary>
     /// Identifies the YValue dependency property.
@@ -36,7 +41,7 @@ public class ChartTooltip : ContentControl
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty YValueProperty =
         DependencyProperty.Register(nameof(YValue), typeof(string), typeof(ChartTooltip),
-            new PropertyMetadata(null, OnVisualPropertyChanged));
+            new PropertyMetadata(null, OnPresentationChanged));
 
     /// <summary>
     /// Identifies the SeriesBrush dependency property.
@@ -44,7 +49,7 @@ public class ChartTooltip : ContentControl
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty SeriesBrushProperty =
         DependencyProperty.Register(nameof(SeriesBrush), typeof(Brush), typeof(ChartTooltip),
-            new PropertyMetadata(null, OnVisualPropertyChanged));
+            new PropertyMetadata(null, OnPresentationChanged));
 
     #endregion
 
@@ -88,113 +93,20 @@ public class ChartTooltip : ContentControl
 
     #endregion
 
-    #region Rendering
-
-    /// <inheritdoc />
-    protected override void OnRender(DrawingContext drawingContext)
+    private ContentPresenter? _content;
+    static ChartTooltip()=>DefaultStyleKeyProperty.OverrideMetadata(typeof(ChartTooltip),new PropertyMetadata(typeof(ChartTooltip)));
+    public override void OnApplyTemplate() { ReleaseContent(); base.OnApplyTemplate(); _content=GetTemplateChild("PART_Content") as ContentPresenter; UpdateStates(); }
+    protected override void OnTemplateChanging() { ReleaseContent(); base.OnTemplateChanging(); }
+    private void ReleaseContent() { if(_content is not null) { _content.ClearBinding(ContentPresenter.ContentProperty); _content.ClearValue(ContentPresenter.ContentProperty); } _content=null; }
+    protected override void OnIsEnabledChanged(bool oldValue,bool newValue) { base.OnIsEnabledChanged(oldValue,newValue); UpdateStates(); }
+    private static void OnPresentationChanged(DependencyObject d,DependencyPropertyChangedEventArgs e) { var tooltip=(ChartTooltip)d; tooltip.InvalidateMeasure(); tooltip.UpdateStates(); }
+    private void UpdateStates()
     {
-        var dc = drawingContext;
-
-        var bgBrush = Background ?? s_defaultBackground;
-        var borderBrush = BorderBrush ?? s_defaultBorder;
-        var fgBrush = Foreground ?? s_defaultForeground;
-        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
-        var fontSize = FontSize;
-
-        var bounds = new Rect(0, 0, RenderSize.Width, RenderSize.Height);
-        var borderPen = new Pen(borderBrush, 1);
-
-        // Draw background and border
-        dc.DrawRoundedRectangle(bgBrush, borderPen, bounds, new CornerRadius(4));
-
-        double x = 8;
-        double y = 6;
-
-        // Draw series color marker
-        if (SeriesBrush != null)
-        {
-            dc.DrawRectangle(SeriesBrush, null, new Rect(x, y + 2, 8, 8));
-            x += 14;
-        }
-
-        if (fontSize <= 0)
-            return;
-
-        // Draw series title
-        if (!string.IsNullOrEmpty(SeriesTitle))
-        {
-            var titleFt = new FormattedText(SeriesTitle, fontFamily, fontSize)
-            {
-                Foreground = fgBrush,
-                FontWeight = 700
-            };
-            TextMeasurement.MeasureText(titleFt);
-            dc.DrawText(titleFt, new Point(x, y));
-            y += titleFt.Height + 4;
-        }
-
-        // Draw X value
-        if (!string.IsNullOrEmpty(XValue))
-        {
-            var xFt = new FormattedText($"X: {XValue}", fontFamily, fontSize)
-            {
-                Foreground = fgBrush
-            };
-            TextMeasurement.MeasureText(xFt);
-            dc.DrawText(xFt, new Point(8, y));
-            y += xFt.Height + 2;
-        }
-
-        // Draw Y value
-        if (!string.IsNullOrEmpty(YValue))
-        {
-            var yFt = new FormattedText($"Y: {YValue}", fontFamily, fontSize)
-            {
-                Foreground = fgBrush
-            };
-            TextMeasurement.MeasureText(yFt);
-            dc.DrawText(yFt, new Point(8, y));
-        }
+        if(TemplateRootInternal is null)return;
+        VisualStateManager.GoToState(this,IsEnabled?"Normal":"Disabled",false);
+        VisualStateManager.GoToState(this,string.IsNullOrEmpty(SeriesTitle)?"NoTitle":"HasTitle",false);
+        VisualStateManager.GoToState(this,string.IsNullOrEmpty(XValue)?"NoXValue":"HasXValue",false);
+        VisualStateManager.GoToState(this,string.IsNullOrEmpty(YValue)?"NoYValue":"HasYValue",false);
+        VisualStateManager.GoToState(this,SeriesBrush is null?"NoSeriesBrush":"HasSeriesBrush",false);
     }
-
-    /// <inheritdoc />
-    protected override Size MeasureOverride(Size availableSize)
-    {
-        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
-        var fontSize = FontSize;
-
-        if (fontSize <= 0)
-            return new Size(SeriesBrush != null ? 30 : 16, SeriesBrush != null ? 22 : 12);
-
-        double maxWidth = 0;
-        double totalHeight = 12; // top + bottom padding
-
-        if (!string.IsNullOrEmpty(SeriesTitle))
-        {
-            var ft = new FormattedText(SeriesTitle, fontFamily, fontSize);
-            TextMeasurement.MeasureText(ft);
-            maxWidth = Math.Max(maxWidth, ft.Width + (SeriesBrush != null ? 14 : 0));
-            totalHeight += ft.Height + 4;
-        }
-
-        if (!string.IsNullOrEmpty(XValue))
-        {
-            var ft = new FormattedText($"X: {XValue}", fontFamily, fontSize);
-            TextMeasurement.MeasureText(ft);
-            maxWidth = Math.Max(maxWidth, ft.Width);
-            totalHeight += ft.Height + 2;
-        }
-
-        if (!string.IsNullOrEmpty(YValue))
-        {
-            var ft = new FormattedText($"Y: {YValue}", fontFamily, fontSize);
-            TextMeasurement.MeasureText(ft);
-            maxWidth = Math.Max(maxWidth, ft.Width);
-            totalHeight += ft.Height + 2;
-        }
-
-        return new Size(maxWidth + 16, totalHeight);
-    }
-
-    #endregion
 }

@@ -1,6 +1,6 @@
 # Vendored third-party libraries
 
-All single-header libraries vendored under `src/native/thirdparty/` are dual-licensed under **public domain (Unlicense)** or **MIT-0**, which means they impose no copyleft or attribution obligation on Jalium.UI builds. The originals are copied verbatim from upstream — no patches.
+Vendored source is pinned and copied verbatim from upstream. Audio/image single-header licenses and the Apache-2.0 SheenBidi license are recorded below; retain each upstream license when distributing its code or linked binaries.
 
 ## Inventory
 
@@ -13,6 +13,10 @@ All single-header libraries vendored under `src/native/thirdparty/` are dual-lic
 | `minimp3/minimp3_ex.h` | — | https://github.com/lieff/minimp3 | CC0 (public domain) | `7b590fdcfa5a79c033e76eacc05d0c3e4c79f536` |
 | `stb/stb_image.h` | v2.30 | https://github.com/nothings/stb | Public domain or MIT | `31c1ad37456438565541f4919958214b6e762fb4` |
 | `stb/stb_vorbis.c` | v1.22 | https://github.com/nothings/stb | Public domain or MIT | `31c1ad37456438565541f4919958214b6e762fb4` |
+
+| `sheenbidi/Headers`, `sheenbidi/Source` | v3.0.0, Unicode 17.0.0 | https://github.com/Tehreer/SheenBidi | Apache-2.0; bundled Unicode data | `cfe430e7375a7845b679adae9d51dac6deaa8858` |
+
+SheenBidi's unmodified license is `sheenbidi/LICENSE`. Unicode data terms are retained in `UNICODE-LICENSE.txt`. The text module compiles the vendored C unity source with private visibility; no external SheenBidi runtime is required. Linux Interop and Android packages include both license files and this inventory under `licenses/`.
 
 To update, re-pull from the corresponding raw URL at a chosen commit:
 
@@ -43,3 +47,9 @@ Each single-header is implemented in **exactly one** `.cpp` to avoid duplicate s
 | `minimp3_ex.h`| `src/native/jalium.native.media.core/src/audio/decoder_mp3.cpp` (defines `MINIMP3_IMPLEMENTATION` before include) |
 | `stb_image.h` | `src/native/jalium.native.vulkan/src/vulkan_backend.cpp` and `src/native/jalium.native.software/src/software_backend.cpp` (one private implementation in each shared backend) |
 | `stb_vorbis.c`| `src/native/jalium.native.media.core/src/audio/decoder_vorbis.cpp` (directly `#include "stb_vorbis.c"`; no separate header) |
+
+Unicode 17 grapheme properties and the official conformance fixture are pinned in
+`unicode-grapheme-17/UPSTREAM.json`. `tools/generate-css-grapheme-unicode.py` verifies
+the input hashes and generates `unicode_grapheme_data.h`; no Unicode runtime
+library is added. Their Unicode License V3 is retained in that directory and is
+byte-identical to `UNICODE-LICENSE.txt`, which the native packages already ship.

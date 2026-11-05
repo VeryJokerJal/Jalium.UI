@@ -65,6 +65,7 @@ public sealed class JsonTreeViewerAutomationPeer : FrameworkElementAutomationPee
         if (!IsEnabled())
             throw new InvalidOperationException("Cannot set value on a disabled JsonTreeViewer.");
 
-        JsonTreeViewerOwner.JsonText = value;
+        if (IsReadOnly) throw new InvalidOperationException("Cannot set value on a read-only JsonTreeViewer.");
+        JsonTreeViewerOwner.SetCurrentValue(JsonTreeViewer.JsonTextProperty, value);
     }
 }

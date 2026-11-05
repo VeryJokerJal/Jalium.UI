@@ -14,7 +14,8 @@ ShapedRun TextShaper::Shape(
     const wchar_t* text,
     uint32_t textLength,
     float fontSizePx,
-    bool isRtl)
+    bool isRtl,
+    const std::vector<JaliumFontFeature>& features)
 {
     ShapedRun run{};
     run.face = face;
@@ -50,13 +51,15 @@ ShapedRun TextShaper::Shape(
     }
 
     std::vector<font::ShapedGlyphItem> items;
-    otShaper_.Shape(*face, cps.data(), static_cast<uint32_t>(cps.size()), fontSizePx, isRtl, items);
+    otShaper_.Shape(*face, cps.data(), static_cast<uint32_t>(cps.size()), fontSizePx, isRtl, items, features);
 
     run.glyphs.reserve(items.size());
-    for (const auto& it : items) {
+    for (size_t index = 0; index < items.size(); ++index) {
+        const auto& it = items[index];
         ShapedGlyph sg{};
         sg.glyphIndex = it.glyphIndex;
         sg.cluster = (it.cluster < clusterMap.size()) ? clusterMap[it.cluster] : it.cluster;
+        sg.clusterEnd = it.clusterEnd < clusterMap.size() ? clusterMap[it.clusterEnd] : textLength;
         sg.advanceX = it.advanceX;
         sg.advanceY = it.advanceY;
         sg.offsetX = it.offsetX;

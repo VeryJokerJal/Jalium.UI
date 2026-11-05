@@ -16,6 +16,36 @@ public partial class DispatcherMainLoopTests
     [LibraryImport("user32.dll")]
     private static partial void PostQuitMessage(int nExitCode);
 
+    [LibraryImport("kernel32.dll")]
+    private static partial uint GetCurrentThreadId();
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool PostThreadMessageW(uint thread, uint message, nuint wParam, nint lParam);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool PeekMessageW(out NativeMessage message, nint hwnd, uint first, uint last, uint flags);
+
+    [LibraryImport("user32.dll")]
+    private static partial uint GetQueueStatus(uint flags);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    private static partial nint SendMessageTimeoutW(nint hwnd, uint message, nuint wParam, nint lParam,
+        uint flags, uint timeout, out nuint result);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeMessage
+    {
+        public nint Hwnd;
+        public uint Message;
+        public nuint WParam;
+        public nint LParam;
+        public uint Time;
+        public int X, Y;
+        public uint Private;
+    }
+
     private static bool IsWindows => RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
 
     // Runs body on a dedicated background thread; fails (never hangs) if it does not
@@ -76,6 +106,76 @@ public partial class DispatcherMainLoopTests
 
         Assert.True(ran, "queued dispatcher work was not processed by the main loop");
         Assert.Equal(7, result);
+    }
+
+    [Theory]
+    [InlineData(0x0101u)] // WM_KEYUP
+    [InlineData(0x0109u)] // WM_UNICHAR
+    [InlineData(0x0200u)] // WM_MOUSEMOVE
+    [InlineData(0x020Eu)] // WM_MOUSEHWHEEL
+    public void RunMainMessageLoop_DrainsPostedClientInputBeforeManagedWork(uint message)
+    {
+        if (!IsWindows) return;
+
+        RunOnPumpThread(() =>
+        {
+            var dispatcher = Dispatcher.GetForCurrentThread();
+            try
+            {
+                // A thread message has no HWND, so dispatch cannot synthesize
+                // physical input or enter a control's pointer-data parser.
+                Assert.True(PostThreadMessageW(GetCurrentThreadId(), message, 0, 0),
+                    $"Could not post message 0x{message:X}: Win32 {Marshal.GetLastPInvokeError()}.");
+                bool? stillQueued = null;
+                dispatcher.BeginInvoke(() =>
+                {
+                    stillQueued = PeekMessageW(out _, 0, message, message, 0);
+                    PostQuitMessage(0);
+                });
+                Assert.Equal(0, dispatcher.RunMainMessageLoop());
+                Assert.False(stillQueued ?? true, "Posted client input must be drained before managed work.");
+            }
+            finally { dispatcher.DisposeCore(); }
+        });
+    }
+
+    [Fact]
+    public void RunMainMessageLoop_ServicesPendingSentMessagesBeforeManagedWork()
+    {
+        if (!IsWindows) return;
+
+        RunOnPumpThread(() =>
+        {
+            const uint sentMessages = 0x0040;
+            var dispatcher = Dispatcher.GetForCurrentThread();
+            using var window = new HiddenNativeWindow(1, 1);
+            nint sendResult = 0;
+            var sender = new Thread(() => sendResult = SendMessageTimeoutW(
+                window.Hwnd, 0, 0, 0, 0x0002, 2000, out _)) { IsBackground = true };
+            try
+            {
+                sender.Start();
+                Assert.True(SpinWait.SpinUntil(
+                    () => ((GetQueueStatus(sentMessages) >> 16) & sentMessages) != 0,
+                    1000), "The worker's sent message was not observed in the native queue.");
+                bool? stillPending = null;
+                dispatcher.BeginInvoke(() =>
+                {
+                    stillPending = ((GetQueueStatus(sentMessages) >> 16) & sentMessages) != 0;
+                    PostQuitMessage(0);
+                });
+                Assert.Equal(0, dispatcher.RunMainMessageLoop());
+                Assert.False(stillPending ?? true, "Pending sent messages must be serviced before managed work.");
+                Assert.True(sender.Join(2500));
+                Assert.NotEqual(0, sendResult);
+            }
+            finally
+            {
+                // Bound the sender before destroying its target on this thread.
+                if (sender.IsAlive) sender.Join(2500);
+                dispatcher.DisposeCore();
+            }
+        });
     }
 
     [Fact]

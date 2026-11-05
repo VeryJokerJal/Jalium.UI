@@ -16,7 +16,10 @@ public sealed class CssStyleSheetBuilder
     private readonly List<CssLayerDeclaration> _layers = [];
     private readonly List<CssPropertyRegistration> _properties = [];
     private readonly List<CssFontFaceRule> _fonts = [];
+    private readonly List<CssFontFeatureValuesRule> _fontFeatureValues = [];
     private readonly List<CssKeyframesRule> _keyframes = [];
+    private readonly List<CssCounterStyleRule> _counterStyles = [];
+    private readonly List<CssPageRule> _pageRules = [];
     private readonly List<CssParseDiagnostic> _diagnostics = [];
     private bool _built;
 
@@ -53,6 +56,12 @@ public sealed class CssStyleSheetBuilder
     public int Compound(string? typeName, bool universal, string? namespaceUri, bool expandedTypeName,
         bool explicitTypeSelector, bool defaultNamespaceApplied, string? id, string[]? classes,
         byte[]? pseudos, uint stateMask, int[]? attributes, int[]? functions)
+        => Compound(typeName, universal, namespaceUri, expandedTypeName, explicitTypeSelector,
+            defaultNamespaceApplied, id, classes, pseudos, stateMask, attributes, functions, 0);
+
+    public int Compound(string? typeName, bool universal, string? namespaceUri, bool expandedTypeName,
+        bool explicitTypeSelector, bool defaultNamespaceApplied, string? id, string[]? classes,
+        byte[]? pseudos, uint stateMask, int[]? attributes, int[]? functions, byte pseudoElement)
         => Add(new CssCompound
         {
             TypeName = typeName, Universal = universal, NamespaceUri = namespaceUri,
@@ -62,6 +71,7 @@ public sealed class CssStyleSheetBuilder
             StateMask = (CssStateMask)stateMask,
             Attributes = attributes is null ? null : GetAll<CssAttributeSelector>(attributes),
             Functions = functions is null ? null : GetAll<CssFunctionalPseudo>(functions),
+            PseudoElement = (CssPseudoElement)pseudoElement,
         });
 
     public int Selector(int[] compounds, byte[] combinators, int specificity, uint rightmostStates,
@@ -135,13 +145,53 @@ public sealed class CssStyleSheetBuilder
     public void FontFace(string family, string[] references, bool[] local, string?[] formats, string[][] technologies,
         double minimumWeight, double maximumWeight, int style, double minimumWidth, double maximumWidth,
         int[] rangeBounds, string display, int offset, int condition, string? layerName)
+        => FontFace(family, references, local, formats, technologies, minimumWeight, maximumWeight, style,
+            minimumWidth, maximumWidth, rangeBounds, display, offset, condition, layerName, "normal");
+
+    public void FontFace(string family, string[] references, bool[] local, string?[] formats, string[][] technologies,
+        double minimumWeight, double maximumWeight, int style, double minimumWidth, double maximumWidth,
+        int[] rangeBounds, string display, int offset, int condition, string? layerName, string featureSettings)
+        => FontFace(family, references, local, formats, technologies, minimumWeight, maximumWeight, style,
+            minimumWidth, maximumWidth, rangeBounds, display, offset, condition, layerName, featureSettings, true);
+
+    public void FontFace(string family, string[] references, bool[] local, string?[] formats, string[][] technologies,
+        double minimumWeight, double maximumWeight, int style, double minimumWidth, double maximumWidth,
+        int[] rangeBounds, string display, int offset, int condition, string? layerName, string featureSettings, bool displaySpecified)
+        => FontFace(family, references, local, formats, technologies, minimumWeight, maximumWeight, style,
+            minimumWidth, maximumWidth, rangeBounds, display, offset, condition, layerName, featureSettings, displaySpecified, "normal");
+
+    public void FontFace(string family, string[] references, bool[] local, string?[] formats, string[][] technologies,
+        double minimumWeight, double maximumWeight, int style, double minimumWidth, double maximumWidth,
+        int[] rangeBounds, string display, int offset, int condition, string? layerName, string featureSettings, bool displaySpecified, string variationSettings)
+
+        => FontFace(family, references, local, formats, technologies, minimumWeight, maximumWeight, style,
+            minimumWidth, maximumWidth, rangeBounds, display, offset, condition, layerName, featureSettings, displaySpecified, variationSettings, null);
+
+    public void FontFace(string family, string[] references, bool[] local, string?[] formats, string[][] technologies,
+        double minimumWeight, double maximumWeight, int style, double minimumWidth, double maximumWidth,
+        int[] rangeBounds, string display, int offset, int condition, string? layerName, string featureSettings, bool displaySpecified, string variationSettings, double[]? metrics)
     {
+        var faceMetrics = metrics is null ? CssFontFaceMetrics.Initial : CssFontFaceMetrics.FromValues(metrics)
+            ?? throw new ArgumentException("Font-face metrics are invalid.", nameof(metrics));
         if (references.Length != local.Length || references.Length != formats.Length || references.Length != technologies.Length || rangeBounds.Length % 2 != 0)
             throw new ArgumentException("Font-face descriptor arrays are inconsistent.");
         var sources = references.Select((reference, i) => new CssFontSource(reference, local[i], formats[i], technologies[i])).ToArray();
         var ranges = Enumerable.Range(0, rangeBounds.Length / 2).Select(i => new CssUnicodeRange(rangeBounds[i * 2], rangeBounds[i * 2 + 1])).ToArray();
+        var reader = new CssTokenReader(featureSettings);
+        var settings = CssFontFeatureSettings.Read(ref reader) ?? throw new ArgumentException("Font-face features are invalid.", nameof(featureSettings));
+        reader = new CssTokenReader(variationSettings);
+        var variations = CssFontVariationSettings.Read(ref reader) ?? throw new ArgumentException("Font-face variations are invalid.", nameof(variationSettings));
         _fonts.Add(new(family, sources, minimumWeight, maximumWeight, style, minimumWidth, maximumWidth, ranges, display, offset,
-            layerName, Optional<CssCondition>(condition)));
+            layerName, Optional<CssCondition>(condition)) { FeatureSettings = settings, VariationSettings = variations, Metrics = faceMetrics, DisplaySpecified = displaySpecified });
+    }
+
+    public void FontFeatureValues(string[] families, string[] kinds, string[] names, int[][] indices,
+        string? display, int offset, int condition, string? layerName)
+    {
+        if (kinds.Length != names.Length || names.Length != indices.Length)
+            throw new ArgumentException("Font feature value arrays are inconsistent.");
+        _fontFeatureValues.Add(new(families.ToArray(), names.Select((name, i) => new CssFontFeatureValue(kinds[i], name, indices[i].ToArray())).ToArray(),
+            display, offset, layerName, Optional<CssCondition>(condition)));
     }
 
     public void Keyframes(string name, double[][] offsets, int[][] declarations, int offset, int condition,
@@ -158,6 +208,28 @@ public sealed class CssStyleSheetBuilder
         });
     }
 
+    public void CounterStyle(string name, int[] declarations, int offset, int condition, string? layerName)
+    {
+        var rule = CssCounterStyleRule.Parse(name, GetAll<CssDeclaration>(declarations), offset)
+            ?? throw new ArgumentException("Invalid compiled counter style.", nameof(declarations));
+        _counterStyles.Add(rule with { Condition = Optional<CssCondition>(condition), LayerName = layerName });
+    }
+
+    public void PageRule(string?[] selectorNames, byte[] selectorPseudos, int[] declarations,
+        byte[] marginKinds, int[][] marginDeclarations, int offset, int condition, string? layerName)
+    {
+        if (selectorNames.Length != selectorPseudos.Length || marginKinds.Length != marginDeclarations.Length)
+            throw new ArgumentException("Page rule arrays are inconsistent.");
+        var selectors = new CssPageSelector[selectorNames.Length];
+        for (var i = 0; i < selectors.Length; i++)
+            selectors[i] = new CssPageSelector(selectorNames[i], (CssPagePseudo)selectorPseudos[i]);
+        var margins = new CssPageMarginRule[marginKinds.Length];
+        for (var i = 0; i < margins.Length; i++)
+            margins[i] = new CssPageMarginRule((CssPageMarginBoxKind)marginKinds[i], GetAll<CssDeclaration>(marginDeclarations[i]));
+        _pageRules.Add(new CssPageRule(selectors, GetAll<CssDeclaration>(declarations), margins, offset,
+            Optional<CssCondition>(condition), layerName, _pageRules.Count));
+    }
+
     public CssStyleSheet Build(string? sourceLabel = null, Uri? baseUri = null)
     {
         if (_built) throw new InvalidOperationException("A CSS builder can only build one stylesheet.");
@@ -166,8 +238,9 @@ public sealed class CssStyleSheetBuilder
         foreach (var property in _properties) property.BaseUri = baseUri;
         foreach (var font in _fonts) font.BaseUri = baseUri;
         foreach (var keyframes in _keyframes) keyframes.BaseUri = baseUri;
+        foreach (var counter in _counterStyles) counter.BaseUri = baseUri;
         return new CssStyleSheet(_rules.ToArray(), _diagnostics.ToArray(), sourceLabel,
             _imports.ToArray(), _layers.ToArray(), _properties.ToArray(), _fonts.ToArray(),
-            _keyframes.ToArray());
+            _keyframes.ToArray(), _counterStyles.ToArray(), _fontFeatureValues.ToArray(), _pageRules.ToArray());
     }
 }

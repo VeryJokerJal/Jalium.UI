@@ -36,6 +36,7 @@ internal sealed class CssInheritedBoxObserver : IDisposable
         var directProperty = name switch
         {
             "white-space-collapse" => CssFlowProperties.WhiteSpaceProperty,
+            "writing-mode" => CssWritingModeProperties.WritingModeProperty,
             "text-wrap-mode" => CssFlowProperties.TextWrapModeProperty,
             "text-wrap-style" => CssFlowProperties.TextWrapStyleProperty,
             "line-padding" => CssFlowProperties.LinePaddingProperty,
@@ -52,12 +53,26 @@ internal sealed class CssInheritedBoxObserver : IDisposable
             "hanging-punctuation" => CssFlowProperties.HangingPunctuationProperty,
             "word-space-transform" => CssFlowProperties.WordSpaceTransformProperty,
             "image-rendering" => CssImageRenderingProperties.ValueProperty,
+            "border-image-source" => CssBorderImageProperties.SourceProperty,
+            "border-image-slice" => CssBorderImageProperties.SliceProperty,
+            "border-image-width" => CssBorderImageProperties.WidthProperty,
+            "border-image-outset" => CssBorderImageProperties.OutsetProperty,
+            "border-image-repeat" => CssBorderImageProperties.RepeatProperty,
             "user-select" => CssUserSelectProperties.ValueProperty,
             "text-underline-offset" => CssTextDecorationProperties.UnderlineOffsetProperty,
             "text-underline-position" => CssTextDecorationProperties.UnderlinePositionProperty,
             "text-decoration-skip-inset" => CssTextDecorationProperties.SkipInsetProperty,
             "text-shadow" => CssTextShadowProperties.ValueProperty,
             "display" => CssDisplayProperties.SpecificationProperty,
+            "flex-basis" => Controls.FlexPanel.BasisProperty,
+            "caption-side" => CssTableProperties.CaptionSideProperty,
+            "border-collapse" => CssTableProperties.CollapseProperty,
+            "column-count" => CssMultiColumnProperties.CountProperty,
+            "column-width" => CssMultiColumnProperties.WidthProperty,
+            "column-fill" => CssMultiColumnProperties.FillProperty,
+            "column-span" => CssMultiColumnProperties.SpanProperty,
+            "column-rule-width" => CssMultiColumnProperties.RuleWidthProperty,
+            "column-rule-style" => CssMultiColumnProperties.RuleStyleProperty,
             _ => null,
         };
         var nativeName = name switch
@@ -98,6 +113,7 @@ internal sealed class CssInheritedBoxObserver : IDisposable
         }
         observers[name] = new CssInheritedBoxObserver(child, parent, property,
             observeBorderPaint, observeBorderStyle, observeDisplay);
+        if (name == "writing-mode") CssRubyWritingMode.Invalidate();
     }
 
     internal static void Finish(CssElementState state)
@@ -114,11 +130,13 @@ internal sealed class CssInheritedBoxObserver : IDisposable
 
     private void Changed(DependencyProperty property, object? _, object? __)
     {
-        if (!ReferenceEquals(property, _property) &&
+        if (!ReferenceEquals(property, _property) && CssSizingPresentation.Native(property) != _property &&
             !ReferenceEquals(property, FrameworkElement.FlowDirectionProperty) &&
             !(_observeBorderPaint && ReferenceEquals(property, CssBorderPaintProperties.ValueProperty)) &&
             !(_observeBorderStyle && ReferenceEquals(property, CssBorderStyleProperties.ValueProperty)) &&
-            !(_observeDisplay && ReferenceEquals(property, CssFloatProperties.FloatProperty))) return;
+            !(_observeDisplay && ReferenceEquals(property, CssFloatProperties.FloatProperty)) &&
+            !(_property == Controls.FlexPanel.BasisProperty &&
+              (property == Controls.FlexPanel.CssBasisProperty || property == Controls.FlexPanel.CssContentBasisProperty))) return;
         InvalidateChild();
     }
 
@@ -140,6 +158,7 @@ internal sealed class CssInheritedBoxObserver : IDisposable
     public void Dispose()
     {
         if (_disposed) return;
+        if (_property == CssWritingModeProperties.WritingModeProperty) CssRubyWritingMode.Invalidate();
         _disposed = true;
         _parent.PropertyChangedInternal -= _handler;
         if (_radiusHandler is not null)

@@ -146,6 +146,13 @@ public class ListBoxItemAutomationPeer : SelectorItemAutomationPeer, Jalium.UI.A
     /// <inheritdoc />
     protected override object? GetPatternCore(PatternInterface patternInterface)
     {
+        // The popup exposes the realized container, while the ComboBox owns the
+        // occurrence and its commit semantics. Reuse that same Invoke provider.
+        if (patternInterface == PatternInterface.Invoke && ComboBoxOwner is { } combo
+            && combo.GetAutomationPeer() is ComboBoxAutomationPeer comboPeer
+            && combo.ItemContainerGenerator.IndexFromContainer(ItemOwner) is int index && index >= 0)
+            return comboPeer.FindOrCreateItemAutomationPeerAt(index).GetPattern(PatternInterface.Invoke);
+
         if (patternInterface == PatternInterface.SelectionItem)
             return this;
 
@@ -685,6 +692,38 @@ public class TabControlAutomationPeer : SelectorAutomationPeer, Jalium.UI.Automa
     }
 
     private TabControl TabControlOwner => (TabControl)Owner;
+    private bool _contentNotificationQueued;
+
+    internal void OnSelectedContentChanged()
+    {
+        ResetContentChildren();
+        if (_contentNotificationQueued || Dispatcher.HasShutdownStarted) return;
+        _contentNotificationQueued = true;
+        var weak = new WeakReference<TabControlAutomationPeer>(this);
+        Dispatcher.BeginInvoke(Jalium.UI.Threading.DispatcherPriority.ContextIdle, () =>
+        {
+            if (!weak.TryGetTarget(out var peer)) return;
+            peer._contentNotificationQueued = false;
+            if (peer.Dispatcher.HasShutdownStarted) return;
+            // A bridge may query the new page before its templates are laid
+            // out. Retire that partial child snapshot after realization.
+            peer.ResetContentChildren();
+            peer.RaiseAutomationEvent(AutomationEvents.StructureChanged);
+        });
+    }
+
+    private void ResetContentChildren()
+    {
+        foreach (var item in GetChildrenCore())
+        {
+            item.ResetChildrenCache();
+            // Native bridges prefer the realized header's peer, which can be
+            // distinct from the selector's occurrence peer for that same tab.
+            if (item.Owner is UIElement header)
+                UIElementAutomationPeer.FromElement(header)?.ResetChildrenCache();
+        }
+        ResetChildrenCache();
+    }
 
     protected override ItemAutomationPeer CreateItemAutomationPeer(object item) => new TabItemAutomationPeer(item, this);
 
@@ -716,7 +755,7 @@ public class TabControlAutomationPeer : SelectorAutomationPeer, Jalium.UI.Automa
     /// <inheritdoc />
     public override AutomationPeer[] GetSelection()
     {
-        return Array.Empty<AutomationPeer>();
+        return base.GetSelection();
     }
 
     /// <inheritdoc />
@@ -745,7 +784,7 @@ public class TabItemAutomationPeer : SelectorItemAutomationPeer, Jalium.UI.Autom
     {
     }
 
-    private TabItem ItemOwner => (TabItem)Owner;
+    private TabItem? ItemOwner => ItemContainer as TabItem ?? Item as TabItem;
 
     /// <inheritdoc />
     protected override AutomationControlType GetAutomationControlTypeCore()
@@ -762,9 +801,16 @@ public class TabItemAutomationPeer : SelectorItemAutomationPeer, Jalium.UI.Autom
     /// <inheritdoc />
     protected override string GetNameCore()
     {
-        var header = ItemOwner.Header;
+        var header = ItemOwner?.Header;
         if (header is string text)
             return text;
+        if (ItemOwner is { } item)
+        {
+            var names = ItemContentAutomation.Children(item, header)
+                .Where(peer => !ReferenceEquals(peer.Owner, item))
+                .Select(peer => peer.GetName()).Where(name => !string.IsNullOrWhiteSpace(name)).ToArray();
+            if (names.Length > 0) return string.Join(" ", names);
+        }
         return header?.ToString() ?? base.GetNameCore();
     }
 
@@ -780,34 +826,45 @@ public class TabItemAutomationPeer : SelectorItemAutomationPeer, Jalium.UI.Autom
     #region ISelectionItemProvider
 
     /// <inheritdoc />
-    public override bool IsSelected => ItemOwner.IsSelected;
+    public override bool IsSelected => ItemOwner?.IsSelected ?? base.IsSelected;
+
+    protected override AutomationPeer? GetParentCore() => IsRetired ? null
+        : ItemsControlAutomationPeer ?? ItemOwner?.TabControl?.GetAutomationPeer();
+
+    protected override List<AutomationPeer> GetChildrenCore()
+    {
+        if (IsRetired || !IsSelected) return [];
+        var tabs = ItemsControlAutomationPeer?.ItemsOwner as TabControl ?? ItemOwner?.TabControl;
+        return tabs == null ? [] : ItemContentAutomation.Children(tabs, tabs.SelectedContent, includeDefaultText: true);
+    }
 
     /// <inheritdoc />
     public override AutomationPeer SelectionContainer
     {
         get
         {
-            var parent = ItemOwner.VisualParent;
-            while (parent != null)
-            {
-                if (parent is TabControl tabControl)
-                    return tabControl.GetAutomationPeer() ?? new TabControlAutomationPeer(tabControl);
-                parent = (parent as FrameworkElement)?.VisualParent;
-            }
-            return null!;
+            if (ItemsControlAutomationPeer is TabControlAutomationPeer owner) return owner;
+            return ItemOwner?.TabControl?.GetAutomationPeer() ?? base.SelectionContainer;
         }
     }
 
     /// <inheritdoc />
     public override void Select()
     {
-        ItemOwner.IsSelected = true;
+        ThrowIfRetired();
+        if (!IsEnabled()) throw new InvalidOperationException("The tab is disabled.");
+        if (ItemOwner is { TabControl: { } tabs } item)
+        {
+            tabs.SelectTab(item);
+            return;
+        }
+        base.Select();
     }
 
     /// <inheritdoc />
     public override void AddToSelection()
     {
-        ItemOwner.IsSelected = true;
+        Select();
     }
 
     /// <inheritdoc />
@@ -990,11 +1047,7 @@ public sealed class MenuItemAutomationPeer : FrameworkElementAutomationPeer, IEx
     /// <inheritdoc />
     public void Invoke()
     {
-        if (!IsEnabled())
-            throw new InvalidOperationException("Cannot invoke a disabled MenuItem.");
-
-        // Raise the Click event
-        MenuItemOwner.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent, MenuItemOwner));
+        MenuItemOwner.InvokeFromAutomation();
         RaiseAutomationEvent(AutomationEvents.InvokePatternOnInvoked);
     }
 
@@ -1011,7 +1064,7 @@ public sealed class MenuItemAutomationPeer : FrameworkElementAutomationPeer, IEx
     {
         if (!IsEnabled())
             throw new InvalidOperationException("Cannot toggle a disabled MenuItem.");
-        MenuItemOwner.IsChecked = !MenuItemOwner.IsChecked;
+        MenuItemOwner.SetCurrentValue(MenuItem.IsCheckedProperty, !MenuItemOwner.IsChecked);
     }
 
     #endregion
@@ -1260,11 +1313,16 @@ public sealed partial class DataGridAutomationPeer : ItemsControlAutomationPeer,
     Jalium.UI.Automation.Provider.ISelectionProvider,
     Jalium.UI.Automation.Provider.ITableProvider
 {
-    private readonly Dictionary<object, Dictionary<DataGridColumn, DataGridCellItemAutomationPeer>> _cellPeers =
-        new(ReferenceEqualityComparer.Instance);
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<DataGridItemAutomationPeer,
+        Dictionary<DataGridColumn, DataGridCellItemAutomationPeer>> _cellPeers = new();
+    private List<DataGridItemAutomationPeer?>? _viewRows;
+    private readonly Dictionary<DataGridItemAutomationPeer, int> _viewIndices = new(ReferenceEqualityComparer.Instance);
+    private int _viewVersion = -1;
+    private ulong _sourceVersion;
+    private bool _viewNotificationQueued;
     private readonly Dictionary<DataGridColumn, DataGridHeaderItemAutomationPeer> _columnHeaderPeers = [];
-    private readonly Dictionary<object, DataGridHeaderItemAutomationPeer> _rowHeaderPeers =
-        new(ReferenceEqualityComparer.Instance);
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<DataGridItemAutomationPeer,
+        DataGridHeaderItemAutomationPeer> _rowHeaderPeers = new();
 
     /// <summary>
     /// Initializes a new instance of the DataGridAutomationPeer class.
@@ -1276,6 +1334,104 @@ public sealed partial class DataGridAutomationPeer : ItemsControlAutomationPeer,
     private DataGrid DataGridOwner => (DataGrid)Owner;
 
     protected override ItemAutomationPeer CreateItemAutomationPeer(object item) => new DataGridItemAutomationPeer(item, this);
+
+    protected override List<AutomationPeer> GetChildrenCore()
+    {
+        var children = new List<AutomationPeer>();
+        if (DataGridOwner.HeadersVisibility.HasFlag(DataGridHeadersVisibility.Column))
+            children.AddRange(DataGridOwner.Columns.Where(column => column.Visibility == Visibility.Visible)
+                .OrderBy(column => column.DisplayIndex).Select(GetColumnHeaderPeer));
+        children.AddRange(GetViewRows().OfType<DataGridItemAutomationPeer>());
+        return children;
+    }
+
+    internal void OnViewChanged()
+    {
+        if (_viewRows != null)
+            foreach (var row in _viewRows) row?.ResetChildrenCache();
+        _viewRows = null;
+        _viewIndices.Clear();
+        ResetChildrenCache();
+        var columns = DataGridOwner.Columns.ToHashSet();
+        foreach (var entry in _cellPeers)
+            foreach (var column in entry.Value.Keys.Where(column => !columns.Contains(column)).ToArray())
+                entry.Value.Remove(column);
+        foreach (var column in _columnHeaderPeers.Keys.Where(column => !columns.Contains(column)).ToArray())
+            _columnHeaderPeers.Remove(column);
+        if (_viewNotificationQueued || Dispatcher.HasShutdownStarted) return;
+        _viewNotificationQueued = true;
+        var weak = new WeakReference<DataGridAutomationPeer>(this);
+        Dispatcher.BeginInvoke(Jalium.UI.Threading.DispatcherPriority.ContextIdle, () =>
+        {
+            if (!weak.TryGetTarget(out var peer)) return;
+            peer._viewNotificationQueued = false;
+            if (!peer.Dispatcher.HasShutdownStarted) peer.RaiseAutomationEvent(AutomationEvents.StructureChanged);
+        });
+    }
+
+    private List<DataGridItemAutomationPeer?> GetViewRows()
+    {
+        if (_viewRows != null && _viewVersion == DataGridOwner.AutomationViewVersion && _sourceVersion == ItemCollectionVersion)
+            return _viewRows;
+        var viewVersion = DataGridOwner.AutomationViewVersion;
+        var sourceVersion = ItemCollectionVersion;
+        var items = DataGridOwner.AutomationViewItems.ToArray();
+        var sourceRows = base.GetChildrenCore().OfType<DataGridItemAutomationPeer>().ToArray();
+        var referenceBuckets = new Dictionary<object, Queue<DataGridItemAutomationPeer>>(ReferenceEqualityComparer.Instance);
+        foreach (var row in sourceRows)
+        {
+            if (!referenceBuckets.TryGetValue(row.Item, out var bucket)) referenceBuckets[row.Item] = bucket = new();
+            bucket.Enqueue(row);
+        }
+        Dictionary<object, Queue<DataGridItemAutomationPeer>>? valueBuckets = null;
+        var used = new HashSet<DataGridItemAutomationPeer>(ReferenceEqualityComparer.Instance);
+        var ordered = new List<DataGridItemAutomationPeer?>(items.Length);
+        foreach (var item in items)
+        {
+            if (item == null) { ordered.Add(null); continue; }
+            DataGridItemAutomationPeer? row = null;
+            if (referenceBuckets.TryGetValue(item, out var bucket))
+                while (bucket.TryDequeue(out var candidate))
+                    if (used.Add(candidate)) { row = candidate; break; }
+            // Separately enumerated value-type sources can produce different boxes.
+            // Keep occurrence queues so equal or repeated rows never share one peer.
+            if (row == null)
+            {
+                if (valueBuckets == null)
+                {
+                    valueBuckets = new();
+                    foreach (var candidate in sourceRows)
+                    {
+                        if (!valueBuckets.TryGetValue(candidate.Item, out var valueQueue)) valueBuckets[candidate.Item] = valueQueue = new();
+                        valueQueue.Enqueue(candidate);
+                    }
+                }
+                if (valueBuckets.TryGetValue(item, out var values))
+                    while (values.TryDequeue(out var candidate))
+                        if (used.Add(candidate)) { row = candidate; break; }
+            }
+            if (row == null) throw new InvalidOperationException("The grid view changed while automation rows were being resolved.");
+            ordered.Add(row);
+        }
+        if (viewVersion != DataGridOwner.AutomationViewVersion || sourceVersion != ItemCollectionVersion || used.Count != sourceRows.Length)
+            throw new InvalidOperationException("The grid view changed while automation rows were being resolved.");
+        _viewIndices.Clear();
+        for (var index = 0; index < ordered.Count; index++)
+            if (ordered[index] is { } row) _viewIndices[row] = index;
+        _viewVersion = viewVersion;
+        _sourceVersion = sourceVersion;
+        return _viewRows = ordered;
+    }
+
+    internal int GetDisplayIndex(DataGridItemAutomationPeer row)
+    {
+        _ = GetViewRows();
+        return _viewIndices.GetValueOrDefault(row, -1);
+    }
+
+    internal List<AutomationPeer> GetCellPeers(DataGridItemAutomationPeer row) => DataGridOwner.Columns
+        .Where(column => column.Visibility == Visibility.Visible).OrderBy(column => column.DisplayIndex)
+        .Select(column => (AutomationPeer)GetCellPeer(row, column)).ToList();
 
     /// <inheritdoc />
     protected override AutomationControlType GetAutomationControlTypeCore()
@@ -1322,17 +1478,15 @@ public sealed partial class DataGridAutomationPeer : ItemsControlAutomationPeer,
     bool Jalium.UI.Automation.Provider.ISelectionProvider.IsSelectionRequired => IsSelectionRequired;
     bool Jalium.UI.Automation.Provider.ISelectionProvider.CanSelectMultiple => CanSelectMultiple;
 
-    int Jalium.UI.Automation.Provider.IGridProvider.RowCount => DataGridOwner.Items.Count;
+    int Jalium.UI.Automation.Provider.IGridProvider.RowCount => GetViewRows().Count;
     int Jalium.UI.Automation.Provider.IGridProvider.ColumnCount => DataGridOwner.Columns.Count;
     Jalium.UI.Automation.Provider.IRawElementProviderSimple? Jalium.UI.Automation.Provider.IGridProvider.GetItem(int row, int column)
     {
-        if ((uint)row >= (uint)DataGridOwner.Items.Count || (uint)column >= (uint)DataGridOwner.Columns.Count)
+        var rows = GetViewRows();
+        if ((uint)row >= (uint)rows.Count || (uint)column >= (uint)DataGridOwner.Columns.Count)
             throw new ArgumentOutOfRangeException(
-                row < 0 || row >= DataGridOwner.Items.Count ? nameof(row) : nameof(column));
-
-        object item = DataGridOwner.Items[row];
-        DataGridColumn dataGridColumn = DataGridOwner.Columns[column];
-        return ProviderFromPeer(GetCellPeer(item, dataGridColumn));
+                row < 0 || row >= rows.Count ? nameof(row) : nameof(column));
+        return rows[row] is { } itemPeer ? ProviderFromPeer(GetCellPeer(itemPeer, DataGridOwner.Columns[column])) : null;
     }
 
     RowOrColumnMajor Jalium.UI.Automation.Provider.ITableProvider.RowOrColumnMajor => RowOrColumnMajor.RowMajor;
@@ -1351,31 +1505,29 @@ public sealed partial class DataGridAutomationPeer : ItemsControlAutomationPeer,
         if (!DataGridOwner.HeadersVisibility.HasFlag(DataGridHeadersVisibility.Row))
             return [];
 
-        return DataGridOwner.Items
-            .Cast<object>()
-            .Select(item => ProviderFromPeer(GetRowHeaderPeer(item)))
-            .ToArray();
+        return GetViewRows().OfType<DataGridItemAutomationPeer>()
+            .Select(row => ProviderFromPeer(GetRowHeaderPeer(row))).ToArray();
     }
 
-    private DataGridCellItemAutomationPeer GetCellPeer(object item, DataGridColumn column)
+    private DataGridCellItemAutomationPeer GetCellPeer(DataGridItemAutomationPeer row, DataGridColumn column)
     {
-        if (!_cellPeers.TryGetValue(item, out Dictionary<DataGridColumn, DataGridCellItemAutomationPeer>? rowPeers))
-        {
-            rowPeers = [];
-            _cellPeers.Add(item, rowPeers);
-        }
+        var rowPeers = _cellPeers.GetValue(row, static _ => new());
 
         if (!rowPeers.TryGetValue(column, out DataGridCellItemAutomationPeer? peer))
         {
-            peer = new DataGridCellItemAutomationPeer(item, column, this);
+            peer = new DataGridCellItemAutomationPeer(row, column, this);
             rowPeers.Add(column, peer);
         }
 
         return peer;
     }
 
-    private DataGridHeaderItemAutomationPeer GetColumnHeaderPeer(DataGridColumn column)
+    private AutomationPeer GetColumnHeaderPeer(DataGridColumn column)
     {
+        if (DataGridOwner.FindName("PART_ColumnHeadersHost") is StackPanel host &&
+            host.Children.OfType<Jalium.UI.Controls.Primitives.DataGridColumnHeader>()
+                .FirstOrDefault(header => ReferenceEquals(header.Column, column))?.GetAutomationPeer() is { } realizedPeer)
+            return realizedPeer;
         if (!_columnHeaderPeers.TryGetValue(column, out DataGridHeaderItemAutomationPeer? peer))
         {
             peer = new DataGridHeaderItemAutomationPeer(column.Header?.ToString() ?? string.Empty, this);
@@ -1385,26 +1537,19 @@ public sealed partial class DataGridAutomationPeer : ItemsControlAutomationPeer,
         return peer;
     }
 
-    private DataGridHeaderItemAutomationPeer GetRowHeaderPeer(object item)
-    {
-        if (!_rowHeaderPeers.TryGetValue(item, out DataGridHeaderItemAutomationPeer? peer))
-        {
-            peer = new DataGridHeaderItemAutomationPeer(item.ToString() ?? string.Empty, this);
-            _rowHeaderPeers.Add(item, peer);
-        }
-
-        return peer;
-    }
+    private DataGridHeaderItemAutomationPeer GetRowHeaderPeer(DataGridItemAutomationPeer row) =>
+        _rowHeaderPeers.GetValue(row, item => new DataGridHeaderItemAutomationPeer(item.Item.ToString() ?? string.Empty, this));
 
     private sealed class DataGridCellItemAutomationPeer : AutomationPeer
     {
-        private readonly object _item;
+        private readonly DataGridItemAutomationPeer _row;
+        private object Item => _row.Item;
         private readonly DataGridColumn _column;
         private readonly DataGridAutomationPeer _parent;
 
-        internal DataGridCellItemAutomationPeer(object item, DataGridColumn column, DataGridAutomationPeer parent)
+        internal DataGridCellItemAutomationPeer(DataGridItemAutomationPeer row, DataGridColumn column, DataGridAutomationPeer parent)
         {
-            _item = item;
+            _row = row;
             _column = column;
             _parent = parent;
         }
@@ -1413,9 +1558,9 @@ public sealed partial class DataGridAutomationPeer : ItemsControlAutomationPeer,
         protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.DataItem;
         protected override string GetClassNameCore() => nameof(DataGridCell);
         protected override string GetNameCore() =>
-            GetRealizedCell()?.Content?.ToString() ?? _column.GetCellValueInternal(_item)?.ToString() ?? string.Empty;
+            _column.GetCellValueInternal(Item)?.ToString() ?? GetRealizedCell()?.GetAutomationPeer()?.GetName() ?? string.Empty;
         protected override string GetAutomationIdCore() =>
-            $"Cell_{_parent.DataGridOwner.Items.IndexOf(_item)}_{_parent.DataGridOwner.Columns.IndexOf(_column)}";
+            $"Cell_{_parent.GetDisplayIndex(_row)}_{_parent.DataGridOwner.Columns.IndexOf(_column)}";
         protected override string GetHelpTextCore() => string.Empty;
         protected override string GetAcceleratorKeyCore() => string.Empty;
         protected override string GetAccessKeyCore() => string.Empty;
@@ -1446,14 +1591,14 @@ public sealed partial class DataGridAutomationPeer : ItemsControlAutomationPeer,
         protected override bool IsPasswordCore() => false;
         protected override bool IsRequiredForFormCore() => false;
         protected override AutomationPeer? GetLabeledByCore() => null;
-        protected override AutomationPeer GetParentCore() => _parent;
+        protected override AutomationPeer GetParentCore() => _row;
         protected override List<AutomationPeer> GetChildrenCore() => [];
         protected override void SetFocusCore() => (GetRealizedCell() as UIElement ?? _parent.DataGridOwner).Focus();
 
         private DataGridCell? GetRealizedCell()
         {
             int columnIndex = _parent.DataGridOwner.Columns.IndexOf(_column);
-            return _parent.DataGridOwner.ItemContainerGenerator.ContainerFromItem(_item) is DataGridRow row &&
+            return !_row.IsRetired && _parent.DataGridOwner.FindRealizedRowAt(_parent.GetDisplayIndex(_row)) is DataGridRow row &&
                    row.CellsByColumn.TryGetValue(columnIndex, out DataGridCell? cell)
                 ? cell
                 : null;

@@ -4,6 +4,7 @@ using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Tests;
 
@@ -73,11 +74,10 @@ public class ButtonBaseInputGateTests
     [Fact]
     public void CanRespondToInput_StaleCommandFlap_ReturnsTrue_AndHealsIsEnabled()
     {
-        // The core fix: command CAN execute right now, but IsEnabled is stuck false from a stale
-        // async CanExecuteChanged. Treat it as clickable and self-heal the local IsEnabled value.
-        var button = new Button { Command = new ToggleCommand(() => true) };
-        button.SetValue(UIElement.IsEnabledProperty, false); // simulate the async flap residue
+        bool canExecute = false;
+        var button = new Button { Command = new ToggleCommand(() => canExecute) };
         Assert.False(button.IsEnabled);
+        canExecute = true; // completion before CanExecuteChanged is delivered
 
         Assert.True(button.CanRespondToInput());
         Assert.True(button.IsEnabled); // healed so the disabled-style trigger reverts immediately
@@ -87,8 +87,10 @@ public class ButtonBaseInputGateTests
     public void CanRespondToInput_RepeatButtonInheritsGate()
     {
         // RepeatButton is the worst case (auto-repeat while held); it must see the same gate.
-        var repeat = new RepeatButton { Command = new ToggleCommand(() => true) };
-        repeat.SetValue(UIElement.IsEnabledProperty, false);
+        bool canExecute = false;
+        var repeat = new RepeatButton { Command = new ToggleCommand(() => canExecute) };
+        Assert.False(repeat.IsEnabled);
+        canExecute = true;
 
         Assert.True(repeat.CanRespondToInput());
         Assert.True(repeat.IsEnabled);
@@ -99,15 +101,15 @@ public class ButtonBaseInputGateTests
     [Fact]
     public void Button_StaleCommandFlap_MouseDownThenUp_StillClicks_ReleaseMode()
     {
-        var command = new ToggleCommand(() => true);
+        bool canExecute = false;
+        var command = new ToggleCommand(() => canExecute);
         var button = new Button { ClickMode = ClickMode.Release, Command = command };
 
         int clicks = 0;
         button.Click += (_, _) => clicks++;
 
-        // Stale async flap: command can run, but IsEnabled is stuck false.
-        button.SetValue(UIElement.IsEnabledProperty, false);
         Assert.False(button.IsEnabled);
+        canExecute = true;
 
         button.RaiseEvent(CreateMouseDown());
 
@@ -136,6 +138,20 @@ public class ButtonBaseInputGateTests
         button.RaiseEvent(CreateMouseUp());
 
         Assert.Equal(0, clicks);
+    }
+
+    [Fact]
+    public void Button_AppDisabledWithAvailableCommand_DoesNotClick()
+    {
+        var command = new ToggleCommand(() => true);
+        var button = new Button { Command = command, IsEnabled = false };
+        int clicks = 0;
+        button.Click += (_, _) => clicks++;
+        button.RaiseEvent(CreateMouseDown());
+        button.RaiseEvent(CreateMouseUp());
+        Assert.Equal(0, clicks);
+        Assert.Equal(0, command.ExecuteCount);
+        Assert.False(button.IsEnabled);
     }
 
     [Fact]
@@ -211,11 +227,13 @@ public class ButtonBaseInputGateTests
     {
         // A Hover-mode button only transiently disabled by a command's async CanExecute flap
         // still activates on hover (and self-heals), like the other gates.
-        var command = new ToggleCommand(() => true);
+        bool canExecute = false;
+        var command = new ToggleCommand(() => canExecute);
         var button = new Button { ClickMode = ClickMode.Hover, Command = command };
         int clicks = 0;
         button.Click += (_, _) => clicks++;
-        button.SetValue(UIElement.IsEnabledProperty, false);
+        Assert.False(button.IsEnabled);
+        canExecute = true;
 
         button.RaiseEvent(new MouseEventArgs(UIElement.MouseEnterEvent) { Source = button });
 

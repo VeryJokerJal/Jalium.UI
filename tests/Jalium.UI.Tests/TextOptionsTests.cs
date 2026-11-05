@@ -10,6 +10,32 @@ namespace Jalium.UI.Tests;
 /// </summary>
 public class TextOptionsTests
 {
+    [Fact]
+    public void ApplyTextOptions_PreservesInheritedParagraphDirection()
+    {
+        var parent = new Jalium.UI.Controls.StackPanel { FlowDirection = FlowDirection.RightToLeft };
+        var child = new Jalium.UI.Controls.TextBlock(); parent.Children.Add(child);
+        var text = new FormattedText("مرحبا CSS", "DejaVu Sans", 20).ApplyTextOptionsFrom(child);
+        Assert.Equal(FlowDirection.RightToLeft, text.FlowDirection);
+        parent.FlowDirection = FlowDirection.LeftToRight;
+        Assert.Equal(FlowDirection.RightToLeft, text.FlowDirection);
+        Assert.Equal(FlowDirection.LeftToRight, new FormattedText("مرحبا CSS", "DejaVu Sans", 20).ApplyTextOptionsFrom(child).FlowDirection);
+    }
+
+    [Fact]
+    public void RecordedTextPool_KeepsOppositeParagraphDirectionsIndependent()
+    {
+        var left = new FormattedText("مرحبا CSS", "DejaVu Sans", 20) { FlowDirection = FlowDirection.LeftToRight };
+        var right = new FormattedText("مرحبا CSS", "DejaVu Sans", 20) { FlowDirection = FlowDirection.RightToLeft };
+        var a = Jalium.UI.Media.Rendering.DrawingObjectPool.CanonicalizeFormattedText(left);
+        var b = Jalium.UI.Media.Rendering.DrawingObjectPool.CanonicalizeFormattedText(right);
+        Assert.NotSame(a,b);
+        Assert.Equal(FlowDirection.LeftToRight,a.FlowDirection);
+        Assert.Equal(FlowDirection.RightToLeft,b.FlowDirection);
+        right.FlowDirection = FlowDirection.LeftToRight;
+        Assert.Equal(FlowDirection.RightToLeft,b.FlowDirection);
+    }
+
     private sealed class Element : DependencyObject { }
 
     [Fact]

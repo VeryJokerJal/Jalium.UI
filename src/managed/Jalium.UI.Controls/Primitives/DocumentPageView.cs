@@ -25,6 +25,10 @@ public class DocumentPageView : FrameworkElement, IServiceProvider, IDisposable
     private DocumentPage? _documentPage;
     private bool _newPageConnected;
     private bool _disposed;
+    private FlowDocumentPresentation? _flowVisual;
+    private bool _needsPageRefresh;
+    private int _pageRequestVersion;
+    private bool _reloadQueued;
 
     private const string PlaceholderBrushKey = "ControlBackground";
     private const string PlaceholderSecondaryBrushKey = "ControlFillColorTertiaryBrush";
@@ -195,27 +199,58 @@ public class DocumentPageView : FrameworkElement, IServiceProvider, IDisposable
 
     #region Layout
 
+    protected override int VisualChildrenCount => _flowVisual is null ? 0 : 1;
+    protected override Visual? GetVisualChild(int index) => index == 0 && _flowVisual is not null
+        ? _flowVisual : throw new ArgumentOutOfRangeException(nameof(index));
+
+    private void LayoutFlowVisual(Size size, bool arrange)
+    {
+        if (_flowVisual is not { } visual || _documentPage is null) return;
+        var page = _documentPage.Size;
+        var x = page.Width > 0 ? size.Width / page.Width : 1;
+        var y = page.Height > 0 ? size.Height / page.Height : 1;
+        // Page layout and its clip stay in the paginator's original coordinates.
+        // Only the displayed page is scaled; arranging the source at display size
+        // would clip its background and text a second time when zoomed out.
+        visual.ClearValue(FrameworkElement.LayoutTransformProperty);
+        if (visual.RenderTransform is not ScaleTransform render || render.ScaleX != x || render.ScaleY != y)
+            visual.RenderTransform = new ScaleTransform(x, y);
+        visual.Measure(page);
+        if (arrange && ReferenceEquals(visual, _flowVisual)) visual.Arrange(new Rect(page));
+    }
+
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
         CheckDisposed();
-        LoadPage();
-
-        if (_documentPage == null || _documentPage == Jalium.UI.Documents.DocumentPage.Missing)
+        // Applying document CSS (or registering a different-DPI consumer) may
+        // replace this page during its first layout. Never publish the retired
+        // visual's size as a valid, permanently empty page.
+        var desired = default(Size);
+        for (var attempt = 0; attempt < 3; attempt++)
         {
-            return default(Size);
+            LoadPage();
+
+            if (_documentPage == null || _documentPage == Jalium.UI.Documents.DocumentPage.Missing)
+            {
+                return default(Size);
+            }
+
+            var pageSize = _documentPage.Size;
+            if (pageSize.IsEmpty)
+            {
+                return default(Size);
+            }
+
+            // Calculate stretched size
+            var scale = CalculateScale(availableSize, pageSize);
+
+            var page = _documentPage;
+            desired = new Size(pageSize.Width * scale, pageSize.Height * scale);
+            LayoutFlowVisual(desired, arrange: false);
+            if (ReferenceEquals(page, _documentPage) && !_needsPageRefresh) return desired;
         }
-
-        var pageSize = _documentPage.Size;
-        if (pageSize.IsEmpty)
-        {
-            return default(Size);
-        }
-
-        // Calculate stretched size
-        var scale = CalculateScale(availableSize, pageSize);
-
-        return new Size(pageSize.Width * scale, pageSize.Height * scale);
+        return desired;
     }
 
     /// <inheritdoc />
@@ -228,7 +263,7 @@ public class DocumentPageView : FrameworkElement, IServiceProvider, IDisposable
             OnPageConnected();
         }
 
-        // Page visual is rendered in OnRender.
+        LayoutFlowVisual(finalSize, arrange: true);
         return finalSize;
     }
 
@@ -280,27 +315,85 @@ public class DocumentPageView : FrameworkElement, IServiceProvider, IDisposable
 
     #region Page Loading
 
+    internal void RefreshPage()
+    {
+        _pageRequestVersion++;
+        // A style/DPI refresh keeps the current text surface in its real visual
+        // ancestry. Recreating it as a detached 1x consumer during layout would
+        // change the shared document's image-set choice again and reenter layout.
+        if (_flowVisual is null) DisposeCurrentPage();
+        _needsPageRefresh = true;
+        InvalidateMeasure();
+    }
+
     private void LoadPage()
     {
-        if (_documentPage != null)
+        for (var attempt = 0; attempt < 3; attempt++)
         {
+            if (_documentPage != null && !_needsPageRefresh)
+            {
+                return;
+            }
+
+            var paginator = DocumentPaginator;
+            if (paginator == null)
+            {
+                return;
+            }
+
+            _needsPageRefresh = false;
+            var version = _pageRequestVersion;
+            var number = PageNumber;
+            if (_flowVisual is { } current && paginator is IFlowDocumentPagePresentation presentation &&
+                presentation.TryRefreshPage(PageNumber, current, out var size))
+            {
+                if (version != _pageRequestVersion || number != PageNumber || !ReferenceEquals(paginator, DocumentPaginator)) continue;
+                _documentPage = new DocumentPage(current, size, new Rect(size), new Rect(size));
+                return;
+            }
+            if (_documentPage is not null) DisposeCurrentPage();
+
+            if (PageNumber < 0)
+            {
+                _documentPage = Jalium.UI.Documents.DocumentPage.Missing;
+                return;
+            }
+
+            version = _pageRequestVersion;
+            number = PageNumber;
+            var page = paginator.GetPage(number) ?? Jalium.UI.Documents.DocumentPage.Missing;
+            if (version != _pageRequestVersion || number != PageNumber || !ReferenceEquals(paginator, DocumentPaginator))
+            {
+                if (page.Visual is FlowDocumentPresentation retired && !ReferenceEquals(retired, _flowVisual)) retired.Dispose();
+                continue;
+            }
+            if (ReferenceEquals(page, Jalium.UI.Documents.DocumentPage.Missing) && paginator is IFlowDocumentPagePresentation && !paginator.IsPageCountValid)
+            {
+                QueuePageReload(paginator, number, version);
+                return;
+            }
+            _documentPage = page;
+            if (_documentPage.Visual is FlowDocumentPresentation flow)
+            {
+                _flowVisual = flow;
+                AddVisualChild(flow);
+            }
+            _newPageConnected = true;
             return;
         }
+        if (DocumentPaginator is { } pending) QueuePageReload(pending, PageNumber, _pageRequestVersion);
+    }
 
-        var paginator = DocumentPaginator;
-        if (paginator == null)
+    private void QueuePageReload(DocumentPaginator paginator, int number, int version)
+    {
+        if (_reloadQueued) return;
+        _reloadQueued = true;
+        Dispatcher.BeginInvoke(Jalium.UI.Threading.DispatcherPriority.Render, () =>
         {
-            return;
-        }
-
-        if (PageNumber < 0)
-        {
-            _documentPage = Jalium.UI.Documents.DocumentPage.Missing;
-            return;
-        }
-
-        _documentPage = paginator.GetPage(PageNumber) ?? Jalium.UI.Documents.DocumentPage.Missing;
-        _newPageConnected = true;
+            _reloadQueued = false;
+            if (!_disposed && ReferenceEquals(paginator, DocumentPaginator) && number == PageNumber && version == _pageRequestVersion)
+                RefreshPage();
+        });
     }
 
     #endregion
@@ -330,11 +423,11 @@ public class DocumentPageView : FrameworkElement, IServiceProvider, IDisposable
         // Composite the paginator's actual visual into the page surface.  A VisualBrush keeps
         // the source visual live, so text/selection invalidation is reflected without replacing
         // the DocumentPageView or rasterizing the document into a stale bitmap.
-        var documentVisualBrush = new VisualBrush(_documentPage.Visual)
+        if (_flowVisual is null)
         {
-            Stretch = Stretch.Fill,
-        };
-        dc.DrawRectangle(documentVisualBrush, null, pageRect);
+            var documentVisualBrush = new VisualBrush(_documentPage.Visual) { Stretch = Stretch.Fill };
+            dc.DrawRectangle(documentVisualBrush, null, pageRect);
+        }
 
         // Draw border
         dc.DrawRectangle(null, ResolveBorderPen(), pageRect);
@@ -446,12 +539,20 @@ public class DocumentPageView : FrameworkElement, IServiceProvider, IDisposable
 
     private void DisposeCurrentPage()
     {
+        _pageRequestVersion++;
         if (_documentPage == null)
         {
             return;
         }
 
+        if (_flowVisual is { } flow)
+        {
+            RemoveVisualChild(flow);
+            flow.Dispose();
+            _flowVisual = null;
+        }
         _documentPage = null;
+        _needsPageRefresh = false;
         _newPageConnected = false;
         InvalidateVisual();
         PageDisconnected?.Invoke(this, EventArgs.Empty);

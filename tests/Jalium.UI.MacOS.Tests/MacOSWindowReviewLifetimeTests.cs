@@ -109,6 +109,12 @@ public sealed class MacOSWindowReviewLifetimeTests
     {
         if (!OperatingSystem.IsMacOS()) return;
         using var h = new InputHost(); var command = new CountingCommand();
+        if (momentum)
+        {
+            h.Wheel(97, MouseWheelPhase.Began, false);
+            h.Wheel(98, MouseWheelPhase.Ended, false);
+            h.Wheel(99, MouseWheelPhase.Began, true);
+        }
         h.Target.InputBindings.Add(new MouseBinding(command, new MouseGesture(MouseAction.WheelClick)));
         h.Target.PreviewMouseWheel += (_, e) =>
         {
@@ -117,7 +123,29 @@ public sealed class MacOSWindowReviewLifetimeTests
         };
         h.Wheel(100, MouseWheelPhase.Changed, momentum);
         Assert.Equal((0, 0), (command.Queries, command.Executions));
-        h.Wheel(102, MouseWheelPhase.Began, momentum);
+        // A fresh physical gesture starts a route; momentum cannot revive one
+        // that the nested Ended/Cancelled packet has retired.
+        h.Wheel(102, MouseWheelPhase.Began, false);
+        Assert.Equal((1, 1), (command.Queries, command.Executions));
+    }
+
+    [Theory]
+    [InlineData(false)] [InlineData(true)]
+    public void ANewMomentumPacketCannotReviveARetiredCommandRoute(bool canceled)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var h = new InputHost(); var command = new CountingCommand();
+        h.Wheel(97, MouseWheelPhase.Began, false);
+        h.Wheel(98, MouseWheelPhase.Ended, false);
+        h.Wheel(99, MouseWheelPhase.Began, true);
+        h.Wheel(101, canceled ? MouseWheelPhase.Cancelled : MouseWheelPhase.Ended, true);
+        h.Target.InputBindings.Add(new MouseBinding(command, new MouseGesture(MouseAction.WheelClick)));
+
+        h.Wheel(102, MouseWheelPhase.Began, true);
+        h.Wheel(103, MouseWheelPhase.Changed, true);
+        Assert.Equal((0, 0), (command.Queries, command.Executions));
+
+        h.Wheel(104, MouseWheelPhase.Began, false);
         Assert.Equal((1, 1), (command.Queries, command.Executions));
     }
 

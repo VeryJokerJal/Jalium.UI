@@ -111,7 +111,7 @@ public class ShellThemeTests
     }
 
     [Fact]
-    public void TabControls_InternalResolvers_ShouldUseThemeResources()
+    public void TabControls_TemplateParts_ShouldUseThemeResources()
     {
         ResetApplicationState();
         ThemeLoader.Initialize();
@@ -136,13 +136,16 @@ public class ShellThemeTests
             host.Measure(new Size(360, 160));
             host.Arrange(new Rect(0, 0, 360, 160));
 
-            Assert.Same(tabStripBackground, InvokePrivateBrushResolver(tabControl, "ResolveTabStripBackground"));
-            Assert.Same(tabStripBorder, InvokePrivateBrushResolver(tabControl, "ResolveTabStripBorderBrush"));
-            Assert.Same(selectedBackground, InvokePrivateBrushResolver(tabItem, "ResolveSelectedBackground"));
-            Assert.Same(hoverBackground, InvokePrivateBrushResolver(tabItem, "ResolveHoverBackground"));
-            Assert.Same(primaryText, InvokePrivateBrushResolver(tabItem, "ResolvePrimaryTextBrush"));
-            Assert.Same(secondaryText, InvokePrivateBrushResolver(tabItem, "ResolveSecondaryTextBrush"));
-            Assert.Same(indicatorBrush, InvokePrivateBrushResolver(tabItem, "ResolveIndicatorBrush"));
+            var strip = Assert.IsType<Border>(tabControl.FindName("PART_HeaderSurface"));
+            var header = Assert.IsType<ContentPresenter>(tabItem.FindName("PART_HeaderPresenter"));
+            Assert.Same(tabStripBackground, strip.Background);
+            Assert.Same(tabStripBorder, strip.BorderBrush);
+            Assert.Same(selectedBackground, Assert.IsType<Border>(tabItem.FindName("PART_Selection")).Background);
+            Assert.Same(hoverBackground, Assert.IsType<Border>(tabItem.FindName("PART_Hover")).Background);
+            Assert.Same(primaryText, header.GetValue(Control.ForegroundProperty));
+            Assert.Same(indicatorBrush, Assert.IsType<Border>(tabItem.FindName("PART_IndicatorBottom")).Background);
+            tabControl.SelectedIndex = -1;
+            Assert.Same(secondaryText, header.GetValue(Control.ForegroundProperty));
         }
         finally
         {
@@ -150,11 +153,4 @@ public class ShellThemeTests
         }
     }
 
-    private static Brush InvokePrivateBrushResolver(Control control, string methodName)
-    {
-        var method = control.GetType().GetMethod(methodName,
-            BindingFlags.Instance | BindingFlags.NonPublic);
-        Assert.NotNull(method);
-        return Assert.IsAssignableFrom<Brush>(method!.Invoke(control, null));
-    }
 }

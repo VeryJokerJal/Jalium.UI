@@ -9,6 +9,24 @@ namespace Jalium.UI.Tests;
 public sealed class TextBlockParityTests
 {
     [Fact]
+    public void TemplateAlignmentOutranksTextAlignInheritedFromAncestorCssButNotCssOnTheElement()
+    {
+        var host = new StackPanel();
+        host.SetValue(Jalium.UI.Styling.CssFlowProperties.TextAlignProperty, Jalium.UI.Styling.CssFlowTextAlignment.Start);
+        var title = new TextBlock { Text = "centred title", TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center };
+        // Template-authored literals live in the ParentTemplate layer, not the local one.
+        title.PromoteLocalValuesToLayer(DependencyObject.LayerValueSource.ParentTemplate);
+        host.Children.Add(title);
+
+        Assert.False(title.HasLocalValue(TextBlock.TextAlignmentProperty));
+        Assert.Equal(TextAlignment.Center, Jalium.UI.Styling.CssFlowProperties.NativeLineTextAlignment(title, TextBlock.TextAlignmentProperty, isLast: false));
+        Assert.Equal(TextAlignment.Center, Jalium.UI.Styling.CssFlowProperties.NativeLineTextAlignment(title, TextBlock.TextAlignmentProperty, isLast: true));
+
+        title.SetValue(Jalium.UI.Styling.CssFlowProperties.TextAlignProperty, Jalium.UI.Styling.CssFlowTextAlignment.Right);
+        Assert.Equal(TextAlignment.Right, Jalium.UI.Styling.CssFlowProperties.NativeLineTextAlignment(title, TextBlock.TextAlignmentProperty, isLast: true));
+    }
+
+    [Fact]
     public void PlainTextDefersInlineMaterializationAndReusesRetainedImplicitRun()
     {
         var inlinesField = typeof(TextBlock).GetField(

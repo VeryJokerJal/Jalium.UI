@@ -80,7 +80,7 @@ internal sealed unsafe partial class MacOSAccessibilityTree
                 // resolving the next font or publishing a partial snapshot.
                 if (!isCurrent() || source.Text != text) return null;
                 writer.WriteStartObject(); writer.WriteNumber("start", run.Start); writer.WriteNumber("length", run.Length);
-                writer.WriteString("family", font?.Family ?? style.FontFamily); writer.WriteNumber("size", font is { } sized ? sized.Size : style.FontSize);
+                writer.WriteString("family", font?.Family ?? AutomationTextStyles.FamilyName(style.FontFamily)); writer.WriteNumber("size", font is { } sized ? sized.Size : style.FontSize);
                 writer.WriteNumber("weight", font?.Weight ?? style.FontWeight); writer.WriteNumber("italic", font?.Style ?? style.FontStyle);
                 if (font is { } resolved) writer.WriteNumber("width", resolved.Width);
                 WriteColor("foreground", style.Foreground); WriteColor("background", style.Background);

@@ -8,6 +8,9 @@ namespace Jalium.UI.Controls.Primitives;
 /// <summary>
 /// Represents a column header in a DataGrid.
 /// </summary>
+[TemplateVisualState(Name = "Unsorted", GroupName = "SortStates")]
+[TemplateVisualState(Name = "SortAscending", GroupName = "SortStates")]
+[TemplateVisualState(Name = "SortDescending", GroupName = "SortStates")]
 public class DataGridColumnHeader : ButtonBase, Jalium.UI.Controls.IProvideDataGridColumn
 {
     private static readonly ComponentResourceKey s_columnFloatingHeaderStyleKey =
@@ -21,24 +24,6 @@ public class DataGridColumnHeader : ButtonBase, Jalium.UI.Controls.IProvideDataG
     /// <summary>Gets the resource key for the column-header drop-separator style.</summary>
     public static ComponentResourceKey ColumnHeaderDropSeparatorStyleKey =>
         s_columnHeaderDropSeparatorStyleKey;
-
-    #region Static Brushes & Pens
-
-    private static readonly SolidColorBrush s_pressedBgBrush = new(Color.FromRgb(60, 60, 60));
-    private static readonly SolidColorBrush s_defaultBgBrush = new(Color.FromRgb(45, 45, 45));
-    private static readonly SolidColorBrush s_defaultFgBrush = new(Color.White);
-    private static readonly SolidColorBrush s_defaultSeparatorBrush = new(Color.FromRgb(67, 67, 70));
-    private static readonly SolidColorBrush s_borderBrush = new(Color.FromRgb(67, 67, 70));
-
-    #endregion
-
-    // Cached pens
-    private Pen? _separatorPen;
-    private Brush? _separatorPenBrush;
-    private Pen? _sortIndicatorPen;
-    private Brush? _sortIndicatorPenBrush;
-    private Pen? _bottomBorderPen;
-    private Brush? _bottomBorderPenBrush;
 
     #region Dependency Properties
 
@@ -159,7 +144,6 @@ public class DataGridColumnHeader : ButtonBase, Jalium.UI.Controls.IProvideDataG
     private const double DragThreshold = 5.0;
 
     private Jalium.UI.Controls.DataGridColumn? _column;
-    private TextBlock? _sortIndicator;
     private FrameworkElement? _resizeGrip;
     private bool _isResizing;
     private double _resizeStartX;
@@ -185,7 +169,7 @@ public class DataGridColumnHeader : ButtonBase, Jalium.UI.Controls.IProvideDataG
 
         AddHandler(PreviewMouseDownEvent, new MouseButtonEventHandler(OnPreviewMouseDownHandler), true);
         AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler), true);
-        AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler), true);
+        AddHandler(PreviewMouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler), true);
     }
 
     #endregion
@@ -196,7 +180,6 @@ public class DataGridColumnHeader : ButtonBase, Jalium.UI.Controls.IProvideDataG
     public override void OnApplyTemplate()
     {
         base.OnApplyTemplate();
-        _sortIndicator = GetTemplateChild("PART_SortIndicator") as TextBlock;
         _resizeGrip = GetTemplateChild("PART_ResizeGrip") as FrameworkElement;
 
         if (_resizeGrip != null)
@@ -252,6 +235,13 @@ public class DataGridColumnHeader : ButtonBase, Jalium.UI.Controls.IProvideDataG
 
     internal void SynchronizeColumnState()
     {
+        if (Column is { } column)
+        {
+            SetCurrentValue(ContentProperty, column.Header);
+            ApplyColumnContentSetting(ContentTemplateProperty, column.HeaderTemplate);
+            ApplyColumnContentSetting(ContentTemplateSelectorProperty, column.HeaderTemplateSelector);
+            ApplyColumnContentSetting(ContentStringFormatProperty, column.HeaderStringFormat);
+        }
         SetValue(SortDirectionPropertyKey, Column?.SortDirection);
         SetValue(CanUserSortPropertyKey, Column?.CanUserSort ?? true);
         SetValue(DisplayIndexPropertyKey, Column?.DisplayIndex ?? -1);
@@ -260,30 +250,24 @@ public class DataGridColumnHeader : ButtonBase, Jalium.UI.Controls.IProvideDataG
         UpdateSortIndicatorVisual();
     }
 
+    private void ApplyColumnContentSetting(DependencyProperty property, object? value)
+    {
+        if (value == null) ClearValue(property);
+        else SetCurrentValue(property, value);
+    }
+
     internal void UpdateSortIndicator(ListSortDirection? direction)
     {
         SetValue(SortDirectionPropertyKey, direction);
         UpdateSortIndicatorVisual();
     }
 
-    private void UpdateSortIndicatorVisual()
+    private void UpdateSortIndicatorVisual() => VisualStateManager.GoToState(this, SortDirection switch
     {
-        if (_sortIndicator == null)
-        {
-            return;
-        }
-
-        if (SortDirection.HasValue)
-        {
-            _sortIndicator.Text = SortDirection == ListSortDirection.Ascending ? "\u25B2" : "\u25BC";
-            _sortIndicator.Visibility = Visibility.Visible;
-        }
-        else
-        {
-            _sortIndicator.Text = string.Empty;
-            _sortIndicator.Visibility = Visibility.Collapsed;
-        }
-    }
+        ListSortDirection.Ascending => "SortAscending",
+        ListSortDirection.Descending => "SortDescending",
+        _ => "Unsorted"
+    }, false);
 
     private void UpdateResizeGripState()
     {
@@ -340,8 +324,9 @@ public class DataGridColumnHeader : ButtonBase, Jalium.UI.Controls.IProvideDataG
         {
             _mouseDownPoint = e.GetPosition(null);
             _mouseDownForDrag = true;
-            CaptureMouse();
-            e.Handled = true;
+            // ButtonBase owns capture and the pressed/click state until the
+            // pointer crosses the drag threshold. A normal release still sorts.
+
         }
     }
 
@@ -382,6 +367,9 @@ public class DataGridColumnHeader : ButtonBase, Jalium.UI.Controls.IProvideDataG
 
     private void OnMouseUpHandler(object sender, MouseButtonEventArgs e)
     {
+        if (e.ChangedButton != MouseButton.Left) return;
+        // Complete our gesture in preview, before ButtonBase releases capture
+        // and OnLostMouseCapture would interpret a normal drop as cancellation.
         if (_isResizing)
         {
             EndResize();
@@ -393,6 +381,7 @@ public class DataGridColumnHeader : ButtonBase, Jalium.UI.Controls.IProvideDataG
         if (_isDragging)
         {
             _isDragging = false;
+            SetIsPressed(false);
             if (IsMouseCaptured)
             {
                 ReleaseMouseCapture();
@@ -408,14 +397,9 @@ public class DataGridColumnHeader : ButtonBase, Jalium.UI.Controls.IProvideDataG
             return;
         }
 
-        if (_mouseDownForDrag)
-        {
-            _mouseDownForDrag = false;
-            if (IsMouseCaptured)
-            {
-                ReleaseMouseCapture();
-            }
-        }
+        // No drag: let ButtonBase's ordinary mouse-up release and click path
+        // run once. Clearing the arm first also makes capture loss idempotent.
+        _mouseDownForDrag = false;
     }
 
     /// <inheritdoc />
@@ -477,162 +461,11 @@ public class DataGridColumnHeader : ButtonBase, Jalium.UI.Controls.IProvideDataG
 
     #region Rendering
 
-    private Brush ResolvePressedBackgroundBrush()
-    {
-        return ResolveThemeBrush("ControlBackgroundPressed", s_pressedBgBrush, "HighlightBackground");
-    }
-
-    private Brush ResolveDefaultBackgroundBrush()
-    {
-        return Background
-            ?? ResolveThemeBrush("ControlBackground", s_defaultBgBrush, "SurfaceBackground");
-    }
-
-    private Brush ResolveForegroundBrush()
-    {
-        if (HasLocalValue(Control.ForegroundProperty) && Foreground != null)
-        {
-            return Foreground;
-        }
-
-        return ResolveThemeBrush("TextPrimary", s_defaultFgBrush, "TextFillColorPrimaryBrush");
-    }
-
-    private Brush ResolveSeparatorBrush()
-    {
-        return SeparatorBrush
-            ?? BorderBrush
-            ?? ResolveThemeBrush("ControlBorder", s_defaultSeparatorBrush, "DividerStrokeColorDefaultBrush");
-    }
-
-    private Pen ResolveBottomBorderPen()
-    {
-        var borderBrush = BorderBrush
-            ?? ResolveThemeBrush("ControlBorder", s_borderBrush, "DividerStrokeColorDefaultBrush");
-        if (_bottomBorderPen == null || _bottomBorderPenBrush != borderBrush)
-        {
-            _bottomBorderPen = new Pen(borderBrush, 1);
-            _bottomBorderPenBrush = borderBrush;
-        }
-        return _bottomBorderPen;
-    }
-
-    private Brush ResolveThemeBrush(string resourceKey, Brush fallback, string? secondaryResourceKey = null)
-    {
-        if (TryFindResource(resourceKey) is Brush brush)
-        {
-            return brush;
-        }
-
-        if (secondaryResourceKey != null && TryFindResource(secondaryResourceKey) is Brush secondaryBrush)
-        {
-            return secondaryBrush;
-        }
-
-        return fallback;
-    }
-
-    /// <inheritdoc />
-    protected override void OnRender(DrawingContext drawingContext)
-    {
-        // A template owns the visual tree in normal DataGrid use. Keep the
-        // lightweight renderer only as a template-less fallback.
-        if (Template != null)
-        {
-            return;
-        }
-
-        var dc = drawingContext;
-
-        var rect = new Rect(RenderSize);
-        var padding = Padding;
-
-        // Draw background
-        var bgBrush = IsPressed
-            ? ResolvePressedBackgroundBrush()
-            : ResolveDefaultBackgroundBrush();
-        dc.DrawRectangle(bgBrush, null, rect);
-
-        // Draw content
-        if (Content is string text)
-        {
-            var fgBrush = ResolveForegroundBrush();
-            double textWidth = 0;
-            if (FontSize > 0)
-            {
-                var formattedText = new FormattedText(text, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
-                {
-                    Foreground = fgBrush
-                };
-                TextMeasurement.MeasureText(formattedText);
-
-                var textX = padding.Left;
-                var textY = (rect.Height - formattedText.Height) / 2;
-                dc.DrawText(formattedText, new Point(textX, textY));
-                textWidth = formattedText.Width;
-            }
-
-            // Draw sort indicator
-            if (SortDirection.HasValue)
-            {
-                DrawSortIndicator(dc, rect, textWidth + padding.Left + 4, fgBrush);
-            }
-        }
-
-        // Draw separator
-        if (SeparatorVisibility == Visibility.Visible)
-        {
-            var separatorBrush = ResolveSeparatorBrush();
-            if (_separatorPen == null || _separatorPenBrush != separatorBrush)
-            {
-                _separatorPen = new Pen(separatorBrush, 1);
-                _separatorPenBrush = separatorBrush;
-            }
-            dc.DrawLine(_separatorPen, new Point(rect.Width - 1, 0), new Point(rect.Width - 1, rect.Height));
-        }
-
-        // Draw bottom border
-        dc.DrawLine(ResolveBottomBorderPen(), new Point(0, rect.Height - 1), new Point(rect.Width, rect.Height - 1));
-    }
-
-    // Sort indicator chevrons in 8×4 design space, cached
-    private static readonly PathGeometry s_sortUp = (PathGeometry)Geometry.Parse("M 0,4 L 4,0 L 8,4");
-    private static readonly PathGeometry s_sortDown = (PathGeometry)Geometry.Parse("M 0,0 L 4,4 L 8,0");
-
-    private void DrawSortIndicator(DrawingContext dc, Rect rect, double offsetX, Brush brush)
-    {
-        if (_sortIndicatorPen == null || _sortIndicatorPenBrush != brush)
-        {
-            _sortIndicatorPen = new Pen(brush, 1.5);
-            _sortIndicatorPenBrush = brush;
-        }
-
-        var source = SortDirection == ListSortDirection.Ascending ? s_sortUp : s_sortDown;
-        var bounds = source.Bounds;
-        var ox = offsetX + 6 - bounds.X - bounds.Width / 2;
-        var oy = rect.Height / 2 - bounds.Y - bounds.Height / 2;
-
-        foreach (var figure in source.Figures)
-        {
-            var tf = new PathFigure
-            {
-                StartPoint = new Point(figure.StartPoint.X + ox, figure.StartPoint.Y + oy),
-                IsClosed = figure.IsClosed,
-                IsFilled = false
-            };
-            foreach (var seg in figure.Segments)
-                if (seg is LineSegment ls)
-                    tf.Segments.Add(new LineSegment(new Point(ls.Point.X + ox, ls.Point.Y + oy), ls.IsStroked));
-            var geo = new PathGeometry();
-            geo.Figures.Add(tf);
-            dc.DrawGeometry(null, _sortIndicatorPen, geo);
-        }
-    }
-
     private static new void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is DataGridColumnHeader header)
         {
+            if (e.Property == SortDirectionProperty) header.UpdateSortIndicatorVisual();
             header.InvalidateVisual();
         }
     }

@@ -14,6 +14,7 @@ internal static class CssFloatProperties
 
     internal static void Register()
     {
+        CssShapeOutsideProperties.Register();
         CssPropertyRegistry.Register(new()
         {
             Name = "float", Kind = CssPropertyKind.Longhand, StorageProperty = FloatProperty,
@@ -44,22 +45,24 @@ internal static class CssFloatProperties
         });
     }
 
-    private static void Changed(DependencyObject target, DependencyPropertyChangedEventArgs _)
+    internal static void Changed(DependencyObject target, DependencyPropertyChangedEventArgs _)
     {
+        CssFirstLine.StructureChanged(target);
+        if (target is Jalium.UI.Documents.TextElement text) text.NotifyTextContentChanged();
         if (target is not UIElement element) return;
         element.InvalidateMeasure();
         for (var parent = element.VisualParent as FrameworkElement; parent is not null; parent = parent.VisualParent as FrameworkElement)
         {
             parent.InvalidateMeasure();
             if (parent is Panel panel) panel.InvalidateCssFlowOrder();
-            if (!CssDisplayLayout.IsFlow(parent)) break;
+            if (!CssDisplayLayout.IsFlow(parent) && !parent.CanFragmentCssInlineContent) break;
         }
     }
 
     internal static CssFloatSide ActiveSide(UIElement element)
     {
-        if (element is not FrameworkElement fe || fe.CssLayout?.Position == CssPositionMode.Absolute ||
-            fe.VisualParent is not FrameworkElement parent || !CssDisplayLayout.IsFlow(parent)) return CssFloatSide.None;
+        if (element is not FrameworkElement fe || fe.CssLayout?.IsOutOfFlow == true ||
+            CssContentsLayout.BoxParent(fe) is not FrameworkElement parent || !CssDisplayLayout.IsFlow(parent)) return CssFloatSide.None;
         var side = (CssFloatSide)element.GetValue(FloatProperty)!;
         return side switch
         {
@@ -71,7 +74,7 @@ internal static class CssFloatProperties
     internal static CssClearSide ClearSide(UIElement element)
     {
         var side = (CssClearSide)element.GetValue(ClearProperty)!;
-        var rtl = element.VisualParent is FrameworkElement { FlowDirection: FlowDirection.RightToLeft };
+        var rtl = CssContentsLayout.BoxParent(element) is FrameworkElement { FlowDirection: FlowDirection.RightToLeft };
         return side switch
         {
             CssClearSide.InlineStart => rtl ? CssClearSide.Right : CssClearSide.Left,
@@ -79,16 +82,18 @@ internal static class CssFloatProperties
         };
     }
 
-    internal static bool IsIndependentBox(UIElement element) => element is not Panel panel || !CssDisplayLayout.IsFlow(panel) ||
+    internal static bool IsIndependentBox(UIElement element) => element is not FrameworkElement panel || !CssDisplayLayout.IsFlow(panel) ||
+        CssLineClampProperties.Active(panel) || CssMultiColumnProperties.Active(panel) || (bool)panel.GetValue(CssMultiColumnProperties.SpanProperty)! ||
         panel.CssDisplayMode != CssDisplayMode.Block || panel.CssInlineOuter || panel.ClipToBounds ||
         CssContainerProperties.HasSizeContainment(panel) || ActiveSide(panel) != CssFloatSide.None;
 
-    internal static int PaintRank(Panel parent, UIElement child)
+    internal static int PaintRank(FrameworkElement parent, UIElement child)
     {
+        if (CssCompositingProperties.EffectiveZIndex(child) < 0) return -1;
+        if (child is FrameworkElement { CssLayout: { Position: not CssPositionMode.Static } }) return 3;
         if (!CssDisplayLayout.IsFlow(parent)) return 0;
-        if (child is FrameworkElement { CssLayout.Position: CssPositionMode.Absolute }) return 3;
         if (ActiveSide(child) != CssFloatSide.None) return 1;
         if (child is FrameworkElement { CssInlineOuter: true }) return 2;
-        return child is Panel panel && CssDisplayLayout.IsFlow(panel) && CssDisplayLayout.FlowFor(panel).HasExportedFloats ? 1 : 0;
+        return child is FrameworkElement panel && CssDisplayLayout.IsFlow(panel) && CssFlowLayout.ExportedRegions(panel).Length > 0 ? 1 : 0;
     }
 }

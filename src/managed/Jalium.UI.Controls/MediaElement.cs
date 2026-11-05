@@ -828,7 +828,7 @@ public sealed class AVSyncClock : IDisposable
 
 #region MediaElement 控件
 
-public class MediaElement : FrameworkElement, IDisposable, IUriContext
+public partial class MediaElement : Control, IDisposable, IUriContext
 {
     #region 私有字段
 
@@ -1250,6 +1250,7 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
     {
         Unloaded += OnUnloaded;
         _audioManager = new AudioPlayer();
+        InitializeMediaTemplateBehavior();
     }
 
     /// <inheritdoc />
@@ -1349,7 +1350,7 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
         StopPlayback();
         _position = TimeSpan.Zero;
         _videoStartTimeMs = 0;
-        InvalidateVisual();
+        InvalidateMediaView();
     }
 
     public void Close()
@@ -1378,6 +1379,7 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
 
     protected override Size MeasureOverride(Size availableSize)
     {
+        base.MeasureOverride(availableSize);
         if ((!_hasVideo && !_isOpening) || _videoWidth <= 0 || _videoHeight <= 0)
         {
             return new Size(0, 0);
@@ -1399,6 +1401,7 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
 
     protected override Size ArrangeOverride(Size finalSize)
     {
+        base.ArrangeOverride(finalSize);
         _arrangedSize = finalSize;
         _isArranged = finalSize.Width > 0 && finalSize.Height > 0;
 
@@ -1502,79 +1505,18 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
         if (clipContent) context.Pop();
     }
 
-    protected override void OnRender(DrawingContext drawingContext)
+    protected override void OnRender(DrawingContext dc)
     {
-        var dc = drawingContext;
-
-        var rect = new Rect(RenderSize);
-
-        if (!_hasVideo && _hasAudio)
-        {
-            dc.DrawRectangle(_backgroundBrush, null, rect);
-
-            var text = new FormattedText("Audio Only", "Segoe UI", 14)
-            {
-                Foreground = s_placeholderTextBrush
-            };
-            dc.DrawText(text, new Point((rect.Width - text.Width) / 2, (rect.Height - text.Height) / 2));
-            return;
-        }
-
-        dc.DrawRectangle(_backgroundBrush, null, rect);
-
-        // Stage 1+2 fast path:D3DImage wraps a NativeVideoSurface and the
-        // framework dispatches DrawImage(D3DImage) straight to
-        // jalium_render_target_draw_video_surface — no WriteableBitmap, no
-        // managed back buffer copy.
-        var surfaceImage = _d3dImage;
-        if (surfaceImage != null && surfaceImage.IsFrontBufferAvailable && surfaceImage.NativeHandle != nint.Zero && _hasVideo)
-        {
-            var frameSize = new Size(surfaceImage.PixelWidth, surfaceImage.PixelHeight);
-            DrawVideoFrame(dc, surfaceImage, frameSize, rect.Size);
-            DrawSubtitleOverlay(dc, rect);
-            return;
-        }
-
-        var bitmap = _frameBitmap;
-        if (bitmap != null && _hasVideo)
-        {
-            var frameSize = new Size(bitmap.Width, bitmap.Height);
-            // The default stays linear; CSS image-rendering or a native mode may override it.
-            DrawVideoFrame(dc, bitmap, frameSize, rect.Size);
-        }
-        else if (_hasVideo)
-        {
-            var text = new FormattedText("Loading...", "Segoe UI", 14)
-            {
-                Foreground = s_placeholderTextBrush
-            };
-            dc.DrawText(text, new Point((rect.Width - text.Width) / 2, (rect.Height - text.Height) / 2));
-        }
-        DrawSubtitleOverlay(dc, rect);
+        base.OnRender(dc);if(TemplateRootInternal is null)RenderVideoSurface(dc);
     }
-
-    private void DrawSubtitleOverlay(DrawingContext drawingContext, Rect bounds)
+    internal void RenderVideoSurface(DrawingContext dc)
     {
-        var subtitle = _subtitleText;
-        if (string.IsNullOrWhiteSpace(subtitle) || bounds.Width <= 40 || bounds.Height <= 20)
-            return;
-
-        var text = new FormattedText(subtitle, "Sans", 24)
-        {
-            Foreground = s_subtitleForegroundBrush,
-            MaxTextWidth = Math.Max(1, bounds.Width - 48),
-            TextAlignment = TextAlignment.Center,
-        };
-        var x = 24.0;
-        var y = Math.Max(8.0, bounds.Height - text.Height - 32.0);
-        var backgroundWidth = Math.Min(bounds.Width - 32.0, text.Width + 16.0);
-        var background = new Rect(
-            (bounds.Width - backgroundWidth) / 2.0,
-            y - 6.0,
-            backgroundWidth,
-            text.Height + 12.0);
-        drawingContext.DrawRectangle(s_subtitleBackgroundBrush, null, background);
-        drawingContext.DrawText(text, new Point(x, y));
+        if(_disposed||!_hasVideo)return;
+        var size=RenderSize;if(size.Width<=0||size.Height<=0)return;
+        var surface=_d3dImage;
+        if(surface is not null&&surface.IsFrontBufferAvailable&&surface.NativeHandle!=nint.Zero)
+        {DrawVideoFrame(dc,surface,new Size(surface.PixelWidth,surface.PixelHeight),size);return;}
+        if(_frameBitmap is { } bitmap)DrawVideoFrame(dc,bitmap,new Size(bitmap.Width,bitmap.Height),size);
     }
 
     #endregion
@@ -1843,7 +1785,7 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
         if (d is MediaElement media)
         {
             media.InvalidateMeasure();
-            media.InvalidateVisual();
+            media.InvalidateMediaView();
         }
     }
 
@@ -1909,7 +1851,7 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
         _videoSurfacePathUnsupported = false;
         _frameBitmap = null;
         DropPendingDisplayFrame();
-        InvalidateVisual();
+        InvalidateMediaView();
 
         var generation = ++_openMediaGeneration;
         ++_trackSwitchGeneration;
@@ -2297,7 +2239,7 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
         Volatile.Write(ref _downloadProgress, 0.0);
 
         InvalidateMeasure();
-        InvalidateVisual();
+        InvalidateMediaView();
     }
 
     private int EnqueuePlaybackOperation(
@@ -2804,7 +2746,7 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
             {
                 previousSurface.Dispose();
             }
-            InvalidateVisual();
+            InvalidateMediaView();
             return;
         }
 
@@ -2819,7 +2761,7 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
         if (!_videoSurfacePathUnsupported &&
             TryUpdateVideoSurface(pixels, width, height, frame.Stride))
         {
-            InvalidateVisual();
+            InvalidateMediaView();
             return;
         }
 
@@ -2844,7 +2786,7 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
         try
         {
             _frameBitmap!.WritePixels(new Int32Rect(0, 0, width, height), pixels, frame.Stride);
-            InvalidateVisual();
+            InvalidateMediaView();
         }
         catch (Exception exception) { throw new InvalidOperationException("Video frame upload failed.", exception); }
     }
@@ -3136,7 +3078,7 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
         if (_subtitleText != null)
         {
             _subtitleText = null;
-            InvalidateVisual();
+            InvalidateMediaView();
         }
     }
 
@@ -3185,7 +3127,7 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
                 if (token.IsCancellationRequested) return;
                 SubtitleError = ex;
                 _subtitleText = null;
-                InvalidateVisual();
+                InvalidateMediaView();
             });
         }
     }
@@ -3208,7 +3150,7 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
         {
             if (token.IsCancellationRequested) return;
             _subtitleText = text;
-            InvalidateVisual();
+            InvalidateMediaView();
         });
     }
 

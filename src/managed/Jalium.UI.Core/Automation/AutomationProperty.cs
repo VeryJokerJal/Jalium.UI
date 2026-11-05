@@ -43,6 +43,7 @@ public sealed class AutomationProperty
     public static AutomationProperty ValueProperty { get; } = Register("Value");
     public static AutomationProperty RangeValueProperty { get; } = Register("RangeValue");
     public static AutomationProperty ExpandCollapseStateProperty { get; } = Register("ExpandCollapseState");
+    public static AutomationProperty ItemStatusProperty { get; } = Register("ItemStatus");
 }
 
 /// <summary>Forwards automation events to an operating-system accessibility bridge.</summary>

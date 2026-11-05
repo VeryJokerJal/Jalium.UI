@@ -1,0 +1,213 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:dev="clr-namespace:Jalium.UI.Controls.DevTools"
+                    xmlns:automation="clr-namespace:Jalium.UI.Automation">
+    <Style TargetType="dev:DevToolsFrameGraph">
+        <Setter Property="MinHeight" Value="64" /><Setter Property="Height" Value="180" /><Setter Property="Padding" Value="8" />
+        <Setter Property="LayoutBrush" Value="{DynamicResource DevTools.Info}" /><Setter Property="RenderBrush" Value="{DynamicResource DevTools.Accent}" /><Setter Property="PresentBrush" Value="{DynamicResource DevTools.Success}" />
+        <Setter Property="BudgetBrush" Value="{DynamicResource DevTools.Error}" /><Setter Property="GridBrush" Value="{DynamicResource DevTools.BorderSubtle}" />
+        <Setter Property="Background" Value="{DynamicResource DevTools.Chrome}" /><Setter Property="BorderBrush" Value="{DynamicResource DevTools.Border}" /><Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsFrameGraph">
+            <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="4" Padding="{TemplateBinding Padding}">
+                <VisualStateManager.VisualStateGroups>
+                        <VisualStateGroup x:Name="DataStates"><VisualState x:Name="FramesAvailable" /><VisualState x:Name="FramesEmpty"><VisualState.Setters><Setter TargetName="PART_Empty" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState></VisualStateGroup>
+                        <VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Normal" /><VisualState x:Name="Disabled"><VisualState.Setters><Setter Property="Opacity" Value="0.45" /></VisualState.Setters></VisualState></VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <Grid Name="PART_Plot" ClipToBounds="True">
+                    <Path Name="PART_Grid" Data="{TemplateBinding GridGeometry}" Stroke="{TemplateBinding GridBrush}" StrokeThickness="1" StrokeDashArray="1,3" Stretch="None" IsHitTestVisible="False" />
+                    <Path Name="PART_Layout" Data="{TemplateBinding LayoutGeometry}" Fill="{TemplateBinding LayoutBrush}" Stretch="None" IsHitTestVisible="False" />
+                    <Path Name="PART_Render" Data="{TemplateBinding RenderGeometry}" Fill="{TemplateBinding RenderBrush}" Stretch="None" IsHitTestVisible="False" />
+                    <Path Name="PART_Present" Data="{TemplateBinding PresentGeometry}" Fill="{TemplateBinding PresentBrush}" Stretch="None" IsHitTestVisible="False" />
+                    <Path Name="PART_Budget" Data="{TemplateBinding BudgetGeometry}" Stroke="{TemplateBinding BudgetBrush}" StrokeThickness="1" StrokeDashArray="4,4" Stretch="None" IsHitTestVisible="False" />
+                    <TextBlock Name="PART_Empty" Text="Waiting for frames" Style="{StaticResource DevTools.MutedText}" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    <TextBlock Name="PART_Scale" Text="{TemplateBinding ScaleText}" Style="{StaticResource DevTools.MutedText}" FontSize="10" HorizontalAlignment="Right" VerticalAlignment="Top" />
+                </Grid>
+            </Border>
+        </ControlTemplate></Setter>
+    </Style>
+    <SolidColorBrush x:Key="DevTools.PerformanceKeyword" Color="#C99BD6" />
+    <DataTemplate x:Key="DevTools.PerformanceSegment">
+        <Border Name="PART_Segment" Background="{DynamicResource DevTools.TextMuted}" />
+        <DataTemplate.Triggers>
+            <DataTrigger Binding="{Binding Tone}" Value="Primary"><Setter TargetName="PART_Segment" Property="Background" Value="{DynamicResource DevTools.TextPrimary}" /></DataTrigger>
+            <DataTrigger Binding="{Binding Tone}" Value="Accent"><Setter TargetName="PART_Segment" Property="Background" Value="{DynamicResource DevTools.Accent}" /></DataTrigger>
+            <DataTrigger Binding="{Binding Tone}" Value="Info"><Setter TargetName="PART_Segment" Property="Background" Value="{DynamicResource DevTools.Info}" /></DataTrigger>
+            <DataTrigger Binding="{Binding Tone}" Value="Success"><Setter TargetName="PART_Segment" Property="Background" Value="{DynamicResource DevTools.Success}" /></DataTrigger>
+            <DataTrigger Binding="{Binding Tone}" Value="Warning"><Setter TargetName="PART_Segment" Property="Background" Value="{DynamicResource DevTools.Warning}" /></DataTrigger>
+            <DataTrigger Binding="{Binding Tone}" Value="Error"><Setter TargetName="PART_Segment" Property="Background" Value="{DynamicResource DevTools.Error}" /></DataTrigger>
+            <DataTrigger Binding="{Binding Tone}" Value="Keyword"><Setter TargetName="PART_Segment" Property="Background" Value="{DynamicResource DevTools.PerformanceKeyword}" /></DataTrigger>
+            <DataTrigger Binding="{Binding Tone}" Value="Type"><Setter TargetName="PART_Segment" Property="Background" Value="{DynamicResource DevTools.TokenType}" /></DataTrigger>
+            <DataTrigger Binding="{Binding Tone}" Value="Enum"><Setter TargetName="PART_Segment" Property="Background" Value="{DynamicResource DevTools.TokenEnum}" /></DataTrigger>
+        </DataTemplate.Triggers>
+    </DataTemplate>
+    <Style TargetType="dev:DevToolsPerformanceBar">
+        <Setter Property="Background" Value="{DynamicResource DevTools.GridLine}" /><Setter Property="Height" Value="10" /><Setter Property="ClipToBounds" Value="True" />
+        <Setter Property="ItemTemplate" Value="{StaticResource DevTools.PerformanceSegment}" />
+        <Setter Property="ItemsPanel"><ItemsPanelTemplate><dev:DevToolsProportionalPanel /></ItemsPanelTemplate></Setter>
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsPerformanceBar"><Border Background="{TemplateBinding Background}" CornerRadius="3"><ItemsPresenter Name="PART_ItemsPresenter" /></Border></ControlTemplate></Setter>
+    </Style>
+    <Style x:Key="DevTools.PerformanceReadout" TargetType="dev:DevToolsReadout">
+        <Setter Property="Foreground" Value="{DynamicResource DevTools.TextSecondary}" /><Setter Property="ValueBrush" Value="{DynamicResource DevTools.TextPrimary}" /><Setter Property="FontSize" Value="11" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsReadout">
+            <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                <TextBlock Name="PART_Label" Text="{TemplateBinding Label}" Foreground="{TemplateBinding Foreground}" FontSize="{TemplateBinding FontSize}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" ToolTip="{TemplateBinding Label}" />
+                <TextBlock Name="PART_Value" Grid.Column="1" Text="{TemplateBinding ValueText}" Foreground="{TemplateBinding ValueBrush}" FontFamily="{TemplateBinding FontFamily}" FontSize="{TemplateBinding FontSize}" VerticalAlignment="Center" TextAlignment="Right" TextTrimming="CharacterEllipsis" MaxWidth="210" Margin="10,0,0,0" ToolTip="{TemplateBinding ValueText}" />
+            </Grid>
+        </ControlTemplate></Setter>
+    </Style>
+    <Style x:Key="DevTools.PerformanceMeter" TargetType="dev:DevToolsMeterRow">
+        <Setter Property="Foreground" Value="{DynamicResource DevTools.Accent}" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsMeterRow">
+            <Grid><Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                <dev:DevToolsReadout Label="{TemplateBinding Label}" ValueText="{TemplateBinding ValueText}" Style="{StaticResource DevTools.PerformanceReadout}" Margin="0,0,0,4" />
+                <dev:DevToolsMeter Name="PART_Meter" Grid.Row="1" Label="{TemplateBinding Label}" Value="{TemplateBinding Fraction}" ProgressBrush="{TemplateBinding Foreground}" />
+            </Grid>
+        </ControlTemplate></Setter>
+    </Style>
+    <DataTemplate x:Key="DevTools.PerformanceMetric">
+        <Grid Margin="0,2,0,5">
+            <dev:DevToolsReadout Name="PART_Value" Label="{Binding Label}" ValueText="{Binding ValueText}" Style="{StaticResource DevTools.PerformanceReadout}" />
+            <dev:DevToolsMeterRow Name="PART_Meter" Label="{Binding Label}" ValueText="{Binding ValueText}" Fraction="{Binding Fraction}" Style="{StaticResource DevTools.PerformanceMeter}" Visibility="Collapsed" />
+            <dev:DevToolsPerformanceBar Name="PART_Bar" ItemsSource="{Binding Segments}" Visibility="Collapsed" />
+            <TextBlock Name="PART_Heading" Text="{Binding Label}" Style="{StaticResource DevTools.Eyebrow}" Foreground="{DynamicResource DevTools.TextSecondary}" Visibility="Collapsed" Margin="0,9,0,3" />
+            <TextBlock Name="PART_Message" Text="{Binding Label}" Style="{StaticResource DevTools.MutedText}" Visibility="Collapsed" TextWrapping="Wrap" />
+        </Grid>
+        <DataTemplate.Triggers>
+            <DataTrigger Binding="{Binding Kind}" Value="Heading"><Setter TargetName="PART_Value" Property="Visibility" Value="Collapsed" /><Setter TargetName="PART_Heading" Property="Visibility" Value="Visible" /></DataTrigger>
+            <DataTrigger Binding="{Binding Kind}" Value="Meter"><Setter TargetName="PART_Value" Property="Visibility" Value="Collapsed" /><Setter TargetName="PART_Meter" Property="Visibility" Value="Visible" /></DataTrigger>
+            <DataTrigger Binding="{Binding Kind}" Value="Bar"><Setter TargetName="PART_Value" Property="Visibility" Value="Collapsed" /><Setter TargetName="PART_Bar" Property="Visibility" Value="Visible" /></DataTrigger>
+            <DataTrigger Binding="{Binding Kind}" Value="Message"><Setter TargetName="PART_Value" Property="Visibility" Value="Collapsed" /><Setter TargetName="PART_Message" Property="Visibility" Value="Visible" /></DataTrigger>
+            <DataTrigger Binding="{Binding Tone}" Value="Muted"><Setter TargetName="PART_Value" Property="ValueBrush" Value="{DynamicResource DevTools.TextSecondary}" /><Setter TargetName="PART_Meter" Property="Foreground" Value="{DynamicResource DevTools.TextMuted}" /></DataTrigger>
+            <DataTrigger Binding="{Binding Tone}" Value="Accent"><Setter TargetName="PART_Value" Property="ValueBrush" Value="{DynamicResource DevTools.Accent}" /><Setter TargetName="PART_Meter" Property="Foreground" Value="{DynamicResource DevTools.Accent}" /></DataTrigger>
+            <DataTrigger Binding="{Binding Tone}" Value="Info"><Setter TargetName="PART_Value" Property="ValueBrush" Value="{DynamicResource DevTools.Info}" /><Setter TargetName="PART_Meter" Property="Foreground" Value="{DynamicResource DevTools.Info}" /></DataTrigger>
+            <DataTrigger Binding="{Binding Tone}" Value="Success"><Setter TargetName="PART_Value" Property="ValueBrush" Value="{DynamicResource DevTools.Success}" /><Setter TargetName="PART_Meter" Property="Foreground" Value="{DynamicResource DevTools.Success}" /></DataTrigger>
+            <DataTrigger Binding="{Binding Tone}" Value="Warning"><Setter TargetName="PART_Value" Property="ValueBrush" Value="{DynamicResource DevTools.Warning}" /><Setter TargetName="PART_Meter" Property="Foreground" Value="{DynamicResource DevTools.Warning}" /></DataTrigger>
+            <DataTrigger Binding="{Binding Tone}" Value="Error"><Setter TargetName="PART_Value" Property="ValueBrush" Value="{DynamicResource DevTools.Error}" /><Setter TargetName="PART_Meter" Property="Foreground" Value="{DynamicResource DevTools.Error}" /></DataTrigger>
+            <DataTrigger Binding="{Binding Tone}" Value="Keyword"><Setter TargetName="PART_Meter" Property="Foreground" Value="{DynamicResource DevTools.PerformanceKeyword}" /></DataTrigger>
+            <DataTrigger Binding="{Binding Tone}" Value="Type"><Setter TargetName="PART_Meter" Property="Foreground" Value="{DynamicResource DevTools.TokenType}" /></DataTrigger>
+            <DataTrigger Binding="{Binding Tone}" Value="Enum"><Setter TargetName="PART_Meter" Property="Foreground" Value="{DynamicResource DevTools.TokenEnum}" /></DataTrigger>
+        </DataTemplate.Triggers>
+    </DataTemplate>
+    <Style TargetType="dev:DevToolsDrawApiRow">
+        <Setter Property="FontFamily" Value="{ThemeResource MonoFontFamily}" /><Setter Property="FontSize" Value="11" /><Setter Property="MinHeight" Value="28" /><Setter Property="Padding" Value="6,4" />
+        <Setter Property="Foreground" Value="{DynamicResource DevTools.TextPrimary}" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsDrawApiRow">
+            <Grid Background="Transparent">
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup x:Name="LayoutStates"><VisualState x:Name="Wide" /><VisualState x:Name="Compact"><VisualState.Setters>
+                        <Setter TargetName="PART_Name" Property="Grid.ColumnSpan" Value="4" /><Setter TargetName="PART_Name" Property="Margin" Value="0,0,0,4" />
+                        <Setter TargetName="PART_Calls" Property="Grid.Row" Value="1" /><Setter TargetName="PART_Calls" Property="Grid.Column" Value="0" /><Setter TargetName="PART_Calls" Property="Grid.ColumnSpan" Value="2" />
+                        <Setter TargetName="PART_Total" Property="Grid.Row" Value="1" /><Setter TargetName="PART_Average" Property="Grid.Row" Value="1" />
+                    </VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup x:Name="RowStates"><VisualState x:Name="Item" /><VisualState x:Name="Header"><VisualState.Setters>
+                        <Setter TargetName="PART_CostBar" Property="Visibility" Value="Collapsed" /><Setter TargetName="PART_Name" Property="Text" Value="API" /><Setter TargetName="PART_Calls" Property="Text" Value="CALLS" /><Setter TargetName="PART_Total" Property="Text" Value="MS" /><Setter TargetName="PART_Average" Property="Text" Value="AVG µS" />
+                        <Setter TargetName="PART_Name" Property="Foreground" Value="{DynamicResource DevTools.TextSecondary}" /><Setter TargetName="PART_Total" Property="Foreground" Value="{DynamicResource DevTools.TextSecondary}" />
+                    </VisualState.Setters></VisualState></VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <dev:DevToolsProportionalPanel Name="PART_CostBar" IsHitTestVisible="False">
+                    <Border Background="{DynamicResource DevTools.AccentSoft}" dev:DevToolsProportionalPanel.Weight="{Binding Item.Fraction, RelativeSource={RelativeSource TemplatedParent}}" />
+                    <Border dev:DevToolsProportionalPanel.Weight="{Binding Item.RemainingFraction, RelativeSource={RelativeSource TemplatedParent}}" />
+                </dev:DevToolsProportionalPanel>
+                <Grid Margin="{TemplateBinding Padding}">
+                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="58" /><ColumnDefinition Width="72" /><ColumnDefinition Width="72" /></Grid.ColumnDefinitions>
+                    <TextBlock Name="PART_Name" Text="{Binding Item.Name, RelativeSource={RelativeSource TemplatedParent}}" ToolTip="{Binding Item.Name, RelativeSource={RelativeSource TemplatedParent}}" Foreground="{TemplateBinding Foreground}" FontFamily="{TemplateBinding FontFamily}" FontSize="{TemplateBinding FontSize}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                    <TextBlock Name="PART_Calls" Grid.Column="1" Text="{Binding Item.CallsText, RelativeSource={RelativeSource TemplatedParent}}" Foreground="{DynamicResource DevTools.TextSecondary}" FontFamily="{TemplateBinding FontFamily}" FontSize="{TemplateBinding FontSize}" TextAlignment="Right" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                    <TextBlock Name="PART_Total" Grid.Column="2" Text="{Binding Item.TotalText, RelativeSource={RelativeSource TemplatedParent}}" Foreground="{DynamicResource DevTools.TextPrimary}" FontFamily="{TemplateBinding FontFamily}" FontSize="{TemplateBinding FontSize}" TextAlignment="Right" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                    <TextBlock Name="PART_Average" Grid.Column="3" Text="{Binding Item.AverageText, RelativeSource={RelativeSource TemplatedParent}}" Foreground="{DynamicResource DevTools.TextSecondary}" FontFamily="{TemplateBinding FontFamily}" FontSize="{TemplateBinding FontSize}" TextAlignment="Right" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                </Grid>
+            </Grid>
+            <ControlTemplate.Triggers>
+                <DataTrigger Binding="{Binding Item.Tone, RelativeSource={RelativeSource Self}}" Value="Accent"><Setter TargetName="PART_Total" Property="Foreground" Value="{DynamicResource DevTools.Accent}" /></DataTrigger>
+                <DataTrigger Binding="{Binding Item.Tone, RelativeSource={RelativeSource Self}}" Value="Warning"><Setter TargetName="PART_Total" Property="Foreground" Value="{DynamicResource DevTools.Warning}" /></DataTrigger>
+            </ControlTemplate.Triggers>
+        </ControlTemplate></Setter>
+    </Style>
+    <DataTemplate x:Key="DevTools.PerformanceApi"><dev:DevToolsDrawApiRow Item="{Binding}" /></DataTemplate>
+    <Style x:Key="DevTools.PerformanceItem" TargetType="ListBoxItem" BasedOn="{StaticResource DevTools.DiagnosticsItem}">
+        <Setter Property="Padding" Value="0,0,12,0" />
+        <Setter Property="automation:AutomationProperties.Name" Value="{Binding AutomationName}" />
+    </Style>
+    <Style x:Key="DevTools.PerformanceList" TargetType="ListBox" BasedOn="{StaticResource DevTools.DiagnosticsList}">
+        <Setter Property="Background" Value="Transparent" /><Setter Property="HorizontalScrollBarVisibility" Value="Disabled" /><Setter Property="ItemContainerStyle" Value="{StaticResource DevTools.PerformanceItem}" />
+    </Style>
+    <Style TargetType="dev:DevToolsPerformanceView">
+        <Setter Property="Background" Value="{DynamicResource DevTools.Surface}" /><Setter Property="Foreground" Value="{DynamicResource DevTools.TextPrimary}" /><Setter Property="FontFamily" Value="{ThemeResource MonoFontFamily}" />
+        <Setter Property="MetricTemplate" Value="{StaticResource DevTools.PerformanceMetric}" /><Setter Property="ApiTemplate" Value="{StaticResource DevTools.PerformanceApi}" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsPerformanceView">
+            <Grid Background="{TemplateBinding Background}">
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup x:Name="MetricStates"><VisualState x:Name="MetricsAvailable" /><VisualState x:Name="MetricsEmpty"><VisualState.Setters><Setter TargetName="PART_MetricsList" Property="Visibility" Value="Collapsed" /><Setter TargetName="PART_NoMetrics" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup x:Name="ApiStates"><VisualState x:Name="ApiAvailable" /><VisualState x:Name="ApiEmpty"><VisualState.Setters><Setter TargetName="PART_ApiList" Property="Visibility" Value="Collapsed" /><Setter TargetName="PART_NoApi" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup x:Name="FrameStates">
+                        <VisualState x:Name="Waiting"><VisualState.Setters><Setter TargetName="PART_Rate" Property="Foreground" Value="{DynamicResource DevTools.TextMuted}" /></VisualState.Setters></VisualState>
+                        <VisualState x:Name="Idle"><VisualState.Setters><Setter TargetName="PART_Rate" Property="Foreground" Value="{DynamicResource DevTools.TextMuted}" /></VisualState.Setters></VisualState>
+                        <VisualState x:Name="Active" /><VisualState x:Name="Healthy"><VisualState.Setters><Setter TargetName="PART_Rate" Property="Foreground" Value="{DynamicResource DevTools.Success}" /></VisualState.Setters></VisualState>
+                        <VisualState x:Name="Slow"><VisualState.Setters><Setter TargetName="PART_Rate" Property="Foreground" Value="{DynamicResource DevTools.Warning}" /></VisualState.Setters></VisualState>
+                    </VisualStateGroup>
+                    <VisualStateGroup x:Name="EngineStates"><VisualState x:Name="AutoEngine"><VisualState.Setters><Setter TargetName="PART_Auto" Property="IsActive" Value="True" /><Setter TargetName="PART_Auto" Property="automation:AutomationProperties.ItemStatus" Value="Selected" /></VisualState.Setters></VisualState><VisualState x:Name="VelloEngine"><VisualState.Setters><Setter TargetName="PART_Vello" Property="IsActive" Value="True" /><Setter TargetName="PART_Vello" Property="automation:AutomationProperties.ItemStatus" Value="Selected" /></VisualState.Setters></VisualState><VisualState x:Name="ImpellerEngine"><VisualState.Setters><Setter TargetName="PART_Impeller" Property="IsActive" Value="True" /><Setter TargetName="PART_Impeller" Property="automation:AutomationProperties.ItemStatus" Value="Selected" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup x:Name="SwitchStates"><VisualState x:Name="Ready" /><VisualState x:Name="Switching"><VisualState.Setters><Setter TargetName="PART_Switching" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup x:Name="EngineErrorStates"><VisualState x:Name="NoError" /><VisualState x:Name="Error"><VisualState.Setters><Setter TargetName="PART_EngineError" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup x:Name="LayoutStates"><VisualState x:Name="Wide"><VisualState.Setters>
+                        <Setter TargetName="PART_MetricsColumn" Property="Width" Value="310" /><Setter TargetName="PART_GapColumn" Property="Width" Value="6" /><Setter TargetName="PART_ApiColumn" Property="Width" Value="*" />
+                        <Setter TargetName="PART_MetricsRow" Property="Height" Value="*" /><Setter TargetName="PART_GapRow" Property="Height" Value="0" /><Setter TargetName="PART_ApiRow" Property="Height" Value="0" />
+                    </VisualState.Setters></VisualState><VisualState x:Name="Compact"><VisualState.Setters>
+                        <Setter TargetName="PART_MetricsColumn" Property="Width" Value="*" /><Setter TargetName="PART_GapColumn" Property="Width" Value="0" /><Setter TargetName="PART_ApiColumn" Property="Width" Value="0" />
+                        <Setter TargetName="PART_MetricsRow" Property="Height" Value="*" /><Setter TargetName="PART_GapRow" Property="Height" Value="6" /><Setter TargetName="PART_ApiRow" Property="Height" Value="*" />
+                        <Setter TargetName="PART_ApiSurface" Property="Grid.Column" Value="0" /><Setter TargetName="PART_ApiSurface" Property="Grid.Row" Value="2" />
+                        <Setter TargetName="PART_Splitter" Property="Grid.Column" Value="0" /><Setter TargetName="PART_Splitter" Property="Grid.Row" Value="1" /><Setter TargetName="PART_Splitter" Property="Width" Value="NaN" /><Setter TargetName="PART_Splitter" Property="Height" Value="6" /><Setter TargetName="PART_Splitter" Property="ResizeDirection" Value="Rows" />
+                    </VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Normal" /><VisualState x:Name="Disabled"><VisualState.Setters><Setter Property="Opacity" Value="0.45" /></VisualState.Setters></VisualState></VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" MinHeight="80" MaxHeight="180" /><RowDefinition Height="Auto" /><RowDefinition Height="3*" /></Grid.RowDefinitions>
+                <dev:DevToolsSurface Kind="Toolbar" HorizontalContentAlignment="Stretch">
+                    <WrapPanel VerticalAlignment="Center">
+                        <dev:DevToolsTag Name="PART_Backend" Text="{TemplateBinding BackendText}" Margin="0,0,8,0" />
+                        <TextBlock Text="Active" Style="{StaticResource DevTools.MutedText}" Margin="0,0,4,0" /><dev:DevToolsTag Text="{TemplateBinding ActualEngineText}" Margin="0,0,10,0" />
+                        <TextBlock Name="PART_Adapter" Text="{TemplateBinding AdapterText}" ToolTip="{TemplateBinding AdapterText}" Style="{StaticResource DevTools.MutedText}" MaxWidth="300" TextTrimming="CharacterEllipsis" Margin="0,0,12,0" />
+                        <StackPanel Orientation="Horizontal">
+                            <dev:DevToolsActionButton Name="PART_Auto" Label="Auto" Command="{TemplateBinding AutoEngineCommand}" automation:AutomationProperties.ItemStatus="Not selected" /><dev:DevToolsActionButton Name="PART_Vello" Label="Vello" Command="{TemplateBinding VelloEngineCommand}" automation:AutomationProperties.ItemStatus="Not selected" /><dev:DevToolsActionButton Name="PART_Impeller" Label="Impeller" Command="{TemplateBinding ImpellerEngineCommand}" automation:AutomationProperties.ItemStatus="Not selected" />
+                        </StackPanel>
+                        <dev:DevToolsTag Name="PART_Switching" Text="Switching" Visibility="Collapsed" Foreground="{DynamicResource DevTools.Warning}" />
+                        <dev:DevToolsTag Name="PART_EngineError" Text="Engine error" Visibility="Collapsed" Foreground="{DynamicResource DevTools.Error}" ToolTip="{TemplateBinding EngineErrorText}" automation:AutomationProperties.HelpText="{TemplateBinding EngineErrorText}" />
+                    </WrapPanel>
+                </dev:DevToolsSurface>
+                <Grid Grid.Row="1" Margin="8,8,8,0">
+                    <dev:DevToolsFrameGraph Name="PART_Graph" Height="NaN" SamplesSource="{TemplateBinding SamplesSource}" FrameBudgetMs="{TemplateBinding FrameBudgetMs}" />
+                    <Border Background="{DynamicResource DevTools.Chrome}" BorderBrush="{DynamicResource DevTools.BorderSubtle}" BorderThickness="1" CornerRadius="4" Padding="10,6" Margin="12" HorizontalAlignment="Left" VerticalAlignment="Top">
+                        <StackPanel>
+                            <StackPanel Orientation="Horizontal"><TextBlock Name="PART_Rate" Text="{Binding FrameSummary.RateText, RelativeSource={RelativeSource TemplatedParent}}" ToolTip="{Binding FrameSummary.RateText, RelativeSource={RelativeSource TemplatedParent}}" FontFamily="{TemplateBinding FontFamily}" FontSize="28" Foreground="{DynamicResource DevTools.Accent}" MaxWidth="160" TextTrimming="CharacterEllipsis" /><TextBlock Text="FPS" Style="{StaticResource DevTools.MutedText}" FontSize="10" Margin="7,0,0,4" VerticalAlignment="Bottom" /></StackPanel>
+                            <TextBlock Name="PART_FrameDetail" Text="{Binding FrameSummary.DetailText, RelativeSource={RelativeSource TemplatedParent}}" ToolTip="{Binding FrameSummary.DetailText, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.MutedText}" FontSize="10" MaxWidth="260" TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+                    </Border>
+                </Grid>
+                <WrapPanel Grid.Row="2" Margin="12,4,8,8">
+                    <TextBlock Text="● Layout" Foreground="{DynamicResource DevTools.Info}" FontSize="10" Margin="0,0,12,0" /><TextBlock Text="● Render" Foreground="{DynamicResource DevTools.Accent}" FontSize="10" Margin="0,0,12,0" /><TextBlock Text="● Present" Foreground="{DynamicResource DevTools.Success}" FontSize="10" Margin="0,0,12,0" />
+                    <TextBlock Text="Budget" Style="{StaticResource DevTools.MutedText}" FontSize="10" Margin="0,0,4,0" /><TextBlock Text="{Binding FrameBudgetMs, RelativeSource={RelativeSource TemplatedParent}}" Foreground="{DynamicResource DevTools.Error}" FontSize="10" /><TextBlock Text="ms" Style="{StaticResource DevTools.MutedText}" FontSize="10" Margin="4,0,0,0" />
+                </WrapPanel>
+                <Grid Name="PART_Body" Grid.Row="3" Margin="8,0,8,8">
+                    <Grid.RowDefinitions><RowDefinition Name="PART_MetricsRow" Height="*" /><RowDefinition Name="PART_GapRow" Height="0" /><RowDefinition Name="PART_ApiRow" Height="0" /></Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions><ColumnDefinition Name="PART_MetricsColumn" Width="310" /><ColumnDefinition Name="PART_GapColumn" Width="6" /><ColumnDefinition Name="PART_ApiColumn" Width="*" /></Grid.ColumnDefinitions>
+                    <dev:DevToolsSurface Name="PART_MetricsSurface" Kind="Panel" Heading="Renderer snapshot" Padding="10" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch">
+                        <Grid Background="Transparent">
+                            <ListBox Name="PART_MetricsList" ItemsSource="{TemplateBinding MetricsSource}" ItemTemplate="{TemplateBinding MetricTemplate}" Style="{StaticResource DevTools.PerformanceList}" automation:AutomationProperties.Name="Renderer metrics" />
+                            <TextBlock Name="PART_NoMetrics" Text="Waiting for renderer snapshot" Style="{StaticResource DevTools.MutedText}" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Center" TextWrapping="Wrap" Margin="12" />
+                        </Grid>
+                    </dev:DevToolsSurface>
+                    <GridSplitter Name="PART_Splitter" Grid.Column="1" Width="6" Background="{DynamicResource DevTools.BorderSubtle}" ResizeDirection="Columns" />
+                    <dev:DevToolsSurface Name="PART_ApiSurface" Grid.Column="2" Kind="Panel" Heading="Draw API" Padding="10" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch">
+                        <Grid Background="Transparent"><Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                            <dev:DevToolsReadout Name="PART_ApiSummary" Label="{TemplateBinding ApiTimeText}" ValueText="{TemplateBinding ApiTotalText}" Style="{StaticResource DevTools.PerformanceReadout}" Margin="6,0,6,4" />
+                            <Border Grid.Row="1" Width="{TemplateBinding ApiViewportWidth}" HorizontalAlignment="Left">
+                                <dev:DevToolsDrawApiRow Name="PART_ApiHeader" IsHeader="True" Margin="0,0,12,0" />
+                            </Border>
+                            <ListBox Name="PART_ApiList" Grid.Row="2" ItemsSource="{TemplateBinding ApiSource}" ItemTemplate="{TemplateBinding ApiTemplate}" Style="{StaticResource DevTools.PerformanceList}" automation:AutomationProperties.Name="Draw API calls" />
+                            <TextBlock Name="PART_NoApi" Grid.Row="2" Text="Waiting for draw calls" Style="{StaticResource DevTools.MutedText}" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Center" TextWrapping="Wrap" Margin="12" />
+                        </Grid>
+                    </dev:DevToolsSurface>
+                </Grid>
+            </Grid>
+            <ControlTemplate.Triggers><DataTrigger Binding="{Binding HasAdapterWarning, RelativeSource={RelativeSource Self}}" Value="True"><Setter TargetName="PART_Adapter" Property="Foreground" Value="{DynamicResource DevTools.Error}" /></DataTrigger></ControlTemplate.Triggers>
+        </ControlTemplate></Setter>
+    </Style>
+</ResourceDictionary>

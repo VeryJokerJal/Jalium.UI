@@ -6,14 +6,14 @@ internal static class CssRelativeLayout
     internal static Size ContainingBlock(FrameworkElement child, Size fallback)
     {
         if (child.CssParentBox is { } cssParent) return cssParent.ContainingBlock;
-        if (child.VisualParent is not FrameworkElement parent) return fallback;
+        if (CssContentsLayout.BoxParent(child) is not FrameworkElement parent) return fallback;
         var parentSize = parent.CssArrangeSizeForChildren;
         var insets = CssBoxMetrics.ContentInsets(parent, parentSize.Width);
         return CssBoxMetrics.InnerSize(parentSize, insets);
     }
 
     internal static bool PreferRight(FrameworkElement child) =>
-        child.VisualParent is FrameworkElement { FlowDirection: FlowDirection.RightToLeft };
+        CssContentsLayout.BoxParent(child) is FrameworkElement { FlowDirection: FlowDirection.RightToLeft };
 
     internal static byte LocalInsetMask(FrameworkElement child)
     {
@@ -50,7 +50,7 @@ internal static class CssRelativeLayout
         return new Point(x, y);
     }
 
-    private static CssLayoutLength CssInset(FrameworkElement child, int edge, CssLayoutLength css)
+    internal static CssLayoutLength CssInset(FrameworkElement child, int edge, CssLayoutLength css)
     {
         var property = CssSlotAccumulator.InsetCompatibilityProperty?.Invoke(edge);
         // Canvas attached values already contribute to normal Canvas placement. Do not

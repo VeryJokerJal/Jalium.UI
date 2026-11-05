@@ -37,9 +37,14 @@ internal static class FontWidthRenderingSource
         owner is FrameworkElement or FrameworkContentElement
         ? Wrap(source, CssFontStretchValue.Computed(CssNode.Get(owner))) : source;
 
-    internal static string ForFormattedText(string source, int stretch) => !OperatingSystem.IsMacOS() ||
-        stretch == 5 || TryUnwrap(source, out _, out _) || CssFontRenderingPlan.TryDecode(source, out _)
-        ? source : Wrap(source, Percentage(stretch));
+    internal static string ForFormattedText(string source, int stretch)
+    {
+        if (FontFeatureRenderingSource.TryUnwrap(source, out var features, out var family, out var caps, out var capsContext))
+            return FontFeatureRenderingSource.Wrap(ForFormattedText(
+                (CssFontFaces.IsBlocked(source) ? CssFontFaces.BlockPrefix : "") + family, stretch), features, caps, capsContext);
+        return !OperatingSystem.IsMacOS() || stretch == 5 || TryUnwrap(source, out _, out _) || CssFontRenderingPlan.TryDecode(source, out _)
+            ? source : Wrap(source, Percentage(stretch));
+    }
 
     internal static string Wrap(string source, double percentage)
     {

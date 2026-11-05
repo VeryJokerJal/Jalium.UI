@@ -1,3 +1,4 @@
+#include <array>
 #include "metal_backend.h"
 #include "metal_text_paragraph.h"
 #ifndef JALIUM_APPLE_TEXT_ONLY
@@ -6,9 +7,12 @@
 #endif
 #include "jalium_string_util.h"
 #include "jalium_font_math.h"
+#include "jalium_font_features.h"
 #include "metal_font_visibility.h"
+#include "metal_font_size_adjust.h"
 #include "jalium_font_resource.h"
 #include "jalium_apple_font.h"
+#include "apple_vertical_features.h"
 
 #include <algorithm>
 #include <atomic>
@@ -19,6 +23,10 @@
 #include <string>
 #include <tuple>
 #include <utility>
+#include <unordered_map>
+#if defined(__aarch64__)
+#include <arm_neon.h>
+#endif
 
 #ifdef __APPLE__
 #import <TargetConditionals.h>
@@ -27,6 +35,9 @@
 #endif
 #import <CoreGraphics/CoreGraphics.h>
 #import <CoreText/CoreText.h>
+#include "metal_font_caps.h"
+#include "metal_font_position.h"
+#include "metal_font_emoji.h"
 #import <ImageIO/ImageIO.h>
 #import <IOSurface/IOSurfaceRef.h>
 #endif
@@ -199,6 +210,7 @@ MetalLinearGradientBrush::MetalLinearGradientBrush(float sx, float sy, float ex,
       spreadMethod(NormalizeSpread(spread))
 {
     if (values && count) stops.assign(values, values + count);
+    std::stable_sort(stops.begin(), stops.end(), [](const auto& a, const auto& b) { return a.position < b.position; });
 }
 
 MetalRadialGradientBrush::MetalRadialGradientBrush(float cx, float cy, float rx,
@@ -208,6 +220,7 @@ MetalRadialGradientBrush::MetalRadialGradientBrush(float cx, float cy, float rx,
       originY(oy), spreadMethod(NormalizeSpread(spread))
 {
     if (values && count) stops.assign(values, values + count);
+    std::stable_sort(stops.begin(), stops.end(), [](const auto& a, const auto& b) { return a.position < b.position; });
 }
 
 #endif
@@ -222,13 +235,111 @@ struct MetalTextFormat::Impl {
     CFCharacterSetRef characterRestriction = nullptr;
     CFCharacterSetRef invisibleCharacters = nullptr;
     using FontOwner = std::shared_ptr<const void>;
+    FontOwner variationBaseFont;
+    std::vector<FontOwner> cascadeVariationBases;
+    std::vector<bool> cascadePrivateFonts;
     std::vector<std::pair<FontOwner, FontOwner>> cascadeFonts;
+    std::vector<FontOwner> cascadeCharacters;
+    std::vector<bool> cascadeDisablesKerning;
+    bool disablesKerning = false;
+    bool automaticOptical = false;
+    std::vector<bool> cascadeAutomaticOptical;
+    JaliumFontFaceMetrics faceMetrics = font_size_adjust::InitialMetrics();
+    std::vector<JaliumFontFaceMetrics> cascadeFaceMetrics;
+    uint32_t opticalPolicy = 0;
+    font_size_adjust::Policy sizePolicy;
+    font_size_adjust::Policy SizingPolicy() const {
+        auto result=sizePolicy;result.size=size;if(!result.metric)result.optical=opticalPolicy;return result;
+    }
+    bool HasFaceDescriptors() const {
+        return faceMetrics.sizeAdjust!=1||HasAppleFontMetrics(faceMetrics)||std::any_of(cascadeFaceMetrics.begin(),cascadeFaceMetrics.end(),
+            [](const auto& value){return value.sizeAdjust!=1||HasAppleFontMetrics(value);});
+    }
+    bool SizingActive() const { return sizePolicy.metric||HasFaceDescriptors(); }
+    std::vector<JaliumFontVariation> sizeAxes;
+    mutable FontOwner sizedMetrics;
+    mutable uint64_t sizedMetricsRevision = 0;
+    mutable double sizedMetricsUsed = 0;
+    mutable std::mutex sizedMetricsGate;
+    CTFontRef MetricsFont() const {
+        if (!sizePolicy.metric && font_size_adjust::IsInitial(faceMetrics)) return font;
+        std::lock_guard<std::mutex> guard(sizedMetricsGate);
+        auto revision=generation.load(std::memory_order_acquire);
+        if (!sizedMetrics || sizedMetricsRevision!=revision) {
+            auto next=font_size_adjust::Copy(font,SizingPolicy(),sizeAxes,true,automaticOptical,&sizedMetricsUsed,faceMetrics,bool(registeredFont));
+            if(!next)return font;
+            sizedMetrics=FontOwner(next,[](const void* p){CFRelease(p);});sizedMetricsRevision=revision;
+        }
+        return static_cast<CTFontRef>(sizedMetrics.get());
+    }
+    AppleFontLineMetrics LineMetrics() const {
+        auto selected=MetricsFont();
+        double used=!sizePolicy.metric&&font_size_adjust::IsInitial(faceMetrics)?size:sizedMetricsUsed;
+        auto result=ApplyAppleFontLineMetrics(selected,faceMetrics,used);
+        result.overridden=result.overridden||HasFaceDescriptors();return result;
+    }
+    CFDictionaryRef SizingAttributes() const {
+        if (!SizingActive()) return nullptr;
+        auto policy=SizingPolicy();
+        auto release=[](const void* p){if(p)CFRelease(p);};using Owner=std::unique_ptr<const void,decltype(release)>;
+        std::vector<uint8_t> bytes(sizeof(policy)+sizeAxes.size()*sizeof(JaliumFontVariation));
+        std::memcpy(bytes.data(),&policy,sizeof(policy));if(!sizeAxes.empty())std::memcpy(bytes.data()+sizeof(policy),sizeAxes.data(),sizeAxes.size()*sizeof(JaliumFontVariation));
+        Owner data(CFDataCreate(kCFAllocatorDefault,bytes.data(),bytes.size()),release);
+        Owner fonts(CFArrayCreateMutable(kCFAllocatorDefault,0,&kCFTypeArrayCallBacks),release),automatic(CFArrayCreateMutable(kCFAllocatorDefault,0,&kCFTypeArrayCallBacks),release),descriptors(CFArrayCreateMutable(kCFAllocatorDefault,0,&kCFTypeArrayCallBacks),release),coverage(CFArrayCreateMutable(kCFAllocatorDefault,0,&kCFTypeArrayCallBacks),release);
+        Owner privateFonts(CFArrayCreateMutable(kCFAllocatorDefault,0,&kCFTypeArrayCallBacks),release);
+        if(!data||!fonts||!automatic||!descriptors||!coverage||!privateFonts)return nullptr;
+        auto append=[&](CTFontRef value,bool autoOptical,const JaliumFontFaceMetrics& metrics,CFCharacterSetRef restriction,bool privateFace) {
+            if(!value)return true;
+            Owner description(CFDataCreate(kCFAllocatorDefault,reinterpret_cast<const UInt8*>(&metrics),sizeof(metrics)),release);
+            Owner characters(restriction?CFRetain(restriction):CTFontCopyCharacterSet(value),release);
+            if(!description||!characters)return false;
+            CFArrayAppendValue(const_cast<CFMutableArrayRef>(static_cast<CFArrayRef>(coverage.get())),characters.get());
+            CFArrayAppendValue(const_cast<CFMutableArrayRef>(static_cast<CFArrayRef>(fonts.get())),value);
+            CFArrayAppendValue(const_cast<CFMutableArrayRef>(static_cast<CFArrayRef>(descriptors.get())),description.get());
+            if(privateFace)CFArrayAppendValue(const_cast<CFMutableArrayRef>(static_cast<CFArrayRef>(privateFonts.get())),value);
+            if(autoOptical)CFArrayAppendValue(const_cast<CFMutableArrayRef>(static_cast<CFArrayRef>(automatic.get())),value);
+            return true;
+        };
+        if(!append(font,automaticOptical,faceMetrics,characterRestriction,bool(registeredFont))||!append(originalFont,automaticOptical,faceMetrics,characterRestriction,bool(registeredFont)))return nullptr;
+        for(size_t i=0;i<cascadeFonts.size();++i){
+            bool autoOptical=i<cascadeAutomaticOptical.size()&&cascadeAutomaticOptical[i];
+            auto metrics=i<cascadeFaceMetrics.size()?cascadeFaceMetrics[i]:font_size_adjust::InitialMetrics();
+            auto restriction=i<cascadeCharacters.size()?static_cast<CFCharacterSetRef>(cascadeCharacters[i].get()):nullptr;
+            bool privateFace=i<cascadePrivateFonts.size()&&cascadePrivateFonts[i];
+            if(!append(static_cast<CTFontRef>(cascadeFonts[i].first.get()),autoOptical,metrics,restriction,privateFace)||
+               !append(static_cast<CTFontRef>(cascadeFonts[i].second.get()),autoOptical,metrics,restriction,privateFace))return nullptr;
+        }
+        const void* keys[]={CFSTR("policy"),CFSTR("fonts"),CFSTR("automatic"),CFSTR("descriptors"),CFSTR("coverage"),CFSTR("private")};const void* values[]={data.get(),fonts.get(),automatic.get(),descriptors.get(),coverage.get(),privateFonts.get()};
+        return CFDictionaryCreate(kCFAllocatorDefault,keys,values,6,&kCFTypeDictionaryKeyCallBacks,&kCFTypeDictionaryValueCallBacks);
+    }
+    uint32_t capsVariant = 0;
+    bool capsSynthesis = true;
+    int32_t capsSmallOverride = -1;
+    std::vector<JaliumFontFeature> requestedFeatures;
+    std::vector<std::array<int64_t,2>> cascadeVerticalOverrides;
+    std::array<int64_t,2> VerticalOverrides() const { return {FeatureOverride(0x76657274u,-1),FeatureOverride(0x76727432u,-1)}; }
+    int64_t FeatureOverride(uint32_t tag, int64_t fallback) const {
+        for (const auto& feature : requestedFeatures) if (feature.tag == tag) fallback = feature.value;
+        return fallback;
+    }
+    int64_t PositionFeatureOverride() const {
+        return (positionFlags & 2) ? FeatureOverride(positionVariant == 1 ? 0x73756273u : 0x73757073u,
+            (positionFlags & 4) ? 1 : 0) : -1;
+    }
+    int64_t CapsFeatureOverride() const {
+        return capsSmallOverride < 0 ? -1 : FeatureOverride(0x736d6370u, capsSmallOverride);
+    }
+    std::string capsLanguage;
+    uint32_t capsBoundaries = 0, capsContinuation = 0;
+    uint32_t emojiVariant = 0, emojiAfter = 0;
+    uint32_t positionVariant = 0, positionFlags = 1, positionRunMode = 0;
     bool fallbackCanonicalRequired = false;
     std::vector<FontCascadeEntry> CanonicalFaces() const
     {
-        if (!characterRestriction && !fallbackCanonicalRequired) return {};
-        std::vector<FontCascadeEntry> faces{{font, originalFont ? originalFont : font}};
-        for (const auto& entry : cascadeFonts) faces.push_back({entry.first.get(), entry.second.get()});
+        if (!characterRestriction && !fallbackCanonicalRequired && !HasFaceDescriptors()) return {};
+        std::vector<FontCascadeEntry> faces{{font, originalFont ? originalFont : font, characterRestriction, disablesKerning}};
+        for (size_t i = 0; i < cascadeFonts.size(); ++i)
+            faces.push_back({cascadeFonts[i].first.get(), cascadeFonts[i].second.get(), cascadeCharacters[i].get(), cascadeDisablesKerning[i]});
         return faces;
     }
 #endif
@@ -260,7 +371,7 @@ struct MetalTextFormat::Impl {
         // CoreText otherwise adds automatic leading beyond CTFont's metrics.
         // Use the same line box reported to managed layout and caret hit tests.
         CGFloat minLine = lineSpacingMethod != 0 && lineSpacing > 0
-            ? lineSpacing : CTFontGetAscent(font) + CTFontGetDescent(font) + CTFontGetLeading(font);
+            ? lineSpacing : LineMetrics().ascent + LineMetrics().descent + LineMetrics().leading;
         CGFloat maxLine = minLine;
         CTParagraphStyleSetting settings[] = {
             {kCTParagraphStyleSpecifierAlignment, sizeof(ctAlignment), &ctAlignment},
@@ -272,7 +383,7 @@ struct MetalTextFormat::Impl {
     }
 
     CFAttributedStringRef CreateAttributed(const wchar_t* text,
-        uint32_t length, CGColorRef color = nullptr) const
+        uint32_t length, CGColorRef color = nullptr, AppleCapsMap* capsMap = nullptr) const
     {
         if (!font || !text) return nullptr;
         CFStringRef string = CreateCFString(text, length);
@@ -282,18 +393,58 @@ struct MetalTextFormat::Impl {
             kCFAllocatorDefault, 3, &kCFTypeDictionaryKeyCallBacks,
             &kCFTypeDictionaryValueCallBacks);
         CFDictionarySetValue(attributes, kCTFontAttributeName, font);
+        if (disablesKerning) {
+            int32_t zero = 0;
+            CFNumberRef number = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &zero);
+            if (number) { CFDictionarySetValue(attributes, kCTKernAttributeName, number); CFRelease(number); }
+        }
         if (paragraph)
             CFDictionarySetValue(attributes, kCTParagraphStyleAttributeName, paragraph);
         if (color)
             CFDictionarySetValue(attributes, kCTForegroundColorAttributeName, color);
         CFAttributedStringRef result = CFAttributedStringCreate(
             kCFAllocatorDefault, string, attributes);
-        if (result && (invisibleCharacters || characterRestriction || fallbackCanonicalRequired)) {
+        if (result && (SizingActive() || invisibleCharacters || characterRestriction || fallbackCanonicalRequired || capsVariant || positionVariant || emojiVariant || emojiAfter)) {
             CFMutableAttributedStringRef visible = CFAttributedStringCreateMutableCopy(kCFAllocatorDefault, 0, result);
             ReleaseCF(result); result = visible;
             if (visible) {
                 ApplyCanonicalFontFallbacks(visible, CFRangeMake(0, CFStringGetLength(string)), CanonicalFaces());
                 ApplyFontVisibility(visible, CFRangeMake(0, CFStringGetLength(string)), invisibleCharacters);
+                if(SizingActive()){
+                    auto settings=SizingAttributes();
+                    if(!settings){ReleaseCF(result);ReleaseCF(attributes);ReleaseCF(paragraph);ReleaseCF(string);return nullptr;}
+                    CFAttributedStringSetAttribute(visible,CFRangeMake(0,CFStringGetLength(string)),font_size_adjust::Key(),settings);CFRelease(settings);
+                    auto adjusted=CreateAppleSizeAdjustedText(visible);ReleaseCF(result);result=adjusted;
+                    visible=const_cast<CFMutableAttributedStringRef>(adjusted);
+                    if(!visible){ReleaseCF(attributes);ReleaseCF(paragraph);ReleaseCF(string);return nullptr;}
+                }
+                AppleCapsMap local;
+                auto& mapping = capsMap ? *capsMap : local;
+                SetAppleEmojiAttributes(visible, CFRangeMake(0, CFStringGetLength(string)), emojiVariant, emojiAfter);
+                if (positionVariant) {
+                    SetApplePositionAttributes(visible, CFRangeMake(0, CFStringGetLength(string)), positionVariant, positionFlags, positionRunMode, PositionFeatureOverride());
+                    if (capsMap && !capsMap->original)
+                        capsMap->original = static_cast<CFAttributedStringRef>(CFRetain(visible));
+                    auto positioned = CreateApplePositionText(visible);
+                    ReleaseCF(result); result = positioned;
+                    visible = const_cast<CFMutableAttributedStringRef>(positioned);
+                    if (!visible) { ReleaseCF(attributes); ReleaseCF(paragraph); ReleaseCF(string); return nullptr; }
+                }
+                if (capsVariant) {
+                    CFStringRef language = CFStringCreateWithBytes(kCFAllocatorDefault,
+                        reinterpret_cast<const UInt8*>(capsLanguage.data()), capsLanguage.size(), kCFStringEncodingASCII, false);
+                    SetAppleCapsAttributes(visible, CFRangeMake(0, CFStringGetLength(string)), capsVariant, capsSynthesis, language, CapsFeatureOverride(), capsBoundaries, capsContinuation);
+                    ReleaseCF(language);
+                    auto transformed = CreateAppleCapsText(visible, mapping);
+                    ReleaseCF(result); result = transformed;
+                }
+                if (result && (emojiVariant || emojiAfter)) {
+                    auto transformed = CreateAppleEmojiText(result, mapping);
+                    ReleaseCF(result); result = transformed;
+                }
+                if(result&&SizingActive()){
+                    auto finalized=FinalizeAppleSizeAdjustedText(result);ReleaseCF(result);result=finalized;
+                }
             }
         }
         ReleaseCF(attributes);
@@ -303,6 +454,125 @@ struct MetalTextFormat::Impl {
     }
 #endif
 };
+
+JaliumResult MetalTextFormat::SetFontEmoji(uint32_t variant, uint32_t after)
+{
+#ifdef __APPLE__
+    if (!IsValid() || variant > 3 || after > 2) return JALIUM_ERROR_INVALID_ARGUMENT;
+    impl_->emojiVariant = variant; impl_->emojiAfter = after;
+    impl_->generation.fetch_add(1, std::memory_order_release); return JALIUM_OK;
+#else
+    (void)variant; (void)after; return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
+void MetalTextFormat::ApplyEmojiAttributes(void* attributed, uint32_t start, uint32_t length) const
+{
+#ifdef __APPLE__
+    SetAppleEmojiAttributes(static_cast<CFMutableAttributedStringRef>(attributed), CFRangeMake(start, length), impl_->emojiVariant, impl_->emojiAfter);
+#else
+    (void)attributed; (void)start; (void)length;
+#endif
+}
+
+void MetalTextFormat::ApplyVerticalFeatureAttributes(void* attributed, uint32_t start, uint32_t length) const
+{
+#ifdef __APPLE__
+    if (!IsValid() || !attributed || !length) return;
+    auto text=static_cast<CFMutableAttributedStringRef>(attributed);
+    auto apply=[&](CFRange range,const std::array<int64_t,2>& values) {
+        auto data=CFDataCreate(kCFAllocatorDefault,reinterpret_cast<const UInt8*>(values.data()),sizeof(int64_t)*2);
+        if(!data)throw std::bad_alloc();
+        CFAttributedStringSetAttribute(text,range,CFSTR("JaliumVerticalFeatureOverrides"),data);CFRelease(data);
+    };
+    apply(CFRangeMake(start,length),impl_->VerticalOverrides());
+    // Raw settings live on source attributes because CoreText drops custom
+    // font-descriptor keys and collapses the reserved vert/vrt2 feature pair.
+    std::vector<FontCascadeEntry> faces{{impl_->font,impl_->originalFont?impl_->originalFont:impl_->font,impl_->characterRestriction,impl_->disablesKerning}};
+    for(size_t i=0;i<impl_->cascadeFonts.size();++i)
+        faces.push_back({impl_->cascadeFonts[i].first.get(),impl_->cascadeFonts[i].second.get(),impl_->cascadeCharacters[i].get(),impl_->cascadeDisablesKerning[i]});
+    ForEachCanonicalFontRange(text,CFRangeMake(start,length),faces,[&](size_t selected,CFRange range) {
+        if(selected>0 && selected-1<impl_->cascadeVerticalOverrides.size())apply(range,impl_->cascadeVerticalOverrides[selected-1]);
+    });
+#else
+    (void)attributed;(void)start;(void)length;
+#endif
+}
+
+JaliumResult MetalTextFormat::SetFontPosition(uint32_t variant, uint32_t flags, uint32_t runMode)
+{
+#ifdef __APPLE__
+    if (!IsValid() || variant > 2 || flags > 7 || ((flags & 4) && !(flags & 2)) || runMode > 3 || (!variant && runMode))
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    impl_->positionVariant = variant; impl_->positionFlags = flags; impl_->positionRunMode = runMode;
+    impl_->generation.fetch_add(1, std::memory_order_release); return JALIUM_OK;
+#else
+    (void)variant; (void)flags; (void)runMode; return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
+void MetalTextFormat::ApplyPositionAttributes(void* attributed, uint32_t start, uint32_t length) const
+{
+#ifdef __APPLE__
+    SetApplePositionAttributes(static_cast<CFMutableAttributedStringRef>(attributed), CFRangeMake(start, length),
+        impl_->positionVariant, impl_->positionFlags, impl_->positionRunMode, impl_->PositionFeatureOverride());
+#else
+    (void)attributed; (void)start; (void)length;
+#endif
+}
+
+JaliumResult MetalTextFormat::SetFontCaps(uint32_t variant, uint32_t flags, const char* language, uint32_t languageLength)
+{
+#ifdef __APPLE__
+    if (!IsValid() || variant > 6 || flags > 7 || ((flags & 4) && !(flags & 2)) || languageLength > 128 || (languageLength && !language)) return JALIUM_ERROR_INVALID_ARGUMENT;
+    std::string next = languageLength ? std::string(language, languageLength) : std::string();
+    impl_->capsLanguage.swap(next); impl_->capsVariant = variant; impl_->capsSynthesis = (flags & 1) != 0;
+    impl_->capsSmallOverride = (flags & 2) ? ((flags & 4) ? 1 : 0) : -1;
+    impl_->capsBoundaries = 0; impl_->capsContinuation = 0;
+    impl_->generation.fetch_add(1, std::memory_order_release);
+    return JALIUM_OK;
+#else
+    (void)variant; (void)flags; (void)language; (void)languageLength; return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
+JaliumResult MetalTextFormat::SetFontCapsContinuation(uint32_t operation)
+{
+#ifdef __APPLE__
+    if (!IsValid() || operation > 2) return JALIUM_ERROR_INVALID_ARGUMENT;
+    impl_->capsContinuation = operation;
+    impl_->generation.fetch_add(1, std::memory_order_release);
+    return JALIUM_OK;
+#else
+    (void)operation; return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
+JaliumResult MetalTextFormat::SetFontCapsContext(uint32_t boundaries)
+{
+#ifdef __APPLE__
+    if (!IsValid() || (boundaries & ~63u)) return JALIUM_ERROR_INVALID_ARGUMENT;
+    impl_->capsBoundaries = boundaries;
+    impl_->generation.fetch_add(1, std::memory_order_release);
+    return JALIUM_OK;
+#else
+    (void)boundaries; return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
+void MetalTextFormat::ApplyCapsAttributes(void* attributed, uint32_t start, uint32_t length) const
+{
+#ifdef __APPLE__
+    if (!impl_->capsVariant || !length) return;
+    CFStringRef language = CFStringCreateWithBytes(kCFAllocatorDefault,
+        reinterpret_cast<const UInt8*>(impl_->capsLanguage.data()), impl_->capsLanguage.size(), kCFStringEncodingASCII, false);
+    SetAppleCapsAttributes(static_cast<CFMutableAttributedStringRef>(attributed), CFRangeMake(start, length),
+        impl_->capsVariant, impl_->capsSynthesis, language, impl_->CapsFeatureOverride(), impl_->capsBoundaries, impl_->capsContinuation);
+    ReleaseCF(language);
+#else
+    (void)attributed; (void)start; (void)length;
+#endif
+}
 
 MetalTextFormat::MetalTextFormat(const wchar_t* family, float size,
     int32_t weight, int32_t style) : MetalTextFormat(family, size, weight, style, 100, false) {}
@@ -318,6 +588,7 @@ MetalTextFormat::MetalTextFormat(const wchar_t* family, float size,
     CFStringRef familyName = family ? CreateCFString(family) : nullptr;
     impl_->font = CreateAppleTextFont(familyName, size, weight, style, width, matchWidth, &impl_->registeredFont);
     ReleaseCF(familyName);
+    if (impl_->font) impl_->variationBaseFont = Impl::FontOwner(CFRetain(impl_->font), [](const void* item) { CFRelease(item); });
 #else
     (void)family; (void)weight; (void)style; (void)width; (void)matchWidth;
 #endif
@@ -333,12 +604,328 @@ MetalTextFormat::~MetalTextFormat()
 #endif
 }
 
+bool MetalTextFormat::IsKerningDisabled() const
+{
+#ifdef __APPLE__
+    return impl_ && impl_->disablesKerning;
+#else
+    return false;
+#endif
+}
+
+JaliumResult MetalTextFormat::GetFontFeatureSupport(uint32_t tables, const uint32_t* tags, uint32_t count, uint8_t* supported) const
+{
+#ifdef __APPLE__
+    if (!IsValid()) return JALIUM_ERROR_NOT_SUPPORTED;
+    std::vector<uint32_t> available;
+    auto release = [](const void* value) { if (value) CFRelease(value); };
+    const CTFontTableTag tableTags[] = {kCTFontTableGSUB, kCTFontTableGPOS};
+    for (unsigned i = 0; i < 2; ++i) {
+        if (!(tables & (1u << i))) continue;
+        std::unique_ptr<const void, decltype(release)> owner(CTFontCopyTable(impl_->font, tableTags[i], kCTFontTableOptionNoOptions), release);
+        auto table = static_cast<CFDataRef>(owner.get());
+        if (table) font_features::Collect(CFDataGetBytePtr(table), static_cast<size_t>(CFDataGetLength(table)), available);
+    }
+    font_features::Query(available, tags, count, supported);
+    return JALIUM_OK;
+#else
+    (void)tables; (void)tags; (void)count; (void)supported;
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
+#ifdef __APPLE__
+namespace {
+CTFontRef CopyTextFontAttributes(CTFontRef font, CFDictionaryRef attributes)
+{
+    auto release = [](const void* value) { if (value) CFRelease(value); };
+    using Owner = std::unique_ptr<const void, decltype(release)>;
+    Owner original(CTFontCopyFontDescriptor(font), release);
+    Owner descriptor(original ? CTFontDescriptorCreateCopyWithAttributes(static_cast<CTFontDescriptorRef>(original.get()), attributes) : nullptr, release);
+    Owner graphics(CTFontCopyGraphicsFont(font, nullptr), release);
+    auto matrix = CTFontGetMatrix(font);
+    return descriptor && graphics ? CTFontCreateWithGraphicsFont(static_cast<CGFontRef>(const_cast<void*>(graphics.get())),
+        CTFontGetSize(font), &matrix, static_cast<CTFontDescriptorRef>(descriptor.get())) : nullptr;
+}
+}
+#endif
+
+JaliumResult MetalTextFormat::SetFontFaceMetrics(const JaliumFontFaceMetrics* metrics,float* usedSize)
+{
+#ifdef __APPLE__
+    if(!IsValid()||!metrics||!usedSize||!font_size_adjust::ValidMetrics(*metrics))return JALIUM_ERROR_INVALID_ARGUMENT;
+    auto release=[](const void* value){if(value)CFRelease(value);};using Owner=std::unique_ptr<const void,decltype(release)>;
+    JaliumFontFaceMetrics clean{};clean.structSize=sizeof(clean);clean.sizeAdjust=metrics->sizeAdjust;
+    clean.ascent=metrics->ascent;clean.descent=metrics->descent;clean.lineGap=metrics->lineGap;
+    clean.verticalAscent=metrics->verticalAscent;clean.verticalDescent=metrics->verticalDescent;clean.verticalLineGap=metrics->verticalLineGap;
+    Owner data(CFDataCreate(kCFAllocatorDefault,reinterpret_cast<const UInt8*>(&clean),sizeof(clean)),release);
+    const void* key=font_size_adjust::FaceKey();const void* value=data.get();
+    Owner attributes(data?CFDictionaryCreate(kCFAllocatorDefault,&key,&value,1,&kCFTypeDictionaryKeyCallBacks,&kCFTypeDictionaryValueCallBacks):nullptr,release);
+    if(!attributes)return JALIUM_ERROR_OUT_OF_MEMORY;
+    auto copy=[&](CTFontRef font){return font?CopyTextFontAttributes(font,static_cast<CFDictionaryRef>(attributes.get())):nullptr;};
+    Owner font(copy(impl_->font),release),original(copy(impl_->originalFont),release);
+    Owner variation(copy(static_cast<CTFontRef>(impl_->variationBaseFont.get())),release);
+    if(!font||(impl_->originalFont&&!original)||(impl_->variationBaseFont&&!variation))return JALIUM_ERROR_OUT_OF_MEMORY;
+    double used=0;Owner probe(font_size_adjust::Copy(static_cast<CTFontRef>(font.get()),impl_->SizingPolicy(),impl_->sizeAxes,true,impl_->automaticOptical,&used,clean,bool(impl_->registeredFont)),release);
+    if(!probe)return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
+    CFRelease(impl_->font);impl_->font=static_cast<CTFontRef>(font.release());
+    if(impl_->originalFont)CFRelease(impl_->originalFont);impl_->originalFont=static_cast<CTFontRef>(original.release());
+    if(variation)impl_->variationBaseFont=Impl::FontOwner(variation.release(),release);
+    impl_->faceMetrics=clean;impl_->generation.fetch_add(1,std::memory_order_release);*usedSize=static_cast<float>(used);return JALIUM_OK;
+#else
+    (void)metrics;(void)usedSize;return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+JaliumResult MetalTextFormat::GetFontInkBounds(const wchar_t* text,uint32_t length,JaliumTextRangeMetrics* bounds)
+{
+#ifdef __APPLE__
+    if(!IsValid()||!text||!bounds)return JALIUM_ERROR_INVALID_ARGUMENT;*bounds={};
+    AppleCapsMap mapping;auto attributed=impl_->CreateAttributed(text,length,nullptr,&mapping);
+    if(!attributed)return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
+    // Query ink relative to the glyph baseline. Paragraph line constraints can
+    // offset a CTLine's bounds even though they do not change the glyph paths.
+    auto query=CFAttributedStringCreateMutableCopy(kCFAllocatorDefault,0,attributed);CFRelease(attributed);
+    if(!query)return JALIUM_ERROR_OUT_OF_MEMORY;
+    CFAttributedStringRemoveAttribute(query,CFRangeMake(0,CFAttributedStringGetLength(query)),kCTParagraphStyleAttributeName);
+    auto line=CTLineCreateWithAttributedString(query);if(!line){CFRelease(query);return JALIUM_ERROR_RESOURCE_CREATION_FAILED;}
+    auto rect=CTLineGetBoundsWithOptions(line,kCTLineBoundsUseGlyphPathBounds);
+    if(!CGRectIsNull(rect)&&!CGRectIsInfinite(rect)&&std::isfinite(rect.origin.x)&&std::isfinite(rect.origin.y)&&std::isfinite(rect.size.width)&&std::isfinite(rect.size.height)) {
+        bounds->textPosition=0;bounds->length=length;bounds->x=CGRectGetMinX(rect);bounds->y=-CGRectGetMaxY(rect);
+        bounds->width=rect.size.width;bounds->height=rect.size.height;
+    }
+    CFRelease(line);CFRelease(query);return JALIUM_OK;
+#else
+    (void)text;(void)length;(void)bounds;return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+JaliumResult MetalTextFormat::GetFontAspectMetric(uint32_t metric,double* aspect)
+{
+#ifdef __APPLE__
+    if(!IsValid()||!aspect||metric<1||metric>5)return JALIUM_ERROR_INVALID_ARGUMENT;
+    auto policy=impl_->SizingPolicy();policy.metric=0;policy.aspect=0;double used=0;
+    auto selected=font_size_adjust::Copy(impl_->originalFont?impl_->originalFont:impl_->font,policy,impl_->sizeAxes,true,impl_->automaticOptical,&used,impl_->faceMetrics,bool(impl_->registeredFont));
+    if(!selected)return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
+    *aspect=used>0?font_size_adjust::Aspect(selected,metric)*used/impl_->size:0;CFRelease(selected);return JALIUM_OK;
+#else
+    (void)metric;(void)aspect;return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+JaliumResult MetalTextFormat::SetFontSizeAdjust(uint32_t metric,double aspect,uint32_t opticalMode,const JaliumFontVariation* axes,uint32_t count,float* usedSize)
+{
+#ifdef __APPLE__
+    if(!IsValid()||!usedSize||metric>5||opticalMode>2||!std::isfinite(aspect)||aspect<0||count>16384||(count&&!axes))return JALIUM_ERROR_INVALID_ARGUMENT;
+    for(uint32_t i=0;i<count;++i){if(!std::isfinite(axes[i].value))return JALIUM_ERROR_INVALID_ARGUMENT;for(unsigned shift=0;shift<32;shift+=8){auto ch=(axes[i].tag>>shift)&255u;if(ch<32||ch>126)return JALIUM_ERROR_INVALID_ARGUMENT;}}
+    std::vector<JaliumFontVariation> requested;if(count)requested.assign(axes,axes+count);
+    font_size_adjust::Policy policy{metric,opticalMode,aspect,impl_->size,count,0};double used=impl_->size;
+    if(metric||!font_size_adjust::IsInitial(impl_->faceMetrics)){auto probe=font_size_adjust::Copy(impl_->font,policy,requested,true,impl_->automaticOptical,&used,impl_->faceMetrics,bool(impl_->registeredFont));if(!probe)return JALIUM_ERROR_RESOURCE_CREATION_FAILED;CFRelease(probe);}
+    impl_->sizePolicy=policy;impl_->sizeAxes.swap(requested);impl_->generation.fetch_add(1,std::memory_order_release);*usedSize=static_cast<float>(used);return JALIUM_OK;
+#else
+    (void)metric;(void)aspect;(void)opticalMode;(void)axes;(void)count;(void)usedSize;return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+void MetalTextFormat::ApplySizeAdjustAttributes(void* attributed,uint32_t start,uint32_t length) const
+{
+#ifdef __APPLE__
+    if(!IsValid()||!attributed||!impl_->SizingActive())return;
+    auto settings=impl_->SizingAttributes();if(!settings)throw std::bad_alloc();
+    CFAttributedStringSetAttribute(static_cast<CFMutableAttributedStringRef>(attributed),CFRangeMake(start,length),font_size_adjust::Key(),settings);CFRelease(settings);
+#else
+    (void)attributed;(void)start;(void)length;
+#endif
+}
+
+JaliumResult MetalTextFormat::SetFontVariations(const JaliumFontVariation* axes, uint32_t count)
+{
+    return SetFontOpticalVariations(axes, count, 0);
+}
+
+JaliumResult MetalTextFormat::SetFontOpticalVariations(const JaliumFontVariation* axes, uint32_t count, uint32_t mode)
+{
+#ifdef __APPLE__
+    if (!IsValid() || mode > 2 || count > 16384 || (count && !axes)) return JALIUM_ERROR_INVALID_ARGUMENT;
+    for (uint32_t i = 0; i < count; ++i) {
+        if (!std::isfinite(axes[i].value)) return JALIUM_ERROR_INVALID_ARGUMENT;
+        for (unsigned shift = 0; shift < 32; shift += 8)
+            if (((axes[i].tag >> shift) & 255u) < 32 || ((axes[i].tag >> shift) & 255u) > 126) return JALIUM_ERROR_INVALID_ARGUMENT;
+    }
+    std::unordered_map<uint32_t, double> requested;
+    for (uint32_t i = 0; i < count; ++i) requested[axes[i].tag] = axes[i].value;
+    auto release = [](const void* value) { if (value) CFRelease(value); };
+    using Owner = std::unique_ptr<const void, decltype(release)>;
+    auto copy = [&](CTFontRef font, CTFontRef base, CFArrayRef cascade = nullptr, double scale = 1, bool privateFace = false) -> CTFontRef {
+        Owner available(CTFontCopyVariationAxes(base), release);
+        auto supported = static_cast<CFArrayRef>(available.get());
+        Owner defaults(CTFontCopyVariation(base), release);
+        Owner coordinates(CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
+            &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks), release);
+        if (!coordinates) return nullptr;
+        auto values = const_cast<CFMutableDictionaryRef>(static_cast<CFDictionaryRef>(coordinates.get()));
+        for (CFIndex index = 0; supported && index < CFArrayGetCount(supported); ++index) {
+            auto axis = static_cast<CFDictionaryRef>(CFArrayGetValueAtIndex(supported, index));
+            auto key = static_cast<CFNumberRef>(CFDictionaryGetValue(axis, kCTFontVariationAxisIdentifierKey));
+            int64_t identifier = 0;
+            if (!key || !CFNumberGetValue(key, kCFNumberSInt64Type, &identifier)) continue;
+            auto number = [&](CFStringRef name) { double value = 0; CFNumberGetValue(
+                static_cast<CFNumberRef>(CFDictionaryGetValue(axis, name)), kCFNumberDoubleType, &value); return value; };
+            double value = number(kCTFontVariationAxisDefaultValueKey);
+            if (defaults && CFDictionaryGetValue(static_cast<CFDictionaryRef>(defaults.get()), key))
+                CFNumberGetValue(static_cast<CFNumberRef>(CFDictionaryGetValue(static_cast<CFDictionaryRef>(defaults.get()), key)), kCFNumberDoubleType, &value);
+            if (identifier == 0x6f70737a && mode != 0)
+                value = mode == 1 ? font_size_adjust::BoundSize(static_cast<long double>(impl_->size)*scale) : number(kCTFontVariationAxisDefaultValueKey);
+            if (auto found = requested.find(static_cast<uint32_t>(identifier)); found != requested.end()) value = found->second;
+            value = std::clamp(value, number(kCTFontVariationAxisMinimumValueKey), number(kCTFontVariationAxisMaximumValueKey));
+            Owner coordinate(CFNumberCreate(kCFAllocatorDefault, kCFNumberDoubleType, &value), release);
+            if (!coordinate) return nullptr;
+            CFDictionarySetValue(values, key, coordinate.get());
+        }
+        // CoreText has a separate optical-size control. Its inherited "auto"
+        // value can override a raw opsz coordinate, particularly in SF fonts.
+        Owner optical(CTFontCopyAttribute(base, kCTFontOpticalSizeAttribute), release);
+        if (mode != 0 || requested.find(0x6f70737a) != requested.end()) {
+            int32_t tag = 0x6f70737a; Owner key(CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &tag), release);
+            auto value = CFDictionaryGetValue(values, key.get());
+            if (value) optical.reset(CFRetain(value));
+        }
+        Owner original(CTFontCopyFontDescriptor(font), release);
+        const void* keys[] = {kCTFontVariationAttribute, kCTFontOpticalSizeAttribute, kCTFontCascadeListAttribute};
+        const void* items[] = {coordinates.get(), optical ? optical.get() : kCFNull, cascade};
+        Owner attributes(CFDictionaryCreate(kCFAllocatorDefault, keys, items, cascade ? 3 : 2,
+            &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks), release);
+        Owner descriptor(original && attributes ? CTFontDescriptorCreateCopyWithAttributes(
+            static_cast<CTFontDescriptorRef>(original.get()), static_cast<CFDictionaryRef>(attributes.get())) : nullptr, release);
+        // A registered webfont must retain its graphics face; descriptor-name
+        // rematching can silently substitute a system font.
+        Owner graphics(CTFontCopyGraphicsFont(base, nullptr), release);
+        auto matrix = CTFontGetMatrix(font);
+        // Copy variable instances from their live font identity. Recreating
+        // one from its named-instance descriptor can rematch a system face
+        // before shaping, even when a private CGFont was supplied.
+        if (privateFace && supported && CFArrayGetCount(supported))
+            return descriptor ? CTFontCreateCopyWithAttributes(font, CTFontGetSize(font), &matrix,
+                static_cast<CTFontDescriptorRef>(descriptor.get())) : nullptr;
+        return descriptor && graphics ? CTFontCreateWithGraphicsFont(static_cast<CGFontRef>(const_cast<void*>(graphics.get())),
+            CTFontGetSize(font), &matrix, static_cast<CTFontDescriptorRef>(descriptor.get())) : nullptr;
+    };
+    std::vector<std::pair<Impl::FontOwner, Impl::FontOwner>> replacements;
+    Owner cascadeOwner(CFArrayCreateMutable(kCFAllocatorDefault, impl_->cascadeFonts.size(), &kCFTypeArrayCallBacks), release);
+    auto cascade = const_cast<CFMutableArrayRef>(static_cast<CFArrayRef>(cascadeOwner.get()));
+    if (!cascade) return JALIUM_ERROR_OUT_OF_MEMORY;
+    for (size_t i = 0; i < impl_->cascadeFonts.size(); ++i) {
+        const auto& entry = impl_->cascadeFonts[i]; auto base = static_cast<CTFontRef>(impl_->cascadeVariationBases[i].get());
+        double factor=i<impl_->cascadeFaceMetrics.size()?impl_->cascadeFaceMetrics[i].sizeAdjust:1;
+        bool privateFace = i < impl_->cascadePrivateFonts.size() && impl_->cascadePrivateFonts[i];
+        Impl::FontOwner effective(copy(static_cast<CTFontRef>(entry.first.get()), base,nullptr,factor,privateFace), release);
+        Impl::FontOwner original(copy(static_cast<CTFontRef>(entry.second.get()), base,nullptr,factor,privateFace), release);
+        if (!effective || !original) return JALIUM_ERROR_OUT_OF_MEMORY;
+        Owner descriptor(CTFontCopyFontDescriptor(static_cast<CTFontRef>(effective.get())), release);
+        if (!descriptor) return JALIUM_ERROR_OUT_OF_MEMORY;
+        CFArrayAppendValue(cascade, descriptor.get());
+        replacements.push_back({std::move(effective), std::move(original)});
+    }
+    auto base = static_cast<CTFontRef>(impl_->variationBaseFont.get());
+    Owner font(copy(impl_->font, base, impl_->cascadeFonts.empty() ? nullptr : cascade,impl_->faceMetrics.sizeAdjust,bool(impl_->registeredFont)), release);
+    Owner original(impl_->originalFont ? copy(impl_->originalFont, base,nullptr,impl_->faceMetrics.sizeAdjust,bool(impl_->registeredFont)) : nullptr, release);
+    if (!font || (impl_->originalFont && !original)) return JALIUM_ERROR_OUT_OF_MEMORY;
+    CFRelease(impl_->font); impl_->font = static_cast<CTFontRef>(font.release());
+    if (impl_->originalFont) CFRelease(impl_->originalFont);
+    impl_->originalFont = static_cast<CTFontRef>(original.release());
+    impl_->cascadeFonts = std::move(replacements);
+    impl_->opticalPolicy=mode;
+    impl_->automaticOptical=mode==1 && requested.find(0x6f70737a)==requested.end();
+    impl_->cascadeAutomaticOptical.assign(impl_->cascadeFonts.size(),impl_->automaticOptical);
+    impl_->generation.fetch_add(1, std::memory_order_release); return JALIUM_OK;
+#else
+    (void)axes; (void)count; (void)mode; return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
+JaliumResult MetalTextFormat::SetFontFeatures(const JaliumFontFeature* features, uint32_t count)
+{
+#ifdef __APPLE__
+    if (!IsValid() || count > 16384 || (count && !features)) return JALIUM_ERROR_INVALID_ARGUMENT;
+    bool disablesKerning = false;
+    for (uint32_t i = 0; i < count; ++i) if (features[i].tag == 0x6b65726eu) disablesKerning = features[i].value == 0;
+    std::vector<JaliumFontFeature> requestedFeatures;
+    if (count) requestedFeatures.assign(features, features + count);
+    std::vector<bool> cascadeDisablesKerning(impl_->cascadeFonts.size(), disablesKerning);
+    auto release = [](const void* value) { if (value) CFRelease(value); };
+    using Owner = std::unique_ptr<const void, decltype(release)>;
+    Owner settingsOwner(CFArrayCreateMutable(kCFAllocatorDefault, count, &kCFTypeArrayCallBacks), release);
+    auto settings = const_cast<CFMutableArrayRef>(static_cast<CFArrayRef>(settingsOwner.get()));
+    if (!settings) return JALIUM_ERROR_OUT_OF_MEMORY;
+    for (uint32_t i = 0; i < count; ++i) {
+        UInt8 bytes[4];
+        for (unsigned j = 0; j < 4; ++j) {
+            bytes[j] = static_cast<UInt8>(features[i].tag >> (24 - j * 8));
+            if (bytes[j] < 32 || bytes[j] > 126) return JALIUM_ERROR_INVALID_ARGUMENT;
+        }
+        Owner tag(CFStringCreateWithBytes(kCFAllocatorDefault, bytes, 4, kCFStringEncodingASCII, false), release);
+        int64_t value = features[i].value;
+        Owner number(CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt64Type, &value), release);
+        const void* keys[] = {kCTFontOpenTypeFeatureTag, kCTFontOpenTypeFeatureValue};
+        const void* values[] = {tag.get(), number.get()};
+        if (!tag || !number) return JALIUM_ERROR_OUT_OF_MEMORY;
+        Owner entry(CFDictionaryCreate(kCFAllocatorDefault, keys, values, 2,
+            &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks), release);
+        if (!entry) return JALIUM_ERROR_OUT_OF_MEMORY;
+        CFArrayAppendValue(settings, entry.get());
+    }
+    std::array<int64_t,2> verticalOverrides{-1,-1};
+    for (uint32_t i=0;i<count;++i) {
+        if(features[i].tag==0x76657274u)verticalOverrides[0]=features[i].value;
+        if(features[i].tag==0x76727432u)verticalOverrides[1]=features[i].value;
+    }
+    std::vector<std::array<int64_t,2>> cascadeVerticalOverrides(impl_->cascadeFonts.size(),verticalOverrides);
+    auto copy = [&](CTFontRef font, CFArrayRef cascade = nullptr) -> CTFontRef {
+        if (!font) return nullptr;
+        return CopyAppleFontFeatures(font, settings, cascade);
+    };
+    // Prepare every replacement first. Allocation failures keep the entire old
+    // cascade, character coverage and retained paragraph fonts intact.
+    std::vector<std::pair<Impl::FontOwner, Impl::FontOwner>> cascadeFonts;
+    Owner cascadeOwner(CFArrayCreateMutable(kCFAllocatorDefault, impl_->cascadeFonts.size(), &kCFTypeArrayCallBacks), release);
+    auto cascade = const_cast<CFMutableArrayRef>(static_cast<CFArrayRef>(cascadeOwner.get()));
+    if (!cascade) return JALIUM_ERROR_OUT_OF_MEMORY;
+    for (const auto& entry : impl_->cascadeFonts) {
+        Impl::FontOwner effective(copy(static_cast<CTFontRef>(entry.first.get())), release);
+        Impl::FontOwner original(copy(static_cast<CTFontRef>(entry.second.get())), release);
+        if (!effective || !original) return JALIUM_ERROR_OUT_OF_MEMORY;
+        Owner descriptor(CTFontCopyFontDescriptor(static_cast<CTFontRef>(effective.get())), release);
+        if (!descriptor) return JALIUM_ERROR_OUT_OF_MEMORY;
+        CFArrayAppendValue(cascade, descriptor.get());
+        cascadeFonts.push_back({std::move(effective), std::move(original)});
+    }
+    Owner font(copy(impl_->font, impl_->cascadeFonts.empty() ? nullptr : cascade), release);
+    Owner original(impl_->originalFont ? copy(impl_->originalFont) : nullptr, release);
+    if (!font || (impl_->originalFont && !original)) return JALIUM_ERROR_OUT_OF_MEMORY;
+    CFRelease(impl_->font); impl_->font = static_cast<CTFontRef>(font.release());
+    if (impl_->originalFont) CFRelease(impl_->originalFont);
+    impl_->originalFont = static_cast<CTFontRef>(original.release());
+    impl_->cascadeFonts = std::move(cascadeFonts);
+    impl_->disablesKerning = disablesKerning;
+    impl_->cascadeDisablesKerning.swap(cascadeDisablesKerning);
+    impl_->requestedFeatures.swap(requestedFeatures);
+    impl_->cascadeVerticalOverrides.swap(cascadeVerticalOverrides);
+    impl_->generation.fetch_add(1, std::memory_order_relaxed);
+    return JALIUM_OK;
+#else
+    (void)features; (void)count; return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
 JaliumResult MetalTextFormat::SetFontFallbacks(TextFormat* const* formats, uint32_t count)
 {
 #ifdef __APPLE__
     if (!IsValid() || (count && !formats)) return JALIUM_ERROR_INVALID_ARGUMENT;
     std::vector<FontResourceReference> resources;
     std::vector<std::pair<Impl::FontOwner, Impl::FontOwner>> cascadeFonts;
+    std::vector<Impl::FontOwner> cascadeCharacters;
+    std::vector<Impl::FontOwner> cascadeVariationBases;
+    std::vector<bool> cascadePrivateFonts;
+    std::vector<bool> cascadeDisablesKerning;
+    std::vector<bool> cascadeAutomaticOptical;
+    std::vector<JaliumFontFaceMetrics> cascadeFaceMetrics;
+    std::vector<std::array<int64_t,2>> cascadeVerticalOverrides;
     bool canonicalRequired = false;
     resources.reserve(count);
     auto release = [](const void* value) { if (value) CFRelease(value); };
@@ -353,9 +940,23 @@ JaliumResult MetalTextFormat::SetFontFallbacks(TextFormat* const* formats, uint3
         std::unique_ptr<const void, decltype(release)> descriptor(CTFontCopyFontDescriptor(format->impl_->font), release);
         if (!descriptor) return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
         CFArrayAppendValue(list, descriptor.get());
-        auto own = [](CTFontRef font) { return Impl::FontOwner(CFRetain(font), [](const void* value) { CFRelease(value); }); };
+        auto own = [](const void* value) { return value ? Impl::FontOwner(CFRetain(value), [](const void* item) { CFRelease(item); }) : Impl::FontOwner{}; };
         cascadeFonts.emplace_back(own(format->impl_->font), own(format->impl_->originalFont ? format->impl_->originalFont : format->impl_->font));
+        cascadeCharacters.push_back(own(format->impl_->characterRestriction));
+        cascadeVariationBases.push_back(own(format->impl_->font));
+        cascadePrivateFonts.push_back(bool(format->impl_->registeredFont));
+        cascadePrivateFonts.insert(cascadePrivateFonts.end(),format->impl_->cascadePrivateFonts.begin(),format->impl_->cascadePrivateFonts.end());
+        for (const auto& entry : format->impl_->cascadeFonts) cascadeVariationBases.push_back(entry.first);
+        cascadeDisablesKerning.push_back(format->impl_->disablesKerning);
+        cascadeVerticalOverrides.push_back(format->impl_->VerticalOverrides());
+        cascadeVerticalOverrides.insert(cascadeVerticalOverrides.end(),format->impl_->cascadeVerticalOverrides.begin(),format->impl_->cascadeVerticalOverrides.end());
+        cascadeAutomaticOptical.push_back(format->impl_->automaticOptical);
+        cascadeFaceMetrics.push_back(format->impl_->faceMetrics);
+        cascadeFaceMetrics.insert(cascadeFaceMetrics.end(),format->impl_->cascadeFaceMetrics.begin(),format->impl_->cascadeFaceMetrics.end());
+        cascadeAutomaticOptical.insert(cascadeAutomaticOptical.end(),format->impl_->cascadeAutomaticOptical.begin(),format->impl_->cascadeAutomaticOptical.end());
         cascadeFonts.insert(cascadeFonts.end(), format->impl_->cascadeFonts.begin(), format->impl_->cascadeFonts.end());
+        cascadeCharacters.insert(cascadeCharacters.end(), format->impl_->cascadeCharacters.begin(), format->impl_->cascadeCharacters.end());
+        cascadeDisablesKerning.insert(cascadeDisablesKerning.end(), format->impl_->cascadeDisablesKerning.begin(), format->impl_->cascadeDisablesKerning.end());
         canonicalRequired |= format->impl_->characterRestriction != nullptr || format->impl_->fallbackCanonicalRequired;
         if (format->impl_->registeredFont) resources.push_back(format->impl_->registeredFont);
         resources.insert(resources.end(), format->impl_->fallbackResources.begin(), format->impl_->fallbackResources.end());
@@ -374,13 +975,16 @@ JaliumResult MetalTextFormat::SetFontFallbacks(TextFormat* const* formats, uint3
         std::unique_ptr<const void, decltype(release)> descriptor(CTFontDescriptorCreateWithAttributes(
             static_cast<CFDictionaryRef>(attributes.get())), release);
         if (!descriptor) return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
-        next = CTFontCreateCopyWithAttributes(original, impl_->size, nullptr, static_cast<CTFontDescriptorRef>(descriptor.get()));
+        next = CopyTextFontAttributes(original, static_cast<CFDictionaryRef>(attributes.get()));
     } else next = static_cast<CTFontRef>(CFRetain(original));
     if (!next) return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
     if (!impl_->originalFont) impl_->originalFont = static_cast<CTFontRef>(CFRetain(original));
     CFRelease(impl_->font); impl_->font = next;
     impl_->fallbackResources.swap(resources);
     impl_->cascadeFonts.swap(cascadeFonts); impl_->fallbackCanonicalRequired = canonicalRequired;
+    impl_->cascadeCharacters.swap(cascadeCharacters); impl_->cascadeVariationBases.swap(cascadeVariationBases); impl_->cascadeDisablesKerning.swap(cascadeDisablesKerning); impl_->cascadeAutomaticOptical.swap(cascadeAutomaticOptical);impl_->cascadeFaceMetrics.swap(cascadeFaceMetrics);
+    impl_->cascadeVerticalOverrides.swap(cascadeVerticalOverrides);
+    impl_->cascadePrivateFonts.swap(cascadePrivateFonts);
     impl_->generation.fetch_add(1, std::memory_order_release);
     return JALIUM_OK;
 #else
@@ -412,7 +1016,7 @@ JaliumResult MetalTextFormat::SetUnicodeRanges(const JaliumUnicodeRange* ranges,
     if (!attributes) return JALIUM_ERROR_OUT_OF_MEMORY;
     std::unique_ptr<const void, decltype(release)> descriptor(CTFontDescriptorCreateWithAttributes(static_cast<CFDictionaryRef>(attributes.get())), release);
     if (!descriptor) return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
-    CTFontRef next = CTFontCreateCopyWithAttributes(impl_->font, impl_->size, nullptr, static_cast<CTFontDescriptorRef>(descriptor.get()));
+    CTFontRef next = CopyTextFontAttributes(impl_->font, static_cast<CFDictionaryRef>(attributes.get()));
     if (!next) return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
     if (!impl_->originalFont) impl_->originalFont = static_cast<CTFontRef>(CFRetain(original));
     CFRelease(impl_->font); impl_->font = next;
@@ -429,7 +1033,7 @@ JaliumResult MetalTextFormat::GetCharacterCoverage(const uint32_t* characters, u
 {
 #ifdef __APPLE__
     if (!IsValid() || (count && (!characters || !supported))) return JALIUM_ERROR_INVALID_ARGUMENT;
-    CFCharacterSetRef set = CTFontCopyCharacterSet(impl_->font);
+    CFCharacterSetRef set = impl_->characterRestriction ? static_cast<CFCharacterSetRef>(CFRetain(impl_->characterRestriction)) : CTFontCopyCharacterSet(impl_->font);
     if (!set) return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
     for (uint32_t i = 0; i < count; ++i) supported[i] = CFCharacterSetIsLongCharacterMember(set, characters[i]) ? 1 : 0;
     CFRelease(set); return JALIUM_OK;
@@ -523,12 +1127,13 @@ JaliumResult MetalTextFormat::MeasureText(const wchar_t* text,
     *metrics = {};
 #ifdef __APPLE__
     if (!IsValid()) return JALIUM_ERROR_INVALID_STATE;
-    CFAttributedStringRef attributed = impl_->CreateAttributed(text, textLength);
+    AppleCapsMap caps;
+    CFAttributedStringRef attributed = impl_->CreateAttributed(text, textLength, nullptr, &caps);
     if (!attributed) return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
     CTFramesetterRef framesetter = CTFramesetterCreateWithAttributedString(attributed);
-    CGFloat ascent = CTFontGetAscent(impl_->font);
-    CGFloat descent = CTFontGetDescent(impl_->font);
-    CGFloat leading = CTFontGetLeading(impl_->font);
+    CGFloat ascent = impl_->LineMetrics().ascent;
+    CGFloat descent = impl_->LineMetrics().descent;
+    CGFloat leading = impl_->LineMetrics().leading;
     float lineHeight = impl_->lineSpacingMethod != 0 && impl_->lineSpacing > 0
         ? impl_->lineSpacing : static_cast<float>(ascent + descent + leading);
     const CGFloat width = std::isfinite(maxWidth) && maxWidth > 0 ? maxWidth : 1000000.0;
@@ -539,10 +1144,12 @@ JaliumResult MetalTextFormat::MeasureText(const wchar_t* text,
         ReleaseCF(path); ReleaseCF(framesetter); ReleaseCF(attributed);
         return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
     }
-    CFArrayRef lines = CTFrameGetLines(frame);
+    AppleCapsLines capsLines(frame, attributed, caps, width, height, impl_->wrapping, impl_->alignment, impl_->font,
+        impl_->lineSpacingMethod != 0 && impl_->lineSpacing > 0 ? impl_->lineSpacing : impl_->LineMetrics().ascent + impl_->LineMetrics().descent + impl_->LineMetrics().leading, true, impl_->LineMetrics());
+    CFArrayRef lines = capsLines.Lines();
     CFIndex count = CFArrayGetCount(lines);
     if (impl_->maxLines > 0) count = std::min<CFIndex>(count, impl_->maxLines);
-    double measuredWidth = 0, inclusiveWidth = 0;
+    double measuredWidth = 0, inclusiveWidth = 0, overriddenHeight = 0;
     for (CFIndex i = 0; i < count; ++i) {
         auto line = static_cast<CTLineRef>(CFArrayGetValueAtIndex(lines, i));
         // These are logical advances, not bitmap extents. Rounding each
@@ -550,11 +1157,17 @@ JaliumResult MetalTextFormat::MeasureText(const wchar_t* text,
         const double advance = CTLineGetTypographicBounds(line, nullptr, nullptr, nullptr);
         inclusiveWidth = std::max(inclusiveWidth, advance);
         measuredWidth = std::max(measuredWidth, advance - CTLineGetTrailingWhitespaceWidth(line));
+        if(capsLines.HasMetricOverrides()) {
+            CGFloat a=0,d=0,g=0;capsLines.Metrics(line,&a,&d,&g);
+            float rowHeight=impl_->lineSpacingMethod!=0&&impl_->lineSpacing>0?impl_->lineSpacing:static_cast<float>(a+d+g);
+            overriddenHeight+=rowHeight;lineHeight=std::max(lineHeight,rowHeight);
+            if(i==0){ascent=a;descent=d;leading=g;}
+        }
     }
     CFStringRef string = CFAttributedStringGetString(attributed);
     const CFIndex length = CFStringGetLength(string);
-    CFRange visible = CTFrameGetVisibleStringRange(frame);
-    if (count && visible.location + visible.length == length &&
+    CFRange visible = capsLines.Visible();
+    if (count && length > 0 && visible.location + visible.length == length &&
         (!impl_->maxLines || count < impl_->maxLines)) {
         const UniChar last = CFStringGetCharacterAtIndex(string, length - 1);
         // A terminal paragraph break has an additional empty insertion row.
@@ -563,7 +1176,7 @@ JaliumResult MetalTextFormat::MeasureText(const wchar_t* text,
     const uint32_t lineCount = std::max(1u, static_cast<uint32_t>(count));
     metrics->width = static_cast<float>(measuredWidth);
     metrics->widthIncludingTrailingWhitespace = static_cast<float>(inclusiveWidth);
-    metrics->height = std::min(static_cast<float>(height), lineHeight * lineCount);
+    metrics->height = std::min(static_cast<float>(height), capsLines.HasMetricOverrides()?static_cast<float>(overriddenHeight+std::max<CFIndex>(0,lineCount-CFArrayGetCount(lines))*lineHeight):lineHeight * lineCount);
     metrics->lineHeight = lineHeight;
     metrics->baseline = impl_->lineSpacingBaseline > 0
         ? impl_->lineSpacingBaseline : static_cast<float>(ascent);
@@ -591,9 +1204,9 @@ JaliumResult MetalTextFormat::GetFontMetrics(JaliumTextMetrics* metrics)
     *metrics = {};
 #ifdef __APPLE__
     if (!IsValid()) return JALIUM_ERROR_INVALID_STATE;
-    CGFloat ascent = CTFontGetAscent(impl_->font);
-    CGFloat descent = CTFontGetDescent(impl_->font);
-    CGFloat leading = CTFontGetLeading(impl_->font);
+    CGFloat ascent = impl_->LineMetrics().ascent;
+    CGFloat descent = impl_->LineMetrics().descent;
+    CGFloat leading = impl_->LineMetrics().leading;
     metrics->lineHeight = impl_->lineSpacingMethod != 0 && impl_->lineSpacing > 0
         ? impl_->lineSpacing : static_cast<float>(ascent + descent + leading);
     metrics->baseline = impl_->lineSpacingBaseline > 0
@@ -617,7 +1230,7 @@ JaliumResult MetalTextFormat::GetFontUnitMetrics(JaliumFontUnitMetrics* metrics)
         impl_->size * .5f, impl_->size, impl_->size, impl_->size * 1.2f, 0};
 #ifdef __APPLE__
     if (!IsValid()) return JALIUM_ERROR_INVALID_STATE;
-    auto font = impl_->font;
+    auto font = impl_->MetricsFont();
     metrics->available = 16;
     metrics->ascent = CTFontGetAscent(font);
     metrics->lineHeight = impl_->lineSpacingMethod != 0 && impl_->lineSpacing > 0 ? impl_->lineSpacing :
@@ -673,22 +1286,30 @@ JaliumResult MetalTextFormat::HitTestPoint(const wchar_t* text,
     if (!result || !text || textLength == 0) return JALIUM_ERROR_INVALID_ARGUMENT;
     *result = {};
 #ifdef __APPLE__
-    CFAttributedStringRef attributed = impl_->CreateAttributed(text, textLength);
+    AppleCapsMap caps;
+    CFAttributedStringRef attributed = impl_->CreateAttributed(text, textLength, nullptr, &caps);
     if (!attributed) return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
+    if (caps.Active() && CFAttributedStringGetLength(attributed) == 0) {
+        result->caretHeight = static_cast<float>(impl_->LineMetrics().ascent + impl_->LineMetrics().descent + impl_->LineMetrics().leading);
+        result->isInside = pointX == 0 && pointY >= 0 && pointY <= result->caretHeight;
+        ReleaseCF(attributed); return JALIUM_OK;
+    }
     CTFramesetterRef setter = CTFramesetterCreateWithAttributedString(attributed);
     const CGFloat width = maxWidth > 0 ? maxWidth : 1000000.0;
     const CGFloat height = maxHeight > 0 ? std::ceil(maxHeight) : 1000000.0;
     CGPathRef path = CGPathCreateWithRect(CGRectMake(0, 0, width, height), nullptr);
     CTFrameRef frame = CTFramesetterCreateFrame(setter, CFRangeMake(0, 0), path, nullptr);
-    CFArrayRef lines = CTFrameGetLines(frame);
+    AppleCapsLines capsLines(frame, attributed, caps, width, height, impl_->wrapping, impl_->alignment, impl_->font,
+        impl_->lineSpacingMethod != 0 && impl_->lineSpacing > 0 ? impl_->lineSpacing : impl_->LineMetrics().ascent + impl_->LineMetrics().descent + impl_->LineMetrics().leading, true, impl_->LineMetrics());
+    CFArrayRef lines = capsLines.Lines();
     CFIndex count = CFArrayGetCount(lines);
     std::vector<CGPoint> origins(static_cast<size_t>(std::max<CFIndex>(count, 1)));
-    if (count > 0) CTFrameGetLineOrigins(frame, CFRangeMake(0, count), origins.data());
+    if (count > 0) capsLines.Origins(CFRangeMake(0, count), origins.data());
     CFIndex selected = count > 0 ? count - 1 : 0;
     for (CFIndex i = 0; i < count; ++i) {
         CGFloat ascent = 0, descent = 0, leading = 0;
         CTLineRef line = static_cast<CTLineRef>(const_cast<void*>(CFArrayGetValueAtIndex(lines, i)));
-        CTLineGetTypographicBounds(line, &ascent, &descent, &leading);
+        capsLines.Metrics(line, &ascent, &descent, &leading);
         float top = static_cast<float>(height - origins[i].y - ascent);
         float bottom = static_cast<float>(height - origins[i].y + descent + leading);
         if (pointY >= top && pointY <= bottom) { selected = i; break; }
@@ -698,7 +1319,13 @@ JaliumResult MetalTextFormat::HitTestPoint(const wchar_t* text,
         CGPoint position = CGPointMake(pointX - origins[selected].x, 0);
         CFIndex index = CTLineGetStringIndexForPosition(line, position);
         if (index == kCFNotFound) index = CFAttributedStringGetLength(attributed);
-        result->textPosition = Utf16IndexToWide(text, textLength, index);
+        if (caps.Active() && index < CFAttributedStringGetLength(attributed)) {
+            auto group = caps.Cluster(CFAttributedStringGetString(attributed), index);
+            double first = CTLineGetOffsetForStringIndex(line, group.location, nullptr);
+            double last = CTLineGetOffsetForStringIndex(line, group.location + group.length, nullptr);
+            index = std::abs(position.x - first) <= std::abs(position.x - last) ? group.location : group.location + group.length;
+        }
+        result->textPosition = Utf16IndexToWide(text, textLength, caps.ToSource(index));
         CGFloat secondary = 0;
         CGFloat primary = CTLineGetOffsetForStringIndex(line, index, &secondary);
         // CoreText returns the nearest insertion index already. Its secondary
@@ -706,7 +1333,7 @@ JaliumResult MetalTextFormat::HitTestPoint(const wchar_t* text,
         result->isTrailingHit = 0;
         result->isInside = pointX >= origins[selected].x && pointX <= width ? 1 : 0;
         CGFloat ascent = 0, descent = 0, leading = 0;
-        CTLineGetTypographicBounds(line, &ascent, &descent, &leading);
+        capsLines.Metrics(line, &ascent, &descent, &leading);
         result->caretX = static_cast<float>(primary + origins[selected].x);
         result->caretY = static_cast<float>(height - origins[selected].y - ascent);
         result->caretHeight = static_cast<float>(ascent + descent + leading);
@@ -728,24 +1355,32 @@ JaliumResult MetalTextFormat::HitTestTextPosition(const wchar_t* text,
         return JALIUM_ERROR_INVALID_ARGUMENT;
     *result = {};
 #ifdef __APPLE__
-    CFAttributedStringRef attributed = impl_->CreateAttributed(text, textLength);
+    AppleCapsMap caps;
+    CFAttributedStringRef attributed = impl_->CreateAttributed(text, textLength, nullptr, &caps);
     if (!attributed) return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
+    if (caps.Active() && CFAttributedStringGetLength(attributed) == 0) {
+        result->textPosition = textPosition; result->isTrailingHit = isTrailingHit != 0; result->isInside = 1;
+        result->caretHeight = static_cast<float>(impl_->LineMetrics().ascent + impl_->LineMetrics().descent + impl_->LineMetrics().leading);
+        ReleaseCF(attributed); return JALIUM_OK;
+    }
     CTFramesetterRef setter=CTFramesetterCreateWithAttributedString(attributed);
     CGFloat width=maxWidth>0?maxWidth:1000000.0;
     CGFloat height=maxHeight>0?std::ceil(maxHeight):1000000.0;
     CGPathRef path=CGPathCreateWithRect(CGRectMake(0,0,width,height),nullptr);
     CTFrameRef frame=CTFramesetterCreateFrame(setter,CFRangeMake(0,0),path,nullptr);
-    CFArrayRef lines=CTFrameGetLines(frame);CFIndex lineCount=CFArrayGetCount(lines);
+    AppleCapsLines capsLines(frame, attributed, caps, width, height, impl_->wrapping, impl_->alignment, impl_->font,
+        impl_->lineSpacingMethod != 0 && impl_->lineSpacing > 0 ? impl_->lineSpacing : impl_->LineMetrics().ascent + impl_->LineMetrics().descent + impl_->LineMetrics().leading, true, impl_->LineMetrics());
+    CFArrayRef lines = capsLines.Lines();CFIndex lineCount=CFArrayGetCount(lines);
     if(impl_->maxLines>0)lineCount=std::min<CFIndex>(lineCount,impl_->maxLines);
     if(lineCount==0){ReleaseCF(frame);ReleaseCF(path);ReleaseCF(setter);
         ReleaseCF(attributed);return JALIUM_OK;}
     std::vector<CGPoint> origins(static_cast<size_t>(lineCount));
-    CTFrameGetLineOrigins(frame,CFRangeMake(0,lineCount),origins.data());
-    CFIndex index = WideIndexToUtf16(text, textLength, textPosition);
+    capsLines.Origins(CFRangeMake(0,lineCount),origins.data());
+    CFIndex index = caps.ToPaint(WideIndexToUtf16(text, textLength, textPosition));
     CFStringRef string = CFAttributedStringGetString(attributed);
     CFIndex anchorIndex = index;
     if (index < CFStringGetLength(string)) {
-        CFRange cluster = CFStringGetRangeOfComposedCharactersAtIndex(string, index);
+        CFRange cluster = caps.Cluster(string, index);
         anchorIndex = cluster.location;
         index = cluster.location + (isTrailingHit ? cluster.length : 0);
     }
@@ -763,8 +1398,9 @@ JaliumResult MetalTextFormat::HitTestTextPosition(const wchar_t* text,
         // At a bidi run boundary CoreText's primary insertion caret can be on
         // the other run. Ask for the logical edge of this actual character.
         __block CGFloat edge = primary;
+        CFIndex edgeIndex = caps.Active() && isTrailingHit ? index - 1 : anchorIndex;
         CTLineEnumerateCaretOffsets(line, ^(double offset, CFIndex charIndex, bool leadingEdge, bool* stop) {
-            if (charIndex == anchorIndex && leadingEdge == (isTrailingHit == 0)) {
+            if (charIndex == edgeIndex && leadingEdge == (isTrailingHit == 0)) {
                 edge = offset;
                 *stop = true;
             }
@@ -772,7 +1408,7 @@ JaliumResult MetalTextFormat::HitTestTextPosition(const wchar_t* text,
         primary = edge;
     }
     CGFloat ascent=0,descent=0,leading=0;
-    CTLineGetTypographicBounds(line,&ascent,&descent,&leading);
+    capsLines.Metrics(line, &ascent, &descent, &leading);
     result->textPosition = textPosition;
     result->isTrailingHit = isTrailingHit != 0;
     result->isInside = 1;
@@ -798,14 +1434,20 @@ JaliumResult MetalTextFormat::HitTestTextRange(const wchar_t* text, uint32_t tex
 #ifdef __APPLE__
     if (!IsValid()) return JALIUM_ERROR_INVALID_STATE;
     if (!textLength) {
-        result->height = static_cast<float>(CTFontGetAscent(impl_->font) +
-            CTFontGetDescent(impl_->font) + CTFontGetLeading(impl_->font));
+        result->height = static_cast<float>(impl_->LineMetrics().ascent +
+            impl_->LineMetrics().descent + impl_->LineMetrics().leading);
         return JALIUM_OK;
     }
     auto release = [](const void* value) { ReleaseCF(value); };
-    std::unique_ptr<const void, decltype(release)> attributed(impl_->CreateAttributed(text, textLength), release);
+    AppleCapsMap caps;
+    std::unique_ptr<const void, decltype(release)> attributed(impl_->CreateAttributed(text, textLength, nullptr, &caps), release);
     if (!attributed) return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
     auto attr = static_cast<CFAttributedStringRef>(attributed.get());
+    if (caps.Active() && CFAttributedStringGetLength(attr) == 0) {
+        result->textPosition = textPosition; result->length = length;
+        result->height = static_cast<float>(impl_->LineMetrics().ascent + impl_->LineMetrics().descent + impl_->LineMetrics().leading);
+        return JALIUM_OK;
+    }
     std::unique_ptr<const void, decltype(release)> setter(CTFramesetterCreateWithAttributedString(attr), release);
     if (!setter) return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
     CGFloat width = maxWidth > 0 ? maxWidth : 1000000.0;
@@ -816,16 +1458,18 @@ JaliumResult MetalTextFormat::HitTestTextRange(const wchar_t* text, uint32_t tex
         static_cast<CTFramesetterRef>(setter.get()), CFRangeMake(0, 0), static_cast<CGPathRef>(path.get()), nullptr), release);
     if (!frame) return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
     auto ctFrame = static_cast<CTFrameRef>(frame.get());
-    CFArrayRef lines = CTFrameGetLines(ctFrame);
+    AppleCapsLines capsLines(ctFrame, attr, caps, width, height, impl_->wrapping, impl_->alignment, impl_->font,
+        impl_->lineSpacingMethod != 0 && impl_->lineSpacing > 0 ? impl_->lineSpacing : impl_->LineMetrics().ascent + impl_->LineMetrics().descent + impl_->LineMetrics().leading, true, impl_->LineMetrics());
+    CFArrayRef lines = capsLines.Lines();
     CFIndex count = CFArrayGetCount(lines);
     if (impl_->maxLines) count = std::min<CFIndex>(count, impl_->maxLines);
     CFStringRef string = CFAttributedStringGetString(attr);
-    CFIndex start = WideIndexToUtf16(text, textLength, textPosition);
-    CFIndex end = WideIndexToUtf16(text, textLength, textPosition + length);
+    CFIndex start = caps.ToPaint(WideIndexToUtf16(text, textLength, textPosition));
+    CFIndex end = caps.ToPaint(WideIndexToUtf16(text, textLength, textPosition + length), true);
     if (start < CFStringGetLength(string))
-        start = CFStringGetRangeOfComposedCharactersAtIndex(string, start).location;
+        start = caps.Cluster(string, start).location;
     if (length && end > 0) {
-        CFRange last = CFStringGetRangeOfComposedCharactersAtIndex(string, end - 1);
+        CFRange last = caps.Cluster(string, end - 1);
         end = last.location + last.length;
     } else end = start;
     for (CFIndex i = 0; i < count; ++i) {
@@ -836,9 +1480,9 @@ JaliumResult MetalTextFormat::HitTestTextRange(const wchar_t* text, uint32_t tex
             continue;
         end = std::min(end, rowEnd);
         CGPoint origin{};
-        CTFrameGetLineOrigins(ctFrame, CFRangeMake(i, 1), &origin);
+        capsLines.Origins(CFRangeMake(i, 1), &origin);
         CGFloat ascent = 0, descent = 0, leading = 0;
-        CTLineGetTypographicBounds(line, &ascent, &descent, &leading);
+        capsLines.Metrics(line, &ascent, &descent, &leading);
         __block double left = CTLineGetOffsetForStringIndex(line, start, nullptr);
         __block double right = left;
         __block bool found = false;
@@ -855,8 +1499,8 @@ JaliumResult MetalTextFormat::HitTestTextRange(const wchar_t* text, uint32_t tex
                 if (index == start && leadingEdge) { left = right = offset; *stop = true; }
             });
         }
-        result->textPosition = Utf16IndexToWide(text, textLength, start);
-        result->length = Utf16IndexToWide(text, textLength, end) - result->textPosition;
+        result->textPosition = Utf16IndexToWide(text, textLength, caps.ToSource(start));
+        result->length = Utf16IndexToWide(text, textLength, caps.ToSource(end)) - result->textPosition;
         result->x = static_cast<float>(origin.x + left);
         result->y = static_cast<float>(height - origin.y - ascent);
         result->width = static_cast<float>(right - left);
@@ -881,14 +1525,20 @@ JaliumResult MetalTextFormat::GetLineMetrics(const wchar_t* text, uint32_t textL
 #ifdef __APPLE__
     if (!IsValid()) return JALIUM_ERROR_INVALID_STATE;
     if (!textLength) {
-        result->height = static_cast<float>(CTFontGetAscent(impl_->font) +
-            CTFontGetDescent(impl_->font) + CTFontGetLeading(impl_->font));
+        result->height = static_cast<float>(impl_->LineMetrics().ascent +
+            impl_->LineMetrics().descent + impl_->LineMetrics().leading);
         return JALIUM_OK;
     }
     auto release = [](const void* value) { ReleaseCF(value); };
-    std::unique_ptr<const void, decltype(release)> attributed(impl_->CreateAttributed(text, textLength), release);
+    AppleCapsMap caps;
+    std::unique_ptr<const void, decltype(release)> attributed(impl_->CreateAttributed(text, textLength, nullptr, &caps), release);
     if (!attributed) return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
     auto attr = static_cast<CFAttributedStringRef>(attributed.get());
+    if (caps.Active() && CFAttributedStringGetLength(attr) == 0) {
+        result->length = textLength; result->rightCaretPosition = textLength; result->rightBackwardAffinity = 1;
+        result->height = static_cast<float>(impl_->LineMetrics().ascent + impl_->LineMetrics().descent + impl_->LineMetrics().leading);
+        return JALIUM_OK;
+    }
     std::unique_ptr<const void, decltype(release)> setter(CTFramesetterCreateWithAttributedString(attr), release);
     if (!setter) return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
     CGFloat width = maxWidth > 0 ? maxWidth : 1000000.0;
@@ -899,14 +1549,16 @@ JaliumResult MetalTextFormat::GetLineMetrics(const wchar_t* text, uint32_t textL
         static_cast<CTFramesetterRef>(setter.get()), CFRangeMake(0, 0), static_cast<CGPathRef>(path.get()), nullptr), release);
     if (!frame) return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
     auto ctFrame = static_cast<CTFrameRef>(frame.get());
-    CFArrayRef lines = CTFrameGetLines(ctFrame);
+    AppleCapsLines capsLines(ctFrame, attr, caps, width, height, impl_->wrapping, impl_->alignment, impl_->font,
+        impl_->lineSpacingMethod != 0 && impl_->lineSpacing > 0 ? impl_->lineSpacing : impl_->LineMetrics().ascent + impl_->LineMetrics().descent + impl_->LineMetrics().leading, true, impl_->LineMetrics());
+    CFArrayRef lines = capsLines.Lines();
     CFIndex count = CFArrayGetCount(lines);
     if (impl_->maxLines) count = std::min<CFIndex>(count, impl_->maxLines);
     CFStringRef string = CFAttributedStringGetString(attr);
     CFIndex textEnd = CFStringGetLength(string);
-    CFIndex insertion = WideIndexToUtf16(text, textLength, textPosition);
+    CFIndex insertion = caps.ToPaint(WideIndexToUtf16(text, textLength, textPosition));
     if (insertion < textEnd)
-        insertion = CFStringGetRangeOfComposedCharactersAtIndex(string, insertion).location;
+        insertion = caps.Cluster(string, insertion).location;
     auto isBreak = [](UniChar c) { return c == '\r' || c == '\n' || c == 0x2028 || c == 0x2029; };
     for (CFIndex i = 0; i < count; ++i) {
         auto line = static_cast<CTLineRef>(CFArrayGetValueAtIndex(lines, i));
@@ -921,18 +1573,20 @@ JaliumResult MetalTextFormat::GetLineMetrics(const wchar_t* text, uint32_t textL
         while (contentEnd > row.location && isBreak(CFStringGetCharacterAtIndex(string, contentEnd - 1)))
             --contentEnd;
         CGPoint origin{};
-        CTFrameGetLineOrigins(ctFrame, CFRangeMake(i, 1), &origin);
+        capsLines.Origins(CFRangeMake(i, 1), &origin);
         CGFloat ascent = 0, descent = 0, leading = 0;
-        CTLineGetTypographicBounds(line, &ascent, &descent, &leading);
+        capsLines.Metrics(line, &ascent, &descent, &leading);
         __block double left = CTLineGetOffsetForStringIndex(line, row.location, nullptr);
         __block double right = left;
         __block CFIndex leftIndex = row.location, rightIndex = row.location;
         __block bool leftBackward = false, rightBackward = false, found = false;
         // Enumerate the actual glyph edges: logical start/end are reversed in
         // RTL and may be interior visual carets in mixed-direction paragraphs.
+        const auto* capsMapping = &caps;
         CTLineEnumerateCaretOffsets(line, ^(double offset, CFIndex index, bool leadingEdge, bool*) {
             if (index < row.location || index >= contentEnd) return;
-            CFRange cluster = CFStringGetRangeOfComposedCharactersAtIndex(string, index);
+            CFRange cluster = capsMapping->Cluster(string, index);
+            if ((leadingEdge && index != cluster.location) || (!leadingEdge && index + 1 != cluster.location + cluster.length)) return;
             CFIndex caret = cluster.location + (leadingEdge ? 0 : cluster.length);
             if (!found || offset < left || (offset == left && leadingEdge)) {
                 left = offset; leftIndex = caret; leftBackward = !leadingEdge;
@@ -942,10 +1596,10 @@ JaliumResult MetalTextFormat::GetLineMetrics(const wchar_t* text, uint32_t textL
             }
             found = true;
         });
-        result->textPosition = Utf16IndexToWide(text, textLength, row.location);
-        result->length = Utf16IndexToWide(text, textLength, contentEnd) - result->textPosition;
-        result->leftCaretPosition = Utf16IndexToWide(text, textLength, leftIndex);
-        result->rightCaretPosition = Utf16IndexToWide(text, textLength, rightIndex);
+        result->textPosition = Utf16IndexToWide(text, textLength, caps.ToSource(row.location));
+        result->length = Utf16IndexToWide(text, textLength, caps.ToSource(contentEnd)) - result->textPosition;
+        result->leftCaretPosition = Utf16IndexToWide(text, textLength, caps.ToSource(leftIndex));
+        result->rightCaretPosition = Utf16IndexToWide(text, textLength, caps.ToSource(rightIndex));
         result->leftBackwardAffinity = leftBackward;
         result->rightBackwardAffinity = rightBackward;
         result->x = static_cast<float>(origin.x + left);
@@ -959,12 +1613,12 @@ JaliumResult MetalTextFormat::GetLineMetrics(const wchar_t* text, uint32_t textL
         (!impl_->maxLines || count < impl_->maxLines)) {
         auto last = static_cast<CTLineRef>(CFArrayGetValueAtIndex(lines, count - 1));
         CGPoint origin{};
-        CTFrameGetLineOrigins(ctFrame, CFRangeMake(count - 1, 1), &origin);
+        capsLines.Origins(CFRangeMake(count - 1, 1), &origin);
         CGFloat ascent = 0, descent = 0, leading = 0;
-        CTLineGetTypographicBounds(last, &ascent, &descent, &leading);
+        capsLines.Metrics(last, &ascent, &descent, &leading);
         result->textPosition = result->leftCaretPosition = result->rightCaretPosition = textLength;
-        result->height = static_cast<float>(CTFontGetAscent(impl_->font) +
-            CTFontGetDescent(impl_->font) + CTFontGetLeading(impl_->font));
+        result->height = static_cast<float>(impl_->LineMetrics().ascent +
+            impl_->LineMetrics().descent + impl_->LineMetrics().leading);
         result->y = static_cast<float>(height - origin.y + descent + leading);
         return JALIUM_OK;
     }
@@ -986,6 +1640,69 @@ TextParagraph* MetalTextFormat::CreateParagraph(const uint16_t* text, uint32_t l
 TextParagraph* MetalTextFormat::CreateParagraphWithWrapping(const uint16_t* text, uint32_t length,
     const JaliumTextSpan* spans, uint32_t spanCount, float width, float minLineHeight,
     int32_t alignment, int32_t direction, int32_t wrapping)
+{ return CreateParagraphCore(text, length, spans, spanCount, width, minLineHeight, alignment, direction, wrapping, false); }
+
+TextParagraph* MetalTextFormat::CreateVerticalParagraph(const uint16_t* text, uint32_t length,
+    const JaliumTextSpan* spans, uint32_t spanCount, float inlineSize, float minColumnWidth,
+    int32_t alignment, int32_t direction, int32_t wrapping)
+{ return CreateParagraphCore(text, length, spans, spanCount, inlineSize, minColumnWidth, alignment, direction, wrapping, false, true); }
+
+TextParagraph* MetalTextFormat::CreateAdvancedVerticalParagraph(const uint16_t* text, uint32_t length,
+    const JaliumTextSpan* spans, uint32_t spanCount, const JaliumTextAdvanceUnit* units, uint32_t unitCount,
+    float inlineSize, float minColumnWidth, int32_t direction, bool contextPaint)
+{
+    std::unique_ptr<TextParagraph> paragraph(CreateParagraphCore(text, length, spans, spanCount,
+        inlineSize, minColumnWidth, 0, direction, 1, contextPaint, true));
+    auto apple = dynamic_cast<MetalTextParagraph*>(paragraph.get());
+    return apple && apple->ApplyAdvances(units, unitCount) ? paragraph.release() : nullptr;
+}
+
+TextParagraph* MetalTextFormat::CreateUprightParagraph(const uint16_t* text, uint32_t length,
+    const JaliumTextSpan* spans, uint32_t spanCount, float inlineSize, float minColumnWidth,
+    int32_t alignment, int32_t direction, int32_t wrapping)
+{ return CreateParagraphCore(text, length, spans, spanCount, inlineSize, minColumnWidth, alignment, direction, wrapping, false, true, true); }
+
+TextParagraph* MetalTextFormat::CreateAdvancedUprightParagraph(const uint16_t* text, uint32_t length,
+    const JaliumTextSpan* spans, uint32_t spanCount, const JaliumTextAdvanceUnit* units, uint32_t unitCount,
+    float inlineSize, float minColumnWidth, int32_t direction, bool contextPaint)
+{
+    std::unique_ptr<TextParagraph> paragraph(CreateParagraphCore(text, length, spans, spanCount,
+        inlineSize, minColumnWidth, 0, direction, 1, contextPaint, true, true));
+    auto apple = dynamic_cast<MetalTextParagraph*>(paragraph.get());
+    return apple && apple->ApplyAdvances(units, unitCount) ? paragraph.release() : nullptr;
+}
+
+TextParagraph* MetalTextFormat::CreateParagraphCore(const uint16_t* text, uint32_t length,
+    const JaliumTextSpan* spans, uint32_t spanCount, float width, float minLineHeight,
+    int32_t alignment, int32_t direction, int32_t wrapping, bool contextPaint, bool verticalForms)
+{ return CreateParagraphCore(text, length, spans, spanCount, width, minLineHeight, alignment, direction, wrapping, contextPaint, verticalForms, false); }
+
+TextParagraph* MetalTextFormat::CreateCombinedParagraph(const uint16_t* text, uint32_t length,
+    const JaliumTextSpan* spans, uint32_t spanCount,
+    const JaliumTextCombineUnit* combined, uint32_t combinedCount,
+    const JaliumTextAdvanceUnit* advances, uint32_t advanceCount,
+    float inlineSize, float minColumnWidth, int32_t alignment, int32_t direction,
+    int32_t wrapping, int32_t orientation, bool contextPaint)
+{
+    std::unique_ptr<TextParagraph> paragraph(CreateParagraphCore(text, length, spans, spanCount,
+        inlineSize, minColumnWidth, alignment, direction, wrapping, contextPaint,
+        orientation != 2, orientation == 1, combined, combinedCount));
+    auto apple = dynamic_cast<MetalTextParagraph*>(paragraph.get());
+    return apple && (!advanceCount || apple->ApplyAdvances(advances, advanceCount)) ? paragraph.release() : nullptr;
+}
+
+TextParagraph* MetalTextFormat::CreateParagraphCore(const uint16_t* text, uint32_t length,
+    const JaliumTextSpan* spans, uint32_t spanCount, float width, float minLineHeight,
+    int32_t alignment, int32_t direction, int32_t wrapping, bool contextPaint, bool verticalForms, bool uprightForms)
+{
+    return CreateParagraphCore(text, length, spans, spanCount, width, minLineHeight,
+        alignment, direction, wrapping, contextPaint, verticalForms, uprightForms, nullptr, 0);
+}
+
+TextParagraph* MetalTextFormat::CreateParagraphCore(const uint16_t* text, uint32_t length,
+    const JaliumTextSpan* spans, uint32_t spanCount, float width, float minLineHeight,
+    int32_t alignment, int32_t direction, int32_t wrapping, bool contextPaint, bool verticalForms, bool uprightForms,
+    const JaliumTextCombineUnit* combined, uint32_t combinedCount)
 {
 #ifdef __APPLE__
     if (!IsValid()) return nullptr;
@@ -1000,15 +1717,49 @@ TextParagraph* MetalTextFormat::CreateParagraphWithWrapping(const uint16_t* text
         visibility.push_back(const_cast<void*>(static_cast<const void*>(format->impl_->invisibleCharacters)));
         canonical.push_back(format->impl_->CanonicalFaces());
     }
+    JaliumTextMetrics defaultMetrics{};GetFontMetrics(&defaultMetrics);
     auto paragraph = std::make_unique<MetalTextParagraph>(text, length,
-        const_cast<void*>(static_cast<const void*>(impl_->font)), fonts, spans, spanCount,
-        width, minLineHeight, alignment, direction, wrapping, visibility, canonical);
+        const_cast<void*>(static_cast<const void*>(impl_->MetricsFont())), fonts, spans, spanCount,
+        width, minLineHeight, alignment, direction, wrapping, visibility, canonical, contextPaint,
+        impl_->HasFaceDescriptors()?&defaultMetrics:nullptr, verticalForms, uprightForms, combined, combinedCount);
     return paragraph->IsValid() ? paragraph.release() : nullptr;
 #else
     (void)text; (void)length; (void)spans; (void)spanCount; (void)width; (void)minLineHeight;
-    (void)alignment; (void)direction; (void)wrapping;
+    (void)alignment; (void)direction; (void)wrapping; (void)contextPaint; (void)verticalForms; (void)uprightForms;
+    (void)combined; (void)combinedCount;
     return nullptr;
 #endif
+}
+
+TextParagraph* MetalTextFormat::CreateSpacedParagraph(const uint16_t* text, uint32_t length,
+    const JaliumTextSpan* spans, uint32_t spanCount,
+    const JaliumTextSpacingUnit* units, uint32_t unitCount,
+    float width, float minLineHeight, int32_t direction)
+{
+    std::unique_ptr<TextParagraph> paragraph(CreateParagraphWithWrapping(text, length, spans,
+        spanCount, width, minLineHeight, 0, direction, 1));
+    auto apple = dynamic_cast<MetalTextParagraph*>(paragraph.get());
+    return apple && apple->ApplySpacing(units, unitCount) ? paragraph.release() : nullptr;
+}
+
+TextParagraph* MetalTextFormat::CreateContextParagraph(const uint16_t* text, uint32_t length,
+    const JaliumTextSpan* spans, uint32_t spanCount, const JaliumTextSpacingUnit* units, uint32_t unitCount,
+    float width, float minLineHeight, int32_t direction)
+{
+    std::unique_ptr<TextParagraph> paragraph(CreateParagraphCore(text, length, spans,
+        spanCount, width, minLineHeight, 0, direction, 1, true));
+    auto apple = dynamic_cast<MetalTextParagraph*>(paragraph.get());
+    return apple && apple->ApplySpacing(units, unitCount) ? paragraph.release() : nullptr;
+}
+
+TextParagraph* MetalTextFormat::CreateAdvancedParagraph(const uint16_t* text, uint32_t length,
+    const JaliumTextSpan* spans, uint32_t spanCount, const JaliumTextAdvanceUnit* units, uint32_t unitCount,
+    float width, float minLineHeight, int32_t direction, bool contextPaint)
+{
+    std::unique_ptr<TextParagraph> paragraph(CreateParagraphCore(text, length, spans,
+        spanCount, width, minLineHeight, 0, direction, 1, contextPaint));
+    auto apple = dynamic_cast<MetalTextParagraph*>(paragraph.get());
+    return apple && apple->ApplyAdvances(units, unitCount) ? paragraph.release() : nullptr;
 }
 
 bool MetalTextFormat::Rasterize(const wchar_t* text, uint32_t textLength,
@@ -1038,7 +1789,10 @@ bool MetalTextFormat::Rasterize(const wchar_t* text, uint32_t textLength,
     // Color glyphs keep their palette and do not use the foreground color's
     // alpha. Apply brush opacity to the context for both color and outline runs.
     CGColorRef color = CGColorCreateGenericRGB(r, g, b, 1);
-    CFAttributedStringRef attributed = impl_->CreateAttributed(text, textLength, color);
+    AppleCapsMap caps;
+    CFAttributedStringRef attributed = impl_->CreateAttributed(text, textLength, color, &caps);
+    std::vector<uint32_t> mappedRanges;
+    if (caps.Active()) { mappedRanges = caps.PaintRanges(ranges, rangeCount); ranges = mappedRanges.data(); rangeCount = mappedRanges.size() / 2; }
     CTFramesetterRef setter = attributed
         ? CTFramesetterCreateWithAttributedString(attributed) : nullptr;
     // Editors round their line boxes to device-independent pixels. CoreText
@@ -1048,7 +1802,7 @@ bool MetalTextFormat::Rasterize(const wchar_t* text, uint32_t textLength,
     // frameHeight below keeps its baseline at the same drawing origin.
     const CGFloat naturalLineHeight = impl_->lineSpacingMethod != 0 && impl_->lineSpacing > 0
         ? impl_->lineSpacing
-        : CTFontGetAscent(impl_->font) + CTFontGetDescent(impl_->font) + CTFontGetLeading(impl_->font);
+        : impl_->LineMetrics().ascent + impl_->LineMetrics().descent + impl_->LineMetrics().leading;
     const CGFloat frameHeight = std::ceil(std::max<CGFloat>(height, naturalLineHeight));
     CGPathRef path = setter
         ? CGPathCreateWithRect(CGRectMake(0, 0, width, frameHeight), nullptr) : nullptr;
@@ -1066,13 +1820,14 @@ bool MetalTextFormat::Rasterize(const wchar_t* text, uint32_t textLength,
     // layout width for unconstrained lines, and allocating that transparent
     // tail for every run is both wasteful and especially bad after rotation.
     CGRect textBounds = CGRectNull;
-    CFArrayRef lines = CTFrameGetLines(frame);
+    AppleCapsLines capsLines(frame, attributed, caps, width, frameHeight, impl_->wrapping, impl_->alignment, impl_->font, naturalLineHeight, true, impl_->LineMetrics());
+    CFArrayRef lines = capsLines.Lines();
     CFIndex lineCount = lines ? CFArrayGetCount(lines) : 0;
     if (impl_->maxLines > 0)
         lineCount = std::min<CFIndex>(lineCount, impl_->maxLines);
     std::vector<CGPoint> lineOrigins(static_cast<size_t>(lineCount));
     if (lineCount > 0) {
-        CTFrameGetLineOrigins(frame, CFRangeMake(0, lineCount), lineOrigins.data());
+        capsLines.Origins(CFRangeMake(0, lineCount), lineOrigins.data());
     }
     for (CFIndex index = 0; index < lineCount; ++index) {
         auto line = static_cast<CTLineRef>(CFArrayGetValueAtIndex(lines, index));
@@ -1192,6 +1947,7 @@ bool MetalTextFormat::Rasterize(const wchar_t* text, uint32_t textLength,
     CGContextConcatCTM(context, textToBitmap);
     CGContextSetTextMatrix(context, CGAffineTransformIdentity);
     CGContextSetAlpha(context, std::clamp(a, 0.0f, 1.0f));
+    ConfigureFontPositioning(context, UsesFractionalFontPositioning(*this));
     for(CFIndex index=0;index<lineCount;++index){
         CTLineRef line=static_cast<CTLineRef>(const_cast<void*>(
             CFArrayGetValueAtIndex(lines,index)));
@@ -1241,46 +1997,47 @@ MetalBitmap::~MetalBitmap() = default;
 uint32_t MetalBitmap::GetWidth() const { return impl_->width; }
 uint32_t MetalBitmap::GetHeight() const { return impl_->height; }
 
-void* MetalBitmap::EnsureTexture(void* deviceHandle)
+void* MetalBitmap::EnsureTexture(void* deviceHandle, void* commandQueueHandle)
 {
 #ifdef __APPLE__
     std::scoped_lock lock(impl_->textureMutex);
     if (!impl_->texture) {
         id<MTLDevice> device = (__bridge id<MTLDevice>)deviceHandle;
-        if (!device || impl_->pixels.empty()) return nullptr;
+        id<MTLCommandQueue> queue = (__bridge id<MTLCommandQueue>)commandQueueHandle;
+        if (!device || !queue || impl_->pixels.empty()) return nullptr;
         MTLTextureDescriptor* descriptor = [MTLTextureDescriptor
             texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
             width:impl_->width height:impl_->height mipmapped:YES];
         descriptor.storageMode = MTLStorageModeShared;
         descriptor.usage = MTLTextureUsageShaderRead;
-        impl_->texture = [device newTextureWithDescriptor:descriptor];
-        if (impl_->texture) {
-            uint32_t levelWidth=impl_->width,levelHeight=impl_->height;
-            std::vector<uint8_t> level=impl_->pixels;
-            for(NSUInteger mip=0;mip<impl_->texture.mipmapLevelCount;++mip){
-                [impl_->texture replaceRegion:MTLRegionMake2D(0,0,levelWidth,levelHeight)
-                    mipmapLevel:mip withBytes:level.data() bytesPerRow:levelWidth*4];
-                if(levelWidth==1&&levelHeight==1)break;
-                uint32_t nextWidth=std::max(1u,levelWidth/2);
-                uint32_t nextHeight=std::max(1u,levelHeight/2);
-                std::vector<uint8_t> next(static_cast<size_t>(nextWidth)*nextHeight*4);
-                for(uint32_t y=0;y<nextHeight;++y)for(uint32_t x=0;x<nextWidth;++x){
-                    uint32_t sums[4]={};uint32_t samples=0;
-                    for(uint32_t oy=0;oy<2;++oy)for(uint32_t ox=0;ox<2;++ox){
-                        uint32_t sx=std::min(x*2+ox,levelWidth-1);
-                        uint32_t sy=std::min(y*2+oy,levelHeight-1);
-                        const uint8_t* pixel=level.data()+(static_cast<size_t>(sy)*levelWidth+sx)*4;
-                        for(int c=0;c<4;++c)sums[c]+=pixel[c];++samples;}
-                    uint8_t* output=next.data()+(static_cast<size_t>(y)*nextWidth+x)*4;
-                    for(int c=0;c<4;++c)output[c]=static_cast<uint8_t>((sums[c]+samples/2)/samples);
-                }
-                level=std::move(next);levelWidth=nextWidth;levelHeight=nextHeight;
-            }
+        id<MTLTexture> texture = [device newTextureWithDescriptor:descriptor];
+        if (!texture) return nullptr;
+        [texture replaceRegion:MTLRegionMake2D(0, 0, impl_->width, impl_->height)
+            mipmapLevel:0 withBytes:impl_->pixels.data() bytesPerRow:impl_->width * 4];
+
+        if (texture.mipmapLevelCount > 1) {
+            // Submit before publishing the texture. Every render target for this
+            // backend uses this same queue and commits its draw after EnsureTexture
+            // returns, so even another window sees completed mip levels before
+            // sampling. A separate buffer also avoids interrupting an open render
+            // encoder. No CPU mip loop, extra full-size copy, or synchronous GPU wait.
+            id<MTLCommandBuffer> upload = [queue commandBuffer];
+            id<MTLBlitCommandEncoder> blit = [upload blitCommandEncoder];
+            if (!blit) return nullptr;
+            upload.label = @"Jalium Bitmap Mipmaps";
+            [blit generateMipmapsForTexture:texture];
+            [blit endEncoding];
+            [upload commit];
         }
+        impl_->texture = texture;
+        // replaceRegion copies the base pixels synchronously; the command buffer
+        // retains the texture until mip generation finishes.
+        std::vector<uint8_t>().swap(impl_->pixels);
     }
     return (__bridge void*)impl_->texture;
 #else
     (void)deviceHandle;
+    (void)commandQueueHandle;
     return nullptr;
 #endif
 }
@@ -1719,7 +2476,23 @@ Bitmap* MetalBackend::CreateBitmapFromPixels(const uint8_t* pixels,
     for (uint32_t y = 0; y < height; ++y) {
         const uint8_t* source = pixels + static_cast<size_t>(y) * stride;
         uint8_t* destination = copy.data() + static_cast<size_t>(y) * width * 4;
-        for (uint32_t x = 0; x < width; ++x) {
+        uint32_t x = 0;
+#if defined(__aarch64__)
+        // Eight BGRA pixels at a time. Rounded division by 255 is exact for
+        // every 8-bit color/alpha pair, including transparent colored pixels.
+        // Keep the row stride and scalar tail independent of vector alignment.
+        const auto premultiply = [](uint8x8_t color, uint8x8_t alpha) {
+            const auto rounded = vaddq_u16(vmull_u8(color, alpha), vdupq_n_u16(128));
+            return vshrn_n_u16(vaddq_u16(rounded, vshrq_n_u16(rounded, 8)), 8);
+        };
+        for (; width - x >= 8; x += 8) {
+            auto pixels8 = vld4_u8(source + x * 4);
+            for (int channel = 0; channel < 3; ++channel)
+                pixels8.val[channel] = premultiply(pixels8.val[channel], pixels8.val[3]);
+            vst4_u8(destination + x * 4, pixels8);
+        }
+#endif
+        for (; x < width; ++x) {
             const uint32_t alpha = source[x * 4 + 3];
             for (uint32_t channel = 0; channel < 3; ++channel)
                 destination[x * 4 + channel] = static_cast<uint8_t>(

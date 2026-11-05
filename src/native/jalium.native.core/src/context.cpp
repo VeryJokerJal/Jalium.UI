@@ -323,6 +323,22 @@ JALIUM_API JaliumContext* jalium_context_create(JaliumBackend backend) {
     }
 }
 
+JALIUM_API JaliumContext* jalium_context_create_rasterizer(void)
+{
+    try {
+        auto& registry = jalium::GetBackendRegistry();
+        if (!registry.IsAvailable(JALIUM_BACKEND_SOFTWARE))
+            (void)TryLoadBackendLibraryOnce(JALIUM_BACKEND_SOFTWARE);
+        auto factory = registry.GetFactory(JALIUM_BACKEND_SOFTWARE);
+        if (!factory) return nullptr;
+        auto backend = std::unique_ptr<jalium::IRenderBackend>(
+            reinterpret_cast<jalium::IRenderBackend*>(factory()));
+        if (!backend || backend->GetType() != JALIUM_BACKEND_SOFTWARE) return nullptr;
+        return reinterpret_cast<JaliumContext*>(
+            new jalium::Context(JALIUM_BACKEND_SOFTWARE, std::move(backend)));
+    } catch (...) { return nullptr; }
+}
+
 JALIUM_API JaliumResult jalium_context_set_gpu_preference(
     JaliumContext* ctx,
     JaliumGpuPreference gpuPreference)

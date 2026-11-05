@@ -1561,6 +1561,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         var target = Mouse.GetMouseTarget(hitElement) ?? (UIElement)this;
 
         target = _wheelGestureRouting.ResolveTarget(target, this, phase, momentumPhase);
+        if (target == null) return;
 
         MouseWheelEventArgs tunnelArgs = new(
             PreviewMouseWheelEvent, position, horizontalDelta, verticalDelta ?? delta, hasPreciseScrollingDeltas,

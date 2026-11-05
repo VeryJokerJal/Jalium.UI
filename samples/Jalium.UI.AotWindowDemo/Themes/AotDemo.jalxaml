@@ -1,0 +1,33 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:local="clr-namespace:Jalium.UI.AotWindowDemo"
+                    x:Class="Jalium.UI.AotWindowDemo.Themes.AotDemoTheme">
+    <Style x:Key="AotDemo.Window" TargetType="Window">
+        <Setter Property="Background" Value="#1E1E2E" />
+    </Style>
+    <Style TargetType="local:AotCounterSurface">
+        <Setter Property="Background" Value="#1E1E2E" />
+        <Setter Property="Foreground" Value="White" />
+        <Setter Property="Padding" Value="32" />
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="local:AotCounterSurface">
+            <Border Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup x:Name="CommonStates">
+                        <VisualState x:Name="Normal" />
+                        <VisualState x:Name="Disabled"><VisualState.Setters><Setter Property="Opacity" Value="0.5" /></VisualState.Setters></VisualState>
+                    </VisualStateGroup>
+                    <VisualStateGroup x:Name="CountStates"><VisualState x:Name="Idle" /><VisualState x:Name="Active" /></VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto" CanContentScroll="False">
+                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <TextBlock Text="{TemplateBinding Title}" FontSize="36" Foreground="{TemplateBinding Foreground}" TextAlignment="Center" TextWrapping="Wrap" Margin="0,0,0,8" Focusable="False" />
+                        <TextBlock Text="{TemplateBinding Description}" FontSize="14" Foreground="#A0A0B4" TextAlignment="Center" TextWrapping="Wrap" Margin="0,0,0,24" Focusable="False" />
+                        <TextBlock Text="{TemplateBinding Hint}" FontSize="12" Foreground="#A6ADC8" TextAlignment="Center" TextWrapping="Wrap" Margin="0,0,0,16" Focusable="False" />
+                        <TextBlock x:Name="PART_StatusText" Text="{TemplateBinding StatusText}" FontSize="14" Foreground="#B4DCFF" TextAlignment="Center" TextWrapping="Wrap" Margin="0,0,0,16" Focusable="False" />
+                        <Button x:Name="PART_IncrementButton" Content="{TemplateBinding ButtonText}" Background="#585B70" BorderBrush="#6C7086" Foreground="White" BorderThickness="1" CornerRadius="6" MinWidth="220" MinHeight="40" HorizontalAlignment="Center" Padding="16,8" />
+                    </StackPanel>
+                </ScrollViewer>
+            </Border>
+        </ControlTemplate></Setter.Value></Setter>
+    </Style>
+</ResourceDictionary>

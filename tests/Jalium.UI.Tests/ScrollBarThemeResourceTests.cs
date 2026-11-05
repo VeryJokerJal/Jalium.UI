@@ -74,9 +74,9 @@ public class ScrollBarThemeResourceTests
             host.Measure(new Size(40, 220));
             host.Arrange(new Rect(0, 0, 40, 220));
 
-            var lineUpButton = Assert.IsType<RepeatButton>(scrollBar.GetVisualChild(0));
-            var track = Assert.IsType<Track>(scrollBar.GetVisualChild(1));
-            var lineDownButton = Assert.IsType<RepeatButton>(scrollBar.GetVisualChild(2));
+            var lineUpButton = Assert.IsType<RepeatButton>(scrollBar.FindName("PART_LineDecreaseButton"));
+            var track = Assert.IsType<Track>(scrollBar.FindName("PART_Track"));
+            var lineDownButton = Assert.IsType<RepeatButton>(scrollBar.FindName("PART_LineIncreaseButton"));
             var thumb = Assert.IsType<Thumb>(track.Thumb);
 
             Assert.False(scrollBar.HasLocalValue(Control.BackgroundProperty));

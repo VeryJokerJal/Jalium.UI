@@ -334,13 +334,23 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
     /// </remarks>
     public void RemoveAll()
     {
-        ClearPreservedPoolContent();
+        var retired = _realizedItems.Values.ToArray();
+        // Release the old generation before invoking user container callbacks.
+        // Reentrant collection changes then belong to the new generation.
         _realizedItems.Clear();
         _containerToIndex.Clear();
         _recyclePool.Clear();
         _sortedIndices.Clear();
         _sortedIndexCacheDirty = false;
         Status = GeneratorStatus.NotStarted;
+        ClearPreservedPoolContent();
+        foreach (var map in retired)
+        {
+            if (map.IsOwnContainer) continue;
+            (map.Container as UIElement)?.StopAnimationsForRecycleRecursive();
+            if (map.Container is FrameworkElement element)
+                _host.ClearContainerForItemInternal(element, map.Item);
+        }
     }
 
     /// <inheritdoc />
@@ -730,6 +740,10 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
                 }
 
                 _recyclePool.Push(map.Container);
+            }
+            else if (map.Container is FrameworkElement discardedElement)
+            {
+                _host.ClearContainerForItemInternal(discardedElement, map.Item);
             }
         }
 

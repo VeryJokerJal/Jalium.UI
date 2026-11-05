@@ -18,7 +18,7 @@ public partial class Window
 
         if (active)
         {
-            RestoreMacOSKeyboardFocus();
+            RestorePlatformKeyboardFocus();
             if (!IsCurrent()) return;
             CssMediaQuery.RefreshPointingDevices();
             if (!IsCurrent()) return;

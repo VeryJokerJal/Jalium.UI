@@ -31,7 +31,7 @@ public partial class Window
                 if (!IsCurrent()) return;
                 SetIsActive(true);
                 if (!IsCurrent()) return;
-                RestoreMacOSKeyboardFocus();
+                RestorePlatformKeyboardFocus();
                 if (!IsCurrent()) return;
                 if (!owner.IsActive) owner.HandleMacOSActivationChanged(active: true);
                 else Application.Current?.SetPlatformActivationState(true);

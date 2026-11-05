@@ -5,11 +5,17 @@
     <!-- ============================================== -->
     <!-- HexEditor Style                                 -->
     <!-- ============================================== -->
-    <!-- A hex editor control for binary data viewing/editing.
-         Uses direct rendering (OnRender) for hex grid drawing. -->
+    <!-- The binary text primitive preserves the editor engine inside a themed viewport. -->
     <Style TargetType="HexEditor">
         <Setter Property="Background" Value="{ThemeResource LayerFillColorDefaultBrush}" />
         <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
+        <Setter Property="OffsetForeground" Value="{ThemeResource HexEditorOffsetForeground}" />
+        <Setter Property="HexForeground" Value="{ThemeResource HexEditorHexForeground}" />
+        <Setter Property="AsciiForeground" Value="{ThemeResource HexEditorAsciiForeground}" />
+        <Setter Property="ModifiedByteBrush" Value="{ThemeResource HexEditorModifiedByteBrush}" />
+        <Setter Property="SelectionBrush" Value="{ThemeResource HexEditorSelectionBrush}" />
+        <Setter Property="GutterBackground" Value="{ThemeResource HexEditorGutterBackground}" />
+        <Setter Property="ColumnSeparatorBrush" Value="{ThemeResource HexEditorColumnSeparatorBrush}" />
         <Setter Property="BorderBrush" Value="{ThemeResource SurfaceStrokeColorDefaultBrush}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="CornerRadius" Value="12" />
@@ -27,7 +33,21 @@
                         BorderThickness="{TemplateBinding BorderThickness}"
                         CornerRadius="{TemplateBinding CornerRadius}"
                         Padding="{TemplateBinding Padding}"
-                        ClipToBounds="True" />
+                        ClipToBounds="True">
+                    <VisualStateManager.VisualStateGroups>
+                        <VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Normal" /><VisualState x:Name="Disabled" /></VisualStateGroup>
+                        <VisualStateGroup x:Name="FocusStates"><VisualState x:Name="Focused" /><VisualState x:Name="Unfocused" /></VisualStateGroup>
+                        <VisualStateGroup x:Name="EditingStates"><VisualState x:Name="Editable" /><VisualState x:Name="ReadOnly" /></VisualStateGroup>
+                        <VisualStateGroup x:Name="DataStates"><VisualState x:Name="Empty" /><VisualState x:Name="HasData" /></VisualStateGroup>
+                    </VisualStateManager.VisualStateGroups>
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <HexEditorTextView x:Name="PART_TextView" IsHitTestVisible="False" />
+                        <ScrollBar x:Name="PART_VerticalScrollBar" Grid.Column="1" Width="14" Orientation="Vertical"
+                                   Minimum="0" SmallChange="1" LargeChange="10" Focusable="False"
+                                   IsTabStop="False" IsThumbSlim="True" Cursor="Arrow" />
+                    </Grid>
+                </Border>
                 <ControlTemplate.Triggers>
                     <Trigger Property="IsMouseOver" Value="True">
                         <Setter TargetName="RootBorder" Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />

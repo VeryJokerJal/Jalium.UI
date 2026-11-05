@@ -78,6 +78,43 @@ public interface IOpacityDrawingContext
     void PopOpacity();
 }
 
+/// <summary>Groups a subtree before applying a raster alpha mask to its completed image.</summary>
+public interface IAlphaMaskDrawingContext
+{
+    /// <summary>Whether grouped alpha masks can be rendered by this context.</summary>
+    bool SupportsAlphaMasks { get; }
+
+    /// <summary>Raster scale needed for a mask's local coordinate space.</summary>
+    double AlphaMaskRasterScale => 1;
+
+    /// <summary>Additional local transform scale when recording without a live target.</summary>
+    double AlphaMaskTransformScale => 1;
+
+    /// <summary>Begins a group in absolute drawing coordinates, before the active transform.</summary>
+    void BeginAlphaMaskCapture(Rect bounds);
+
+    /// <summary>Closes the group and restores its parent target, clipping and opacity.</summary>
+    void EndAlphaMaskCapture();
+
+    /// <summary>
+    /// Composites the most recently completed group through a borrowed, tightly packed A8 mask.
+    /// Both rectangles use the same drawing coordinates as BeginAlphaMaskCapture.
+    /// </summary>
+    void ApplyAlphaMask(byte[] coverage, int width, int height, Rect maskBounds, Rect captureBounds);
+}
+
+/// <summary>Captures and composites isolated color blending groups.</summary>
+public interface IBlendDrawingContext
+{
+    bool SupportsBlendModes { get; }
+    /// <summary>Starts a capture using absolute coordinates before the current transform.</summary>
+    void BeginBlendCapture(Rect bounds);
+    /// <summary>Closes the capture, restoring the parent target without painting it.</summary>
+    void EndBlendCapture();
+    /// <summary>Blends the completed capture with the restored parent target.</summary>
+    void CompositeBlendCapture(CssBlendMode mode, Rect bounds);
+}
+
 /// <summary>
 /// Interface for drawing contexts that support push/pop transforms.
 /// </summary>
@@ -109,9 +146,10 @@ public interface ITransformDrawingContext
 /// The live render-target context implements this; recording / probing contexts
 /// (the retained-mode recorder, the whole-frame recorder) do NOT, so a caller that
 /// only sees a recorder transparently falls back to full re-emission. A layer is a
-/// content snapshot at identity transform/opacity: it is rebuilt only when the
-/// subtree's CONTENT changes (render-dirty / size / DPI), never when the animated
-/// transform/opacity changes (those are applied at composite time).
+/// content snapshot at full opacity. Translation is included in its raster
+/// origin so direct and cached text use the same physical pixel phase. Content,
+/// size, DPI and raster-phase changes rebuild it; integer physical translations
+/// and opacity changes can reuse it at composite time.
 /// </remarks>
 public interface ILayerCompositingDrawingContext
 {
@@ -122,16 +160,29 @@ public interface ILayerCompositingDrawingContext
     /// </summary>
     bool SupportsRetainedLayers { get; }
 
+    /// <summary>The current target's physical pixels per drawing unit.</summary>
+    DpiScale RetainedLayerRasterScale => new(1, 1);
+
     /// <summary>
     /// Opens a capture scope that redirects subsequent draws into a persistent layer
     /// texture covering <paramref name="worldBounds"/> (in current offset/screen
     /// space). Reuses/resizes <paramref name="existingLayer"/> when non-zero. The
-    /// caller renders the subtree's CONTENT (no animated transform/opacity) between
+    /// caller renders the subtree's CONTENT at its translated raster origin,
+    /// without pushing animated opacity, between
     /// this call and <see cref="EndLayerCapture"/>. Returns the layer handle, or
     /// <c>0</c> if a layer could not be realized (caller must fall back to direct
     /// rendering and must not call <see cref="EndLayerCapture"/>).
     /// </summary>
     nint BeginLayerCapture(nint existingLayer, Rect worldBounds);
+
+    /// <summary>
+    /// Opens a capture with the element's transform applied to rasterization.
+    /// Contexts which support this overload balance that transform in
+    /// <see cref="EndLayerCapture"/>; other contexts retain their existing
+    /// untransformed capture behavior.
+    /// </summary>
+    nint BeginLayerCapture(nint existingLayer, Rect worldBounds, Transform? transform,
+        double originX, double originY) => BeginLayerCapture(existingLayer, worldBounds);
 
     /// <summary>
     /// Closes the capture scope opened by <see cref="BeginLayerCapture"/> and

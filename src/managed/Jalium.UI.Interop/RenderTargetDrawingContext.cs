@@ -14,7 +14,7 @@ namespace Jalium.UI.Interop;
 /// <summary>
 /// A DrawingContext implementation that renders to a RenderTarget.
 /// </summary>
-public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetDrawingContext, IClipBoundsDrawingContext, IOpacityDrawingContext, IEffectDrawingContext, ITransformDrawingContext, ICacheableDrawingContext, ILayerCompositingDrawingContext
+public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetDrawingContext, IClipBoundsDrawingContext, IOpacityDrawingContext, IEffectDrawingContext, ITransformDrawingContext, ICacheableDrawingContext, ILayerCompositingDrawingContext, IAlphaMaskDrawingContext, IBlendDrawingContext
 {
     private static readonly ConditionalWeakTable<PathGeometry, FrozenPathGeometryInfo>
         s_frozenPathGeometryInfo = new();
@@ -101,8 +101,15 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     private int _opacityDepth;
     // While capturing a layer, ShouldRenderChild must cull against the LAYER bounds
     // (so the whole subtree is captured), not the window dirty-region clip. When
-    // set, CurrentClipBounds returns this verbatim.
+    // set, CurrentClipBounds maps it back through any live child transform.
     private Rect? _layerCaptureClipBounds;
+    // Native D3D12 captures rebase screen coordinates to a texture-local origin.
+    // Keep all capture kinds in one stack: a transition can contain an effect
+    // scope, but native only redirects the outermost capture.
+    private readonly Stack<Rect> _offscreenCaptureBounds = new();
+    private readonly Stack<(int Slot, bool Opened)> _transitionCaptureScopes = new();
+    private readonly bool[] _suppressedTransitionSlots = new bool[2];
+    private bool _layerCaptureTransformPushed;
     // Depth of open effect captures (BeginEffectCapture..EndEffectCapture).
     // While > 0, CurrentClipBounds returns the innermost entry of
     // _effectCaptureCullOverrideStack instead of the window dirty-region /
@@ -171,8 +178,8 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     /// A relative gradient's native coordinates depend on the destination
     /// bounds. Keying only by managed brush identity made a shared gradient
     /// thrash between every differently-positioned control on every frame.
-    /// Keep reference identity semantics while retaining one native resource
-    /// per distinct mapping rectangle.
+    /// Solid brushes share native resources by RGB and effective alpha. Other
+    /// brushes retain reference identity and their mapping rectangle.
     /// </summary>
     private readonly struct BrushCacheKey : IEquatable<BrushCacheKey>
     {
@@ -182,7 +189,14 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             BoundsKey = boundsKey;
         }
 
-        public Brush Brush { get; }
+        public BrushCacheKey(Color color, float alpha)
+        {
+            Brush = null;
+            uint rgb = ((uint)color.R << 16) | ((uint)color.G << 8) | color.B;
+            BoundsKey = ((long)rgb << 32) | (uint)BitConverter.SingleToInt32Bits(alpha);
+        }
+
+        public Brush? Brush { get; }
         public long BoundsKey { get; }
 
         public bool Equals(BrushCacheKey other) =>
@@ -192,7 +206,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             obj is BrushCacheKey other && Equals(other);
 
         public override int GetHashCode() =>
-            HashCode.Combine(RuntimeHelpers.GetHashCode(Brush), BoundsKey);
+            HashCode.Combine(Brush is null ? 0 : RuntimeHelpers.GetHashCode(Brush), BoundsKey);
     }
 
     private readonly record struct TextFormatCacheKey(
@@ -203,7 +217,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         int TextRenderingMode,
         int TextFormattingMode,
         int TextHintingMode,
-        bool SubpixelPositioning, bool NoWrap, TextAlignment Alignment, long FontEpoch);
+        bool SubpixelPositioning, bool NoWrap, TextAlignment Alignment, int Direction, long FontEpoch);
 
     private sealed class BitmapCacheEntry
     {
@@ -302,6 +316,8 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         public BitmapImage? RasterizedBitmap;
         public int PixelWidth;
         public int PixelHeight;
+        public Size? SvgViewportSize;
+        public Drawing? SourceDrawing;
 
         /// <summary>
         /// The inner <see cref="ImageSource"/>s the rasterization read pixels from, each with the
@@ -413,7 +429,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     {
         if (_renderTarget.Backend == RenderBackend.Metal && strokePen == null &&
             TryDrawMetalImageBrushFill(brush, geometry)) return;
-        if (brush.CssGradientLayout is { } layout &&
+        if (brush.CssImageLayout is { } layout &&
             geometry.Bounds.Width > 0 && geometry.Bounds.Height > 0)
         {
             if (layout.Resolve(geometry.Bounds.Width, geometry.Bounds.Height) is not ImageBrush resolved) return;
@@ -470,7 +486,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         if (_renderTarget.Backend == RenderBackend.Metal && geometry is PathGeometry metalPath)
         {
             if (!TryCreateNativeDash(pen, out var dash, out var phase)) return true;
-            var commands = BuildMetalStrokeCommands(pen, metalPath);
+            var commands = BuildCompoundStrokeCommands(pen, metalPath);
             if (commands.Count == 0) return true;
             if (_renderTarget.TryPushStrokePathClip(CopyPathCommands(commands), commands.Count, pen, dash, phase, _pathEdgeMode))
             {
@@ -606,8 +622,10 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     private long MaskRasterBytes() => _imageMaskSources.Values.Sum(source =>
         _vectorDrawingCache.TryGetValue(source.Image, out var raster) ? (long)raster.PixelWidth * raster.PixelHeight * 4 : 0);
 
-    private static bool TryResolveVectorImageSource(ImageSource source, out Drawing? drawing, out Rect viewport)
+    private static bool TryResolveVectorImageSource(ImageSource source, out Drawing? drawing, out Rect viewport, Size? concreteSize = null)
     {
+        if (source is SvgImage { UsesCssViewport: true } cssSvg && concreteSize is { } size)
+            source = cssSvg.ImageForViewport(size);
         switch (source)
         {
             case SvgImage { Drawing: { } svgDrawing } svg:
@@ -628,13 +646,15 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     }
 
     private NativeBitmap? GetOrCreateVectorNativeBitmap(
-        ImageSource source, Drawing drawing, Rect viewport, int targetWidth, int targetHeight)
+        ImageSource source, Drawing drawing, Rect viewport, int targetWidth, int targetHeight, Size? svgViewportSize = null)
     {
         targetWidth = Math.Clamp(targetWidth, 1, 4096);
         targetHeight = Math.Clamp(targetHeight, 1, 4096);
         if (_vectorDrawingCache.TryGetValue(source, out var cached) &&
             cached.RasterizedBitmap is not null &&
             cached.PixelWidth == targetWidth && cached.PixelHeight == targetHeight &&
+            cached.SvgViewportSize == svgViewportSize &&
+            ReferenceEquals(cached.SourceDrawing, drawing) &&
             cached.SourceGeneration == source.ContentGeneration &&
             cached.MatchesTouchedSourceGenerations())
         {
@@ -646,7 +666,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         var sourceGeneration = source.ContentGeneration;
         var touchedSources = new HashSet<ImageSource>();
         var pixels = SoftwareVectorRasterizer.Rasterize(
-            drawing, targetWidth, targetHeight, viewport, touchedSources);
+            drawing, targetWidth, targetHeight, viewport, touchedSources, svgViewportSize);
         if (pixels is null) return null;
 
         var rasterized = BitmapImage.FromPixels(pixels, targetWidth, targetHeight, targetWidth * 4);
@@ -663,6 +683,8 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             RasterizedBitmap = rasterized,
             PixelWidth = targetWidth,
             PixelHeight = targetHeight,
+            SvgViewportSize = svgViewportSize,
+            SourceDrawing = drawing,
             SourceGeneration = sourceGeneration,
             TouchedSources = dependencies,
         };
@@ -735,7 +757,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             // bounds so the whole subtree is captured (the window dirty-region clip
             // would wrongly drop in-layer content outside the current dirty rect).
             if (_layerCaptureClipBounds.HasValue)
-                return _layerCaptureClipBounds;
+                return MapSurfaceClipToDrawing(_layerCaptureClipBounds.Value);
 
             // While capturing an element for an effect (BeginEffectCapture..
             // EndEffectCapture), cull against the CAPTURE RECT instead of the
@@ -763,43 +785,37 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                 if (_effectCaptureCullOverrideStack.Count == 0)
                     return null;
 
-                var capture = _effectCaptureCullOverrideStack.Peek();
-                if (_nativeTransformDepth <= 0)
-                    return capture;
-
-                var cm = new Jalium.UI.Media.Matrix(
-                    _currentNativeMatrix[0], _currentNativeMatrix[1],
-                    _currentNativeMatrix[2], _currentNativeMatrix[3],
-                    _currentNativeMatrix[4], _currentNativeMatrix[5]);
-                if (!cm.TryInvert(out var captureInv))
-                    return null; // non-invertible → no cull, never under-cull
-
-                return TransformRectAabb(capture,
-                    captureInv.M11, captureInv.M12, captureInv.M21, captureInv.M22,
-                    captureInv.OffsetX, captureInv.OffsetY);
+                return MapSurfaceClipToDrawing(_effectCaptureCullOverrideStack.Peek());
             }
+
+            if (_offscreenCaptureBounds.Count > 0)
+                return MapSurfaceClipToDrawing(_offscreenCaptureBounds.Peek());
 
             if (_clipBoundsStack.Count == 0)
                 return null;
 
             var top = _clipBoundsStack.Peek();
 
-            // Depth 0: the native matrix is identity, surface space == screen space,
-            // so the stored value is already in the comparison space — return as-is
-            // (bit-for-bit identical to the historical fast path).
-            if (_nativeTransformDepth <= 0 || !top.HasValue)
+            if (!top.HasValue)
                 return top;
-
-            var m = new Jalium.UI.Media.Matrix(
-                _currentNativeMatrix[0], _currentNativeMatrix[1],
-                _currentNativeMatrix[2], _currentNativeMatrix[3],
-                _currentNativeMatrix[4], _currentNativeMatrix[5]);
-            if (!m.TryInvert(out var inv))
-                return null; // non-invertible (e.g. zero scale) → no cull, never under-cull
-
-            return TransformRectAabb(top.Value,
-                inv.M11, inv.M12, inv.M21, inv.M22, inv.OffsetX, inv.OffsetY);
+            return MapSurfaceClipToDrawing(top.Value);
         }
+    }
+
+    private Rect? MapSurfaceClipToDrawing(Rect surfaceClip)
+    {
+        if (_nativeTransformDepth <= 0)
+            return surfaceClip;
+        var matrix = new Matrix(
+            _currentNativeMatrix[0], _currentNativeMatrix[1],
+            _currentNativeMatrix[2], _currentNativeMatrix[3],
+            _currentNativeMatrix[4], _currentNativeMatrix[5]);
+        // This is only a culling hint. Singular transforms must disable it
+        // rather than discard content using bounds from a different space.
+        if (!matrix.TryInvert(out var inverse))
+            return null;
+        return TransformRectAabb(surfaceClip,
+            inverse.M11, inverse.M12, inverse.M21, inverse.M22, inverse.OffsetX, inverse.OffsetY);
     }
 
     /// <summary>
@@ -914,6 +930,10 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     // ── ILayerCompositingDrawingContext (retained GPU layer fast path) ──
 
     /// <inheritdoc />
+    public DpiScale RetainedLayerRasterScale => new(
+        _renderTarget?.DpiScaleX ?? 1, _renderTarget?.DpiScaleY ?? 1);
+
+    /// <inheritdoc />
     public bool SupportsRetainedLayers
     {
         get
@@ -929,12 +949,46 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
 
     /// <inheritdoc />
     public nint BeginLayerCapture(nint existingLayer, Rect worldBounds)
+        => BeginLayerCaptureCore(existingLayer, worldBounds, 0);
+
+    /// <inheritdoc />
+    public nint BeginLayerCapture(nint existingLayer, Rect worldBounds, Transform? transform,
+        double originX, double originY)
     {
-        if (_closed || _inLayerCapture) return 0;
+        if (_renderTarget?.Backend is not (RenderBackend.Metal or RenderBackend.Software))
+            return BeginLayerCapture(existingLayer, worldBounds);
+        if (_closed || _inLayerCapture || _nativeTransformDepth > 0 || _opacityDepth > 0)
+            return 0;
+        var before = Offset;
+        bool pushed = transform is not null;
+        if (pushed) ((ITransformDrawingContext)this).PushTransform(transform!, originX, originY);
+        nint layer;
+        try
+        {
+            var capture = new Rect(worldBounds.X + Offset.X - before.X,
+                worldBounds.Y + Offset.Y - before.Y, worldBounds.Width, worldBounds.Height);
+            layer = BeginLayerCaptureCore(existingLayer, capture, _nativeTransformDepth);
+        }
+        catch
+        {
+            if (pushed) ((ITransformDrawingContext)this).PopTransform();
+            throw;
+        }
+        if (layer == 0)
+        {
+            if (pushed) ((ITransformDrawingContext)this).PopTransform();
+        }
+        else _layerCaptureTransformPushed = pushed;
+        return layer;
+    }
+
+    private nint BeginLayerCaptureCore(nint existingLayer, Rect worldBounds, int ownedTransformDepth)
+    {
+        if (_closed || _inLayerCapture || _offscreenCaptureBounds.Count > 0) return 0;
         if (!SupportsRetainedLayers) return 0;
         // An ancestor non-translate transform or opacity would bake into the
         // captured content (the composite re-applies them) — fall back instead.
-        if (_nativeTransformDepth > 0 || _opacityDepth > 0) return 0;
+        if (_nativeTransformDepth != ownedTransformDepth || _opacityDepth > 0) return 0;
         if (worldBounds.Width <= 0 || worldBounds.Height <= 0) return 0;
         if (_renderTarget == null || _renderTarget.Handle == nint.Zero) return 0;
 
@@ -952,6 +1006,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             ? ComputeScreenEffectCaptureRect(worldBounds, Matrix.Identity,
                 _renderTarget.DpiScaleX, _renderTarget.DpiScaleX)
             : worldBounds;
+        _offscreenCaptureBounds.Push(_layerCaptureClipBounds.Value);
         return layer;
     }
 
@@ -963,6 +1018,12 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             NativeMethods.RenderTargetRealizeLayerEnd(_renderTarget.Handle, layer);
         _inLayerCapture = false;
         _layerCaptureClipBounds = null;
+        _offscreenCaptureBounds.Pop();
+        if (_layerCaptureTransformPushed)
+        {
+            _layerCaptureTransformPushed = false;
+            ((ITransformDrawingContext)this).PopTransform();
+        }
     }
 
     /// <inheritdoc />
@@ -1055,7 +1116,12 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         _effectCaptureCullOverrideStack.Clear();
         _effectCaptureFrameStack.Clear();
         _lastEndedEffectCapture = default;
-        _suppressedEffectCaptureDepth = 0;
+        _inLayerCapture = false;
+        _layerCaptureClipBounds = null;
+        _offscreenCaptureBounds.Clear();
+        _transitionCaptureScopes.Clear();
+        Array.Clear(_suppressedTransitionSlots);
+        _effectCaptureSuppressions.Clear();
         if (_renderTarget == null || _renderTarget.Handle == nint.Zero) return;
         while (Visual.TryDequeuePendingLayerDestroy(out nint h))
         {
@@ -1096,7 +1162,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     // even when Visual itself observes the policy above. Track those suppressed
     // scopes so their content stays on the main target and the replay remains
     // balanced without entering the native capture pipeline.
-    private int _suppressedEffectCaptureDepth;
+    private readonly Stack<bool> _effectCaptureSuppressions = new();
 
     /// <summary>
     /// Begins batching ellipse draw calls. While batching is active, DrawEllipse calls
@@ -1465,9 +1531,14 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         if (_closed || pen?.Brush == null ||
             !double.IsFinite(pen.Thickness) || pen.Thickness <= 0) return;
 
-        if (TryDrawImageBrushStroke(pen, new LineGeometry(point0, point1))) return;
+        if (pen.Brush is ImageBrush && TryDrawImageBrushStroke(pen, new LineGeometry(point0, point1))) return;
 
-        var brush = GetNativeBrush(pen.Brush);
+        var lineBounds = new Rect(Math.Min(point0.X, point1.X), Math.Min(point0.Y, point1.Y),
+            Math.Abs(point1.X - point0.X), Math.Abs(point1.Y - point0.Y));
+        if (pen.Brush is not GradientBrush svgGradient || !GradientPaintCoordinates.UsesUnitBox(svgGradient))
+            lineBounds.Inflate(pen.Thickness / 2, pen.Thickness / 2);
+        var brush = GetNativeStrokeBrush(pen, (float)(lineBounds.X + Offset.X), (float)(lineBounds.Y + Offset.Y),
+            (float)lineBounds.Width, (float)lineBounds.Height);
         if (brush == null) return;
 
         var x0 = SnapCoordinate(point0.X + Offset.X);
@@ -1499,7 +1570,32 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             }
         }
 
-        _renderTarget.DrawLine(x0, y0, x1, y1, brush, thickness);
+        // The primitive line API has no cap metadata. SVG's default butt caps
+        // and explicit square caps must use the full stroke contract too.
+        _renderTarget.StrokePath(x0, y0, [0f, x1, y1], brush, thickness,
+            closed: false, lineJoin: (int)pen.LineJoin, miterLimit: (float)pen.MiterLimit,
+            lineCap: (int)pen.StartLineCap);
+    }
+
+    private void DrawLayeredBackground(CssLayeredBackgroundBrush layers, Rect bounds, Action<Brush?> draw)
+    {
+        if (bounds.IsEmpty || bounds.Width <= 0 || bounds.Height <= 0) return;
+        var capture = bounds;
+        capture.Offset(Offset.X, Offset.Y);
+        var groupNeeded = layers.Opacity != 1 || layers.BlendMode != CssBlendMode.Normal;
+        for (var item = layers.Bottom as CssLayeredBackgroundBrush; item is not null; item = item.Bottom as CssLayeredBackgroundBrush)
+            groupNeeded |= item.BlendMode != CssBlendMode.Normal;
+        using var group = groupNeeded
+            ? CssBlendGroup.Begin(this, capture, CssBlendMode.Normal, "background-blend-mode") : null;
+        if (layers.Bottom is CssLayeredBackgroundBrush bottom) DrawLayeredBackground(bottom, bounds, draw);
+        else draw(layers.Bottom);
+        using (var image = layers.BlendMode != CssBlendMode.Normal
+            ? CssBlendGroup.Begin(this, capture, layers.BlendMode, "background-blend-mode") : null)
+        {
+            draw(layers.Top);
+            image?.Complete();
+        }
+        group?.Complete(layers.Opacity);
     }
 
     /// <inheritdoc />
@@ -1508,8 +1604,8 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         if (_closed) return;
         if (brush is CssLayeredBackgroundBrush layers)
         {
-            DrawRectangle(layers.Bottom, null, rectangle);
-            DrawRectangle(layers.Top, pen, rectangle);
+            DrawLayeredBackground(layers, rectangle, value => DrawRectangle(value, null, rectangle));
+            if (pen is not null) DrawRectangle(null, pen, rectangle);
             return;
         }
         Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.DRAW_RECT2);
@@ -1534,7 +1630,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         // The fill keeps the original width/height to avoid shrinking backgrounds.
         if (pen?.Brush != null)
         {
-            if (TryDrawImageBrushStroke(pen, new RectangleGeometry(rectangle))) return;
+            if (pen.Brush is ImageBrush && TryDrawImageBrushStroke(pen, new RectangleGeometry(rectangle))) return;
             if (pen.DashStyle.Dashes.Count > 0)
             {
                 DrawPathFigureNative(null, pen,
@@ -1546,7 +1642,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             var strokeBottom = SnapCoordinate(rectangle.Y + rectangle.Height + Offset.Y);
             var strokeW = strokeRight - x;
             var strokeH = strokeBottom - y;
-            var strokeBrush = GetNativeBrush(pen.Brush, x, y, strokeW, strokeH);
+            var strokeBrush = GetNativeStrokeBrush(pen, x, y, strokeW, strokeH);
             if (strokeBrush != null)
             {
                 _renderTarget.DrawRectangle(x, y, strokeW, strokeH, strokeBrush, (float)pen.Thickness);
@@ -1560,8 +1656,8 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         if (_closed) return;
         if (brush is CssLayeredBackgroundBrush layers)
         {
-            DrawRoundedRectangle(layers.Bottom, null, rectangle, radiusX, radiusY);
-            DrawRoundedRectangle(layers.Top, pen, rectangle, radiusX, radiusY);
+            DrawLayeredBackground(layers, rectangle, value => DrawRoundedRectangle(value, null, rectangle, radiusX, radiusY));
+            if (pen is not null) DrawRoundedRectangle(null, pen, rectangle, radiusX, radiusY);
             return;
         }
 
@@ -1586,7 +1682,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         // The fill keeps the original width/height to avoid shrinking backgrounds.
         if (pen?.Brush != null)
         {
-            if (TryDrawImageBrushStroke(pen,
+            if (pen.Brush is ImageBrush && TryDrawImageBrushStroke(pen,
                     new RectangleGeometry(rectangle, radiusX, radiusY))) return;
             var strokeRight = SnapCoordinate(rectangle.X + rectangle.Width + Offset.X);
             var strokeBottom = SnapCoordinate(rectangle.Y + rectangle.Height + Offset.Y);
@@ -1602,7 +1698,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                     FillRule.Nonzero, rectangle);
                 return;
             }
-            var strokeBrush = GetNativeBrush(pen.Brush, x, y, strokeW, strokeH);
+            var strokeBrush = GetNativeStrokeBrush(pen, x, y, strokeW, strokeH);
             if (strokeBrush != null)
             {
                 _renderTarget.DrawRoundedRectangle(x, y, strokeW, strokeH, strokeRx, strokeRy, strokeBrush, (float)pen.Thickness);
@@ -1618,8 +1714,8 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         if (_closed) return;
         if (brush is CssLayeredBackgroundBrush layers)
         {
-            DrawRoundedRectangle(layers.Bottom, null, rectangle, cornerRadius);
-            DrawRoundedRectangle(layers.Top, pen, rectangle, cornerRadius);
+            DrawLayeredBackground(layers, rectangle, value => DrawRoundedRectangle(value, null, rectangle, cornerRadius));
+            if (pen is not null) DrawRoundedRectangle(null, pen, rectangle, cornerRadius);
             return;
         }
 
@@ -1644,7 +1740,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
 
         if (pen?.Brush != null)
         {
-            if (TryDrawImageBrushStroke(pen,
+            if (pen.Brush is ImageBrush && TryDrawImageBrushStroke(pen,
                     new RectangleGeometry(rectangle, cornerRadius))) return;
             if (pen.DashStyle.Dashes.Count > 0)
             {
@@ -1659,7 +1755,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             var strokeBottom = SnapCoordinate(rectangle.Y + rectangle.Height + Offset.Y);
             var strokeW = strokeRight - x;
             var strokeH = strokeBottom - y;
-            var strokeBrush = GetNativeBrush(pen.Brush, x, y, strokeW, strokeH);
+            var strokeBrush = GetNativeStrokeBrush(pen, x, y, strokeW, strokeH);
             if (strokeBrush != null)
             {
                 _renderTarget.DrawPerCornerRoundedRectangle(x, y, strokeW, strokeH, tl, tr, br, bl, strokeBrush, (float)pen.Thickness);
@@ -1687,7 +1783,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             return;
         }
 
-        if (pen.Brush is ImageBrush)
+        if (pen.Brush is ImageBrush or GradientBrush)
         {
             for (int i = 0; i + 1 < endpoints.Length; i += 2)
                 DrawLine(pen, endpoints[i], endpoints[i + 1]);
@@ -1778,8 +1874,8 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         if (_closed) return;
         if (brush is CssLayeredBackgroundBrush layers)
         {
-            DrawEllipse(layers.Bottom, null, center, radiusX, radiusY);
-            DrawEllipse(layers.Top, pen, center, radiusX, radiusY);
+            DrawLayeredBackground(layers, new Rect(center.X-radiusX, center.Y-radiusY, radiusX*2, radiusY*2), value => DrawEllipse(value, null, center, radiusX, radiusY));
+            if (pen is not null) DrawEllipse(null, pen, center, radiusX, radiusY);
             return;
         }
 
@@ -1827,7 +1923,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         // Stroke
         if (pen?.Brush != null)
         {
-            if (TryDrawImageBrushStroke(pen,
+            if (pen.Brush is ImageBrush && TryDrawImageBrushStroke(pen,
                     new EllipseGeometry(center, radiusX, radiusY))) return;
             if (pen.DashStyle.Dashes.Count > 0 && radiusX > 0 && radiusY > 0)
             {
@@ -1836,7 +1932,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                         radiusX * 2, radiusY * 2));
                 return;
             }
-            var strokeBrush = GetNativeBrush(pen.Brush, bx, by, bw, bh);
+            var strokeBrush = GetNativeStrokeBrush(pen, bx, by, bw, bh);
             if (strokeBrush != null)
             {
                 _renderTarget.DrawEllipse(cx, cy, rx, ry, strokeBrush, (float)pen.Thickness);
@@ -1881,7 +1977,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     public override void DrawText(FormattedText formattedText, Point origin)
     {
         if (_closed || formattedText is null) return;
-        if (formattedText.GlyphVisibility == 0 || !OperatingSystem.IsMacOS() || _renderTarget.Backend is not (RenderBackend.Metal or RenderBackend.Software))
+        if (formattedText.GlyphVisibility == 0)
         {
             DrawTextCore(formattedText, origin);
             return;
@@ -1895,7 +1991,17 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     {
         if (!_closed && formattedText?.PlatformTextLine is NativeTextParagraph.Line line)
         {
-            _renderTarget.DrawParagraphLine(line, (float)(origin.X + Offset.X), (float)(origin.Y + Offset.Y));
+            var x = (float)(origin.X + Offset.X); var y = (float)(origin.Y + Offset.Y);
+            if (formattedText.Foreground is GradientBrush gradient)
+            {
+                // Paint the retained glyphs, preserving font spans, bidi and
+                // source ownership. Visibility never changes the brush box.
+                var bounds = line.BrushBounds;
+                var brush = GetNativeBrush(gradient, x + (float)bounds.X, y + (float)bounds.Y,
+                    (float)bounds.Width, (float)bounds.Height);
+                if (brush is not null) _renderTarget.DrawParagraphLine(line, x, y, brush);
+            }
+            else _renderTarget.DrawParagraphLine(line, x, y);
             return;
         }
         if (_closed || formattedText == null || formattedText.FontSize == 0 || string.IsNullOrEmpty(formattedText.Text)) return;
@@ -1906,6 +2012,16 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
 
         var mx = origin.X + Offset.X;
         var my = origin.Y + Offset.Y;
+
+        // Editor fragments can carry only approximate metrics because their
+        // shaped advances were already supplied by the surrounding layout.
+        // A gradient needs native glyph extents as well. Measure a private copy
+        // so painting never changes a caller's or retained command's metrics.
+        if (formattedText.Foreground is GradientBrush && !formattedText.IsMeasured)
+        {
+            var measured = formattedText.CreateRenderSnapshot(formattedText.Foreground);
+            if (TextMeasurement.MeasureText(measured)) formattedText = measured;
+        }
 
         // Gradient foregrounds are mapped onto the text's own box. The old call passed
         // no bounds at all (GetNativeBrush(brush) ⇒ a 0×0 rect), which degenerates a
@@ -1969,7 +2085,11 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         // Keep its original layout and pass the matrix through: recreating a
         // layout at the scaled font size rounds fallback baselines differently
         // from the surrounding geometry (a 1px jump during a 1.00 -> 1.03 zoom).
+        // Animated text keeps the original layout and baseline while the native
+        // matrix scales its glyphs. Recreating a layout at every fractional em
+        // size changes fallback metrics and line-box rounding mid-animation.
         var preserveNativeScaleDeformation = _nativeTextTransformDepth > 0 ||
+            formattedText.TextHintingMode == (int)TextHintingMode.Animated ||
             _renderTarget.Backend == RenderBackend.D3D12;
         if (!isIdentity)
         {
@@ -2038,7 +2158,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                 formattedText.TextRenderingMode,
                 formattedText.TextFormattingMode,
                 formattedText.TextHintingMode,
-                subpixelPositioning: identitySubpixel, noWrap: noWrap, textAlignment: formattedText.NativeTextAlignment ?? TextAlignment.Left);
+                subpixelPositioning: identitySubpixel, noWrap: noWrap, textAlignment: formattedText.NativeTextAlignment ?? TextAlignment.Left, flowDirection: formattedText.FlowDirection, naturalDirection: formattedText.NaturalBidiDirection);
             if (format == null) return;
 
             var x = (float)mx;
@@ -2069,7 +2189,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             formattedText.TextRenderingMode,
             formattedText.TextFormattingMode,
             formattedText.TextHintingMode,
-            subpixelPositioning: !s_subpixelPositioningDisabled, noWrap: noWrap, textAlignment: formattedText.NativeTextAlignment ?? TextAlignment.Left);
+            subpixelPositioning: !s_subpixelPositioningDisabled, noWrap: noWrap, textAlignment: formattedText.NativeTextAlignment ?? TextAlignment.Left, flowDirection: formattedText.FlowDirection, naturalDirection: formattedText.NaturalBidiDirection);
         if (scaledFormat == null) return;
 
         // Screen-space origin = current matrix applied to (mx, my). The origin
@@ -2136,6 +2256,11 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         const double axisAlignmentEpsilon = 1e-6;
         const double scaleDifferenceEpsilon = 0.001;
 
+        // A positive font size cannot encode a reflection or a half turn.
+        // Preserve the signed matrix, just as for rotation/skew, instead of
+        // painting upright glyphs from the transformed box's opposite edge.
+        if (m11 < 0 || m22 < 0) return true;
+
         // Rotation / skew: the screen-resolution compensation below can only
         // express the matrix as ONE font size, which is exactly what an angle
         // cannot be folded into — so it used to be dropped outright and a
@@ -2183,10 +2308,39 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     public override void DrawGeometry(Brush? brush, Pen? pen, Geometry geometry, EdgeMode edgeMode)
     {
         if (_closed || geometry == null) return;
+        if (_renderTarget.Backend == RenderBackend.Software && pen is { SvgViewportStroke: true })
+        {
+            if (brush is not null) DrawGeometry(brush, null, geometry, edgeMode);
+            var stroke = new GeometryDrawing(null, pen, geometry);
+            var bounds = stroke.Bounds;
+            if (bounds.IsEmpty || bounds.Width <= 0 || bounds.Height <= 0 ||
+                !double.IsFinite(bounds.X) || !double.IsFinite(bounds.Y) ||
+                !double.IsFinite(bounds.Width) || !double.IsFinite(bounds.Height)) return;
+            GetTransformScale(out var sx, out var sy);
+            sx = Math.Max(1, sx * _renderTarget.DpiScaleX);
+            sy = Math.Max(1, sy * _renderTarget.DpiScaleY);
+            if (!double.IsFinite(sx) || !double.IsFinite(sy)) return;
+            var left = Math.Floor(bounds.Left * sx); var top = Math.Floor(bounds.Top * sy);
+            var right = Math.Ceiling(bounds.Right * sx); var bottom = Math.Ceiling(bounds.Bottom * sy);
+            var width = (int)Math.Clamp(right - left, 1, 4096);
+            var height = (int)Math.Clamp(bottom - top, 1, 4096);
+            // Retain integer raster extents: dividing by a non-exact scale
+            // and multiplying again can otherwise ceil an extra pixel.
+            bounds = new(left / sx, top / sy, (right - left) / sx, (bottom - top) / sy);
+            if (SoftwareVectorRasterizer.Rasterize(stroke, width, height, bounds) is { } pixels)
+            {
+                // Use the existing frame-aware image cache for native resource
+                // lifetime and budget management, including grouped captures.
+                var bitmap = BitmapSource.Create(width, height, 96 * width / bounds.Width,
+                    96 * height / bounds.Height, PixelFormats.Bgra32, null, pixels, width * 4);
+                DrawImage(bitmap, bounds, BitmapScalingMode.NearestNeighbor);
+            }
+            return;
+        }
         if (brush is CssLayeredBackgroundBrush layers)
         {
-            DrawGeometry(layers.Bottom, null, geometry, edgeMode);
-            DrawGeometry(layers.Top, pen, geometry, edgeMode);
+            DrawLayeredBackground(layers, geometry.Bounds, value => DrawGeometry(value, null, geometry, edgeMode));
+            if (pen is not null) DrawGeometry(null, pen, geometry, edgeMode);
             return;
         }
         Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.DRAW_GEO);
@@ -2221,7 +2375,13 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     {
         if (geometry is Jalium.UI.Styling.CssRoundedRectangleGeometry cssRounded)
         {
-            if (_renderTarget.Backend == RenderBackend.Metal)
+            if (_renderTarget.Backend == RenderBackend.Metal && brush is not null &&
+                brush is not ImageBrush && _pathEdgeMode != 1 &&
+                TryFillCssRoundedRectangle(brush, cssRounded))
+            {
+                if (pen is not null) DrawPathGeometry(null, pen, cssRounded.Path);
+            }
+            else if (_renderTarget.Backend == RenderBackend.Metal)
                 DrawPathGeometry(brush, pen, cssRounded.Path);
             else if (brush is ImageBrush imageBrush)
             {
@@ -2276,7 +2436,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         }
         else if (geometry is GeometryGroup group)
         {
-            DrawGeometryGroup(this, brush, pen, group, DevicePathTolerance());
+            DrawPathGeometry(brush, pen, FlattenGeometryGroup(group, DevicePathTolerance()));
         }
         else if (geometry is CombinedGeometry combined)
         {
@@ -2302,19 +2462,27 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         }
     }
 
-    // The group's transform is already on the context stack. Only the fill may
-    // bake child centerlines: strokes must retain each child's local coordinate
-    // space so the entire pen (including dashes, caps and joins) is transformed.
-    internal static void DrawGeometryGroup(DrawingContext context, Brush? brush, Pen? pen,
-        GeometryGroup group, double tolerance = 0.125)
+    private bool TryFillCssRoundedRectangle(Brush brush, CssRoundedRectangleGeometry geometry)
     {
-        if (brush != null)
-            context.DrawGeometry(brush, null, FlattenGeometryGroup(group, tolerance));
-        if (pen != null)
-        {
-            foreach (var child in group.Children)
-                context.DrawGeometry(null, pen, child);
-        }
+        // Circular CSS corners can use the existing GPU primitive. Routing a
+        // moving card background through FillPath would scan its entire area
+        // again for every new fractional scroll position. Keep elliptical,
+        // oversized and explicitly aliased corners on the general path route.
+        var rect = geometry.Rect;
+        var radii = geometry.Radii;
+        double limit = Math.Min(rect.Width, rect.Height) / 2;
+        bool Circular(Size radius) => radius.Width == radius.Height &&
+            radius.Width >= 0 && radius.Width <= limit;
+        if (!(rect.Width > 0 && rect.Height > 0) ||
+            !Circular(radii.TopLeft) || !Circular(radii.TopRight) ||
+            !Circular(radii.BottomRight) || !Circular(radii.BottomLeft)) return false;
+        float x = (float)(rect.X + Offset.X), y = (float)(rect.Y + Offset.Y);
+        var nativeBrush = GetNativeBrush(brush, x, y, (float)rect.Width, (float)rect.Height);
+        if (nativeBrush is null) return false;
+        _renderTarget.FillPerCornerRoundedRectangle(x, y, (float)rect.Width, (float)rect.Height,
+            (float)radii.TopLeft.Width, (float)radii.TopRight.Width,
+            (float)radii.BottomRight.Width, (float)radii.BottomLeft.Width, nativeBrush);
+        return true;
     }
 
     private static bool FigureHasCurves(PathFigure figure)
@@ -2332,44 +2500,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     }
 
     internal static PathGeometry FlattenGeometryGroup(GeometryGroup group, double tolerance = 0.125)
-    {
-        var result = new PathGeometry { FillRule = group.FillRule };
-        void Append(Geometry geometry, Matrix parent)
-        {
-            var matrix = geometry.Transform is { } transform
-                ? Matrix.Multiply(transform.Value, parent) : parent;
-            if (geometry is GeometryGroup nested)
-            {
-                foreach (var child in nested.Children) Append(child, matrix);
-                return;
-            }
-            var linearScale = Math.Sqrt(matrix.M11 * matrix.M11 + matrix.M12 * matrix.M12 +
-                matrix.M21 * matrix.M21 + matrix.M22 * matrix.M22);
-            var flat = geometry.GetFlattenedPathGeometry(tolerance / Math.Max(linearScale, 0.01), ToleranceType.Absolute);
-            foreach (var figure in flat.Figures)
-            {
-                var output = new PathFigure { StartPoint = matrix.Transform(figure.StartPoint),
-                    IsClosed = figure.IsClosed, IsFilled = figure.IsFilled };
-                foreach (var segment in figure.Segments)
-                {
-                    if (segment is LineSegment line)
-                        output.Segments.Add(new LineSegment(matrix.Transform(line.Point), line.IsStroked)
-                            { IsSmoothJoin = line.IsSmoothJoin });
-                    else if (segment is PolyLineSegment poly)
-                    {
-                        var transformed = new PolyLineSegment { IsStroked = poly.IsStroked, IsSmoothJoin = poly.IsSmoothJoin };
-                        foreach (var point in poly.Points) transformed.Points.Add(matrix.Transform(point));
-                        output.Segments.Add(transformed);
-                    }
-                }
-                result.Figures.Add(output);
-            }
-        }
-        // The caller already pushed the group's own transform. Child transforms
-        // belong inside the compound path so all winding is evaluated together.
-        foreach (var child in group.Children) Append(child, Matrix.Identity);
-        return result;
-    }
+        => group.GetFlattenedPathGeometry(tolerance, ToleranceType.Absolute);
 
     private double DevicePathTolerance()
     {
@@ -2399,14 +2530,15 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             pen.StartLineCap != PenLineCap.Flat ||
             pen.EndLineCap != PenLineCap.Flat);
 
-        // Compute geometry bounds once for gradient brush coordinate mapping.
+        // 纯色描边不需要边界或填充轮廓，跳过临时几何的缓存分析。
         long boundsTickStart = _svgDiagActive ? Stopwatch.GetTimestamp() : 0;
-        var frozenInfo = pathGeom.IsFrozen
+        bool needsBrushBounds = NeedsGeometryBounds(brush) || NeedsGeometryBounds(pen?.Brush);
+        var frozenInfo = pathGeom.IsFrozen && (brush is not null || needsBrushBounds)
             ? s_frozenPathGeometryInfo.GetValue(
                 pathGeom,
                 static geometry => new FrozenPathGeometryInfo(geometry))
             : null;
-        var geoBounds = frozenInfo?.Bounds ?? pathGeom.Bounds;
+        var geoBounds = needsBrushBounds ? frozenInfo?.Bounds ?? pathGeom.Bounds : default;
         if (_svgDiagActive)
             _svgBoundsCalcTicks += Stopwatch.GetTimestamp() - boundsTickStart;
 
@@ -2436,13 +2568,16 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         if (fillFigures is { Count: > 0 })
             DrawCompoundPathFill(brush!, fillFigures, pathGeom.FillRule, geoBounds);
 
-        // Stroke rendering: each figure stroked individually.
+        // Preserve union coverage for compound and closed software paths;
+        // compositing their segments separately darkens translucent joins.
         if (pen?.Brush != null)
         {
             if (TryDrawImageBrushStroke(pen, pathGeom)) return;
-            if (_renderTarget.Backend == RenderBackend.Metal)
+            if (_renderTarget.Backend == RenderBackend.Metal ||
+                _renderTarget.Backend == RenderBackend.Software && pathGeom.Figures.Count > 0 &&
+                pathGeom.Figures.All(figure => figure.IsClosed && figure.Segments.All(segment => segment.IsStroked)))
             {
-                DrawMetalPathStroke(pen, pathGeom, geoBounds);
+                DrawCompoundPathStroke(pen, pathGeom, geoBounds);
                 return;
             }
             foreach (var figure in pathGeom.Figures)
@@ -2456,7 +2591,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                 // moment the stroke brush is translucent.
                 bool routeRendersCaps;
                 double capSnapDx = 0, capSnapDy = 0;
-                if (hasDash || FigureHasCurves(figure))
+                if (hasDash || FigureHasCurves(figure) || pen.Brush is GradientBrush)
                 {
                     // The shared native traversal keeps dash phase continuous
                     // around corners and across the closure seam.
@@ -2500,6 +2635,9 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             }
         }
     }
+
+    private static bool NeedsGeometryBounds(Brush? brush)
+        => brush is not null && (brush is not SolidColorBrush || brush.CssGradientLayout is not null);
 
     /// <summary>
     /// Sends multiple path figures as a single compound path to native FillPath,
@@ -2557,27 +2695,17 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         }
     }
 
-    private List<float> BuildMetalStrokeCommands(Pen pen, PathGeometry geometry)
+    private List<float> BuildCompoundStrokeCommands(Pen pen, PathGeometry geometry)
     {
         _pathCommandBuffer ??= new List<float>(256);
         var commands = _pathCommandBuffer;
         commands.Clear();
         foreach (var figure in geometry.Figures)
         {
-            double dx = 0, dy = 0;
-            if (!FigureHasCurves(figure))
-            {
-                _polygonPointBuffer ??= new List<Point>();
-                _polygonPointBuffer.Clear();
-                _polygonPointBuffer.Add(figure.StartPoint);
-                foreach (var segment in figure.Segments)
-                    if (segment is LineSegment line) _polygonPointBuffer.Add(line.Point);
-                    else if (segment is PolyLineSegment poly) _polygonPointBuffer.AddRange(poly.Points);
-                if (IsAxisAlignedPath(_polygonPointBuffer))
-                    TryComputeAxisAlignedSnap(figure.StartPoint.X + Offset.X, figure.StartPoint.Y + Offset.Y,
-                        pen.Thickness, true, out dx, out dy);
-            }
-            var ox = Offset.X + dx; var oy = Offset.Y + dy;
+            // Preserve fractional placement just like the other native primitives.
+            // Snapping a straight figure's origin to the stroke phase also cancels
+            // fractional offsets/translations on every animation frame.
+            var ox = Offset.X; var oy = Offset.Y;
             commands.Add(2f); commands.Add((float)(figure.StartPoint.X + ox)); commands.Add((float)(figure.StartPoint.Y + oy));
             commands.Add(7f); commands.Add((int)pen.StartLineCap); commands.Add((int)pen.EndLineCap); commands.Add((int)pen.DashCap);
             AppendFigureSegments(commands, figure, figure.StartPoint, ox, oy, strokeMetadata: true, nativeArcs: true);
@@ -2586,13 +2714,15 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         return commands;
     }
 
-    private void DrawMetalPathStroke(Pen pen, PathGeometry geometry, Rect bounds)
+    private void DrawCompoundPathStroke(Pen pen, PathGeometry geometry, Rect bounds)
     {
         if (!double.IsFinite(pen.Thickness) || pen.Thickness <= 0 ||
             !TryCreateNativeDash(pen, out var dashes, out var phase)) return;
-        var commands = BuildMetalStrokeCommands(pen, geometry);
+        if (pen.DashStyle.Dashes.Count > 0 && geometry.Figures.Any(FigureHasCurves))
+            geometry = geometry.GetFlattenedPathGeometry(Math.Min(.0001, DevicePathTolerance() / 1600), ToleranceType.Absolute);
+        var commands = BuildCompoundStrokeCommands(pen, geometry);
         if (commands.Count == 0) return;
-        var brush = GetNativeBrush(pen.Brush!, (float)(bounds.X + Offset.X), (float)(bounds.Y + Offset.Y),
+        var brush = GetNativeStrokeBrush(pen, (float)(bounds.X + Offset.X), (float)(bounds.Y + Offset.Y),
             (float)bounds.Width, (float)bounds.Height);
         if (brush == null) return;
         _renderTarget.StrokePath(0, 0, CopyPathCommands(commands), commands.Count, brush,
@@ -2892,6 +3022,13 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
 
     private void DrawPathFigureNative(Brush? brush, Pen? pen, PathFigure figure, FillRule fillRule, Rect geoBounds)
     {
+        if (pen?.DashStyle.Dashes.Count > 0 && FigureHasCurves(figure))
+        {
+            var centerline = new PathGeometry(); centerline.Figures.Add(figure);
+            var flat = centerline.GetFlattenedPathGeometry(Math.Min(.0001, DevicePathTolerance() / 1600), ToleranceType.Absolute);
+            if (flat.Figures.Count == 0) return;
+            figure = flat.Figures[0];
+        }
         if (_svgDiagActive)
             _svgDrawPathNativeCount++;
 
@@ -2946,7 +3083,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         if (pen?.Brush != null)
         {
             long brushStart = _svgDiagActive ? Stopwatch.GetTimestamp() : 0;
-            var strokeBrush = GetNativeBrush(pen.Brush, bx, by, bw, bh);
+            var strokeBrush = GetNativeStrokeBrush(pen, bx, by, bw, bh);
             if (_svgDiagActive)
                 _svgGetBrushTicks += Stopwatch.GetTimestamp() - brushStart;
 
@@ -3069,54 +3206,85 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         // segments, so anti-aliased diagonals render at their natural weight.
         bool isAxisAligned = !hasCurvedSegments && IsAxisAlignedPath(points);
 
-        var pointArray = new float[points.Count * 2];
-        double snapDx = 0, snapDy = 0;
-        bool hasStroke = pen?.Brush != null && pen.Thickness > 0;
-        if (isAxisAligned && points.Count > 0
-            && TryComputeAxisAlignedSnap(
-                points[0].X + Offset.X, points[0].Y + Offset.Y,
-                hasStroke ? pen!.Thickness : 0.0, hasStroke,
-                out snapDx, out snapDy))
+        // 纯色多边形将视口位移留在变换中，使原生路径缓存可跨平移复用同一份坐标。
+        bool translateOffset = (brush is null or SolidColorBrush) &&
+            (pen?.Brush is null or SolidColorBrush) && (Offset.X != 0 || Offset.Y != 0);
+        double pointOffsetX = translateOffset ? 0 : Offset.X;
+        double pointOffsetY = translateOffset ? 0 : Offset.Y;
+        int coordinateCount = checked(points.Count * 2);
+        float[]? rentedCoordinates = null;
+        Span<float> pointArray = coordinateCount <= 256
+            ? stackalloc float[coordinateCount]
+            : (rentedCoordinates = ArrayPool<float>.Shared.Rent(coordinateCount)).AsSpan(0, coordinateCount);
+        try
         {
-            appliedSnapDx = snapDx;
-            appliedSnapDy = snapDy;
-            for (int i = 0; i < points.Count; i++)
+            double snapDx = 0, snapDy = 0;
+            bool hasStroke = pen?.Brush != null && pen.Thickness > 0;
+            if (isAxisAligned && points.Count > 0
+                && TryComputeAxisAlignedSnap(
+                    points[0].X + Offset.X, points[0].Y + Offset.Y,
+                    hasStroke ? pen!.Thickness : 0.0, hasStroke,
+                    out snapDx, out snapDy))
             {
-                pointArray[i * 2] = (float)(points[i].X + Offset.X + snapDx);
-                pointArray[i * 2 + 1] = (float)(points[i].Y + Offset.Y + snapDy);
+                appliedSnapDx = snapDx;
+                appliedSnapDy = snapDy;
+                for (int i = 0; i < points.Count; i++)
+                {
+                    pointArray[i * 2] = (float)(points[i].X + pointOffsetX + snapDx);
+                    pointArray[i * 2 + 1] = (float)(points[i].Y + pointOffsetY + snapDy);
+                }
+            }
+            else
+            {
+                for (int i = 0; i < points.Count; i++)
+                {
+                    pointArray[i * 2] = (float)(points[i].X + pointOffsetX);
+                    pointArray[i * 2 + 1] = (float)(points[i].Y + pointOffsetY);
+                }
+            }
+
+            var ox = Offset.X;
+            var oy = Offset.Y;
+            float bx = (float)(geoBounds.X + ox), by = (float)(geoBounds.Y + oy);
+            float bw = (float)geoBounds.Width, bh = (float)geoBounds.Height;
+
+            if (translateOffset)
+            {
+                // 原生栈右乘，先通过现有线性部分换算位移，保持 (point + Offset) * current。
+                float nativeDx = (float)(ox * _currentNativeMatrix[0] + oy * _currentNativeMatrix[2]);
+                float nativeDy = (float)(ox * _currentNativeMatrix[1] + oy * _currentNativeMatrix[3]);
+                _renderTarget.PushTransformTranslation(nativeDx, nativeDy);
+            }
+            try
+            {
+                if (brush != null && figure.IsFilled && points.Count >= 3)
+                {
+                    int rule = fillRule == FillRule.Nonzero ? 1 : 0;
+                    var nativeBrush = GetNativeBrush(brush, bx, by, bw, bh);
+                    if (nativeBrush != null)
+                    {
+                        _renderTarget.FillPolygon(pointArray, nativeBrush, rule);
+                    }
+                }
+
+                if (pen?.Brush != null && points.Count >= 2)
+                {
+                    var strokeBrush = GetNativeStrokeBrush(pen, bx, by, bw, bh);
+                    if (strokeBrush != null)
+                    {
+                        _renderTarget.DrawPolygon(pointArray, strokeBrush, (float)pen.Thickness, figure.IsClosed, (int)pen.LineJoin, (float)pen.MiterLimit);
+                    }
+                }
+            }
+            finally
+            {
+                if (translateOffset) _renderTarget.PopTransform();
             }
         }
-        else
+        finally
         {
-            for (int i = 0; i < points.Count; i++)
-            {
-                pointArray[i * 2] = (float)(points[i].X + Offset.X);
-                pointArray[i * 2 + 1] = (float)(points[i].Y + Offset.Y);
-            }
-        }
-
-        var ox = Offset.X;
-        var oy = Offset.Y;
-        float bx = (float)(geoBounds.X + ox), by = (float)(geoBounds.Y + oy);
-        float bw = (float)geoBounds.Width, bh = (float)geoBounds.Height;
-
-        if (brush != null && figure.IsFilled && points.Count >= 3)
-        {
-            int rule = fillRule == FillRule.Nonzero ? 1 : 0;
-            var nativeBrush = GetNativeBrush(brush, bx, by, bw, bh);
-            if (nativeBrush != null)
-            {
-                _renderTarget.FillPolygon(pointArray, nativeBrush, rule);
-            }
-        }
-
-        if (pen?.Brush != null && points.Count >= 2)
-        {
-            var strokeBrush = GetNativeBrush(pen.Brush, bx, by, bw, bh);
-            if (strokeBrush != null)
-            {
-                _renderTarget.DrawPolygon(pointArray, strokeBrush, (float)pen.Thickness, figure.IsClosed, (int)pen.LineJoin, (float)pen.MiterLimit);
-            }
+            if (rentedCoordinates is not null)
+                ArrayPool<float>.Shared.Return(rentedCoordinates);
         }
     }
 
@@ -3177,6 +3345,9 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         // Rotation / skew / mirroring / degenerate scale: no meaningful device phase.
         if (Math.Abs(m12) > 1e-6 || Math.Abs(m21) > 1e-6) return false;
         if (!(m11 > 0) || !(m22 > 0) || !double.IsFinite(m11) || !double.IsFinite(m22)) return false;
+        // A live scale must move the whole figure continuously. Snapping each
+        // figure at its changing device phase makes icon parts jump separately.
+        if (Math.Abs(m11 - 1) > 1e-6 || Math.Abs(m22 - 1) > 1e-6) return false;
 
         var dpiX = dpiScaleX > 0 && double.IsFinite(dpiScaleX) ? dpiScaleX : 1.0;
         var dpiY = dpiScaleY > 0 && double.IsFinite(dpiScaleY) ? dpiScaleY : 1.0;
@@ -3454,9 +3625,14 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         // stretch the visible geometry to fill the target rect, breaking
         // centering (e.g. settings cog) and clipping content positioned at
         // the viewport edges (e.g. notification bell decorations).
-        if (TryResolveVectorImageSource(imageSource, out var vectorDrawing, out var vectorViewport))
+        if (TryResolveVectorImageSource(imageSource, out var vectorDrawing, out var vectorViewport, new Size(rectangle.Width, rectangle.Height)))
         {
             var drawing = vectorDrawing!;
+            // All concrete plans of one SVG share one native raster slot. Keep
+            // the drawing identity in the key checks so canvas/image embedding
+            // at the same size cannot reuse each other's coordinate system.
+            var vectorOwner = imageSource is DrawingImage { DrawOwner: { } owner } ? owner : imageSource;
+            Size? svgViewportSize = imageSource is SvgImage ? new Size(rectangle.Width, rectangle.Height) : null;
             if (vectorViewport.IsEmpty || vectorViewport.Width <= 0 || vectorViewport.Height <= 0) return;
 
             // Rasterize at device-pixel resolution so the software anti-aliasing isn't
@@ -3491,10 +3667,12 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             // size compare alone served a DrawingImage's PRE-DECODE rasterization — an entirely
             // transparent buffer — for as long as the element kept its size, which for an icon in a
             // fixed cell is forever.
-            if (_vectorDrawingCache.TryGetValue(imageSource, out var cached) &&
+            if (_vectorDrawingCache.TryGetValue(vectorOwner, out var cached) &&
                 cached.RasterizedBitmap != null &&
                 cached.PixelWidth == targetW && cached.PixelHeight == targetH &&
-                cached.SourceGeneration == imageSource.ContentGeneration && cached.MatchesTouchedSourceGenerations())
+                cached.SvgViewportSize == svgViewportSize &&
+                ReferenceEquals(cached.SourceDrawing, drawing) &&
+                cached.SourceGeneration == vectorOwner.ContentGeneration && cached.MatchesTouchedSourceGenerations())
             {
                 // Cache hit — draw via the standard bitmap pipeline (< 0.1ms)
                 var cachedNative = GetNativeBitmap(cached.RasterizedBitmap);
@@ -3511,8 +3689,8 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                 }
             }
 
-            if (_vectorDrawingCache.TryGetValue(imageSource, out var staleVector))
-                DropVectorRaster(imageSource, staleVector);
+            if (_vectorDrawingCache.TryGetValue(vectorOwner, out var staleVector))
+                DropVectorRaster(vectorOwner, staleVector);
 
             // ── Cache miss: rasterize SVG to BGRA pixel buffer ──
             _svgDiagStopwatch ??= new Stopwatch();
@@ -3535,10 +3713,10 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             // staleness signal: this raster is a flat snapshot of sources that publish
             // asynchronously, and the very first rasterization of a URI-backed inner bitmap
             // necessarily happens before its decode has produced anything.
-            var drawingGeneration = imageSource.ContentGeneration;
+            var drawingGeneration = vectorOwner.ContentGeneration;
             var touchedSources = new HashSet<ImageSource>();
             var pixels = SoftwareVectorRasterizer.Rasterize(
-                drawing, targetW, targetH, vectorViewport, touchedSources);
+                drawing, targetW, targetH, vectorViewport, touchedSources, svgViewportSize);
             BitmapImage? rasterized = null;
             if (pixels != null)
             {
@@ -3559,11 +3737,13 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
 
                 // Cache the BitmapImage — D3D12 resource lifecycle is managed by
                 // the existing GetNativeBitmap / _bitmapCache pipeline.
-                _vectorDrawingCache[imageSource] = new VectorDrawingCacheEntry
+                _vectorDrawingCache[vectorOwner] = new VectorDrawingCacheEntry
                 {
                     RasterizedBitmap = rasterized,
                     PixelWidth = targetW,
                     PixelHeight = targetH,
+                    SvgViewportSize = svgViewportSize,
+                    SourceDrawing = drawing,
                     SourceGeneration = drawingGeneration,
                     TouchedSources = dependencies,
                 };
@@ -3702,11 +3882,21 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     /// <param name="localBounds">The transition area in local coordinates.</param>
     public void BeginTransitionCapture(int slot, Rect localBounds)
     {
-        if (_closed) return;
+        if (_closed || slot is < 0 or > 1) return;
         var x = (float)(localBounds.X + Offset.X);
         var y = (float)(localBounds.Y + Offset.Y);
-        _renderTarget.BeginTransitionCapture(slot, x, y,
-            (float)localBounds.Width, (float)localBounds.Height);
+        var width = (float)localBounds.Width;
+        var height = (float)localBounds.Height;
+        // End must only close a capture this scope actually opened. Native
+        // transitions share their surfaces with effects and retained layers.
+        bool opened = _offscreenCaptureBounds.Count == 0 &&
+            float.IsFinite(x) && float.IsFinite(y) &&
+            float.IsFinite(width) && float.IsFinite(height) && width > 0 && height > 0;
+        _transitionCaptureScopes.Push((slot, opened));
+        _suppressedTransitionSlots[slot] = !opened;
+        if (!opened) return;
+        _offscreenCaptureBounds.Push(new Rect(x, y, width, height));
+        _renderTarget.BeginTransitionCapture(slot, x, y, width, height);
     }
 
     /// <summary>
@@ -3715,8 +3905,11 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     /// <param name="slot">0 = old content, 1 = new content.</param>
     public void EndTransitionCapture(int slot)
     {
-        if (_closed) return;
+        if (_closed || _transitionCaptureScopes.Count == 0 || _transitionCaptureScopes.Peek().Slot != slot) return;
+        if (!_transitionCaptureScopes.Pop().Opened) return;
         _renderTarget.EndTransitionCapture(slot);
+        _offscreenCaptureBounds.Pop();
+        _suppressedTransitionSlots[slot] = false;
     }
 
     /// <summary>
@@ -3727,7 +3920,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     /// <param name="mode">Shader mode index (0-9).</param>
     public void DrawTransitionShader(Rect localBounds, float progress, int mode, float cornerRadius = 0f)
     {
-        if (_closed) return;
+        if (_closed || _suppressedTransitionSlots[0] || _suppressedTransitionSlots[1]) return;
         var x = (float)(localBounds.X + Offset.X);
         var y = (float)(localBounds.Y + Offset.Y);
         _renderTarget.DrawTransitionShader(x, y,
@@ -3739,7 +3932,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     /// </summary>
     public void DrawCapturedTransition(int slot, Rect localBounds, float opacity)
     {
-        if (_closed) return;
+        if (_closed || slot is < 0 or > 1 || _suppressedTransitionSlots[slot]) return;
         var x = (float)(localBounds.X + Offset.X);
         var y = (float)(localBounds.Y + Offset.Y);
         _renderTarget.DrawCapturedTransition(slot, x, y,
@@ -3827,13 +4020,13 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             var finalDy = dy + oy;
 
             // --- Nested-transform fix --------------------------------------------
-            // Native PushTransform performs RIGHT-multiply: native_new = native_old * incoming.
+            // D3D12/Vulkan PushTransform append row-vector matrices:
+            // native_new = native_old * incoming.
             // For nested visuals (outer pushed first, inner pushed second), the
             // expected row-vector apply order is P * inner * outer (inner applied
             // first, then outer). That requires LEFT-multiply on the stack:
             //   stack_new = incoming * stack_old
-            // The native renderer can't be changed cheaply (4 C++ backends), so we
-            // pass it a conjugated matrix that, after native's RIGHT-multiply,
+            // Pass these backends a conjugated matrix that, after RIGHT-multiply,
             // produces the same final state as LEFT-multiply:
             //   conjugate = current^-1 * incoming * current
             //   native_new = current * conjugate = incoming * current  ✓
@@ -3845,31 +4038,27 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                 _currentNativeMatrix[0], _currentNativeMatrix[1],
                 _currentNativeMatrix[2], _currentNativeMatrix[3],
                 _currentNativeMatrix[4], _currentNativeMatrix[5]);
-            // D3D12 offscreen captures add a native-only translation from surface
-            // coordinates to the capture origin. Include it in the conjugation so
-            // a child's local scale/rotation does not transform that translation.
-            // Keep the managed mirror in surface space for offsets and culling.
+            // D3D12 adds a native-only capture translation. Conjugate against the
+            // actual outer capture for layers, effects AND transitions; a local
+            // scale must not scale that translation. Nested effect scopes cannot
+            // redirect native again, so the oldest origin remains authoritative.
             var nativeCurrent = current;
-            if (_inLayerCapture && _renderTarget.Backend == RenderBackend.D3D12 &&
-                _layerCaptureClipBounds is Rect layerBounds)
+            if (_renderTarget.Backend == RenderBackend.D3D12 && _offscreenCaptureBounds.Count > 0)
             {
+                var capture = _offscreenCaptureBounds.Last();
                 nativeCurrent *= new Jalium.UI.Media.Matrix(
-                    1, 0, 0, 1, -layerBounds.X, -layerBounds.Y);
-            }
-            else if (_renderTarget.Backend == RenderBackend.D3D12 &&
-                _effectCaptureFrameStack.Count > 0)
-            {
-                // Native effect captures cannot nest: inner effect scopes draw
-                // into the first capture, so its origin remains authoritative.
-                // Omitting this translation rotates children around the window
-                // origin instead of their position in a shadow/blur texture.
-                var capture = _effectCaptureFrameStack.Last();
-                nativeCurrent *= new Jalium.UI.Media.Matrix(
-                    1, 0, 0, 1, -capture.ScreenX, -capture.ScreenY);
+                    1, 0, 0, 1, -capture.X, -capture.Y);
             }
 
             Jalium.UI.Media.Matrix toNative;
-            if (nativeCurrent.TryInvert(out var currentInv))
+            // Metal and Software use column-vector parent * child internally;
+            // that already equals child * parent in our row-vector convention.
+            // Conjugating again changes nested noncommuting transforms.
+            if (_renderTarget.Backend is RenderBackend.Metal or RenderBackend.Software)
+            {
+                toNative = incoming;
+            }
+            else if (nativeCurrent.TryInvert(out var currentInv))
             {
                 toNative = currentInv * incoming * nativeCurrent;
             }
@@ -3966,16 +4155,15 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
 
         // Bake geometry transforms into one compound path. A clip captures the
         // transform at push time and must keep holes and child winding together.
-        if (_renderTarget.Backend == RenderBackend.Metal &&
-            (clipGeometry is not RectangleGeometry || clipGeometry.Transform is { Value.IsIdentity: false }))
+        if ((_renderTarget.Backend == RenderBackend.Metal && clipGeometry is not RectangleGeometry) ||
+            clipGeometry is GeometryGroup or CombinedGeometry || clipGeometry.Transform is { Value.IsIdentity: false })
         {
-            var container = new GeometryGroup();
-            container.Children.Add(clipGeometry);
-            var flattened = FlattenGeometryGroup(container, DevicePathTolerance());
+            var flattened = GeometryComposition.FlattenChild(clipGeometry, DevicePathTolerance());
             flattened.FillRule = clipGeometry is GeometryGroup group ? group.FillRule :
                 clipGeometry is PathGeometry pg ? pg.FillRule :
                 clipGeometry is StreamGeometry sg ? sg.FillRule : flattened.FillRule;
             if (TryPushGeometryPathClip(flattened)) return;
+            clipGeometry = flattened;
         }
 
         if (clipGeometry is PathGeometry path && path.Figures.Count > 0)
@@ -4426,11 +4614,39 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     /// the backend expects — see <see cref="NativeEffectCaptureRectIsPostTransform"/>.
     /// </remarks>
     public void BeginEffectCapture(float x, float y, float w, float h)
+        => BeginEffectCaptureCore(x, y, w, h, required: false);
+
+    bool IAlphaMaskDrawingContext.SupportsAlphaMasks => !_closed && _renderTarget.SupportsAlphaMasks();
+
+    bool IBlendDrawingContext.SupportsBlendModes => !_closed && _renderTarget.SupportsBlendModes();
+    void IBlendDrawingContext.BeginBlendCapture(Rect bounds) =>
+        BeginEffectCaptureCore((float)bounds.X, (float)bounds.Y, (float)bounds.Width, (float)bounds.Height, required: true);
+    void IBlendDrawingContext.EndBlendCapture() => EndEffectCapture();
+    void IBlendDrawingContext.CompositeBlendCapture(CssBlendMode mode, Rect bounds)
+    {
+        if (!_closed) _renderTarget.CompositeBlendCapture(mode, bounds);
+    }
+
+    double IAlphaMaskDrawingContext.AlphaMaskRasterScale => Math.Max(_renderTarget.DpiScaleX, _renderTarget.DpiScaleY) *
+        Math.Max(1, Math.Max(Math.Sqrt(_currentNativeMatrix[0] * _currentNativeMatrix[0] + _currentNativeMatrix[1] * _currentNativeMatrix[1]),
+            Math.Sqrt(_currentNativeMatrix[2] * _currentNativeMatrix[2] + _currentNativeMatrix[3] * _currentNativeMatrix[3])));
+
+    void IAlphaMaskDrawingContext.BeginAlphaMaskCapture(Rect bounds) =>
+        BeginEffectCaptureCore((float)bounds.X, (float)bounds.Y, (float)bounds.Width, (float)bounds.Height, required: true);
+
+    void IAlphaMaskDrawingContext.EndAlphaMaskCapture() => EndEffectCapture();
+
+    void IAlphaMaskDrawingContext.ApplyAlphaMask(byte[] coverage, int width, int height, Rect maskBounds, Rect captureBounds)
+    {
+        if (!_closed) _renderTarget.ApplyAlphaMask(coverage, width, height, maskBounds, captureBounds);
+    }
+
+    private void BeginEffectCaptureCore(float x, float y, float w, float h, bool required)
     {
         if (_closed) return;
-        if (SimplifyElementEffects)
+        if (SimplifyElementEffects && !required)
         {
-            _suppressedEffectCaptureDepth++;
+            _effectCaptureSuppressions.Push(true);
             return;
         }
         // Swap the cull source from the dirty-region/viewport clip to the
@@ -4471,7 +4687,21 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             }
         }
         _effectCaptureFrameStack.Push(frame);
-        _renderTarget.BeginEffectCapture(nativeX, nativeY, nativeW, nativeH);
+        _offscreenCaptureBounds.Push(new Rect(frame.ScreenX, frame.ScreenY, frame.ScreenWidth, frame.ScreenHeight));
+        try
+        {
+            if (required) _renderTarget.BeginAlphaMaskCapture(nativeX, nativeY, nativeW, nativeH);
+            else _renderTarget.BeginEffectCapture(nativeX, nativeY, nativeW, nativeH);
+            _effectCaptureSuppressions.Push(false);
+        }
+        catch
+        {
+            _offscreenCaptureBounds.Pop();
+            _effectCaptureFrameStack.Pop();
+            _effectCaptureCullOverrideStack.Pop();
+            _effectCaptureCullSuspendDepth--;
+            throw;
+        }
     }
 
     /// <summary>
@@ -4480,18 +4710,23 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     public void EndEffectCapture()
     {
         if (_closed) return;
-        if (_suppressedEffectCaptureDepth > 0)
+        if (_effectCaptureSuppressions.TryPop(out var suppressed) && suppressed)
         {
-            _suppressedEffectCaptureDepth--;
             return;
         }
         if (_effectCaptureCullSuspendDepth > 0)
             _effectCaptureCullSuspendDepth--;
         if (_effectCaptureCullOverrideStack.Count > 0)
             _effectCaptureCullOverrideStack.Pop();
-        _lastEndedEffectCapture = _effectCaptureFrameStack.Count > 0
-            ? _effectCaptureFrameStack.Pop()
-            : default;
+        if (_effectCaptureFrameStack.Count > 0)
+        {
+            _lastEndedEffectCapture = _effectCaptureFrameStack.Pop();
+            _offscreenCaptureBounds.Pop();
+        }
+        else
+        {
+            _lastEndedEffectCapture = default;
+        }
         _renderTarget.EndEffectCapture();
     }
 
@@ -5418,6 +5653,13 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         TrimBitmapCacheIfNeeded();
     }
 
+    private NativeBrush? GetNativeStrokeBrush(Pen pen, float bx, float by, float bw, float bh)
+    {
+        if (pen.Brush is not { } brush) return null;
+        var bounds = GradientPaintCoordinates.StrokeBounds(brush, new Rect(bx, by, bw, bh), pen.Thickness);
+        return GetNativeBrush(brush, (float)bounds.X, (float)bounds.Y, (float)bounds.Width, (float)bounds.Height);
+    }
+
     private NativeBrush? GetNativeBrush(Brush brush)
         => GetNativeBrush(brush, 0, 0, 0, 0);
 
@@ -5425,31 +5667,24 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     {
         if (brush == null) return null;
 
-        if (brush.CssGradientLayout is { } cssLayout &&
+        if (brush.CssImageLayout is { } cssLayout &&
             bw > 0 && bh > 0)
         {
-            if (cssLayout.Resolve(bw, bh) is not { } resolved) return null;
+            if (Jalium.UI.Styling.CssImageLayout.ResolveBrush(brush, bw, bh) is not { } resolved) return null;
             brush = resolved;
         }
 
         if (brush is SolidColorBrush solidBrush)
         {
-            var cacheKey = new BrushCacheKey(brush, 0);
             var color = solidBrush.Color;
             double opacity = Math.Clamp(solidBrush.Opacity, 0.0, 1.0);
-            // Cache based on (brush reference, current color) to invalidate
-            // when the same brush object's color or opacity changes.
+            float alpha = EffectiveBrushAlpha(color.A, opacity);
+            // 缓存实际传给原生的值，临时画刷和属性往返变化均可复用资源。
+            var cacheKey = new BrushCacheKey(color, alpha);
             if (_brushCache.TryGetValue(cacheKey, out var cached))
             {
-                if (cached.CachedColor == color &&
-                    cached.CachedOpacity == opacity)
-                {
-                    cached.LastAccessSequence = ++_brushCacheSequence;
-                    return cached;
-                }
-                // Color changed — dispose old native brush and recreate
-                cached.Dispose();
-                _brushCache.Remove(cacheKey);
+                cached.LastAccessSequence = ++_brushCacheSequence;
+                return cached;
             }
 
             // Pass sRGB values to native: D2D expects sRGB, and the direct D3D12
@@ -5458,7 +5693,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                 color.R / 255f,
                 color.G / 255f,
                 color.B / 255f,
-                EffectiveBrushAlpha(color.A, opacity));
+                alpha);
             nb.CachedColor = color;
             nb.CachedOpacity = opacity;
             nb.LastAccessSequence = ++_brushCacheSequence;
@@ -5470,9 +5705,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         {
             long contentHash = linear.ComputeContentHash();
             long boundsKey =
-                linear.MappingMode == BrushMappingMode.RelativeToBoundingBox
-                    ? ComputeGradientBoundsKey(bx, by, bw, bh)
-                    : 0;
+                ComputeGradientPaintBoundsKey(bx, by, bw, bh);
             var cacheKey = new BrushCacheKey(brush, boundsKey);
             if (_brushCache.TryGetValue(cacheKey, out var cachedLinear) &&
                 cachedLinear.CachedGradientContentHash == contentHash &&
@@ -5488,9 +5721,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         {
             long contentHash = radial.ComputeContentHash();
             long boundsKey =
-                radial.MappingMode == BrushMappingMode.RelativeToBoundingBox
-                    ? ComputeGradientBoundsKey(bx, by, bw, bh)
-                    : 0;
+                ComputeGradientPaintBoundsKey(bx, by, bw, bh);
             var cacheKey = new BrushCacheKey(brush, boundsKey);
             if (_brushCache.TryGetValue(cacheKey, out var cachedRadial) &&
                 cachedRadial.CachedGradientContentHash == contentHash &&
@@ -5698,7 +5929,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         float clipX, float clipY, float clipW, float clipH,
         float clipRx, float clipRy, NativeEllipticalClip? contour = null)
     {
-        if (imageBrush.CssGradientLayout is { } layout &&
+        if (imageBrush.CssImageLayout is { } layout &&
             shapeBounds.Width > 0 && shapeBounds.Height > 0)
         {
             if (layout.Resolve(shapeBounds.Width, shapeBounds.Height) is not ImageBrush resolved) return;
@@ -5713,11 +5944,17 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         // enough source pixels for the full tile before converting to device pixels.
         // Cover mode also asks the bucket resolver for the larger axis ratio.
         var imageSource = imageBrush.ImageSource;
+        var svgViewportSize = ImageBrushSampler.VectorViewportSize(imageBrush, shapeBounds);
         var requestWidth = shapeBounds.Width;
         var requestHeight = shapeBounds.Height;
-        if (imageBrush.CssBackgroundLayout is { } cssLayout && imageSource.Width > 0 && imageSource.Height > 0)
+        if (svgViewportSize is { } imageSize)
         {
-            var image = cssLayout.ImageRect(shapeBounds, imageSource.Width, imageSource.Height);
+            requestWidth = Math.Max(requestWidth, imageSize.Width);
+            requestHeight = Math.Max(requestHeight, imageSize.Height);
+        }
+        else if (imageBrush.CssBackgroundLayout is { } cssLayout && imageSource.Width > 0 && imageSource.Height > 0)
+        {
+            var image = cssLayout.ImageRect(shapeBounds, imageSource);
             if (!image.IsEmpty)
             {
                 requestWidth = Math.Max(requestWidth, image.Width);
@@ -5729,8 +5966,9 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             (int)Math.Clamp(Math.Ceiling(requestWidth * sx), 0d, 16384d),
             (int)Math.Clamp(Math.Ceiling(requestHeight * sy), 0d, 16384d));
 
-        var nativeBitmap = TryResolveVectorImageSource(imageSource, out var vectorDrawing, out var vectorViewport)
-            ? GetOrCreateVectorNativeBitmap(imageSource, vectorDrawing!, vectorViewport, hintW, hintH)
+        var nativeBitmap = TryResolveVectorImageSource(imageSource, out var vectorDrawing, out var vectorViewport, svgViewportSize)
+            ? GetOrCreateVectorNativeBitmap(imageSource, vectorDrawing!, vectorViewport, hintW, hintH,
+                svgViewportSize)
             : GetNativeBitmap(
                 imageSource,
                 hintW,
@@ -5915,7 +6153,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
 
     internal static float[] MarshalGradientStops(
         IList<GradientStop> stops,
-        double opacity)
+        double opacity, ColorInterpolationMode mode = ColorInterpolationMode.SRgbLinearInterpolation)
     {
         var arr = new float[stops.Count * 5];
         for (int i = 0; i < stops.Count; i++)
@@ -5923,15 +6161,21 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             var s = stops[i];
             int off = i * 5;
             arr[off] = (float)s.Offset;
-            // Pass sRGB values: D2D D2D1_GAMMA_2_2 expects sRGB, and the
-            // software backend's InterpolateGradientStops handles sRGB↔linear.
-            arr[off + 1] = s.Color.R / 255f;
-            arr[off + 2] = s.Color.G / 255f;
-            arr[off + 3] = s.Color.B / 255f;
-            arr[off + 4] = EffectiveBrushAlpha(s.Color.A, opacity);
+            // The ABI carries encoded sRGB; preserve extended scRGB inputs
+            // until native interpolation, instead of first clipping to bytes.
+            var color = s.Color;
+            var linear = mode == ColorInterpolationMode.ScRgbLinearInterpolation;
+            arr[off + 1] = linear ? (float)GradientColorRamp.EncodeLinear(color.ScR) : color.R / 255f;
+            arr[off + 2] = linear ? (float)GradientColorRamp.EncodeLinear(color.ScG) : color.G / 255f;
+            arr[off + 3] = linear ? (float)GradientColorRamp.EncodeLinear(color.ScB) : color.B / 255f;
+            arr[off + 4] = color.ScA * (float)Math.Clamp(opacity, 0, 1);
         }
         return arr;
     }
+
+    private long ComputeGradientPaintBoundsKey(float bx, float by, float bw, float bh) =>
+        unchecked((ComputeGradientBoundsKey(bx, by, bw, bh) ^
+            ComputeGradientBoundsKey((float)Offset.X, (float)Offset.Y, 0, 0)) * 0x100000001b3L);
 
     private static long ComputeGradientBoundsKey(
         float bx,
@@ -5973,21 +6217,12 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         if (brush.GradientStops.Count == 0)
             return null;
 
-        float sx, sy, ex, ey;
-        if (brush.MappingMode == BrushMappingMode.RelativeToBoundingBox)
-        {
-            sx = bx + (float)brush.StartPoint.X * bw;
-            sy = by + (float)brush.StartPoint.Y * bh;
-            ex = bx + (float)brush.EndPoint.X * bw;
-            ey = by + (float)brush.EndPoint.Y * bh;
-        }
-        else
-        {
-            sx = (float)brush.StartPoint.X;
-            sy = (float)brush.StartPoint.Y;
-            ex = (float)brush.EndPoint.X;
-            ey = (float)brush.EndPoint.Y;
-        }
+        var bounds = new Rect(bx, by, bw, bh);
+        var transform = GradientPaintCoordinates.GradientToTarget(brush, bounds, Offset);
+        if (!GradientPaintCoordinates.TryInvert(transform, out _)) return null;
+        var start = GradientPaintCoordinates.MapPoint(brush, brush.StartPoint, bounds, Offset);
+        var end = GradientPaintCoordinates.MapPoint(brush, brush.EndPoint, bounds, Offset);
+        float sx = (float)start.X, sy = (float)start.Y, ex = (float)end.X, ey = (float)end.Y;
 
         // Guard against degenerate gradient line (start == end).
         if (sx == ex && sy == ey)
@@ -5995,7 +6230,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
 
         var stops = MarshalGradientStops(
             brush.GradientStops,
-            brush.Opacity);
+            brush.Opacity, brush.ColorInterpolationMode);
         var nb = _context.CreateLinearGradientBrush(sx, sy, ex, ey, stops, (uint)brush.GradientStops.Count, ToNativeExtendMode(brush.SpreadMethod));
         if (!nb.IsValid)
         {
@@ -6004,11 +6239,11 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         }
 
         nb.LastAccessSequence = ++_brushCacheSequence;
+        nb.SetColorInterpolationMode(brush.ColorInterpolationMode);
+        if (!nb.SetPaintTransform(transform)) return null;
         nb.CachedGradientContentHash = brush.ComputeContentHash();
         nb.CachedBoundsKey =
-            brush.MappingMode == BrushMappingMode.RelativeToBoundingBox
-                ? ComputeGradientBoundsKey(bx, by, bw, bh)
-                : 0;
+            ComputeGradientPaintBoundsKey(bx, by, bw, bh);
         var cacheKey = new BrushCacheKey(brush, nb.CachedBoundsKey);
 
         // Replace previous cached entry if any
@@ -6024,29 +6259,22 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         if (brush.GradientStops.Count == 0)
             return null;
 
-        float cx, cy, rx, ry, ox, oy;
-        if (brush.MappingMode == BrushMappingMode.RelativeToBoundingBox)
-        {
-            cx = bx + (float)brush.Center.X * bw;
-            cy = by + (float)brush.Center.Y * bh;
-            rx = (float)brush.RadiusX * bw;
-            ry = (float)brush.RadiusY * bh;
-            ox = bx + (float)brush.GradientOrigin.X * bw;
-            oy = by + (float)brush.GradientOrigin.Y * bh;
-        }
-        else
-        {
-            cx = (float)brush.Center.X;
-            cy = (float)brush.Center.Y;
-            rx = (float)brush.RadiusX;
-            ry = (float)brush.RadiusY;
-            ox = (float)brush.GradientOrigin.X;
-            oy = (float)brush.GradientOrigin.Y;
-        }
+        var bounds = new Rect(bx, by, bw, bh);
+        var transform = GradientPaintCoordinates.GradientToTarget(brush, bounds, Offset);
+        if (!GradientPaintCoordinates.TryInvert(transform, out _)) return null;
+        var center = GradientPaintCoordinates.MapPoint(brush, brush.Center, bounds, Offset);
+        var origin = GradientPaintCoordinates.MapPoint(brush, brush.GradientOrigin, bounds, Offset);
+        float cx = (float)center.X, cy = (float)center.Y, ox = (float)origin.X, oy = (float)origin.Y;
+        float rx = (float)GradientPaintCoordinates.MapRadius(brush, brush.RadiusX, bw);
+        float ry = (float)GradientPaintCoordinates.MapRadius(brush, brush.RadiusY, bh);
+        var focalRadius = GradientPaintCoordinates.MapRadius(brush, brush.SvgFocalRadius, bw);
+        var radialGeometry = new RadialGradientGeometry(center, origin,
+            GradientPaintCoordinates.MapRadius(brush, brush.RadiusX, bw),
+            GradientPaintCoordinates.MapRadius(brush, brush.RadiusY, bh), focalRadius, brush.UsesSvgRadialInterpolation);
 
         var stops = MarshalGradientStops(
             brush.GradientStops,
-            brush.Opacity);
+            brush.Opacity, brush.ColorInterpolationMode);
         var nb = _context.CreateRadialGradientBrush(cx, cy, rx, ry, ox, oy, stops, (uint)brush.GradientStops.Count, ToNativeExtendMode(brush.SpreadMethod));
         if (!nb.IsValid)
         {
@@ -6054,12 +6282,14 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             return null;
         }
 
+        if (brush.UsesSvgRadialInterpolation) nb.SetRadialGeometry(focalRadius, radialGeometry.Flags);
+
         nb.LastAccessSequence = ++_brushCacheSequence;
+        nb.SetColorInterpolationMode(brush.ColorInterpolationMode);
+        if (!nb.SetPaintTransform(transform)) return null;
         nb.CachedGradientContentHash = brush.ComputeContentHash();
         nb.CachedBoundsKey =
-            brush.MappingMode == BrushMappingMode.RelativeToBoundingBox
-                ? ComputeGradientBoundsKey(bx, by, bw, bh)
-                : 0;
+            ComputeGradientPaintBoundsKey(bx, by, bw, bh);
         var cacheKey = new BrushCacheKey(brush, nb.CachedBoundsKey);
 
         // Replace previous cached entry if any
@@ -6077,7 +6307,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         int textRenderingMode,
         int textFormattingMode,
         int textHintingMode,
-        bool subpixelPositioning = false, bool noWrap = false, TextAlignment textAlignment = TextAlignment.Left)
+        bool subpixelPositioning = false, bool noWrap = false, TextAlignment textAlignment = TextAlignment.Left, FlowDirection flowDirection = FlowDirection.LeftToRight, bool naturalDirection = false)
     {
         if (string.IsNullOrWhiteSpace(fontFamily))
         {
@@ -6103,7 +6333,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             textRenderingMode,
             textFormattingMode,
             textHintingMode,
-            subpixelPositioning, noWrap, textAlignment, TextMeasurement.FontCacheEpoch);
+            subpixelPositioning, noWrap, textAlignment, naturalDirection ? 2 : (int)flowDirection, TextMeasurement.FontCacheEpoch);
 
         if (_textFormatCache.TryGetValue(key, out var cached) && cached.IsValid)
         {
@@ -6128,6 +6358,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             // is harmless because the native side just stores the value.
             if (noWrap) format.SetNoWrap(true);
             format.SetTextAlignment(textAlignment);
+            format.TrySetTextDirection(naturalDirection ? 2 : (int)flowDirection);
             format.SetTextRenderingMode(textRenderingMode);
             format.SetTextFormattingMode(textFormattingMode);
             format.SetTextHintingMode(textHintingMode);

@@ -15,6 +15,8 @@ import subprocess
 import tempfile
 import time
 
+from native_payload_proof import capture_payload, verify_software_payload
+
 LIBRARIES = tuple('libjalium.native.' + name + '.dylib' for name in
                   ('core', 'text', 'metal', 'software', 'platform', 'media.core', 'media', 'browser'))
 ASSEMBLIES = ('Jalium.UI.MacOS.HostSmoke.dll', 'Jalium.UI.Managed.dll', 'Jalium.UI.MacOS.dll', 'Jalium.UI.Xaml.dll')
@@ -31,6 +33,7 @@ def stop_owned_app(app):
             except ProcessLookupError: pass
 
 def run_case(work, app, client_binary, index, libraries):
+    native_before = capture_payload(libraries)
     output = work / ('case-' + str(index)); output.mkdir(mode=0o700)
     commands, checks, failures = [], [], []
     launcher = client = None; pid = None; initial = final = {}
@@ -118,12 +121,12 @@ def run_case(work, app, client_binary, index, libraries):
             except subprocess.TimeoutExpired: stop_owned_app(app); launcher.wait(timeout=6)
         final = state(); loaded = []
         log = (output / 'app.err').read_text(errors='replace') if (output / 'app.err').exists() else ''
-        for name, paths in libraries.items():
-            if not any(str(path) in log for path in paths): failures.append('loaded payload not proven: ' + name)
-            else: loaded.append(name)
+        native_proof = verify_software_payload(libraries, native_before, log)
+        failures.extend(native_proof['errors'])
+        loaded = native_proof['loadedNames']
         result = {'index': index, 'passed': not failures, 'checks': checks, 'failures': failures,
                   'initial': initial, 'final': final, 'commands': commands, 'hostPID': pid,
-                  'clientPID': None if client is None else client.pid, 'loadedNative': loaded,
+                  'clientPID': None if client is None else client.pid, 'loadedNative': loaded, 'nativePayloadProof': native_proof,
                   'externalAX': True, 'physicalInput': False, 'seconds': round(time.monotonic() - started, 3)}
         (output / 'receipt.json').write_text(json.dumps(result, ensure_ascii=False))
     return result

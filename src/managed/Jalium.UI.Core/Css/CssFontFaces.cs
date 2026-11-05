@@ -24,10 +24,39 @@ internal static class CssFontFaces
 
     internal static string MaterializeSource(string source, string? text)
     {
+        if (FontFeatureRenderingSource.TryUnwrap(source, out var features, out var family, out var caps, out var capsContext))
+        {
+            bool blocked = IsBlocked(source);
+            var result = MaterializeSource((blocked ? BlockPrefix : "") + family, text);
+            return FontFeatureRenderingSource.Wrap(result, features, caps, capsContext);
+        }
         if (!CssFontRenderingPlan.TryDecode(source, out var plan) || plan.RequestId == 0 ||
             !s_requestIds.TryGetValue(plan.RequestId, out var weak) || !weak.TryGetTarget(out var request) ||
             !request.Node.Dispatcher.CheckAccess()) return source;
         return For(request.Node).Resolve(request.Node, request.Families, request.Weight, request.Style, text, request.Width);
+    }
+
+    // Request ids identify the owner used for future text-dependent loading.
+    // They do not make an otherwise identical selected face a font override.
+    // Keep this identity for comparisons only; actual rendering retains the
+    // original request, including its observer and unicode-range resolution.
+    internal static bool HasMetricOverrides(string source)
+    {
+        if (CssFontRenderingPlan.TryDecode(source, out var plan)) return plan.Faces.Any(face => face.Metrics.HasHorizontalOverrides);
+        return FontFeatureRenderingSource.TryUnwrap(source, out _, out _, out _, out var context) && context.FaceMetrics?.HasHorizontalOverrides == true;
+    }
+
+    internal static string ComparisonSource(string source)
+    {
+        bool blocked = IsBlocked(source);
+        string family = Unblock(source);
+        string prefix = blocked ? BlockPrefix : "";
+        if (FontFeatureRenderingSource.TryUnwrap(family, out var features, out var inner, out var caps, out var context))
+            return prefix + FontFeatureRenderingSource.Wrap(ComparisonSource(inner), features, caps, context);
+        if (FontWidthRenderingSource.TryUnwrap(family, out var width, out inner))
+            return prefix + FontWidthRenderingSource.Wrap(ComparisonSource(inner), width);
+        return CssFontRenderingPlan.TryDecode(family, out var plan)
+            ? prefix + (plan with { RequestId = 0 }).Encode() : source;
     }
 
     private static long RequestId(CssNode node, IReadOnlyList<string> families, int weight, int style, double width)
@@ -60,6 +89,16 @@ internal static class CssFontFaces
     }
     private static readonly Lazy<HashSet<string>> s_localFamilies = new(() => new(
         Jalium.UI.Controls.Helpers.FontEnumerationHelper.EnumerateSystemFontFamilies() ?? [], StringComparer.OrdinalIgnoreCase));
+
+    private static bool LocalAvailable(string family)
+    {
+        // The UI family list can omit usable supplemental/hidden fonts.
+        // Match the same native availability check used by actual CSS drawing.
+        if (OperatingSystem.IsMacOS())
+            try { return NativeMethods.FontFamilyIsAvailable(family) != 0; }
+            catch (Exception error) when (error is EntryPointNotFoundException or DllNotFoundException or BadImageFormatException) { }
+        return s_localFamilies.Value.Contains(family);
+    }
 
     internal static bool IsBlocked(string family) => family.StartsWith(BlockPrefix, StringComparison.Ordinal);
     internal static string Unblock(string family) => IsBlocked(family) ? family[BlockPrefix.Length..] : family;
@@ -96,10 +135,13 @@ internal static class CssFontFaces
 
     internal static string RenderingFamily(DependencyObject owner, FontFamily family)
     {
-        if (!IsActive || !family.IsCssFamily || owner is not (FrameworkElement or FrameworkContentElement)) return family.Source;
+        if (!IsActive || owner is not (FrameworkElement or FrameworkContentElement)) return family.Source;
         var node = CssNode.Get(owner);
-        var familyProperty = CssDependencyPropertyLookup.Find(node.GetType(), "FontFamily");
-        if (familyProperty is not null && node.HasLocalOrAnimatedValue(familyProperty)) return family.Source;
+        // A document or generated-content proxy may copy a CSS FontFamily into
+        // a local DP. Its CSS origin still matters; native-created families have
+        // IsCssFamily == false and keep their installed-font selection below.
+        if (!family.IsCssFamily)
+            return CssFontAlternates.For(owner).HasNamedValues ? For(node).ResolveNativeAlternates(node, family.Source) : family.Source;
         var weightProperty = CssDependencyPropertyLookup.Find(node.GetType(), "FontWeight");
         var styleProperty = CssDependencyPropertyLookup.Find(node.GetType(), "FontStyle");
         var textProperty = CssDependencyPropertyLookup.Find(node.GetType(), "Text");
@@ -127,6 +169,9 @@ internal static class CssFontFaces
         private readonly WeakReference<CssNode> _root = new(root);
         private readonly Dictionary<CssFontFaceRule, Entry> _entries = new(ReferenceEqualityComparer.Instance);
         private CssFontFaceRule[] _rules = [];
+        private readonly Dictionary<string, Dictionary<(string Kind, string Name), int[]>> _featureValues = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, string> _familyDisplay = new(StringComparer.OrdinalIgnoreCase);
+        private CssFontFeatureValuesRule[] _featureRules = [];
         private int _version = -1;
         private Size _viewport;
         private bool _refreshing;
@@ -148,6 +193,7 @@ internal static class CssFontFaces
             try
             {
                 var rules = new List<(CssFontFaceRule Rule, int[] Layer, int Order)>();
+                var featureRules = new List<(CssFontFeatureValuesRule Rule, int[] Layer, int Order)>();
                 var layers = new CssLayerOrder();
                 void Add(IEnumerable<CssStyleSheet> sheets)
                 {
@@ -156,6 +202,8 @@ internal static class CssFontFaces
                         foreach (var layer in sheet.Layers) if (layer.Condition is null || layer.Condition.Evaluate(root)) layers.GetKey(layer.Name);
                         foreach (var rule in sheet.FontFaces)
                             if (rule.Condition is null || rule.Condition.Evaluate(root)) rules.Add((rule, layers.GetKey(rule.LayerName), rules.Count));
+                        foreach (var rule in sheet.FontFeatureValues)
+                            if (rule.Condition is null || rule.Condition.Evaluate(root)) featureRules.Add((rule, layers.GetKey(rule.LayerName), featureRules.Count));
                     }
                 }
                 if (CssEngine.ApplicationStyleSheetsProvider?.Invoke() is { } application) Add(application);
@@ -168,10 +216,27 @@ internal static class CssFontFaces
                 }
                 rules.Sort((a, b) => { var layer = CssLayerOrder.Compare(a.Layer, b.Layer); return layer != 0 ? -layer : b.Order.CompareTo(a.Order); });
                 _rules = rules.Select(r => r.Rule).ToArray();
+                featureRules.Sort((a, b) => { var layer = CssLayerOrder.Compare(a.Layer, b.Layer); return layer != 0 ? -layer : b.Order.CompareTo(a.Order); });
+                var selectedFeatures = featureRules.Select(entry => entry.Rule).ToArray();
+                bool featureDefinitionsChanged = !selectedFeatures.SequenceEqual(_featureRules);
+                _featureRules = selectedFeatures;
+                _featureValues.Clear(); _familyDisplay.Clear();
+                foreach (var entry in featureRules)
+                    foreach (string family in entry.Rule.Families)
+                    {
+                        if (!_featureValues.TryGetValue(family, out var values)) _featureValues[family] = values = new();
+                        foreach (var value in entry.Rule.Values.Reverse()) values.TryAdd((value.Kind, value.Name), value.Indices);
+                        if (entry.Rule.Display is { } display) _familyDisplay.TryAdd(family, display);
+                    }
                 var retained = _rules.ToHashSet(ReferenceEqualityComparer.Instance);
-                foreach (var rule in _entries.Keys.Where(rule => !retained.Contains(rule)).ToArray())
+                foreach (var rule in _entries.Keys.Where(rule => !retained.Contains(rule) || _entries[rule].Display != DisplayFor(rule)).ToArray())
                 { _entries[rule].Dispose(); _entries.Remove(rule); }
                 _version = CssEngine.CascadeVersion; _viewport = viewport;
+                if (featureDefinitionsChanged)
+                {
+                    FontWidthRenderingSource.Invalidate(root);
+                    root.InvalidateMeasure();
+                }
             }
             finally { _refreshing = false; }
         }
@@ -187,7 +252,28 @@ internal static class CssFontFaces
             return ResolveLegacy(node, families, weight, style, text);
         }
 
-        private sealed record Candidate(CssFontFaceRule? Rule, Entry? Entry, string? Local, int Weight, double Width)
+        private string DisplayFor(CssFontFaceRule rule) => !rule.DisplaySpecified && _familyDisplay.TryGetValue(rule.Family, out var display) ? display : rule.Display;
+
+        private FontFeature[] FeaturesFor(CssNode node, string family)
+            => !_featureValues.TryGetValue(family, out var values) ? [] : CssFontAlternates.For(node.Target).Resolve(
+                (kind, name) => values.GetValueOrDefault((kind, name)));
+
+        internal string ResolveNativeAlternates(CssNode node, string source)
+        {
+            var families = TextMeasurement.EnumerateFontFamilyNames(source).ToArray();
+            if (!OperatingSystem.IsMacOS()) return JoinFamilies(families.Select(name => FontFeatureRenderingSource.Wrap(name, FeaturesFor(node, name))));
+            var weightProperty = CssDependencyPropertyLookup.Find(node.GetType(), "FontWeight");
+            int weight = weightProperty is not null && node.GetValue(weightProperty) is FontWeight value ? value.ToOpenTypeWeight() : 400;
+            var faces = families.Where(name => NativeMethods.FontFamilyIsAvailable(name) != 0).Select(name =>
+                new CssRenderingFace(name, weight, [new(0, 0x10ffff)], false, false, CssFontStretchValue.Computed(node))
+                    { Features = FeaturesFor(node, name) }).ToArray();
+            if (faces.Length == 0 || faces.All(face => face.Features.Length == 0)) return source;
+            // Native-set FontFamily values keep selecting installed fonts, even if
+            // a CSS @font-face happens to use the same name.
+            return new CssFontRenderingPlan(0, 0, faces).Encode();
+        }
+
+        private sealed record Candidate(CssFontFaceRule? Rule, Entry? Entry, string? Local, int Weight, double Width, string CssFamily)
         {
             internal string? Family => Local ?? Entry?.RenderFamily;
             internal CssUnicodeRange[] Ranges => Rule?.Ranges ?? [new(0, 0x10ffff)];
@@ -202,7 +288,7 @@ internal static class CssFontFaces
                 var matches = _rules.Where(rule => rule.Family.Equals(name, StringComparison.OrdinalIgnoreCase)).ToArray();
                 if (matches.Length == 0)
                 {
-                    if (NativeMethods.FontFamilyIsAvailable(name) != 0) candidates.Add(new(null, null, name, weight, width));
+                    if (NativeMethods.FontFamilyIsAvailable(name) != 0) candidates.Add(new(null, null, name, weight, width, name));
                     continue;
                 }
                 hasRules = true;
@@ -212,13 +298,13 @@ internal static class CssFontFaces
                 foreach (var rule in matches.Where(rule => rule.MinimumWidth == best.MinimumWidth && rule.MaximumWidth == best.MaximumWidth &&
                     rule.Style == best.Style && rule.MinimumWeight == best.MinimumWeight && rule.MaximumWeight == best.MaximumWeight))
                 {
-                    if (!_entries.TryGetValue(rule, out var entry)) _entries[rule] = entry = new(rule);
+                    if (!_entries.TryGetValue(rule, out var entry)) _entries[rule] = entry = new(rule, DisplayFor(rule));
                     entry.Observe(node);
                     candidates.Add(new(rule, entry, null, (int)Math.Clamp(weight, rule.MinimumWeight, rule.MaximumWeight),
-                        Math.Clamp(width, rule.MinimumWidth, rule.MaximumWidth)));
+                        Math.Clamp(width, rule.MinimumWidth, rule.MaximumWidth), name));
                 }
             }
-            if (!hasRules) return FontWidthRenderingSource.Wrap(JoinFamilies(families), width);
+            if (!hasRules && !CssFontAlternates.For(node.Target).HasNamedValues) return FontWidthRenderingSource.Wrap(JoinFamilies(families), width);
             // Font timers start on the first attempt to use a face. Already loaded
             // fallbacks can paint while it waits, without starting more downloads.
             var clusters = new List<(int[] Original, int[] Normalized)>();
@@ -257,14 +343,19 @@ internal static class CssFontFaces
             foreach (var cluster in clusters)
                 if (!Demand(cluster.Original, cluster.Normalized))
                     foreach (int scalar in cluster.Original) Demand([scalar], [scalar]);
-            var faces = candidates.Where(candidate => candidate.Family is not null || candidate.Entry is { Started: true, Finished: false })
-                .Select(candidate => new CssRenderingFace(candidate.Family, candidate.Weight, candidate.Ranges,
-                    candidate.Family is null, candidate.Entry?.Blocked ?? false, candidate.Width)).ToArray();
+            // Font loading finishes on another thread. Read each family's identity
+            // once so the face and its waiting flag describe the same snapshot.
+            var faces = candidates.Select(candidate => (Candidate: candidate, Family: candidate.Family))
+                .Where(item => item.Family is not null || item.Candidate.Entry is { Started: true, Finished: false })
+                .Select(item => new CssRenderingFace(item.Family, item.Candidate.Weight, item.Candidate.Ranges,
+                    item.Family is null, item.Candidate.Entry?.Blocked ?? false, item.Candidate.Width)
+                    { Features = FontFeatureRenderingSource.Merge(item.Candidate.Rule?.FeatureSettings.Features ?? [], FeaturesFor(node, item.Candidate.CssFamily)),
+                      Variations = item.Candidate.Rule?.VariationSettings.Axes ?? [], Metrics = item.Candidate.Rule?.Metrics ?? CssFontFaceMetrics.Initial }).ToArray();
             if (faces.Length > 4096 || faces.Sum(face => (long)face.Ranges.Length) > 65536)
                 throw new InvalidOperationException("CSS font cascade exceeds the supported size");
             int metrics = Array.FindIndex(faces, face => !face.Waiting && face.Contains(32));
             bool unresolved = candidates.Any(candidate => candidate.Entry is { Finished: false });
-            if (!unresolved && faces.All(face => face.Unrestricted && face.Weight == weight && face.Width == width) && metrics == 0)
+            if (!unresolved && faces.All(face => !face.Waiting && face.Unrestricted && face.Weight == weight && face.Width == width && face.Features.Length == 0 && face.Variations.Length == 0 && face.Metrics.IsInitial) && metrics == 0)
                 return FontWidthRenderingSource.Wrap(JoinFamilies(faces.Select(face => face.Family!)), width);
             var result = FontWidthRenderingSource.Wrap(new CssFontRenderingPlan(RequestId(node, families, weight, style, width), metrics, faces).Encode(), width);
             // Preserve the existing whole-text block contract when its complete
@@ -296,15 +387,16 @@ internal static class CssFontFaces
                     (string.IsNullOrEmpty(text) || text.EnumerateRunes().Any(rune => rule.Contains(rune.Value)))).ToArray();
                 if (candidates.Length == 0)
                 {
-                    resolved.Add(raw.Trim());
+                    resolved.Add(JoinFamilies([FontFeatureRenderingSource.Wrap(name, FeaturesFor(node, name))]));
                     if (s_localFamilies.Value.Contains(name)) break;
                     continue;
                 }
                 var rule = candidates.OrderBy(r => r.Style == style ? 0 : r.Style != 0 && style != 0 ? 1 : 2)
                     .ThenBy(r => WeightDistance(r, weight)).First();
-                if (!_entries.TryGetValue(rule, out var entry)) _entries[rule] = entry = new(rule);
+                if (!_entries.TryGetValue(rule, out var entry)) _entries[rule] = entry = new(rule, DisplayFor(rule));
                 entry.Observe(node); entry.Start();
-                if (entry.RenderFamily is { } loaded) { resolved.Add(loaded); break; }
+                if (entry.RenderFamily is { } loaded)
+                { resolved.Add(JoinFamilies([FontFeatureRenderingSource.Wrap(loaded, FontFeatureRenderingSource.Merge(rule.FeatureSettings.Features, FeaturesFor(node, name)), CssCapsVariant.Normal, new(Variations: rule.VariationSettings.Axes, FaceMetrics: rule.Metrics))])); break; }
                 blocked |= entry.Blocked;
             }
             var result = string.Join(", ", resolved.Where(s => s.Length > 0));
@@ -328,7 +420,7 @@ internal static class CssFontFaces
         internal IReadOnlyList<string> Errors() => _entries.Values.SelectMany(e => e.Errors).ToArray();
     }
 
-    private sealed class Entry(CssFontFaceRule rule) : IDisposable
+    private sealed class Entry(CssFontFaceRule rule, string display) : IDisposable
     {
         private readonly CancellationTokenSource _cancellation = new();
         private readonly List<WeakReference<CssNode>> _users = [];
@@ -340,8 +432,9 @@ internal static class CssFontFaces
         private long _start;
         private bool _finished, _disposed;
         internal Task Task => _task ?? System.Threading.Tasks.Task.CompletedTask;
-        private int BlockPeriod => rule.Display is "swap" ? 0 : rule.Display is "optional" or "fallback" ? 100 : 3000;
-        private long SwapDeadline => rule.Display == "optional" ? 100 : rule.Display == "fallback" ? 3100 : long.MaxValue;
+        internal string Display => display;
+        private int BlockPeriod => display is "swap" ? 0 : display is "optional" or "fallback" ? 100 : 3000;
+        private long SwapDeadline => display == "optional" ? 100 : display == "fallback" ? 3100 : long.MaxValue;
         internal bool Started { get { lock (_gate) return _task is not null; } }
         internal bool Finished { get { lock (_gate) return _finished || _disposed; } }
         internal bool Blocked { get { lock (_gate) return _task is not null && !_finished && !_disposed && Environment.TickCount64 - _start < BlockPeriod; } }
@@ -392,7 +485,7 @@ internal static class CssFontFaces
                         string? family; CssNativeFontResource? resource = null;
                         if (source.Local)
                         {
-                            if (!s_localFamilies.Value.Contains(source.Reference)) continue;
+                            if (!LocalAvailable(source.Reference)) continue;
                             family = source.Reference;
                         }
                         else
@@ -449,6 +542,7 @@ internal static class CssFontFaces
                         for (var current = node; current is not null; current = current.FrameworkParent)
                             if (current.Target is FrameworkElement visual) { visual.OnFontResourcesChanged(); break; }
                         CssEvaluationScheduler.InvalidateSubtree(node);
+                        node.InvalidateMeasure();
                     }
                 }
                 if (group.Key.HasShutdownStarted) continue;

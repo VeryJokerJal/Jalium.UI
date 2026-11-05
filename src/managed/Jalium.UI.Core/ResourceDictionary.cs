@@ -79,6 +79,7 @@ public partial class ResourceDictionary : IDictionary, ISupportInitialize, Jaliu
         private readonly Uri? _baseUri;
         private readonly Assembly? _sourceAssembly;
         private readonly Jalium.UI.Threading.Dispatcher _dispatcher;
+        private readonly IReadOnlyList<ResourceDictionary>? _ambientDictionaries;
         private int _state;
         private object? _value;
 
@@ -86,16 +87,18 @@ public partial class ResourceDictionary : IDictionary, ISupportInitialize, Jaliu
             Jalium.UI.Markup.XamlBuilder.DeferredResourceFactory factory,
             Uri? baseUri,
             Assembly? sourceAssembly,
-            Jalium.UI.Threading.Dispatcher dispatcher)
+            Jalium.UI.Threading.Dispatcher dispatcher,
+            IReadOnlyList<ResourceDictionary>? ambientDictionaries)
         {
             _factory = factory;
             _baseUri = baseUri;
             _sourceAssembly = sourceAssembly;
             _dispatcher = dispatcher;
+            _ambientDictionaries = ambientDictionaries;
         }
 
         public DeferredResourceEntry Clone()
-            => new(_factory, _baseUri, _sourceAssembly, _dispatcher);
+            => new(_factory, _baseUri, _sourceAssembly, _dispatcher, _ambientDictionaries);
 
         public object? GetValue(ResourceDictionary owner, object key)
         {
@@ -126,6 +129,8 @@ public partial class ResourceDictionary : IDictionary, ISupportInitialize, Jaliu
                 // Never retain the mutable context used to build the containing dictionary.
                 // A fresh context gives this factory an empty parent/name stack while preserving
                 // the owner, BaseUri and source assembly needed by StaticResource and Source.
+                using var ambientScope = TemplateAmbientResourceContext.Push(
+                    _ambientDictionaries ?? TemplateAmbientResourceContext.Current);
                 var context = Jalium.UI.Markup.XamlBuilder.BeginComponent(
                     owner,
                     _baseUri,
@@ -533,7 +538,8 @@ public partial class ResourceDictionary : IDictionary, ISupportInitialize, Jaliu
                 factory,
                 BaseUri,
                 SourceAssembly,
-                Jalium.UI.Threading.Dispatcher.CurrentDispatcher));
+                Jalium.UI.Threading.Dispatcher.CurrentDispatcher,
+                TemplateAmbientResourceContext.Current?.ToArray()));
         OnChangedForKey(key);
     }
 
@@ -577,7 +583,7 @@ public partial class ResourceDictionary : IDictionary, ISupportInitialize, Jaliu
             return true;
 
         var chain = t_lookupChain ??= new HashSet<ThemeLookupVisit>();
-        var visit = new ThemeLookupVisit(this, EffectiveLookupThemeKey);
+        var visit = new ThemeLookupVisit(this, EffectiveLookupThemeKey, key);
         if (!chain.Add(visit))
             return false; // Cycle detected
 
@@ -755,7 +761,7 @@ public partial class ResourceDictionary : IDictionary, ISupportInitialize, Jaliu
         out ResourceDictionary? sourceDictionary)
     {
         var chain = t_lookupChain ??= new HashSet<ThemeLookupVisit>();
-        var visit = new ThemeLookupVisit(this, EffectiveLookupThemeKey);
+        var visit = new ThemeLookupVisit(this, EffectiveLookupThemeKey, key);
         if (!chain.Add(visit))
         {
             value = null;

@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using Jalium.UI.Controls;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
+using Jalium.UI.Styling;
 using System.Collections;
 using System.ComponentModel;
 using Jalium.UI.Data;
@@ -566,6 +567,13 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
         }
     }
 
+    internal void UnregisterOwnNameIfMatches(string name, object expected)
+    {
+        if (_namedElements is not null && _namedElements.TryGetValue(name, out var registered)
+            && ReferenceEquals(registered, expected))
+            _namedElements.Remove(name);
+    }
+
     /// <summary>
     /// Unregisters a named element from this element's template scope.
     /// </summary>
@@ -600,6 +608,15 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
         if (_namedElements != null && _namedElements.TryGetValue(name, out var element))
         {
             return element;
+        }
+
+        // Compiled templates keep every named object in their instance scope,
+        // including nonvisual ColumnDefinitions and content projected into named
+        // regions. A visual-tree-only part walk cannot discover those objects.
+        if (StateGroupsRoot is { } templateRoot && !ReferenceEquals(templateRoot, this) &&
+            NameScope.GetNameScope(templateRoot)?.FindName(name) is { } templateNamed)
+        {
+            return templateNamed;
         }
 
         // Stop at template boundary: if the parent is the TemplatedParent of this element,
@@ -643,8 +660,18 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
         if (localSource.BaseValueSource != BaseValueSource.Default || localSource.IsAnimated)
             return localSource;
 
-        if (dp.GetMetadata(GetType()).Inherits && FrameworkParent is FrameworkElement parent)
-            return new ValueSource(BaseValueSource.Inherited, localSource.IsExpression, localSource.IsAnimated, localSource.IsCoerced);
+        if (dp.GetMetadata(GetType()).Inherits)
+        {
+            if (_logicalParent is null && Styling.CssNode.ContentInheritanceParent(this) is { } docParent &&
+                docParent.GetValueSourceInternal(dp).BaseValueSource != BaseValueSource.Default)
+                return new ValueSource(BaseValueSource.Inherited, localSource.IsExpression, localSource.IsAnimated, localSource.IsCoerced);
+            if (FrameworkParent is FrameworkElement parent)
+            {
+                var source = FindInheritedSource(parent, dp);
+                if (source != null && TryGetInheritedBaseValue(source, dp, out _))
+                    return new ValueSource(BaseValueSource.Inherited, localSource.IsExpression, localSource.IsAnimated, localSource.IsCoerced);
+            }
+        }
 
         return localSource;
     }
@@ -659,12 +686,22 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
             return localValue;
         }
 
-        if (dp.GetMetadata(GetType()).Inherits && FrameworkParent is FrameworkElement parent)
+        if (dp.GetMetadata(GetType()).Inherits)
         {
-            var source = FindInheritedSource(parent, dp);
-            if (source != null && TryGetInheritedBaseValue(source, dp, out var inheritedValue))
+            if (_logicalParent is null && Styling.CssNode.ContentInheritanceParent(this) is { } docParent)
             {
-                return (inheritedValue, BaseValueSource.Inherited);
+                var docValue = docParent.GetUncoercedBaseValueInternal(dp);
+                if (docValue.source != BaseValueSource.Default)
+                    return (docValue.value, BaseValueSource.Inherited);
+            }
+
+            if (FrameworkParent is FrameworkElement parent)
+            {
+                var source = FindInheritedSource(parent, dp);
+                if (source != null && TryGetInheritedBaseValue(source, dp, out var inheritedValue))
+                {
+                    return (inheritedValue, BaseValueSource.Inherited);
+                }
             }
         }
 
@@ -1074,10 +1111,10 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
                     current.ReEvaluateImplicitStyle();
                 }
 
-                var childCount = current.VisualChildrenCount;
+                var childCount = current.InternalVisualChildrenCount;
                 for (int i = 0; i < childCount; i++)
                 {
-                    if (current.GetVisualChild(i) is FrameworkElement child)
+                    if (current.InternalGetVisualChild(i) is FrameworkElement child)
                     {
                         stack.Add(child);
                     }
@@ -1274,19 +1311,50 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
     /// <inheritdoc />
     protected override Size MeasureCore(Size availableSize)
     {
+        if (_cssIntrinsicSizing is null && CssLayout?.HasSizingKeywords != true) return MeasureFrameworkCore(availableSize);
+        var state = _cssIntrinsicSizing ??= new(); var previous = state.Available;
+        state.Available = availableSize;
+        try { return MeasureFrameworkCore(availableSize); }
+        finally { state.Available = previous; }
+    }
+
+    private Size MeasureFrameworkCore(Size availableSize)
+    {
+        if (CssContentsLayout.IsContents(this) || CssContentsLayout.Suppressed(this))
+        { LastCssMeasureBox = CssParentBox; return default; }
+        CssContentsLayout.Prepare(this, arrange: false);
+        if (IsCssColumnFrame)
+        {
+            LastCssMeasureBox = CssParentBox;
+            return CssColumnBox!.Size;
+        }
+        if (IsCssInlineFrame)
+        {
+            LastCssMeasureBox = CssParentBox;
+            return CssInlineBox!.Size;
+        }
+        if (this is Controls.TextBlock { IsCssInlineBox: true } fragmented && fragmented.TryCssInlineAllocation(out var inlineSize))
+        {
+            LastCssMeasureBox = CssParentBox;
+            return inlineSize;
+        }
         // CSS layout state (%, aspect-ratio, box-sizing) resolves here because the
         // containing-block basis only exists during layout. Null = zero-cost path.
         var cssLayout = CssLayout;
 
         LastCssMeasureBox = CssParentBox;
-        var containingBlock = CssParentBox?.ContainingBlock ?? availableSize;
-        var margin = CssParentBox is not null ? default : cssLayout is { HasMargin: true } && !HasLocalOrAnimatedValue(MarginProperty)
+        var tableManaged = Jalium.UI.Styling.CssTableLayout.IsManaged(this);
+        if (CssFlexSizing is { } flexMeasure) flexMeasure.Measured = flexMeasure.Current;
+        var containingBlock = CssParentBox?.ContainingBlock ?? CssNativeBox?.ContainingBlock ??
+            Jalium.UI.Styling.CssPositionedLayout.MeasureContainingSize(this, availableSize);
+        var margin = tableManaged || Jalium.UI.Styling.CssRubyBoxMetrics.IsStructural(this) || CssParentBox is not null ? default : cssLayout is { HasMargin: true } && !HasLocalOrAnimatedValue(MarginProperty)
             ? ResolveCssMargin(cssLayout, containingBlock.Width)
             : Margin;
         if (cssLayout is not null)
         {
             cssLayout.MeasureMarginCache = margin;
             cssLayout.ContainingWidthCache = containingBlock.Width;
+            cssLayout.NativeMeasureContainingBlock = CssNativeBox?.ContainingBlock;
         }
 
         var marginWidth = margin.Left + margin.Right;
@@ -1305,8 +1373,8 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
         }
 
         // Apply explicit size constraints (DP wins; CSS % resolves against the basis)
-        var effectiveWidth = ResolveEffectiveWidth(cssLayout, containingBlock.Width);
-        var effectiveHeight = ResolveEffectiveHeight(cssLayout, containingBlock.Height);
+        var effectiveWidth = tableManaged || CssDisplayMode is Jalium.UI.Styling.CssDisplayMode.TableCell or Jalium.UI.Styling.CssDisplayMode.TableCaption && CssIntrinsicMeasure ? double.NaN : ResolveEffectiveWidth(cssLayout, containingBlock.Width);
+        var effectiveHeight = tableManaged ? double.NaN : ResolveEffectiveHeight(cssLayout, containingBlock.Height);
         if (!double.IsNaN(effectiveWidth))
         {
             contentAvailable = new Size(effectiveWidth, contentAvailable.Height);
@@ -1317,25 +1385,36 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
         }
 
         // Apply min/max constraints
-        var (minWidth, maxWidth) = ResolveEffectiveWidthBounds(cssLayout, containingBlock.Width);
-        var (minHeight, maxHeight) = ResolveEffectiveHeightBounds(cssLayout, containingBlock.Height);
+        var (minWidth, maxWidth) = tableManaged ? (0d, double.PositiveInfinity) : ResolveEffectiveWidthBounds(cssLayout, containingBlock.Width);
+        var (minHeight, maxHeight) = tableManaged ? (0d, double.PositiveInfinity) : ResolveEffectiveHeightBounds(cssLayout, containingBlock.Height);
         contentAvailable = new Size(
             Math.Clamp(contentAvailable.Width, minWidth, maxWidth),
             Math.Clamp(contentAvailable.Height, minHeight, maxHeight));
 
         // Measure content
-        var contentSize = CssDisplayMode != Jalium.UI.Styling.CssDisplayMode.Native &&
-            Jalium.UI.Styling.CssDisplayLayout.TryMeasure(this, contentAvailable, out var cssContentSize)
+        var contentSize = Jalium.UI.Styling.CssReplacedContent.IsActive(this)
+            ? Jalium.UI.Styling.CssReplacedContent.Measure(this, contentAvailable)
+            : (CssDisplayMode != Jalium.UI.Styling.CssDisplayMode.Native ||
+            Jalium.UI.Styling.CssDisplayLayout.IsImplicitHost(this) || Jalium.UI.Styling.CssMultiColumnProperties.Active(this)) &&
+            Jalium.UI.Styling.CssDisplayLayout.TryMeasure(this, contentAvailable, containingBlock, out var cssContentSize)
                 ? cssContentSize : MeasureOverride(contentAvailable);
+        if (Jalium.UI.Styling.CssEngine.IsActive)
+            Jalium.UI.Styling.CssListProperties.MeasureOutside(this, ref contentSize);
         if (CssRuntimeState is not null)
             contentSize = Jalium.UI.Styling.CssContainerProperties.ContainedDesiredSize(this, contentSize, containingBlock.Width);
 
         // Apply constraints to result
         var resultWidth = double.IsNaN(effectiveWidth) ? contentSize.Width : effectiveWidth;
         var resultHeight = double.IsNaN(effectiveHeight) ? contentSize.Height : effectiveHeight;
+        if (CssDisplayMode == Jalium.UI.Styling.CssDisplayMode.Table)
+        { resultWidth = Math.Max(resultWidth, contentSize.Width); resultHeight = Math.Max(resultHeight, contentSize.Height); }
+        var captionHeight = Jalium.UI.Styling.CssTableLayout.CaptionHeight(this);
+        if (captionHeight != 0) resultHeight = contentSize.Height;
 
         // aspect-ratio derives the auto axis; min/max clamp afterwards (CSS order).
-        if (cssLayout is not null && cssLayout.AspectRatio > 0)
+        if (cssLayout is not null && cssLayout.AspectRatio > 0 &&
+            CssFlexSizing?.Current is not { MinimumContribution: true } && !Jalium.UI.Styling.CssReplacedContent.HasReplacement(this) &&
+            !Jalium.UI.Styling.CssReplacedImageSizing.NativeActive(this))
         {
             (resultWidth, resultHeight) = ApplyCssAspectRatio(
                 cssLayout.AspectRatio,
@@ -1344,9 +1423,27 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
         }
 
         resultWidth = Math.Clamp(resultWidth, minWidth, maxWidth);
-        resultHeight = Math.Clamp(resultHeight, minHeight, maxHeight);
+        // The table formatter already applies its width bounds while retaining
+        // the grid's natural minimum. A generic clamp must not hide that minimum
+        // from an ancestor's intrinsic-width measurement.
+        if (CssDisplayMode == Jalium.UI.Styling.CssDisplayMode.Table)
+            resultWidth = Math.Max(resultWidth, contentSize.Width);
+        resultHeight = Math.Clamp(resultHeight, Math.Max(0, minHeight + captionHeight), Math.Max(0, maxHeight + captionHeight));
+        if (CssDisplayMode == Jalium.UI.Styling.CssDisplayMode.Table)
+            resultHeight = Math.Max(resultHeight, contentSize.Height);
 
-        var transformedSize = ApplyLayoutTransformToDesiredSize(new Size(resultWidth, resultHeight));
+        if (double.IsPositiveInfinity(resultWidth))
+        {
+            resultWidth = double.IsFinite(availableSize.Width) ? Math.Max(minWidth, availableSize.Width - marginWidth) : minWidth;
+        }
+
+        if (double.IsPositiveInfinity(resultHeight))
+        {
+            resultHeight = double.IsFinite(availableSize.Height) ? Math.Max(minHeight, availableSize.Height - marginHeight) : minHeight;
+        }
+
+        var projectedSize = Jalium.UI.Styling.CssTableLayout.ProjectMeasuredSize(this, new Size(resultWidth, resultHeight));
+        var transformedSize = _cssIntrinsicSizing?.Probing > 0 ? projectedSize : ApplyLayoutTransformToDesiredSize(projectedSize);
         return new Size(
             Math.Max(0, transformedSize.Width + marginWidth),
             Math.Max(0, transformedSize.Height + marginHeight));
@@ -1355,22 +1452,33 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
     /// <inheritdoc />
     protected sealed override void ArrangeCore(Rect finalRect)
     {
+        if (CssContentsLayout.IsContents(this) || CssContentsLayout.Suppressed(this))
+        {
+            SetVisualBounds(default); _renderSize = default;
+            SetValue(ActualWidthPropertyKey, 0d); SetValue(ActualHeightPropertyKey, 0d);
+            return;
+        }
+        CssContentsLayout.Prepare(this, arrange: true);
         var cssLayout = CssLayout;
+        var tableManaged = Jalium.UI.Styling.CssTableLayout.IsManaged(this);
+        var rubyStructural = Jalium.UI.Styling.CssRubyBoxMetrics.IsStructural(this);
         LastCssParentAlignment = CssParentAlignment;
         LastCssArrangeBox = CssParentBox;
-        var containingBlock = CssParentBox?.ContainingBlock ?? finalRect.Size;
+        LastCssNativeArrangeBox = CssNativeBox;
+        if (CssFlexSizing is { } flexArrange) flexArrange.Arranged = flexArrange.Current;
+        var containingBlock = CssParentBox?.ContainingBlock ?? CssNativeBox?.ContainingBlock ?? finalRect.Size;
 
         // An absolutely positioned element's slot was ALREADY solved by the panel against
         // the panel's size (its true containing block) — the slot itself is not a
         // containing block, so re-resolving percentages here would apply them twice
         // (a 50%-wide child in a 200px panel gets a 100px slot; taking 50% of the slot
         // again would shrink it to 50). Reuse the measure-side margin and skip the rest.
-        var isCssAbsolute = cssLayout is { Position: Jalium.UI.Styling.CssPositionMode.Absolute };
+        var isCssAbsolute = cssLayout is { IsOutOfFlow: true };
         if (cssLayout is not null && !isCssAbsolute) cssLayout.ContainingWidthCache = containingBlock.Width;
 
         // Arrange-side containing block is the final rect the parent allotted.
         Thickness margin;
-        if (CssParentBox is not null) margin = default;
+        if (tableManaged || rubyStructural || CssParentBox is not null) margin = default;
         else if (cssLayout is { HasMargin: true } && !HasLocalOrAnimatedValue(MarginProperty))
         {
             margin = isCssAbsolute
@@ -1399,27 +1507,42 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
         // so the subtraction must clamp to zero like WPF does; Size throws on negatives.
         // %-margins may resolve differently per pass, so subtract the margin that was
         // actually added during Measure — otherwise the content desired size is skewed.
-        var measureMargin = CssParentBox is not null ? default : cssLayout is { HasMargin: true } ? cssLayout.MeasureMarginCache : margin;
+        var measureMargin = rubyStructural || CssParentBox is not null ? default : cssLayout is { HasMargin: true } ? cssLayout.MeasureMarginCache : margin;
         var desiredWidth = Math.Max(0, DesiredSize.Width - (measureMargin.Left + measureMargin.Right));
         var desiredHeight = Math.Max(0, DesiredSize.Height - (measureMargin.Top + measureMargin.Bottom));
 
         // Determine arrange size based on alignment
         // When alignment is Stretch, use available size; otherwise use desired size (clamped to available)
-        var horizontalAlignment = ResolveCssParentHorizontalAlignment(cssLayout, containingBlock.Width);
-        var verticalAlignment = ResolveCssParentVerticalAlignment(cssLayout, containingBlock.Height);
+        var horizontalAlignment = tableManaged ? HorizontalAlignment.Stretch : ResolveCssParentHorizontalAlignment(cssLayout, containingBlock.Width);
+        var verticalAlignment = tableManaged ? VerticalAlignment.Stretch : ResolveCssParentVerticalAlignment(cssLayout, containingBlock.Height);
+        if (!tableManaged && IsCssContentHost && CssDisplayMode == Jalium.UI.Styling.CssDisplayMode.Table &&
+            CssParentAlignment is null && !HasValueAboveInherited(VerticalAlignmentProperty) &&
+            !(CssNativeBox is { FillHeight: true } && double.IsNaN(ResolveEffectiveHeight(cssLayout, containingBlock.Height))))
+            verticalAlignment = VerticalAlignment.Top;
+        var nativeImageSizing = Jalium.UI.Styling.CssReplacedImageSizing.NativeActive(this);
+        var replaced = Jalium.UI.Styling.CssReplacedContent.HasReplacement(this) || nativeImageSizing;
+        if (replaced && !HasLocalOrAnimatedValue(HorizontalAlignmentProperty) && CssParentAlignment?.Horizontal is not Jalium.UI.Styling.CssBoxAlignment.Stretch)
+            horizontalAlignment = HorizontalAlignment.Left;
+        if (replaced && !HasLocalOrAnimatedValue(VerticalAlignmentProperty) && CssParentAlignment?.Vertical is not Jalium.UI.Styling.CssBoxAlignment.Stretch)
+            verticalAlignment = VerticalAlignment.Top;
         var arrangeWidth = horizontalAlignment == HorizontalAlignment.Stretch
             ? availableWidth
-            : Math.Min(desiredWidth, availableWidth);
+            : replaced ? desiredWidth : Math.Min(desiredWidth, availableWidth);
 
         var arrangeHeight = verticalAlignment == VerticalAlignment.Stretch
             ? availableHeight
-            : Math.Min(desiredHeight, availableHeight);
+            : replaced ? desiredHeight : Math.Min(desiredHeight, availableHeight);
 
         var arrangeSize = new Size(arrangeWidth, arrangeHeight);
 
         // Apply explicit size constraints (DP wins; CSS % resolves against the final rect)
-        var effectiveWidth = ResolveEffectiveWidth(cssLayout, containingBlock.Width);
-        var effectiveHeight = ResolveEffectiveHeight(cssLayout, containingBlock.Height);
+        // Non-replaced inline dimensions come from the fragment allocation;
+        // authored width/height and their bounds do not size individual fragments.
+        var fragmentedInline = IsCssColumnFrame || IsCssInlineFrame || this is Controls.TextBlock { IsCssInlineBox: true } text && text.TryCssInlineAllocation(out _);
+        var effectiveWidth = tableManaged || fragmentedInline ? double.NaN : ResolveEffectiveWidth(cssLayout, containingBlock.Width);
+        var effectiveHeight = tableManaged || fragmentedInline ? double.NaN : ResolveEffectiveHeight(cssLayout, containingBlock.Height);
+        var captionHeight = Jalium.UI.Styling.CssTableLayout.CaptionHeight(this);
+        if (captionHeight != 0 && !double.IsNaN(effectiveHeight)) effectiveHeight += captionHeight;
         if (!double.IsNaN(effectiveWidth))
         {
             arrangeSize = new Size(effectiveWidth, arrangeSize.Height);
@@ -1430,7 +1553,10 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
         }
 
         // aspect-ratio mirrors the Measure-side derivation so render size stays consistent.
-        if (cssLayout is not null && cssLayout.AspectRatio > 0 &&
+        if (nativeImageSizing)
+            arrangeSize = Jalium.UI.Styling.CssReplacedImageSizing.ArrangeNativeBox((Jalium.UI.Controls.Image)this,
+                arrangeSize, !double.IsNaN(effectiveWidth), !double.IsNaN(effectiveHeight));
+        if (cssLayout is not null && cssLayout.AspectRatio > 0 && !replaced && !nativeImageSizing &&
             (!double.IsNaN(effectiveWidth) || !double.IsNaN(effectiveHeight)))
         {
             var (ratioWidth, ratioHeight) = ApplyCssAspectRatio(
@@ -1441,21 +1567,23 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
         }
 
         // Apply min/max constraints
-        var (minWidth, maxWidth) = ResolveEffectiveWidthBounds(cssLayout, containingBlock.Width);
-        var (minHeight, maxHeight) = ResolveEffectiveHeightBounds(cssLayout, containingBlock.Height);
+        var (minWidth, maxWidth) = tableManaged || fragmentedInline ? (0d, double.PositiveInfinity) : ResolveEffectiveWidthBounds(cssLayout, containingBlock.Width);
+        var (minHeight, maxHeight) = tableManaged || fragmentedInline ? (0d, double.PositiveInfinity) : ResolveEffectiveHeightBounds(cssLayout, containingBlock.Height);
         arrangeSize = new Size(
             Math.Clamp(arrangeSize.Width, minWidth, maxWidth),
-            Math.Clamp(arrangeSize.Height, minHeight, maxHeight));
+            Math.Clamp(arrangeSize.Height, Math.Max(0, minHeight + captionHeight), Math.Max(0, maxHeight + captionHeight)));
 
         // Percentage values resolved against a drifted basis (∞ measure constraint,
         // star-track shrink) converge through a one-shot re-measure, mirroring Grid's
         // correction pattern; the flag prevents oscillation loops.
         if (CssParentBox is null && cssLayout is { UsesPercent: true })
         {
-            var measureBasis = PreviousAvailableSize;
+            var measureBasis = CssNativeBox is not null && cssLayout.NativeMeasureContainingBlock is { } nativeBasis
+                ? nativeBasis : PreviousAvailableSize;
+            var arrangeBasis = CssNativeBox?.ContainingBlock ?? finalRect.Size;
             var drifted =
-                Math.Abs(finalRect.Width - measureBasis.Width) > 0.5 ||
-                Math.Abs(finalRect.Height - measureBasis.Height) > 0.5;
+                Math.Abs(arrangeBasis.Width - measureBasis.Width) > 0.5 ||
+                Math.Abs(arrangeBasis.Height - measureBasis.Height) > 0.5;
             if (drifted && !cssLayout.ArrangeCorrectionQueued)
             {
                 cssLayout.ArrangeCorrectionQueued = true;
@@ -1468,9 +1596,15 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
         }
 
         // Arrange content
+        if (CssDisplayMode == Jalium.UI.Styling.CssDisplayMode.Table)
+            arrangeSize = new Size(Math.Max(arrangeSize.Width, DesiredSize.Width - margin.Left - margin.Right),
+                Math.Max(arrangeSize.Height, DesiredSize.Height - margin.Top - margin.Bottom));
         CssArrangeSizeForChildren = arrangeSize;
-        var renderSize = CssDisplayMode != Jalium.UI.Styling.CssDisplayMode.Native &&
-            Jalium.UI.Styling.CssDisplayLayout.TryArrange(this, arrangeSize, out var cssRenderSize)
+        var renderSize = Jalium.UI.Styling.CssReplacedContent.IsActive(this)
+            ? Jalium.UI.Styling.CssReplacedContent.Arrange(this, arrangeSize)
+            : fragmentedInline ? arrangeSize : (CssDisplayMode != Jalium.UI.Styling.CssDisplayMode.Native ||
+            Jalium.UI.Styling.CssDisplayLayout.IsImplicitHost(this) || Jalium.UI.Styling.CssMultiColumnProperties.Active(this)) &&
+            Jalium.UI.Styling.CssDisplayLayout.TryArrange(this, arrangeSize, containingBlock, out var cssRenderSize)
                 ? cssRenderSize : ArrangeOverride(arrangeSize);
         CssArrangeSizeForChildren = renderSize;
 
@@ -1499,7 +1633,7 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
             }
         }
 
-        if (CssParentBox is null && cssLayout is { HasMargin: true } && !HasLocalOrAnimatedValue(MarginProperty) &&
+        if (!rubyStructural && CssParentBox is null && cssLayout is { HasMargin: true } && !HasLocalOrAnimatedValue(MarginProperty) &&
             (cssLayout.MarginLeft.IsAuto || cssLayout.MarginRight.IsAuto))
         {
             var free = Math.Max(0, extraWidth);
@@ -1515,7 +1649,10 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
             {
                 case VerticalAlignment.Center:
                 // Same effective-alignment rule as the horizontal axis.
-                case VerticalAlignment.Stretch when arrangeSize.Height < availableHeight:
+                case VerticalAlignment.Stretch when arrangeSize.Height < availableHeight &&
+                    (CssParentAlignment is null || HasLocalOrAnimatedValue(VerticalAlignmentProperty) ||
+                     CssParentAlignment.Value.Vertical == Jalium.UI.Styling.CssBoxAlignment.Normal &&
+                     GetValueSourceInternal(VerticalAlignmentProperty).BaseValueSource != BaseValueSource.Default):
                     y += extraHeight / 2;
                     break;
                 case VerticalAlignment.Bottom:
@@ -1524,7 +1661,8 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
             }
         }
 
-        if (cssLayout is { Position: Jalium.UI.Styling.CssPositionMode.Relative } relativeLayout)
+        if (cssLayout is { Position: Jalium.UI.Styling.CssPositionMode.Relative } relativeLayout &&
+            !Jalium.UI.Styling.CssMultiColumnLayout.IsCapturing(this))
         {
             var relativeContainingBlock = Jalium.UI.Styling.CssRelativeLayout.ContainingBlock(this, finalRect.Size);
             var offset = Jalium.UI.Styling.CssRelativeLayout.Offset(this, relativeLayout, relativeContainingBlock);
@@ -1555,6 +1693,9 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
 
         var previousVisualBounds = _visualBounds;
         _visualBounds = new Rect(x, y, renderSize.Width, renderSize.Height);
+        if (Jalium.UI.Styling.CssEngine.IsActive)
+            Jalium.UI.Styling.CssListProperties.ArrangeOutside(this, renderSize);
+        Jalium.UI.Styling.CssPositionedLayout.RecordLayout(this);
 
         // OnRender records in element-local coordinates. A size change can alter
         // those commands (and covers the first 0x0 -> arranged pass that once left
@@ -1592,6 +1733,7 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
         if (!_hasActualSizeValues || previousRenderSize.Height != renderSize.Height)
             SetValue(ActualHeightPropertyKey, renderSize.Height);
         _hasActualSizeValues = true;
+        UpdateCssTextInkBounds();
         CssRuntimeState?.QueryContainer?.RefreshSize();
     }
 
@@ -1619,6 +1761,15 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
 
     #region Hit Testing
 
+    /// <summary>VisualTreeHelper supplies local coordinates; the native point
+    /// overload below receives coordinates in the element's parent.</summary>
+    protected override HitTestResult? HitTestCore(PointHitTestParameters hitTestParameters)
+    {
+        ArgumentNullException.ThrowIfNull(hitTestParameters);
+        var point = hitTestParameters.HitPoint;
+        return HitTestCore(new Point(point.X + _visualBounds.X, point.Y + _visualBounds.Y));
+    }
+
     /// <inheritdoc />
     protected override HitTestResult? HitTestCore(Point point)
     {
@@ -1626,6 +1777,11 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
         if (Visibility != Visibility.Visible || !IsHitTestVisible ||
             Styling.CssDisplayProperties.IsCollapsedFlexItem(this) ||
             Styling.CssDisplayProperties.IsExitInert(this))
+        {
+            return null;
+        }
+        if (!Styling.CssTransform3D.IsActivePlane(this) &&
+            Styling.CssTransform3D.IsBackfaceCulled(this))
         {
             return null;
         }
@@ -1638,7 +1794,7 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
         // edges before constructing their layout geometry (and, for rounded
         // clips, doing the exact corner test). An explicit Clip still takes
         // precedence and may intentionally extend outside RenderSize.
-        if (ClipToBounds &&
+        if (!CssContentsLayout.IsContents(this) && ClipToBounds &&
             !IsPointInsideClipToBoundsEdges(localPoint, new Rect(RenderSize)) &&
             Clip == null &&
             !Styling.CssOverflowProperties.TryGetActiveClipMargin(this, out _))
@@ -1655,55 +1811,71 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
             return null;
         }
 
-        // ⚠ WPF 一致性关键：child 递归不受 self _visualBounds.Contains 约束。
-        // 子元素可以通过负 Margin、Canvas.Left/Top、RenderTransform(Scale/Translate) 自由
-        // 落到 self 名义 bounds 之外（典型：ZoomableCanvas 内 Canvas 名义 822×209，
-        // 缩放平移后视觉区域和 layout size 完全脱钩；积木 BlockItem 负下边距让末块底部
-        // 凸起落在父 StackPanel bounds 之外）。如果在这里用 `if (!_visualBounds.Contains
-        // (point)) return null;` 拦截，整个子树就被一刀切，深嵌套 / 重叠 / 平移的子完全
-        // 不可点。正确做法：先无条件递归 children，children 不命中再回头判定 self。
-        var hitTestChildCount = IsPointInsideChildLayoutClip(localPoint) ? VisualChildrenCount : 0;
-        for (int i = hitTestChildCount - 1; i >= 0; i--)
+        if (!Styling.CssTransform3D.IsActivePlane(this) &&
+            Styling.CssTransform3D.IsEffectivePreserve3D(this))
         {
-            var child = GetVisualChild(i);
-            if (child is null || !IsPointInsideAdditionalChildLayoutClip(localPoint, child))
-                continue;
-            if (child is FrameworkElement fe)
+            var hit3D = Styling.CssTransform3D.HitTest3DContext(
+                this,
+                localPoint,
+                inRootLocalSpace: true,
+                static (plane, localPt) => plane is FrameworkElement fePlane
+                    ? fePlane.HitTestCore(new Point(localPt.X + fePlane._visualBounds.X, localPt.Y + fePlane._visualBounds.Y))
+                    : VisualTreeHelper.HitTest(plane, localPt));
+            if (hit3D != null)
+                return hit3D;
+        }
+        else if (!Styling.CssTransform3D.SuppressesChildrenOf(this))
+        {
+            var positionedChildren = Styling.CssPositionedLayout.PaintChildren(this);
+            var hitTestChildCount = IsPointInsideChildLayoutClip(localPoint) ? positionedChildren?.Count ?? InternalVisualChildrenCount : 0;
+            for (int i = hitTestChildCount - 1; i >= 0; i--)
             {
-                // 子有 RenderTransform 则反向变换 localPoint 到子的"原始"局部空间，
-                // 与渲染时父对子做 PushTransform(child.RenderTransform, originX, originY) 对偶。
-                var pointForChild = localPoint;
-                var childTransform = fe.RenderTransform;
-                if (childTransform != null)
+                var promoted = positionedChildren is not null && positionedChildren[i].Promoted;
+                var child = positionedChildren is not null ? positionedChildren[i].Visual : InternalGetVisualChild(i);
+                if (child is null || !promoted && (Styling.CssPositionedLayout.DefersPaint(child) ||
+                    !IsPointInsideAdditionalChildLayoutClip(localPoint, child)) ||
+                    promoted && !Styling.CssPositionedLayout.PathIsVisible(child, this, true, localPoint))
+                    continue;
+                if (child is FrameworkElement fe)
                 {
-                    var matrix = childTransform.Value;
-                    if (matrix.TryInvert(out var inv))
+                    var parentPoint = localPoint;
+                    if (promoted)
                     {
-                        var origin = fe.RenderTransformOrigin;
-                        var size = fe.RenderSize;
-                        var originAbsX = fe._visualBounds.X + origin.X * size.Width;
-                        var originAbsY = fe._visualBounds.Y + origin.Y * size.Height;
-
-                        var translated = new Point(localPoint.X - originAbsX, localPoint.Y - originAbsY);
-                        var inverted = inv.Transform(translated);
-                        pointForChild = new Point(inverted.X + originAbsX, inverted.Y + originAbsY);
+                        var origin = positionedChildren![i].ParentOrigin;
+                        parentPoint = new(localPoint.X - origin.X, localPoint.Y - origin.Y);
                     }
-                    else
+                    if (Styling.CssTransform3D.IsEffectivePreserve3D(fe))
                     {
-                        // 非可逆 transform（如 ScaleTransform 0）：子整体不可见，跳过。
+                        var res3D = Styling.CssTransform3D.HitTest3DContext(
+                            fe,
+                            parentPoint,
+                            inRootLocalSpace: false,
+                            static (plane, localPt) => plane is FrameworkElement fePlane
+                                ? fePlane.HitTestCore(new Point(localPt.X + fePlane._visualBounds.X, localPt.Y + fePlane._visualBounds.Y))
+                                : VisualTreeHelper.HitTest(plane, localPt));
+                        if (res3D != null)
+                            return res3D;
                         continue;
                     }
-                }
+                    if (!CssContentsLayout.IsContents(fe))
+                    {
+                        if (!Styling.CssTransform3D.TryMapParentPointToChildLocal(fe, parentPoint, out var childLocal))
+                            continue;
+                        parentPoint = new Point(childLocal.X + fe._visualBounds.X, childLocal.Y + fe._visualBounds.Y);
+                    }
 
-                var childResult = fe.HitTestCore(pointForChild);
-                if (childResult != null)
-                {
-                    return childResult;
+                    var childResult = fe.HitTestCore(parentPoint);
+                    if (childResult != null)
+                    {
+                        return childResult;
+                    }
                 }
             }
         }
 
-        if (Styling.CssDisplayProperties.EffectiveVisibility(this) != Visibility.Visible ||
+        if (this is Jalium.UI.Styling.ICssStyledBox or Controls.FlowDocumentPresentation { PassThroughSelfHit: true } ||
+            CssContentsLayout.IsContents(this) || CssContentsLayout.Suppressed(this) ||
+            Styling.CssDisplayProperties.EffectiveVisibility(this) != Visibility.Visible ||
             Styling.CssPointerEventsProperties.Effective(this) == Styling.CssPointerEventsMode.None)
             return null;
 
@@ -1718,7 +1890,16 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
 
         // CSS corners also shape the pointer-active border box when overflow is visible.
         // Descendants were checked first so they can still receive input outside it.
-        if (Jalium.UI.Styling.CssBorderRadiusProperties.Get(this) is { } radius &&
+        if (this is Jalium.UI.Styling.ICssAnonymousBox anonymous && !anonymous.Contains(localPoint)) return null;
+        if (IsCssInlineFrame)
+        {
+            if (!CssInlineFrameContains(localPoint)) return null;
+        }
+        else if (this is Controls.TextBlock { IsCssInlineBox: true } inlineText)
+        {
+            if (!inlineText.CssInlineContains(localPoint)) return null;
+        }
+        else if (Jalium.UI.Styling.CssBorderRadiusProperties.Get(this) is { } radius &&
             !Jalium.UI.Styling.CssRoundedRectangleGeometry.Contains(
                 new Rect(RenderSize), radius.Resolve(RenderSize), localPoint))
             return null;
@@ -1733,7 +1914,7 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
     /// <returns>The hit test result, or null if nothing was hit.</returns>
     public HitTestResult? HitTest(Point point)
     {
-        return HitTestCore(point);
+        return Styling.CssGeneratedContent.ResolveHit(HitTestPointCore(new PointHitTestParameters(point)));
     }
 
     #endregion
@@ -1973,17 +2154,25 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
     /// <inheritdoc />
     protected internal override void OnVisualParentChanged(DependencyObject? oldParent)
     {
+        Controls.TextBlock.RetireInitialLetterScope(this);
+        if (CssInlineBox is { } fragments) ReleaseCssInlineFrame(fragments.Owner);
         Interlocked.Increment(ref s_inheritanceTreeVersion);
         _inheritedSources = null;
         base.OnVisualParentChanged(oldParent);
         if (Jalium.UI.Styling.CssEngine.IsActive)
         {
+            Jalium.UI.Styling.CssFirstLine.StructureChanged(this, oldParent);
             Jalium.UI.Styling.CssSelectorDependencies.TreeChanged(this);
             if (oldParent is FrameworkElement or FrameworkContentElement)
                 Jalium.UI.Styling.CssSelectorDependencies.TreeChanged(Jalium.UI.Styling.CssNode.Get(oldParent));
             if (FrameworkParent is { } currentParent) Jalium.UI.Styling.CssSelectorDependencies.TreeChanged(currentParent);
         }
-        if (Jalium.UI.Styling.CssEngine.IsActive && Jalium.UI.Styling.CssRegisteredProperties.IsActive)
+        // Formatting projections do not add or remove document @property rules.
+        // Re-evaluating their real root here would restart first-line allocation
+        // every time that allocation replaces its private visual fragments.
+        if (Jalium.UI.Styling.CssEngine.IsActive && Jalium.UI.Styling.CssRegisteredProperties.IsActive &&
+            this is not Jalium.UI.Styling.ICssAnonymousBox and not Jalium.UI.Styling.ICssStyledBox and not Jalium.UI.Styling.ICssGeneratedContentBox &&
+            Jalium.UI.Styling.CssGeneratedContent.Kind(Jalium.UI.Styling.CssNode.Get(this)) == Jalium.UI.Styling.CssPseudoElement.None)
         {
             Jalium.UI.Styling.CssRegisteredProperties.Invalidate(this);
             if (oldParent is FrameworkElement or FrameworkContentElement)
@@ -2042,7 +2231,9 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
             // rather than synchronous like the rescope above: there is no "attach returns with
             // styles readable" contract, and the batch avoids the O(n × depth) re-scan cost
             // documented for bottom-up tree construction.
-            if (Jalium.UI.Styling.CssEngine.IsActive)
+            if (Jalium.UI.Styling.CssEngine.IsActive &&
+                this is not Jalium.UI.Styling.ICssAnonymousBox and not Jalium.UI.Styling.ICssStyledBox and not Jalium.UI.Styling.ICssGeneratedContentBox and not Jalium.UI.Styling.CssGeneratedText and not Controls.TextBlock { IsCssTypographyProjection: true } &&
+                Jalium.UI.Styling.CssNode.DocumentContainerParent(this) is null)
             {
                 Jalium.UI.Styling.CssEvaluationScheduler.InvalidateSubtree(this);
             }
@@ -2095,7 +2286,9 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
 
             // Ancestor-scoped rules no longer apply after a detach; the batched pass diffs
             // the subtree's CSS values against the reduced scope set.
-            if (Jalium.UI.Styling.CssEngine.IsActive)
+            if (Jalium.UI.Styling.CssEngine.IsActive &&
+                this is not Jalium.UI.Styling.ICssAnonymousBox and not Jalium.UI.Styling.ICssStyledBox and not Jalium.UI.Styling.ICssGeneratedContentBox and not Jalium.UI.Styling.CssGeneratedText and not Controls.TextBlock { IsCssTypographyProjection: true } &&
+                Jalium.UI.Styling.CssNode.DocumentContainerParent(this) is null)
             {
                 Jalium.UI.Styling.CssEvaluationScheduler.InvalidateSubtree(this);
             }
@@ -2332,7 +2525,12 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
         if (newExplicit == null)
         {
             var found = LookupImplicitStyle();
-            newImplicit = ReferenceEquals(found, newTheme) ? null : found;
+            // Framework theme dictionaries also participate in application resource
+            // lookup. A base Button theme discovered there must not replace a
+            // derived control's own theme template. Actual application styles are
+            // distinct objects and still form the higher-priority implicit layer.
+            var foundTheme = found?.TargetType is Type foundType ? ThemeStyleResolver?.Invoke(foundType) : null;
+            newImplicit = ReferenceEquals(found, newTheme) || ReferenceEquals(found, foundTheme) ? null : found;
         }
 
         // An explicit Style can literally be the theme style object (e.g. captured via
@@ -2907,7 +3105,7 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
 
     public bool IsInitialized => _isInitialized;
     public bool IsLoaded => _isLoaded;
-    public DependencyObject? Parent => _logicalParent ?? VisualParent as DependencyObject;
+    public DependencyObject? Parent => _logicalParent ?? (VisualParent is Styling.ICssAnonymousBox or Styling.ICssStyledBox or Styling.ICssGeneratedContentBox ? null : VisualParent as DependencyObject);
 
     protected internal InheritanceBehavior InheritanceBehavior
     {
@@ -3133,6 +3331,18 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
     {
     }
 
+    /// <summary>
+    /// Called before the current template is detached. Override to unsubscribe
+    /// from template-part events and release cached parts. This can also be
+    /// called before the first template is applied and must be idempotent.
+    /// </summary>
+    protected virtual void OnTemplateChanging()
+    {
+    }
+
+    // Core cannot depend on Control; navigation pages also own control templates.
+    internal virtual FrameworkElement? StateGroupsRoot => null;
+
     protected internal DependencyObject? GetTemplateChild(string childName)
     {
         if (string.IsNullOrEmpty(childName))
@@ -3194,9 +3404,9 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
             Unloaded?.Invoke(this, new RoutedEventArgs(routedEvent, this));
         }
 
-        for (var i = 0; i < VisualChildrenCount; i++)
+        for (var i = 0; i < InternalVisualChildrenCount; i++)
         {
-            if (GetVisualChild(i) is FrameworkElement child)
+            if (InternalGetVisualChild(i) is FrameworkElement child)
             {
                 child.SetLoadedState(loaded);
             }
@@ -3304,9 +3514,9 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
             return named;
         }
 
-        for (var i = 0; i < root.VisualChildrenCount; i++)
+        for (var i = 0; i < root.InternalVisualChildrenCount; i++)
         {
-            if (root.GetVisualChild(i) is FrameworkElement child
+            if (root.InternalGetVisualChild(i) is FrameworkElement child
                 && FindTemplateChild(child, name) is { } found)
             {
                 return found;
@@ -3320,6 +3530,10 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
     {
         if (d is FrameworkElement element)
         {
+            // Descendants read inherited direction lazily. Their cached line
+            // fragments still need rebuilding even with unchanged constraints.
+            if (e.Property == FlowDirectionProperty)
+                Styling.CssFlowProperties.InvalidateInheritedTextLayout(element);
             element.InvalidateMeasure();
             element.InvalidateArrange();
             element.InvalidateVisual();
@@ -3332,6 +3546,8 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
         {
             return;
         }
+
+        Jalium.UI.Styling.CssPositionedLayout.ContainingBlockChanged(element);
 
         if (e.OldValue is Transform oldTransform)
         {
@@ -3383,7 +3599,8 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
             typeof(FrameworkElement),
             new FrameworkPropertyMetadata(
                 XmlLanguage.GetLanguage("en-US"),
-                FrameworkPropertyMetadataOptions.AffectsMeasure | FrameworkPropertyMetadataOptions.Inherits));
+                FrameworkPropertyMetadataOptions.AffectsMeasure | FrameworkPropertyMetadataOptions.Inherits,
+                static (target, _) => CssFlowProperties.InvalidateWhiteSpaceOrigin(target)));
 
     /// <summary>Identifies the <see cref="ToolTipOpening"/> routed event.</summary>
     public static readonly RoutedEvent ToolTipOpeningEvent =
@@ -3612,9 +3829,9 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
         OnDpiChanged(oldDpi, newDpi);
 
         List<FrameworkElement>? children = null;
-        for (var index = 0; index < VisualChildrenCount; index++)
+        for (var index = 0; index < InternalVisualChildrenCount; index++)
         {
-            if (GetVisualChild(index) is FrameworkElement child)
+            if (InternalGetVisualChild(index) is FrameworkElement child)
             {
                 children ??= new List<FrameworkElement>();
                 children.Add(child);
@@ -3715,6 +3932,14 @@ public class SizeChangedEventArgs : RoutedEventArgs
         NewSize = info.NewSize;
         WidthChanged = info.WidthChanged;
         HeightChanged = info.HeightChanged;
+    }
+
+    internal SizeChangedEventArgs(Size previousSize, Size newSize, bool widthChanged, bool heightChanged)
+    {
+        PreviousSize = previousSize;
+        NewSize = newSize;
+        WidthChanged = widthChanged;
+        HeightChanged = heightChanged;
     }
 
     /// <summary>

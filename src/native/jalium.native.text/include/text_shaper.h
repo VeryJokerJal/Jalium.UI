@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "ot_shaper.h"
+#include "jalium_types.h"
 
 namespace jalium {
 
@@ -21,6 +22,8 @@ class FontFace;
 struct ShapedGlyph {
     uint32_t glyphIndex;    ///< Glyph ID in the font
     uint32_t cluster;       ///< Index into original text (character offset)
+    uint32_t clusterEnd = 0; ///< Exclusive source offset, including merged ligature components.
+    uint8_t bidiLevel = 0;
     float    advanceX;      ///< Horizontal advance
     float    advanceY;      ///< Vertical advance
     float    offsetX;       ///< Horizontal offset from pen position
@@ -31,6 +34,9 @@ struct ShapedGlyph {
     // atlas lookup uses the correct face + a collision-free fontId.
     FontFace* face = nullptr;
     uint64_t  fontId = 0;
+    // Immutable styled paragraphs can contain several font sizes in one line.
+    // Zero keeps the format's size for legacy single-format callers.
+    float fontSize = 0;
 };
 
 /// A run of shaped glyphs with a single font and direction.
@@ -61,7 +67,8 @@ public:
         const wchar_t* text,
         uint32_t textLength,
         float fontSizePx,
-        bool isRtl = false);
+        bool isRtl = false,
+        const std::vector<JaliumFontFeature>& features = {});
 
 private:
     font::OtShaper otShaper_;

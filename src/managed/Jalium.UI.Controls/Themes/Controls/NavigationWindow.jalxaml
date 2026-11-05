@@ -1,0 +1,74 @@
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:navigation="clr-namespace:Jalium.UI.Navigation;assembly=Jalium.UI.Controls"
+    xmlns:automation="clr-namespace:Jalium.UI.Automation;assembly=Jalium.UI.Controls">
+
+    <Style x:Key="NavigationWindow.ButtonStyle" TargetType="Button">
+        <Setter Property="MinWidth" Value="36" />
+        <Setter Property="MinHeight" Value="36" />
+        <Setter Property="Width" Value="36" />
+        <Setter Property="Height" Value="36" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="Margin" Value="2,0" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="CornerRadius" Value="6" />
+        <Setter Property="FontSize" Value="18" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Style.Triggers>
+            <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.4" /></Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style TargetType="navigation:NavigationWindow">
+        <Setter Property="Background" Value="{ThemeResource WindowBackground}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
+        <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="VerticalContentAlignment" Value="Stretch" />
+        <Setter Property="NavigationBarBackground" Value="{ThemeResource LayerFillColorDefaultBrush}" />
+        <Setter Property="NavigationBarBorderBrush" Value="{ThemeResource ControlBorder}" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="navigation:NavigationWindow">
+                <Border x:Name="PART_Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="{TemplateBinding CornerRadius}">
+                    <VisualStateManager.VisualStateGroups>
+                        <VisualStateGroup x:Name="NavigationStates">
+                            <VisualState x:Name="NavigationVisible" />
+                            <VisualState x:Name="NavigationHidden">
+                                <VisualState.Setters>
+                                    <Setter TargetName="PART_NavigationBar" Property="Visibility" Value="Collapsed" />
+                                </VisualState.Setters>
+                            </VisualState>
+                        </VisualStateGroup>
+                    </VisualStateManager.VisualStateGroups>
+                    <Grid>
+                        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                        <Grid x:Name="PART_NavigationBar" Background="{TemplateBinding NavigationBarBackground}" MinHeight="44">
+                            <StackPanel Orientation="Horizontal" Margin="4" VerticalAlignment="Center">
+                                <Button x:Name="PART_BackButton" Style="{StaticResource NavigationWindow.ButtonStyle}"
+                                        Content="&#x2190;" Foreground="{TemplateBinding Foreground}" Command="{TemplateBinding GoBackCommand}"
+                                        ToolTip="Back" automation:AutomationProperties.Name="Back" />
+                                <Button x:Name="PART_ForwardButton" Style="{StaticResource NavigationWindow.ButtonStyle}"
+                                        Content="&#x2192;" Foreground="{TemplateBinding Foreground}" Command="{TemplateBinding GoForwardCommand}"
+                                        ToolTip="Forward" automation:AutomationProperties.Name="Forward" />
+                                <Button x:Name="PART_RefreshButton" Style="{StaticResource NavigationWindow.ButtonStyle}"
+                                        Content="&#x21BB;" Foreground="{TemplateBinding Foreground}" Command="{TemplateBinding RefreshCommand}"
+                                        ToolTip="Refresh" automation:AutomationProperties.Name="Refresh" />
+                            </StackPanel>
+                            <Rectangle Fill="{TemplateBinding NavigationBarBorderBrush}" Height="1" VerticalAlignment="Bottom" />
+                        </Grid>
+                        <ContentPresenter x:Name="PART_ContentPresenter" Grid.Row="1" Margin="{TemplateBinding Padding}"
+                                          Content="{TemplateBinding Content}" ContentTemplate="{TemplateBinding ContentTemplate}"
+                                          ContentTemplateSelector="{TemplateBinding ContentTemplateSelector}"
+                                          ContentStringFormat="{TemplateBinding ContentStringFormat}"
+                                          HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                          VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
+                    </Grid>
+                </Border>
+            </ControlTemplate>
+        </Setter>
+    </Style>
+</ResourceDictionary>

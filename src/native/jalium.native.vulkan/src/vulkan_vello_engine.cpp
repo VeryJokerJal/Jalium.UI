@@ -2,6 +2,7 @@
 #include "jalium_scanline_rasterizer.h"
 #include "jalium_triangulate.h"
 #include "jalium_path_stats.h"            // stroke cache hit/miss telemetry
+#include "jalium_radial_raster.h"
 #include "jalium_flatten.h"               // ScaleBucketFromMaxScale
 #include <cstring>
 #include <cmath>
@@ -249,6 +250,20 @@ bool VelloVulkanEngine::EncodeFillPath(
         sceneEncoder_.EndPrimitiveBox(encOk_);
         return encOk_;
     }
+    if (brush.type==2 && (brush.radialFlags&1)) {
+        const float scale=std::max(MaxScale(transform),.01f);
+        auto source=FlattenPathToContours(startX,startY,commands,commandLength,flattenTolerance_/scale);
+        VkVelloDrawBatch batch;batch.pipelineType=0;
+        auto flush=[&](){if(!batch.vertices.empty()){PushBatch(std::move(batch));batch={};batch.pipelineType=0;}};
+        const PixelRect viewport{0,0,int(viewportW_),int(viewportH_),1};
+        const bool result=RasterizeRadialPaint(source,brush,transform,fillRule,
+            [&](float x,float y,const GradientColor& c){
+                const uint32_t base=static_cast<uint32_t>(batch.vertices.size());const float red=c.r*c.a,green=c.g*c.a,blue=c.b*c.a;
+                batch.vertices.insert(batch.vertices.end(),{{x,y,red,green,blue,c.a},{x+1,y,red,green,blue,c.a},{x+1,y+1,red,green,blue,c.a},{x,y+1,red,green,blue,c.a}});
+                batch.indices.insert(batch.indices.end(),{base,base+1,base+2,base,base+2,base+3});if(batch.vertices.size()>=16384)flush();
+            },&viewport);
+        flush();encodedPathCount_++;return result;
+    }
     if (brush.type == 1 || brush.type == 2 || brush.type == 3) {
         float gradMaxScale = MaxScale(transform);
         float gradTolerance = (gradMaxScale > 0.001f)
@@ -408,6 +423,17 @@ bool VelloVulkanEngine::EncodeStrokePath(
         return encOk_;
     }
 
+    if (brush.type==2 && (brush.radialFlags&1)) {
+        const float scale=std::max(MaxScale(transform),.01f);
+        auto source=FlattenPathToContours(startX,startY,commands,commandLength,flattenTolerance_/scale);
+        const auto contours=RadialStrokeContours(source,strokeWidth,closed,lineJoin,miterLimit,lineCap,dashPattern,dashCount,dashOffset,scale);
+        std::vector<float> path;float firstX=0,firstY=0;bool first=true;
+        for(const auto& c:contours){if(c.VertexCount()<3)continue;
+            if(first){firstX=c.X(0);firstY=c.Y(0);first=false;}else path.insert(path.end(),{2,c.X(0),c.Y(0)});
+            for(uint32_t i=1;i<c.VertexCount();++i)path.insert(path.end(),{0,c.X(i),c.Y(i)});path.push_back(5);
+        }
+        return first || EncodeFillPath(firstX,firstY,path.data(),static_cast<uint32_t>(path.size()),brush,FillRule::NonZero,transform,edgeMode);
+    }
     // Resolve edge mode (D3D12 parity): em<0 → 1 (cacheable feather mesh);
     // em==2 → explicit Antialiased (keep the legacy scanline/stencil body).
     int em = edgeMode;
@@ -676,6 +702,12 @@ bool VelloVulkanEngine::EncodeFillPolygon(
         return encOk_;
     }
     if (pointCount < 3) return false;
+    if (brush.type==2 && (brush.radialFlags&1)) {
+        std::vector<float> path;path.reserve(size_t(pointCount)*3);
+        for(uint32_t i=1;i<pointCount;++i)path.insert(path.end(),{0,points[i*2],points[i*2+1]});path.push_back(5);
+        return EncodeFillPath(points[0],points[1],path.data(),static_cast<uint32_t>(path.size()),brush,fillRule,transform,-1);
+    }
+
 
     float r = brush.r * brush.a;
     float g = brush.g * brush.a;

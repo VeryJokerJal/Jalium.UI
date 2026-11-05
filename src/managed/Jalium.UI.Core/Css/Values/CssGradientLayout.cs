@@ -8,7 +8,7 @@ namespace Jalium.UI.Styling;
 /// to that element instead of leaking through a shared compiled stylesheet.
 /// </summary>
 internal sealed class CssGradientLayout(string function, string arguments, CssLengthContext lengths,
-    bool dependsOnCurrentColor = false, Color? currentColor = null)
+    bool dependsOnCurrentColor = false, Color? currentColor = null) : CssImageLayout
 {
     internal bool DependsOnCurrentColor => dependsOnCurrentColor;
     private readonly object _gate = new();
@@ -18,7 +18,15 @@ internal sealed class CssGradientLayout(string function, string arguments, CssLe
     internal CssGradientLayout ForElement(in CssLengthContext context, Color color) =>
         new(function, arguments, context, dependsOnCurrentColor, color);
 
-    internal Brush? Resolve(double width, double height)
+    internal CssGradientLayout CaptureForRendering(out long contextHash)
+    {
+        var captured = lengths.CaptureForRendering();
+        contextHash = captured.RenderSnapshot!.ContentHash;
+        return lengths.RenderSnapshot is not null ? this
+            : new CssGradientLayout(function, arguments, captured, dependsOnCurrentColor, currentColor);
+    }
+
+    internal override Brush? Resolve(double width, double height)
     {
         if (!double.IsFinite(width) || !double.IsFinite(height) || width <= 0 || height <= 0)
             return null;
@@ -36,6 +44,7 @@ internal sealed class CssGradientLayout(string function, string arguments, CssLe
             var reader = new CssTokenReader(source, new CssNumericReadContext(lengths));
             if (!CssGradientParser.TryParseResolved(function, ref reader, lengths, width, height, out var brush) ||
                 brush is null) return null;
+            if (brush is GradientBrush gradient) gradient.UsesCssImageCoordinates = true;
             if (brush.CanFreeze) brush.Freeze();
             _lastWidth = width;
             _lastHeight = height;

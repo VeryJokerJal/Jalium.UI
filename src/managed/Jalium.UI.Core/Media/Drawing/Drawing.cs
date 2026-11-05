@@ -63,7 +63,7 @@ public sealed class DrawingCollection : Animatable, IList<Drawing>, IList
         _items.AddRange(drawings);
     }
 
-    public Drawing this[int index] { get => _items[index]; set => _items[index] = value; }
+    public Drawing this[int index] { get => _items[index]; set => _items.SetItem(index, value); }
     object? IList.this[int index] { get => this[index]; set => this[index] = AnimatableListStorage<Drawing>.Cast(value); }
     public int Count => _items.Count;
     bool ICollection<Drawing>.IsReadOnly => _items.IsReadOnly;
@@ -121,11 +121,5 @@ public sealed class DrawingCollection : Animatable, IList<Drawing>, IList
         }
     }
 
-    private AnimatableListStorage<Drawing> CreateStorage(int capacity = 0) => new(
-        () => ReadPreamble(),
-        () => WritePreamble(),
-        () => WritePostscript(),
-        (oldValue, newValue) => OnFreezablePropertyChanged(oldValue, newValue),
-        () => IsFrozen,
-        capacity);
+    private AnimatableListStorage<Drawing> CreateStorage(int capacity = 0) => new(this, capacity);
 }

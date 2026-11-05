@@ -23,6 +23,8 @@ internal enum CssSlot : byte
 /// </summary>
 internal sealed class CssSlotAccumulator
 {
+    internal Dictionary<string, (Jalium.UI.Media.FontFamily Family, double Size, FontStyle Style, FontWeight Weight)>? SystemFonts;
+    internal Func<string, (Jalium.UI.Media.FontFamily Family, double Size, FontStyle Style, FontWeight Weight)>? SystemFontSnapshot;
     public Jalium.UI.Media.Brush? ForegroundBrush;
     public CssTransitionParts? Transitions;
     public CssAnimationParts? Animations;
@@ -240,6 +242,8 @@ internal sealed class CssSlotAccumulator
         {
             CssPositionKeyword.Relative => CssPositionMode.Relative,
             CssPositionKeyword.Absolute => CssPositionMode.Absolute,
+            CssPositionKeyword.Fixed => CssPositionMode.Fixed,
+            CssPositionKeyword.Sticky => CssPositionMode.Sticky,
             _ => CssPositionMode.Static,
         };
         _layout.HasPosition = true;
@@ -398,11 +402,13 @@ internal sealed class CssSlotAccumulator
             sink.CurrentValueIsState = _margin.FromState;
             sink.CurrentValueIsImportant = _margin.FromImportant;
             var thickness = ResolveThickness(in _margin, in context, "margin", clampNonNegative: false);
-            sink.Set(FrameworkElement.MarginProperty, thickness);
+            // Document blocks own a different Margin property from visual controls.
+            var marginProperty = CssDependencyPropertyLookup.Find(context.Element.GetType(), "Margin") ?? FrameworkElement.MarginProperty;
+            sink.Set(marginProperty, thickness);
         }
 
         var paddingUsesLayout = _padding.Touched && (HasPercentEdge(in _padding) ||
-            (context.Element.Target is Jalium.UI.Controls.Panel or Jalium.UI.Controls.Page or Jalium.UI.Controls.Image or Jalium.UI.Controls.MediaElement) &&
+            (context.Element.Target is Jalium.UI.Controls.Panel or Jalium.UI.Controls.Page or Jalium.UI.Controls.Image or Jalium.UI.Controls.MediaElement or FrameworkContentElement or FrameworkElement { IsCssContentHost: true }) &&
             CssDependencyPropertyLookup.Find(context.Element.GetType(), "Padding") is null);
         if (_padding.Touched && !paddingUsesLayout)
         {
@@ -427,7 +433,7 @@ internal sealed class CssSlotAccumulator
                 CssBorderStyles.IsHidden(styles.Bottom) ? 0 : width.Bottom);
             if (CssDependencyPropertyLookup.Find(context.Element.GetType(), "BorderThickness") is { } dp)
                 sink.Set(dp, width);
-            else if (context.Element.Target is Jalium.UI.Controls.Panel or Jalium.UI.Controls.TextBlock or Jalium.UI.Controls.Page)
+            else if (context.Element.Target is Jalium.UI.Controls.Panel or Jalium.UI.Controls.TextBlock or Jalium.UI.Controls.Page or Jalium.UI.Controls.Image or FrameworkContentElement or FrameworkElement { IsCssContentHost: true })
                 sink.Set(CssBorderUsedThicknessProperties.ValueProperty, width);
             else if (_borderWidth.Touched)
                 CssDiagnostics.Report("border-width", CssDiagnosticReason.TargetPropertyMissing,
@@ -495,6 +501,7 @@ internal sealed class CssSlotAccumulator
         sink.CurrentValueIsImportant = false;
 
         FlushLayoutState(in context, sink, marginIsPercent, paddingUsesLayout);
+        if (sink is CssEngine.CssSetterCollector collector) CssSizingPresentation.Collect(context, collector);
     }
 
     private static bool HasPercentEdge(in ThicknessSlot slot)
@@ -532,7 +539,6 @@ internal sealed class CssSlotAccumulator
              _layout.MinWidth.IsSet || _layout.MinHeight.IsSet ||
              _layout.MaxWidth.IsSet || _layout.MaxHeight.IsSet ||
              _layout.HasAspectRatio || _layout.HasBoxSizing || position != CssPositionMode.Static ||
-             _layout.ComputedPosition is CssPositionKeyword.Fixed or CssPositionKeyword.Sticky ||
              _layout.InsetLeft.IsSet || _layout.InsetTop.IsSet ||
              _layout.InsetRight.IsSet || _layout.InsetBottom.IsSet);
         if (!needsState)
@@ -678,17 +684,17 @@ internal sealed class CssSlotAccumulator
     private void FlushCorner(in CssApplyContext context, ICssSetterSink sink)
     {
         var dp = CssDependencyPropertyLookup.Find(context.Element.GetType(), "CornerRadius");
-        if (dp is null && context.Element.Target is not FrameworkElement)
+        if (dp is null && context.Element.Target is not (FrameworkElement or FrameworkContentElement))
         {
             CssDiagnostics.Report(
                 "border-radius", CssDiagnosticReason.TargetPropertyMissing, context.Element.GetType(),
-                "border-radius requires a visual framework element; declaration skipped here");
+                "border-radius requires a framework element or document element; declaration skipped here");
             return;
         }
 
         var radii = new CssBorderRadiusValue(_corner.TopLeft, _corner.TopRight, _corner.BottomRight, _corner.BottomLeft);
         var element = context.Element;
-        if (radii.UsesPercent && !CssEngine.EnsureState(element).ObservesOwnSize)
+        if (radii.UsesPercent && element.Target is FrameworkElement && !CssEngine.EnsureState(element).ObservesOwnSize)
         {
             CssEngine.EnsureState(element).ObservesOwnSize = true;
             element.SizeChanged += (_, _) => CssEvaluationScheduler.InvalidateElement(element);
@@ -748,7 +754,8 @@ internal sealed class CssSlotAccumulator
                     Jalium.UI.Media.CssBackgroundSizeMode.Fill => Jalium.UI.Media.Stretch.Fill,
                     _ => Jalium.UI.Media.Stretch.None,
                 };
-                imageBrush.CssBackgroundLayout = new Jalium.UI.Media.CssBackgroundImageLayout(size, repeat, position);
+                imageBrush.CssBackgroundLayout = new Jalium.UI.Media.CssBackgroundImageLayout(size, repeat, position,
+                    naturalResolution: imageBrush.CssBackgroundLayout?.NaturalResolution ?? 1);
                 image = imageBrush;
             }
 
@@ -756,6 +763,10 @@ internal sealed class CssSlotAccumulator
 
             brush = brush is Jalium.UI.Media.Brush bottom
                 ? new Jalium.UI.Media.CssLayeredBackgroundBrush(bottom, image)
+                {
+                    BlendOwner = new WeakReference<DependencyObject>(context.Element.Target),
+                    ImageIndex = i,
+                }
                 : image;
         }
 

@@ -761,6 +761,9 @@ public abstract class DrawingContextAdapter : DrawingContext
 /// </summary>
 public sealed class Pen : Animatable
 {
+    internal static readonly DependencyProperty SvgViewportStrokeProperty = DependencyProperty.Register(
+        "SvgViewportStroke", typeof(bool), typeof(Pen), new PropertyMetadata(false));
+    internal bool SvgViewportStroke { get => (bool)GetValue(SvgViewportStrokeProperty)!; set => SetValue(SvgViewportStrokeProperty, value); }
     public static readonly DependencyProperty BrushProperty =
         DependencyProperty.Register(nameof(Brush), typeof(Brush), typeof(Pen), new PropertyMetadata(null));
 
@@ -869,8 +872,8 @@ public sealed class Pen : Animatable
     /// <param name="thickness">The stroke thickness.</param>
     public Pen(Brush brush, double thickness)
     {
-        Brush = brush;
-        Thickness = thickness;
+        SetInitialLocalValue(BrushProperty, brush);
+        SetInitialLocalValue(ThicknessProperty, thickness);
     }
 
     /// <summary>
@@ -1050,6 +1053,15 @@ public abstract class Geometry : Animatable, IFormattable
             if (ReferenceEquals(Transform, value))
                 return;
             SetValue(TransformProperty, value);
+        }
+    }
+
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        if (ReferenceEquals(e.Property, TransformProperty))
+        {
+            OnFreezablePropertyChanged(e.OldValue as DependencyObject, e.NewValue as DependencyObject, TransformProperty);
             WritePostscript();
         }
     }
@@ -1329,7 +1341,7 @@ public abstract class Geometry : Animatable, IFormattable
 
     /// <summary>
     /// Combines two geometries using the specified combine mode and optional transform.
-    /// This is a simplified implementation; full CSG boolean operations are extremely complex.
+    /// Curves are flattened first; polygon clipping preserves each input fill rule and holes.
     /// </summary>
     /// <param name="geometry1">The first geometry.</param>
     /// <param name="geometry2">The second geometry.</param>
@@ -1338,128 +1350,11 @@ public abstract class Geometry : Animatable, IFormattable
     /// <returns>A PathGeometry representing the combined result.</returns>
     public static PathGeometry Combine(Geometry geometry1, Geometry geometry2, GeometryCombineMode mode, Transform? transform)
     {
-        var flat1 = geometry1.GetFlattenedPathGeometry();
-        var flat2 = geometry2.GetFlattenedPathGeometry();
-        var result = new PathGeometry();
-
-        switch (mode)
-        {
-            case GeometryCombineMode.Union:
-                // Merge all figures from both geometries
-                result.Figures.AddRange(flat1.Figures);
-                result.Figures.AddRange(flat2.Figures);
-                break;
-
-            case GeometryCombineMode.Intersect:
-                // Sutherland-Hodgman polygon clipping between figures
-                foreach (var fig1 in flat1.Figures)
-                {
-                    if (!fig1.IsFilled) continue;
-                    var subjectPoly = ExtractPolygonPoints(fig1);
-                    if (subjectPoly.Count < 3) continue;
-
-                    foreach (var fig2 in flat2.Figures)
-                    {
-                        if (!fig2.IsFilled) continue;
-                        var clipPoly = ExtractPolygonPoints(fig2);
-                        if (clipPoly.Count < 3) continue;
-
-                        var clipped = SutherlandHodgmanClip(subjectPoly, clipPoly);
-                        if (clipped.Count >= 3)
-                        {
-                            var figure = new PathFigure
-                            {
-                                StartPoint = clipped[0],
-                                IsClosed = true,
-                                IsFilled = true
-                            };
-                            for (int i = 1; i < clipped.Count; i++)
-                                figure.Segments.Add(new LineSegment(clipped[i]));
-                            result.Figures.Add(figure);
-                        }
-                    }
-                }
-                break;
-
-            case GeometryCombineMode.Exclude:
-                // Add geometry1 figures as-is
-                result.Figures.AddRange(flat1.Figures);
-                // Add geometry2 figures with reversed winding order
-                foreach (var fig in flat2.Figures)
-                {
-                    var reversed = ReverseFigureWinding(fig);
-                    result.Figures.Add(reversed);
-                }
-                break;
-
-            case GeometryCombineMode.Xor:
-                // Xor = Union minus Intersect: add all figures from both, then add
-                // reversed intersection figures to cut out the overlap
-                result.Figures.AddRange(flat1.Figures);
-                result.Figures.AddRange(flat2.Figures);
-
-                // Compute intersection and add reversed
-                foreach (var fig1 in flat1.Figures)
-                {
-                    if (!fig1.IsFilled) continue;
-                    var subjectPoly = ExtractPolygonPoints(fig1);
-                    if (subjectPoly.Count < 3) continue;
-
-                    foreach (var fig2 in flat2.Figures)
-                    {
-                        if (!fig2.IsFilled) continue;
-                        var clipPoly = ExtractPolygonPoints(fig2);
-                        if (clipPoly.Count < 3) continue;
-
-                        var clipped = SutherlandHodgmanClip(subjectPoly, clipPoly);
-                        if (clipped.Count >= 3)
-                        {
-                            // Add the intersection twice reversed to cancel out overlap
-                            var figure = new PathFigure
-                            {
-                                StartPoint = clipped[0],
-                                IsClosed = true,
-                                IsFilled = true
-                            };
-                            for (int i = 1; i < clipped.Count; i++)
-                                figure.Segments.Add(new LineSegment(clipped[i]));
-
-                            result.Figures.Add(ReverseFigureWinding(figure));
-                            result.Figures.Add(ReverseFigureWinding(figure));
-                        }
-                    }
-                }
-                break;
-        }
-
-        // Apply transform if provided
-        if (transform != null)
-        {
-            var m = transform.Value;
-            foreach (var figure in result.Figures)
-            {
-                figure.StartPoint = TransformPointByMatrix(figure.StartPoint, m);
-                foreach (var segment in figure.Segments)
-                {
-                    if (segment is LineSegment ls)
-                        ls.Point = TransformPointByMatrix(ls.Point, m);
-                    else if (segment is PolyLineSegment pls)
-                    {
-                        for (int i = 0; i < pls.Points.Count; i++)
-                            pls.Points[i] = TransformPointByMatrix(pls.Points[i], m);
-                    }
-                }
-            }
-        }
-
-        // Boolean output is expressed with the nonzero winding rule: outer contours, holes,
-        // and the reversed clip contours (Exclude/Xor) cancel by winding sign — which the
-        // even-odd default cannot represent. Previously this was left at PathGeometry's
-        // default (EvenOdd), so Exclude/Xor produced wrong results and Union hollowed out
-        // overlaps. (Exact arbitrary concave/self-intersecting boolean still needs a full
-        // plane-sweep solver; this correctly handles the common winding-regular inputs.)
-        result.FillRule = FillRule.Nonzero;
-        return result;
+        ArgumentNullException.ThrowIfNull(geometry1);
+        ArgumentNullException.ThrowIfNull(geometry2);
+        var first = GeometryComposition.FlattenChild(geometry1, StandardFlatteningTolerance);
+        var second = GeometryComposition.FlattenChild(geometry2, StandardFlatteningTolerance);
+        return GeometryBoolean.Combine(first, second, mode, transform);
     }
 
     /// <summary>Combines two geometries using an explicit flattening tolerance.</summary>
@@ -1475,125 +1370,15 @@ public abstract class Geometry : Animatable, IFormattable
         ArgumentNullException.ThrowIfNull(geometry2);
         ValidateTolerance(tolerance);
 
-        PathGeometry left = geometry1.GetFlattenedPathGeometry(tolerance, type);
-        PathGeometry right = geometry2.GetFlattenedPathGeometry(tolerance, type);
+        if (type == ToleranceType.Relative)
+        {
+            var first = GeometryComposition.FlattenChild(geometry1, StandardFlatteningTolerance).Bounds;
+            first.Union(GeometryComposition.FlattenChild(geometry2, StandardFlatteningTolerance).Bounds);
+            tolerance *= first.IsEmpty ? 1 : Math.Max(first.Width, first.Height);
+        }
+        PathGeometry left = GeometryComposition.FlattenChild(geometry1, tolerance);
+        PathGeometry right = GeometryComposition.FlattenChild(geometry2, tolerance);
         return Combine(left, right, mode, transform);
-    }
-
-    private static Point TransformPointByMatrix(Point p, Matrix m)
-    {
-        return new Point(
-            p.X * m.M11 + p.Y * m.M21 + m.OffsetX,
-            p.X * m.M12 + p.Y * m.M22 + m.OffsetY);
-    }
-
-    /// <summary>
-    /// Extracts polygon points from a flattened path figure.
-    /// </summary>
-    private static List<Point> ExtractPolygonPoints(PathFigure figure)
-    {
-        var pts = new List<Point> { figure.StartPoint };
-        foreach (var seg in figure.Segments)
-        {
-            if (seg is LineSegment ls) pts.Add(ls.Point);
-            else if (seg is PolyLineSegment pls) pts.AddRange(pls.Points);
-        }
-        return pts;
-    }
-
-    /// <summary>
-    /// Sutherland-Hodgman polygon clipping algorithm.
-    /// Clips the subject polygon against the clip polygon.
-    /// </summary>
-    private static List<Point> SutherlandHodgmanClip(List<Point> subject, List<Point> clip)
-    {
-        var output = new List<Point>(subject);
-
-        for (int i = 0; i < clip.Count && output.Count > 0; i++)
-        {
-            var input = new List<Point>(output);
-            output.Clear();
-
-            var edgeStart = clip[i];
-            var edgeEnd = clip[(i + 1) % clip.Count];
-
-            for (int j = 0; j < input.Count; j++)
-            {
-                var current = input[j];
-                var previous = input[(j + input.Count - 1) % input.Count];
-
-                bool currentInside = IsInsideEdge(current, edgeStart, edgeEnd);
-                bool previousInside = IsInsideEdge(previous, edgeStart, edgeEnd);
-
-                if (currentInside)
-                {
-                    if (!previousInside)
-                    {
-                        // Entering: add intersection point
-                        var intersection = LineIntersection(previous, current, edgeStart, edgeEnd);
-                        if (intersection.HasValue)
-                            output.Add(intersection.Value);
-                    }
-                    output.Add(current);
-                }
-                else if (previousInside)
-                {
-                    // Leaving: add intersection point
-                    var intersection = LineIntersection(previous, current, edgeStart, edgeEnd);
-                    if (intersection.HasValue)
-                        output.Add(intersection.Value);
-                }
-            }
-        }
-
-        return output;
-    }
-
-    /// <summary>
-    /// Determines if a point is on the inside (left side) of a directed edge.
-    /// </summary>
-    private static bool IsInsideEdge(Point p, Point edgeStart, Point edgeEnd)
-    {
-        return (edgeEnd.X - edgeStart.X) * (p.Y - edgeStart.Y) -
-               (edgeEnd.Y - edgeStart.Y) * (p.X - edgeStart.X) >= 0;
-    }
-
-    /// <summary>
-    /// Computes the intersection point of two line segments.
-    /// </summary>
-    private static Point? LineIntersection(Point p1, Point p2, Point p3, Point p4)
-    {
-        double x1 = p1.X, y1 = p1.Y, x2 = p2.X, y2 = p2.Y;
-        double x3 = p3.X, y3 = p3.Y, x4 = p4.X, y4 = p4.Y;
-
-        double denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
-        if (Math.Abs(denom) < 1e-10)
-            return null;
-
-        double t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom;
-        return new Point(x1 + t * (x2 - x1), y1 + t * (y2 - y1));
-    }
-
-    /// <summary>
-    /// Reverses the winding order of a path figure.
-    /// </summary>
-    private static PathFigure ReverseFigureWinding(PathFigure figure)
-    {
-        var pts = ExtractPolygonPoints(figure);
-        if (pts.Count < 2) return figure;
-
-        pts.Reverse();
-
-        var reversed = new PathFigure
-        {
-            StartPoint = pts[0],
-            IsClosed = figure.IsClosed,
-            IsFilled = figure.IsFilled
-        };
-        for (int i = 1; i < pts.Count; i++)
-            reversed.Segments.Add(new LineSegment(pts[i]));
-
-        return reversed;
     }
 
     /// <summary>
@@ -2094,6 +1879,10 @@ public sealed class EllipseGeometry : Geometry
         var errorRatio = Math.Clamp(safeTolerance / Math.Max(rx, ry), 1e-300, 2);
         var step = errorRatio < 1e-4 ? 2*Math.Sqrt(2*errorRatio) : 2*Math.Acos(1-errorRatio);
         var segments = (int)Math.Clamp(Math.Ceiling(2*Math.PI/step), 16, 65536);
+        // Keep the cardinal points in the polygon. A quarter turn must produce
+        // the same flattened ellipse as swapping its radii; rounding upward
+        // also preserves the requested sagitta tolerance.
+        segments = (segments + 3) & ~3;
         figure.StartPoint = new Point(Center.X + rx, Center.Y);
 
         for (int i = 1; i <= segments; i++)
@@ -2237,6 +2026,27 @@ public sealed class LineGeometry : Geometry
 /// </summary>
 public sealed class GeometryGroup : Geometry
 {
+    private sealed record CachedGeometry(PathGeometry Path, Rect Bounds);
+    private CachedGeometry? _cachedGeometry;
+
+    private CachedGeometry CurrentGeometry
+    {
+        get
+        {
+            ReadPreamble();
+            if (_cachedGeometry is { } current) return current;
+            var path = GetFlattenedPathGeometry(); path.Freeze();
+            var created = new CachedGeometry(path, GeometryComposition.GroupBounds(this));
+            return System.Threading.Interlocked.CompareExchange(ref _cachedGeometry, created, null) ?? created;
+        }
+    }
+
+    protected override void OnChanged()
+    {
+        _cachedGeometry = null;
+        base.OnChanged();
+    }
+
     public static readonly DependencyProperty ChildrenProperty =
         DependencyProperty.Register(nameof(Children), typeof(GeometryCollection), typeof(GeometryGroup),
             new PropertyMetadata(null));
@@ -2280,48 +2090,33 @@ public sealed class GeometryGroup : Geometry
     {
         get
         {
-            if (Children.Count == 0) return Rect.Empty;
-
-            var result = Children[0].Bounds;
-            for (int i = 1; i < Children.Count; i++)
-            {
-                result = Rect.Union(result, Children[i].Bounds);
-            }
-            return result;
+            return CurrentGeometry.Bounds;
         }
     }
 
     /// <inheritdoc />
     public override bool FillContains(Point point)
     {
-        if (FillRule == FillRule.EvenOdd)
-        {
-            int count = 0;
-            foreach (var child in Children)
-            {
-                if (child.FillContains(point)) count++;
-            }
-            return (count % 2) != 0;
-        }
-        else
-        {
-            // Nonzero: any child containing the point counts
-            foreach (var child in Children)
-            {
-                if (child.FillContains(point)) return true;
-            }
-            return false;
-        }
+        var current = CurrentGeometry;
+        return current.Bounds.Contains(point) && current.Path.FillContains(point);
     }
 
     /// <inheritdoc />
     public override PathGeometry GetFlattenedPathGeometry(double tolerance, ToleranceType toleranceType)
     {
-        var result = new PathGeometry { FillRule = FillRule };
-        foreach (var child in Children)
+        ValidateTolerance(tolerance);
+        if (toleranceType == ToleranceType.Relative)
         {
-            var flat = child.GetFlattenedPathGeometry(tolerance, toleranceType);
-            result.Figures.AddRange(flat.Figures);
+            var bounds = Bounds;
+            tolerance *= bounds.IsEmpty ? 1 : Math.Max(bounds.Width, bounds.Height);
+        }
+        var result = new PathGeometry { FillRule = FillRule };
+        // Only children are baked. The group's own Transform is applied once by
+        // the drawing/clip consumer. Iterate so deep group trees do not recurse.
+        foreach (var (geometry, matrix) in GeometryComposition.Leaves(this))
+        {
+            var flat = geometry.GetFlattenedPathGeometry(tolerance / Math.Max(GeometryComposition.Scale(matrix), .01), ToleranceType.Absolute);
+            GeometryComposition.Append(result, flat, matrix);
         }
         return result;
     }
@@ -2337,6 +2132,19 @@ public sealed class GeometryGroup : Geometry
 /// </summary>
 public sealed class CombinedGeometry : Geometry
 {
+    private PathGeometry? _cachedPath;
+    private PathGeometry CurrentPath
+    {
+        get
+        {
+            ReadPreamble();
+            if (_cachedPath is { } current) return current;
+            var path = GetFlattenedPathGeometry(); path.Freeze();
+            return System.Threading.Interlocked.CompareExchange(ref _cachedPath, path, null) ?? path;
+        }
+    }
+    protected override void OnChanged() { _cachedPath = null; base.OnChanged(); }
+
     public static readonly DependencyProperty Geometry1Property =
         DependencyProperty.Register(nameof(Geometry1), typeof(Geometry), typeof(CombinedGeometry),
             new PropertyMetadata(null));
@@ -2419,52 +2227,34 @@ public sealed class CombinedGeometry : Geometry
     {
         get
         {
-            var bounds1 = Geometry1?.Bounds ?? Rect.Empty;
-            var bounds2 = Geometry2?.Bounds ?? Rect.Empty;
-
-            return GeometryCombineMode switch
-            {
-                GeometryCombineMode.Union => Rect.Union(bounds1, bounds2),
-                GeometryCombineMode.Intersect => Rect.Intersect(bounds1, bounds2),
-                GeometryCombineMode.Exclude => bounds1,
-                GeometryCombineMode.Xor => Rect.Union(bounds1, bounds2),
-                _ => Rect.Union(bounds1, bounds2)
-            };
+            return CurrentPath.Bounds;
         }
     }
 
     /// <inheritdoc />
     public override bool FillContains(Point point)
     {
-        if (Geometry1 == null && Geometry2 == null) return false;
-        if (Geometry1 == null) return Geometry2!.FillContains(point);
-        if (Geometry2 == null) return Geometry1.FillContains(point);
-
-        bool in1 = Geometry1.FillContains(point);
-        bool in2 = Geometry2.FillContains(point);
-
-        return GeometryCombineMode switch
-        {
-            GeometryCombineMode.Union => in1 || in2,
-            GeometryCombineMode.Intersect => in1 && in2,
-            GeometryCombineMode.Exclude => in1 && !in2,
-            GeometryCombineMode.Xor => in1 ^ in2,
-            _ => in1 || in2
-        };
+        var path = CurrentPath;
+        return path.Bounds.Contains(point) && path.FillContains(point);
     }
 
     /// <inheritdoc />
     public override PathGeometry GetFlattenedPathGeometry(double tolerance, ToleranceType toleranceType)
     {
+        ValidateTolerance(tolerance);
         if (Geometry1 == null && Geometry2 == null) return new PathGeometry();
-        if (Geometry1 == null) return Geometry2!.GetFlattenedPathGeometry(tolerance, toleranceType);
-        if (Geometry2 == null) return Geometry1.GetFlattenedPathGeometry(tolerance, toleranceType);
+        if (Geometry1 == null)
+            return GeometryCombineMode is GeometryCombineMode.Union or GeometryCombineMode.Xor
+                ? Geometry.Combine(Geometry.Empty, Geometry2!, GeometryCombineMode.Union, null, tolerance, toleranceType) : new PathGeometry();
+        if (Geometry2 == null)
+            return GeometryCombineMode != GeometryCombineMode.Intersect
+                ? Geometry.Combine(Geometry1, Geometry.Empty, GeometryCombineMode.Union, null, tolerance, toleranceType) : new PathGeometry();
 
         // Pass a null transform: like every other Geometry.GetFlattenedPathGeometry the result
         // stays in local space, and this geometry's own Transform is applied once by the consumer
         // (DrawGeometry's PushTransform / the software context's WithTransform). Baking Transform
         // in here would double-apply it (once baked, once pushed).
-        return Geometry.Combine(Geometry1, Geometry2, GeometryCombineMode, null);
+        return Geometry.Combine(Geometry1, Geometry2, GeometryCombineMode, null, tolerance, toleranceType);
     }
 
     /// <inheritdoc />
@@ -2640,14 +2430,17 @@ public sealed class PathGeometry : Geometry
     /// Computes the tight local-space bounds for one path figure without
     /// constructing a temporary <see cref="PathGeometry"/>.
     /// </summary>
-    internal static Rect GetFigureBounds(PathFigure figure)
+    internal static Rect GetFigureBounds(PathFigure figure) => GetFigureBounds(figure, Matrix.Identity);
+
+    internal static Rect GetFigureBounds(PathFigure figure, Matrix matrix)
     {
         ArgumentNullException.ThrowIfNull(figure);
+        Point Map(Point point) => matrix.IsIdentity ? point : matrix.Transform(point);
 
         double minX = double.MaxValue, minY = double.MaxValue;
         double maxX = double.MinValue, maxY = double.MinValue;
 
-        UpdateBounds(figure.StartPoint, ref minX, ref minY, ref maxX, ref maxY);
+        UpdateBounds(Map(figure.StartPoint), ref minX, ref minY, ref maxX, ref maxY);
         var currentPoint = figure.StartPoint;
 
         foreach (var segment in figure.Segments)
@@ -2655,19 +2448,19 @@ public sealed class PathGeometry : Geometry
             switch (segment)
             {
                 case LineSegment line:
-                    UpdateBounds(line.Point, ref minX, ref minY, ref maxX, ref maxY);
+                    UpdateBounds(Map(line.Point), ref minX, ref minY, ref maxX, ref maxY);
                     currentPoint = line.Point;
                     break;
 
                 case PolyLineSegment polyLine:
                     foreach (var pt in polyLine.Points)
-                        UpdateBounds(pt, ref minX, ref minY, ref maxX, ref maxY);
+                        UpdateBounds(Map(pt), ref minX, ref minY, ref maxX, ref maxY);
                     if (polyLine.Points.Count > 0)
                         currentPoint = polyLine.Points[^1];
                     break;
 
                 case BezierSegment bezier:
-                    UpdateCubicBezierBounds(currentPoint, bezier.Point1, bezier.Point2, bezier.Point3,
+                    UpdateCubicBezierBounds(Map(currentPoint), Map(bezier.Point1), Map(bezier.Point2), Map(bezier.Point3),
                         ref minX, ref minY, ref maxX, ref maxY);
                     currentPoint = bezier.Point3;
                     break;
@@ -2677,7 +2470,7 @@ public sealed class PathGeometry : Geometry
                     var pts = polyBezier.Points;
                     for (int i = 0; i + 2 < pts.Count; i += 3)
                     {
-                        UpdateCubicBezierBounds(currentPoint, pts[i], pts[i + 1], pts[i + 2],
+                        UpdateCubicBezierBounds(Map(currentPoint), Map(pts[i]), Map(pts[i + 1]), Map(pts[i + 2]),
                             ref minX, ref minY, ref maxX, ref maxY);
                         currentPoint = pts[i + 2];
                     }
@@ -2685,7 +2478,7 @@ public sealed class PathGeometry : Geometry
                 }
 
                 case QuadraticBezierSegment quad:
-                    UpdateQuadBezierBounds(currentPoint, quad.Point1, quad.Point2,
+                    UpdateQuadBezierBounds(Map(currentPoint), Map(quad.Point1), Map(quad.Point2),
                         ref minX, ref minY, ref maxX, ref maxY);
                     currentPoint = quad.Point2;
                     break;
@@ -2695,7 +2488,7 @@ public sealed class PathGeometry : Geometry
                     var pts = polyQuad.Points;
                     for (int i = 0; i + 1 < pts.Count; i += 2)
                     {
-                        UpdateQuadBezierBounds(currentPoint, pts[i], pts[i + 1],
+                        UpdateQuadBezierBounds(Map(currentPoint), Map(pts[i]), Map(pts[i + 1]),
                             ref minX, ref minY, ref maxX, ref maxY);
                         currentPoint = pts[i + 1];
                     }
@@ -2703,13 +2496,13 @@ public sealed class PathGeometry : Geometry
                 }
 
                 case ArcSegment arc:
-                    UpdateArcBounds(currentPoint, arc, ref minX, ref minY, ref maxX, ref maxY);
+                    UpdateArcBounds(currentPoint, arc, matrix, ref minX, ref minY, ref maxX, ref maxY);
                     currentPoint = arc.Point;
                     break;
 
                 default:
                     foreach (var pt in segment.GetPoints())
-                        UpdateBounds(pt, ref minX, ref minY, ref maxX, ref maxY);
+                        UpdateBounds(Map(pt), ref minX, ref minY, ref maxX, ref maxY);
                     currentPoint = segment.GetEndPoint(currentPoint);
                     break;
             }
@@ -2833,11 +2626,11 @@ public sealed class PathGeometry : Geometry
     /// SVG endpoint-to-center parameterization, then checking axis-aligned
     /// extrema of the rotated ellipse within the swept angle range.
     /// </summary>
-    private static void UpdateArcBounds(Point start, ArcSegment arc,
+    private static void UpdateArcBounds(Point start, ArcSegment arc, Matrix matrix,
         ref double minX, ref double minY, ref double maxX, ref double maxY)
     {
-        UpdateBounds(start, ref minX, ref minY, ref maxX, ref maxY);
-        UpdateBounds(arc.Point, ref minX, ref minY, ref maxX, ref maxY);
+        UpdateBounds(matrix.Transform(start), ref minX, ref minY, ref maxX, ref maxY);
+        UpdateBounds(matrix.Transform(arc.Point), ref minX, ref minY, ref maxX, ref maxY);
 
         var rx = Math.Abs(arc.Size.Width);
         var ry = Math.Abs(arc.Size.Height);
@@ -2894,18 +2687,20 @@ public sealed class PathGeometry : Geometry
         //                        y(θ) = cy + rx·cos(θ)·sin(rot) + ry·sin(θ)·cos(rot)
         // Extrema of x: dx/dθ = 0 → tan(θ) = -(ry/rx)·tan(rot) → θ = atan2(-ry·sin(rot), rx·cos(rot))
         // Extrema of y: dy/dθ = 0 → tan(θ) =  (ry/rx)·cot(rot) → θ = atan2( ry·cos(rot), rx·sin(rot))
-        double txBase = Math.Atan2(-ry * sinR, rx * cosR);
-        double tyBase = Math.Atan2(ry * cosR, rx * sinR);
+        double txBase = Math.Atan2(-ry * sinR * matrix.M11 + ry * cosR * matrix.M21,
+            rx * cosR * matrix.M11 + rx * sinR * matrix.M21);
+        double tyBase = Math.Atan2(-ry * sinR * matrix.M12 + ry * cosR * matrix.M22,
+            rx * cosR * matrix.M12 + rx * sinR * matrix.M22);
 
         // Check the 4 candidate angles (2 for x extrema, 2 for y extrema).
         // Keep this allocation-free: Bounds is called from the render hot path.
-        UpdateArcExtremum(txBase, startAngle, deltaAngle, cx, cy, rx, ry, cosR, sinR,
+        UpdateArcExtremum(txBase, startAngle, deltaAngle, cx, cy, rx, ry, cosR, sinR, matrix,
             ref minX, ref minY, ref maxX, ref maxY);
-        UpdateArcExtremum(txBase + Math.PI, startAngle, deltaAngle, cx, cy, rx, ry, cosR, sinR,
+        UpdateArcExtremum(txBase + Math.PI, startAngle, deltaAngle, cx, cy, rx, ry, cosR, sinR, matrix,
             ref minX, ref minY, ref maxX, ref maxY);
-        UpdateArcExtremum(tyBase, startAngle, deltaAngle, cx, cy, rx, ry, cosR, sinR,
+        UpdateArcExtremum(tyBase, startAngle, deltaAngle, cx, cy, rx, ry, cosR, sinR, matrix,
             ref minX, ref minY, ref maxX, ref maxY);
-        UpdateArcExtremum(tyBase + Math.PI, startAngle, deltaAngle, cx, cy, rx, ry, cosR, sinR,
+        UpdateArcExtremum(tyBase + Math.PI, startAngle, deltaAngle, cx, cy, rx, ry, cosR, sinR, matrix,
             ref minX, ref minY, ref maxX, ref maxY);
     }
 
@@ -2919,6 +2714,7 @@ public sealed class PathGeometry : Geometry
         double ry,
         double cosR,
         double sinR,
+        Matrix matrix,
         ref double minX,
         ref double minY,
         ref double maxX,
@@ -2929,8 +2725,10 @@ public sealed class PathGeometry : Geometry
             return;
         }
 
-        var px = cx + rx * Math.Cos(angle) * cosR - ry * Math.Sin(angle) * sinR;
-        var py = cy + rx * Math.Cos(angle) * sinR + ry * Math.Sin(angle) * cosR;
+        var point = matrix.Transform(new Point(cx + rx * Math.Cos(angle) * cosR - ry * Math.Sin(angle) * sinR,
+            cy + rx * Math.Cos(angle) * sinR + ry * Math.Sin(angle) * cosR));
+        var px = point.X;
+        var py = point.Y;
         if (px < minX) minX = px;
         if (px > maxX) maxX = px;
         if (py < minY) minY = py;
@@ -3320,7 +3118,7 @@ public sealed class PathGeometry : Geometry
     {
         // Ray-casting algorithm: cast a horizontal ray from point to the right.
         // Count crossings and track signed winding number for Nonzero fill rule.
-        var flat = GetFlattenedPathGeometry();
+        var flat = MayHaveCurves() ? GetFlattenedPathGeometry() : this;
         int crossings = 0;
         int winding = 0;
 
@@ -3335,8 +3133,9 @@ public sealed class PathGeometry : Geometry
                 else if (seg is PolyLineSegment pls) pts.AddRange(pls.Points);
             }
 
-            // Close the figure
-            if (figure.IsClosed && pts.Count > 1)
+            // Filled figures close implicitly. IsClosed controls the stroke's
+            // last edge and must not change fill hit testing.
+            if (pts.Count > 1)
             {
                 var first = pts[0];
                 var last = pts[^1];
@@ -3384,30 +3183,8 @@ public sealed class PathGeometry : Geometry
     /// </summary>
     internal double ComputeArea()
     {
-        double area = 0;
-        var flat = (Figures.Count > 0 && !HasCurves()) ? this : GetFlattenedPathGeometry();
-
-        foreach (var figure in flat.Figures)
-        {
-            if (!figure.IsFilled) continue;
-            var pts = new List<Point> { figure.StartPoint };
-            foreach (var seg in figure.Segments)
-            {
-                if (seg is LineSegment ls) pts.Add(ls.Point);
-                else if (seg is PolyLineSegment pls) pts.AddRange(pls.Points);
-            }
-            if (pts.Count < 3) continue;
-
-            // Shoelace formula
-            for (int i = 0; i < pts.Count; i++)
-            {
-                var j = (i + 1) % pts.Count;
-                area += pts[i].X * pts[j].Y;
-                area -= pts[j].X * pts[i].Y;
-            }
-        }
-
-        return Math.Abs(area) / 2.0;
+        var flat = Figures.Count > 0 && !HasCurves() ? this : GetFlattenedPathGeometry();
+        return GeometryBoolean.Area(flat);
     }
 
     private bool HasCurves()

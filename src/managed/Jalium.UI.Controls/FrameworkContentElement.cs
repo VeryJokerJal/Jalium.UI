@@ -250,6 +250,9 @@ public class FrameworkContentElement : ContentElement, IFrameworkInputElement, I
 
     public DependencyObject? Parent => _logicalParent ?? base.GetUIParentCore();
 
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Automation.Peers.ContentElementAutomationPeer(this);
+
     internal override ValueSource GetValueSourceInternal(DependencyProperty property)
     {
         var local = base.GetValueSourceInternal(property);

@@ -41,6 +41,13 @@ JALIUM_API int32_t jalium_text_copy_outline_path(
 /// @return A handle to the created context, or nullptr on failure.
 JALIUM_API JaliumContext* jalium_context_create(JaliumBackend backend);
 
+/// Creates a private Software rasterizer, independent of window backend overrides.
+JALIUM_API JaliumContext* jalium_context_create_rasterizer(void);
+
+/// Creates a windowless framebuffer. Supported by Software contexts only.
+JALIUM_API JaliumRenderTarget* jalium_render_target_create_offscreen(
+    JaliumContext* ctx, int32_t width, int32_t height);
+
 /// Sets the GPU adapter preference on a context before initialization.
 /// Must be called before any render target is created on this context.
 /// @param ctx The context.
@@ -833,6 +840,23 @@ JALIUM_API JaliumBrush* jalium_brush_create_radial_gradient(
     uint32_t extendMode
 );
 
+/// Selects gradient interpolation: 0=linear-light RGB, 1=encoded sRGB.
+/// Stop RGB values remain encoded sRGB; alpha is interpolated independently.
+/// Existing factory calls retain their backend's legacy default until selected.
+/// Returns NOT_SUPPORTED for a brush/backend without the independent capability.
+JALIUM_API JaliumResult jalium_brush_set_color_interpolation_mode(JaliumBrush* brush, uint32_t mode);
+
+/// Maps gradient coordinates into the path's pre-transform user space.
+/// Identity preserves factory behavior. Null, non-finite or non-invertible
+/// matrices return INVALID_ARGUMENT without changing the prior paint transform.
+/// Returns NOT_SUPPORTED when the brush/backend lacks this capability.
+JALIUM_API JaliumResult jalium_brush_set_paint_transform(JaliumBrush* brush, const JaliumMatrix* transform);
+
+/// Sets radial circle geometry. Flags: 0=legacy (radius=0), 1=SVG2,
+/// 3=SVG2 with an exact zero-radius focus on the end circle (radius=0).
+/// 5=SVG2 with an exact tangent circle family (linear parameter equation).
+JALIUM_API JaliumResult jalium_brush_set_radial_geometry(JaliumBrush* brush, float focalRadius, uint32_t flags);
+
 /// Destroys a brush.
 /// @param brush The brush to destroy.
 JALIUM_API void jalium_brush_destroy(JaliumBrush* brush);
@@ -871,6 +895,96 @@ JALIUM_API void jalium_text_format_destroy(JaliumTextFormat* format);
 /// An empty list restores the original font cascade. Unsupported backends return NOT_SUPPORTED.
 JALIUM_API JaliumResult jalium_text_format_set_font_fallbacks(JaliumTextFormat* format,
     JaliumTextFormat* const* fallbackFormats, uint32_t count);
+
+/// Sets paragraph direction: 0 = LTR, 1 = RTL, 2 = first-strong/default LTR.
+/// Unsupported text formats return NOT_SUPPORTED and keep their prior behavior.
+JALIUM_API JaliumResult jalium_text_format_set_direction(JaliumTextFormat* format, int32_t direction);
+
+/// Copies an OpenType feature list. Zero entries restore the font's defaults.
+/// At most 16384 entries, four printable ASCII tag characters; unsupported tags
+/// are ignored by the font shaper. Existing layouts retain their shaped data.
+JALIUM_API JaliumResult jalium_text_format_set_font_features(JaliumTextFormat* format,
+    const JaliumFontFeature* features, uint32_t count);
+
+/// Replaces explicit variable-font coordinates, clamping each supported axis to
+/// its face range. Unsupported tags are ignored without synthesizing glyphs.
+/// Empty input restores pre-variation coordinates; invalid input preserves state.
+/// count <= 16384; coordinates must be finite. Older backends return NOT_SUPPORTED.
+JALIUM_API JaliumResult jalium_text_format_set_font_variations(JaliumTextFormat* format,
+    const JaliumFontVariation* axes, uint32_t count);
+
+/// Atomically replaces explicit axes plus an optical-size policy: 0 keeps the
+/// platform policy, 1 selects this format's used size, 2 selects the face default.
+/// Explicit opsz has final precedence. Other argument rules match set_font_variations.
+JALIUM_API JaliumResult jalium_text_format_set_font_optical_variations(JaliumTextFormat* format,
+    const JaliumFontVariation* axes, uint32_t count, uint32_t mode);
+
+/// Sets this face's glyph multiplier and optional line metric ratios.
+/// Does not change the CSS nominal size; fallbacks keep their own descriptors.
+JALIUM_API JaliumResult jalium_text_format_set_font_face_metrics(JaliumTextFormat* format,
+    const JaliumFontFaceMetrics* metrics, float* usedSize);
+
+/// Actual unwrapped glyph ink, relative to the baseline (positive Y down).
+JALIUM_API JaliumResult jalium_text_format_get_font_ink_bounds(JaliumTextFormat* format,
+    const wchar_t* text, uint32_t length, JaliumTextRangeMetrics* bounds);
+
+/// Per-face font-size-adjust: metric 0 disables; 1=x-height, 2=cap-height,
+/// 3=zero width, 4=water width, 5=water height. Aspect is finite and non-negative.
+/// Optical mode follows set_font_optical_variations; axes configure implicit
+/// system fallback only (explicit faces retain their individual descriptors).
+JALIUM_API JaliumResult jalium_text_format_set_font_size_adjust(JaliumTextFormat* format,
+    uint32_t metric, double aspect, uint32_t opticalMode, const JaliumFontVariation* axes,
+    uint32_t count, float* usedSize);
+/// The unadjusted primary face's metric/font-size ratio. Zero means absent.
+JALIUM_API JaliumResult jalium_text_format_get_font_aspect_metric(JaliumTextFormat* format,
+    uint32_t metric, double* aspect);
+
+/// Queries primary-face GSUB/GPOS feature availability (not glyph substitution).
+/// Table mask: 1=GSUB, 2=GPOS, 3=both. Tags use big-endian OpenType values;
+/// count is limited to 16384. Empty queries
+/// allow null buffers. Older backends return NOT_SUPPORTED.
+JALIUM_API JaliumResult jalium_text_format_get_font_feature_support(JaliumTextFormat* format,
+    uint32_t tables, const uint32_t* tags, uint32_t count, uint8_t* supported);
+
+/// Semantic CSS caps variant: 0=normal, 1=small, 2=all-small, 3=petite,
+/// 4=all-petite, 5=unicase, 6=titling. Language is at most 128 ASCII BCP47
+/// characters (letters, digits, hyphens), or empty for the default casing.
+/// Copies the semantic request for casing/synthesis; select native OpenType
+/// features separately with set_font_features. Older backends return NOT_SUPPORTED.
+/// Flags: 1 allows synthesis, 2 supplies an element-level smcp override,
+/// 4 enables that override (requires 2). Other bits are invalid.
+JALIUM_API JaliumResult jalium_text_format_set_font_caps(JaliumTextFormat* format,
+    uint32_t variant, int32_t flags, const char* language, uint32_t languageLength);
+
+/// Unicode context outside the supplied text fragment, reset by set_font_caps.
+/// Bits: 1=preceding cased, 2=following cased, 4=after I,
+/// 8=after soft-dotted, 16=before dot above, 32=more above.
+/// These are Unicode SpecialCasing predicates at the fragment boundaries.
+/// Other bits are invalid. Older backends return NOT_SUPPORTED.
+JALIUM_API JaliumResult jalium_text_format_set_font_caps_context(JaliumTextFormat* format,
+    uint32_t boundaries);
+
+/// Casing operation of a leading combining scalar, obtained from its complete
+/// logical paragraph. 0=none, 1=synthetic uppercase, 2=native-smcp lowercase.
+/// Reset by set_font_caps. This does not change Unicode boundary flag meanings.
+JALIUM_API JaliumResult jalium_text_format_set_font_caps_continuation(JaliumTextFormat* format,
+    uint32_t operation);
+
+// Per-source vertical typography: 0 mixed, 1 upright, 2 sideways.
+// Parent baseline context: 0 central, 1 alphabetic.
+// Consumed by vertical paragraphs; horizontal typography is unaffected.
+JALIUM_API JaliumResult jalium_text_format_set_orientation(JaliumTextFormat* format, int32_t orientation, int32_t baseline);
+
+/// Emoji presentation: 0=normal, 1=text, 2=emoji, 3=Unicode default.
+/// after: authored selector following the fragment, 0=none, 1=VS15, 2=VS16.
+JALIUM_API JaliumResult jalium_text_format_set_font_emoji(JaliumTextFormat* format,
+    uint32_t variant, uint32_t after);
+
+/// Semantic position: 0=normal, 1=sub, 2=super. Flags: bit 0 permits synthesis;
+/// bit 1 supplies an explicit selected-feature override, bit 2 enables it.
+/// runMode: 0=resolve the complete run, 1=native, 2=synthetic, 3=unmodified.
+JALIUM_API JaliumResult jalium_text_format_set_font_position(JaliumTextFormat* format,
+    uint32_t variant, uint32_t flags, uint32_t runMode);
 
 /// Intersects the face's actual character map with the supplied ranges. Disabling
 /// restores its original coverage. Enabled with zero ranges excludes every character.
@@ -1026,6 +1140,83 @@ JALIUM_API JaliumTextParagraph* jalium_text_paragraph_create_with_wrapping(
     JaliumTextFormat* defaultFormat, const uint16_t* text, uint32_t textLength,
     const JaliumTextSpan* spans, uint32_t spanCount, float maxWidth,
     float minLineHeight, int32_t alignment, int32_t direction, int32_t wrapping);
+/// Shapes vertical glyph forms and mixed orientation in logical coordinates.
+/// maxInlineSize wraps columns; line x/width are inline coordinates and y/height
+/// are block coordinates. The caller maps columns to its physical writing mode.
+/// Unsupported backends return null, without changing shared text formats.
+JALIUM_API JaliumTextParagraph* jalium_text_paragraph_create_vertical(
+    JaliumTextFormat* defaultFormat, const uint16_t* text, uint32_t textLength,
+    const JaliumTextSpan* spans, uint32_t spanCount, float maxInlineSize,
+    float minColumnWidth, int32_t alignment, int32_t direction, int32_t wrapping);
+/// Vertical glyph forms with construction-time spacing and source-slice paint.
+/// Units use the same logical coordinates and flags as create_advanced.
+/// contextPaint is 0 or 1. Unsupported providers return null.
+JALIUM_API JaliumTextParagraph* jalium_text_paragraph_create_vertical_advanced(
+    JaliumTextFormat* defaultFormat, const uint16_t* text, uint32_t textLength,
+    const JaliumTextSpan* spans, uint32_t spanCount,
+    const JaliumTextAdvanceUnit* units, uint32_t unitCount,
+    float maxInlineSize, float minColumnWidth, int32_t direction, int32_t contextPaint);
+/// Upright vertical paragraph: horizontal-script character units are isolated
+/// and upright; native vertical scripts retain their intrinsic orientation.
+/// Used direction is LTR. Input/source positions and computed styles are unchanged.
+/// Geometry remains logical inline/block. Old providers return null.
+JALIUM_API JaliumTextParagraph* jalium_text_paragraph_create_upright(
+    JaliumTextFormat* defaultFormat, const uint16_t* text, uint32_t textLength,
+    const JaliumTextSpan* spans, uint32_t spanCount, float maxInlineSize,
+    float minColumnWidth, int32_t alignment, int32_t direction, int32_t wrapping);
+/// Same upright composition with construction-time advances and source-slice paint.
+JALIUM_API JaliumTextParagraph* jalium_text_paragraph_create_upright_advanced(
+    JaliumTextFormat* defaultFormat, const uint16_t* text, uint32_t textLength,
+    const JaliumTextSpan* spans, uint32_t spanCount,
+    const JaliumTextAdvanceUnit* units, uint32_t unitCount,
+    float maxInlineSize, float minColumnWidth, int32_t direction, int32_t contextPaint);
+/// One horizontal-in-vertical composition. Ordered, disjoint ranges address
+/// original UTF-16 and contain complete character units. em is the parent's
+/// computed font size; direction is -1 auto, 0 LTR or 1 RTL.
+typedef struct JaliumTextCombineUnit {
+    uint32_t textPosition;
+    uint32_t length;
+    float em;
+    int32_t direction;
+} JaliumTextCombineUnit;
+/// Optional capability; old providers return null. orientation: 0 mixed
+/// vertical, 1 upright vertical, 2 sideways glyphs in a vertical writing mode.
+/// Advances, when present, cover the source without splitting a composition.
+/// wrapping: 0 word, 1 no wrap, 2 character. Geometry remains logical.
+JALIUM_API JaliumTextParagraph* jalium_text_paragraph_create_combined(
+    JaliumTextFormat* defaultFormat, const uint16_t* text, uint32_t textLength,
+    const JaliumTextSpan* spans, uint32_t spanCount,
+    const JaliumTextCombineUnit* combined, uint32_t combinedCount,
+    const JaliumTextAdvanceUnit* advances, uint32_t advanceCount,
+    float maxInlineSize, float minColumnWidth, int32_t alignment,
+    int32_t direction, int32_t wrapping, int32_t orientation, int32_t contextPaint);
+/// Creates an immutable, left-aligned paragraph without automatic wrapping.
+/// Hard breaks and U+2028 remain separate rows, each with independent edge
+/// spacing after bidi ordering. Font shaping and glyph clusters are retained. Unsupported
+/// providers return null. This does not modify any existing paragraph/provider ABI.
+JALIUM_API JaliumTextParagraph* jalium_text_paragraph_create_spaced(
+    JaliumTextFormat* defaultFormat, const uint16_t* text, uint32_t textLength,
+    const JaliumTextSpan* spans, uint32_t spanCount,
+    const JaliumTextSpacingUnit* units, uint32_t unitCount,
+    float maxWidth, float minLineHeight, int32_t direction);
+/// As above, with foreground paint supplied by draw_paragraph_slice. Span
+/// colors do not partition shaping; callers use a common neutral span paint.
+JALIUM_API JaliumTextParagraph* jalium_text_paragraph_create_context_spaced(
+    JaliumTextFormat* defaultFormat, const uint16_t* text, uint32_t textLength,
+    const JaliumTextSpan* spans, uint32_t spanCount,
+    const JaliumTextSpacingUnit* units, uint32_t unitCount,
+    float maxWidth, float minLineHeight, int32_t direction);
+/// As the spaced factories above, with independent logical unit advances.
+JALIUM_API JaliumTextParagraph* jalium_text_paragraph_create_advanced(
+    JaliumTextFormat* defaultFormat, const uint16_t* text, uint32_t textLength,
+    const JaliumTextSpan* spans, uint32_t spanCount,
+    const JaliumTextAdvanceUnit* units, uint32_t unitCount,
+    float maxWidth, float minLineHeight, int32_t direction);
+JALIUM_API JaliumTextParagraph* jalium_text_paragraph_create_context_advanced(
+    JaliumTextFormat* defaultFormat, const uint16_t* text, uint32_t textLength,
+    const JaliumTextSpan* spans, uint32_t spanCount,
+    const JaliumTextAdvanceUnit* units, uint32_t unitCount,
+    float maxWidth, float minLineHeight, int32_t direction);
 JALIUM_API void jalium_text_paragraph_destroy(JaliumTextParagraph* paragraph);
 JALIUM_API uint32_t jalium_text_paragraph_line_count(JaliumTextParagraph* paragraph);
 JALIUM_API JaliumResult jalium_text_paragraph_get_line(JaliumTextParagraph* paragraph,
@@ -1040,6 +1231,22 @@ JALIUM_API JaliumResult jalium_text_paragraph_hit_test(JaliumTextParagraph* para
 JALIUM_API JaliumResult jalium_text_paragraph_get_selection(JaliumTextParagraph* paragraph,
     uint32_t line, uint32_t start, uint32_t length, JaliumTextRangeMetrics* results,
     uint32_t capacity, uint32_t* count);
+/// Copy the resolved caps operation at each original UTF-16 source unit.
+/// length must equal the paragraph's original source length. Old backends
+/// return NOT_SUPPORTED without changing the output buffer.
+JALIUM_API JaliumResult jalium_text_paragraph_get_caps_operations(JaliumTextParagraph* paragraph,
+    uint8_t* operations, uint32_t length);
+
+/// Copy position modes (0=normal, 1=native, 2=synthetic, 3=unmodified) at each
+/// original source unit. Exact source length required; old backends return
+/// NOT_SUPPORTED without changing the destination.
+JALIUM_API JaliumResult jalium_text_paragraph_get_position_modes(JaliumTextParagraph* paragraph,
+    uint8_t* modes, uint32_t length);
+
+/// Ink bounds of glyphs whose complete source cluster ends in this slice.
+/// Coordinates include the line origin and baseline; an empty slice has no ink.
+JALIUM_API JaliumResult jalium_text_paragraph_get_source_bounds(JaliumTextParagraph* paragraph,
+    uint32_t line, uint32_t start, uint32_t length, JaliumTextRangeMetrics* result);
 /// Navigate words using the immutable paragraphs' actual shaped line/caret geometry.
 /// Offsets locate each paragraph in the UTF-16 document. Gaps must be paragraph breaks.
 /// Direction: 0=logical forward, 1=logical backward, 2=physical right, 3=physical left.
@@ -1052,6 +1259,16 @@ JALIUM_API JaliumResult jalium_text_paragraph_navigate_word(
     int32_t backwardAffinity, JaliumParagraphCaret* result);
 JALIUM_API JaliumResult jalium_render_target_draw_paragraph_line(JaliumRenderTarget* target,
     JaliumTextParagraph* paragraph, uint32_t line, float x, float y, float opacity);
+/// Draw each retained glyph only when its source cluster ends in this slice.
+/// Existing shaped visibility ranges also apply, independently of ownership.
+JALIUM_API JaliumResult jalium_render_target_draw_paragraph_slice(JaliumRenderTarget* target,
+    JaliumTextParagraph* paragraph, uint32_t line, float x, float y,
+    uint32_t start, uint32_t length, float r, float g, float b, float a);
+/// Same glyph ownership and visibility as draw_paragraph_slice, with brush paint.
+/// Brush coordinates are in the target's current local coordinate space.
+JALIUM_API JaliumResult jalium_render_target_draw_paragraph_brush(JaliumRenderTarget* target,
+    JaliumTextParagraph* paragraph, uint32_t line, float x, float y,
+    uint32_t start, uint32_t length, JaliumBrush* brush);
 
 /// Measures text and returns metrics.
 /// Uses DirectWrite's IDWriteTextLayout for accurate measurement.
@@ -1551,6 +1768,25 @@ JALIUM_API JaliumResult jalium_draw_inner_shadow_layer_elliptical(JaliumRenderTa
 JALIUM_API void jalium_draw_color_matrix_effect(JaliumRenderTarget* rt,
     float x, float y, float w, float h,
     const float* matrix);
+
+/// Whether this target supports grouped A8 masks of completed element captures.
+JALIUM_API int32_t jalium_render_target_supports_alpha_masks(JaliumRenderTarget* rt);
+// Optional extension. Modes 0..16 match CssBlendMode; the input is the last
+// completed effect capture. The RenderTarget base vtable remains unchanged.
+JALIUM_API int32_t jalium_render_target_supports_blend_modes(JaliumRenderTarget* rt);
+JALIUM_API JaliumResult jalium_draw_blend_effect(JaliumRenderTarget* rt,
+    uint32_t mode, float x, float y, float w, float h);
+
+/// Begins a mask group without applying a second antialiased geometry boundary.
+/// End with jalium_effect_end_capture after a successful return.
+JALIUM_API JaliumResult jalium_alpha_mask_begin_capture(JaliumRenderTarget* rt,
+    float x, float y, float w, float h);
+
+/// Applies a borrowed A8 image to the last completed element capture.
+/// Mask and capture rectangles use current local drawing coordinates.
+JALIUM_API JaliumResult jalium_draw_alpha_mask_effect(JaliumRenderTarget* rt,
+    const uint8_t* pixels,uint32_t bytes,uint32_t width,uint32_t height,uint32_t stride,
+    float maskX,float maskY,float maskW,float maskH,float captureX,float captureY,float captureW,float captureH);
 
 /// Applies an ordered CSS color-matrix filter chain to the captured content.
 /// Each stage clamps before the next stage reads it. The matrix array contains

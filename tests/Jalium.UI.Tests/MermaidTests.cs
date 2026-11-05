@@ -3,6 +3,7 @@ using System.Reflection;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Charts;
 using Jalium.UI.Controls.Themes;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Tests;
 

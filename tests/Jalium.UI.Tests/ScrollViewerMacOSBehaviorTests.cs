@@ -8,8 +8,10 @@ using Jalium.UI.Media;
 namespace Jalium.UI.Tests;
 
 [Collection("Application")]
-public class ScrollViewerMacOSBehaviorTests
+public class ScrollViewerMacOSBehaviorTests : IDisposable
 {
+    public ScrollViewerMacOSBehaviorTests() => ScrollBarTemplateTestHelper.Register();
+
     [Fact]
     public void PreciseWheel_IntegratesFractionalPacketsWithoutAdditionalInertia()
     {
@@ -257,8 +259,8 @@ public class ScrollViewerMacOSBehaviorTests
     public void MacOSPersistentScrollBar_HasNoArrowButtonsAndKeepsTrackPaging()
     {
         var bar = CreateMacOSBar(Orientation.Vertical, overlay: false);
-        Assert.Equal(Visibility.Collapsed, ((RepeatButton)bar.GetVisualChild(0)).Visibility);
-        Assert.Equal(Visibility.Collapsed, ((RepeatButton)bar.GetVisualChild(2)).Visibility);
+        Assert.Equal(Visibility.Collapsed, ((RepeatButton)bar.FindName("PART_LineDecreaseButton")).Visibility);
+        Assert.Equal(Visibility.Collapsed, ((RepeatButton)bar.FindName("PART_LineIncreaseButton")).Visibility);
         Assert.Equal(3, bar.Track.VisualBounds.Y);
         Assert.Equal(214, bar.Track.RenderSize.Height);
         Assert.True(bar.Track.IncreaseRepeatButton!.IsHitTestVisible);
@@ -397,4 +399,6 @@ public class ScrollViewerMacOSBehaviorTests
         public void PageRight() { }
         public Rect MakeVisible(Visual visual, Rect rectangle) => rectangle;
     }
+    public void Dispose() => ScrollBarTemplateTestHelper.Reset();
+
 }

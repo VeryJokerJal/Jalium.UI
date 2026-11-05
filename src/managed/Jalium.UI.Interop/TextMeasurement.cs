@@ -1,3 +1,4 @@
+using Jalium.UI.Styling;
 using System.Collections.Concurrent;
 using System.Globalization;
 using Jalium.UI;
@@ -28,16 +29,19 @@ public static partial class TextMeasurement
 
     private readonly struct FormatKey : IEquatable<FormatKey>
     {
-        public FormatKey(int contextGeneration, string fontFamily, float fontSize, int fontWeight, int fontStyle, bool noWrap)
+        public FormatKey(int contextGeneration, string fontFamily, float fontSize, int fontWeight, int fontStyle, bool noWrap, bool paragraph = false)
         {
             ContextGeneration = contextGeneration;
             FontFamily = fontFamily;
             // Preserve the former "0.###" string-key coalescing without
-            // allocating the formatted string on every warm lookup.
-            FontSize = MathF.Round(fontSize, 3);
+            // allocating the formatted string on every warm lookup. Paragraphs
+            // retain exact sizes and use a separate cache entry from mutable
+            // measurement formats.
+            FontSize = paragraph ? fontSize : MathF.Round(fontSize, 3);
             FontWeight = fontWeight;
             FontStyle = fontStyle;
             NoWrap = noWrap;
+            Paragraph = paragraph;
         }
 
         private int ContextGeneration { get; }
@@ -46,12 +50,13 @@ public static partial class TextMeasurement
         private int FontWeight { get; }
         private int FontStyle { get; }
         private bool NoWrap { get; }
+        private bool Paragraph { get; }
 
         public bool Equals(FormatKey other) =>
             ContextGeneration == other.ContextGeneration &&
             FontSize.Equals(other.FontSize) &&
             FontWeight == other.FontWeight &&
-            FontStyle == other.FontStyle && NoWrap == other.NoWrap &&
+            FontStyle == other.FontStyle && NoWrap == other.NoWrap && Paragraph == other.Paragraph &&
             string.Equals(FontFamily, other.FontFamily, StringComparison.Ordinal);
 
         public override bool Equals(object? obj) => obj is FormatKey other && Equals(other);
@@ -65,6 +70,7 @@ public static partial class TextMeasurement
             hash.Add(FontWeight);
             hash.Add(FontStyle);
             hash.Add(NoWrap);
+            hash.Add(Paragraph);
             return hash.ToHashCode();
         }
     }
@@ -158,7 +164,7 @@ public static partial class TextMeasurement
     // DirectWrite 做一次完整的 CreateTextLayout + 整形（昂贵）。虚拟化大列表滚动时，每个新实例化的行单元
     // 都会冷测量，回滚或重复文本更是反复测量同一串。这里按完整测量签名缓存 TextMetrics 结果：命中即 O(1)
     // 返回，免去 DWrite 整形。键用 struct 避免命中路径分配字符串；LRU 有界，唯一文本不会无界增长。
-    private const int MaxMeasureCacheEntries = 4096;
+    private const int MaxMeasureCacheEntries = 8192;
 
     private readonly struct MeasureKey : IEquatable<MeasureKey>
     {
@@ -422,7 +428,10 @@ public static partial class TextMeasurement
 
     private static void TrimMeasureCacheIfNeeded()
     {
-        while (_measureCache.Count > MaxMeasureCacheEntries && _measureLruKeys.First is { } oldest)
+        // Insertions, evictions and clears update both collections under
+        // _measureLock. The LRU count is exact here and avoids acquiring every
+        // ConcurrentDictionary stripe lock just to check the capacity.
+        while (_measureLruKeys.Count > MaxMeasureCacheEntries && _measureLruKeys.First is { } oldest)
         {
             _measureLruKeys.RemoveFirst();
             _measureCache.TryRemove(oldest.Value, out _);
@@ -894,12 +903,13 @@ public static partial class TextMeasurement
         RenderContext context, string fontFamily, float fontSize, int fontWeight, int fontStyle)
     {
         fontFamily = Jalium.UI.Styling.CssFontFaces.Unblock(fontFamily);
+        FontFeatureRenderingSource.TryUnwrap(fontFamily, out var features, out fontFamily, out var caps, out var capsContext);
         float width = FontWidthRenderingSource.TryUnwrap(fontFamily, out var percentage, out var source)
             ? (float)Math.Min(percentage, float.MaxValue) : 100;
         if (context.Backend != RenderBackend.Metal && !(OperatingSystem.IsMacOS() && context.Backend == RenderBackend.Software)) width = 100;
         fontFamily = source;
         if (OperatingSystem.IsMacOS() && Jalium.UI.Styling.CssFontRenderingPlan.TryDecode(fontFamily, out var plan))
-            return CreateCssTextFormat(context, plan, fontSize, fontWeight, fontStyle, width);
+            return CreateCssTextFormat(context, plan, fontSize, fontWeight, fontStyle, width, features, caps, capsContext);
         Exception? firstFailure = null;
         NativeTextFormat? primary = null;
         var fallbacks = new List<NativeTextFormat>();
@@ -908,14 +918,16 @@ public static partial class TextMeasurement
         {
             foreach (string name in EnumerateFontFamilyNames(fontFamily))
             {
+                FontFeatureRenderingSource.TryUnwrap(name, out var faceFeatures, out var actualFamily, out _, out var faceContext);
                 if (OperatingSystem.IsMacOS())
                 {
                     if (!names.Add(name)) continue;
-                    try { if (NativeMethods.FontFamilyIsAvailable(name) == 0) continue; }
+                    try { if (NativeMethods.FontFamilyIsAvailable(actualFamily) == 0) continue; }
                     catch (EntryPointNotFoundException) { } // Older native payload keeps its fallback.
                 }
                 NativeTextFormat format;
-                try { format = context.CreateTextFormat(name, fontSize, fontWeight, fontStyle, width); }
+                try { format = ConfigureFontFeatures(context.CreateTextFormat(actualFamily, fontSize, fontWeight, fontStyle, width),
+                    features, caps, faceFeatures, capsContext, faceContext.Variations, faceContext.FaceMetrics); }
                 catch (Exception ex) { firstFailure ??= ex; continue; }
                 if (!format.IsValid) { format.Dispose(); continue; }
                 if (!OperatingSystem.IsMacOS()) return format;
@@ -925,8 +937,8 @@ public static partial class TextMeasurement
             if (primary is null)
             {
                 if (firstFailure != null) throw firstFailure;
-                return context.CreateTextFormat(OperatingSystem.IsMacOS() ? FrameworkElement.DefaultFontFamilyName : fontFamily,
-                    fontSize, fontWeight, fontStyle, width);
+                return ConfigureFontFeatures(context.CreateTextFormat(OperatingSystem.IsMacOS() ? FrameworkElement.DefaultFontFamilyName : fontFamily,
+                    fontSize, fontWeight, fontStyle, width), features, caps, capsContext: capsContext);
             }
             if (fallbacks.Count > 0)
             {
@@ -999,17 +1011,98 @@ public static partial class TextMeasurement
 
     // Accessibility consumes the same primary face as drawing. In particular,
     // encoded CSS plans, quoted family lists and width keys are not font names.
+    internal static bool TryGetFontInkBounds(FormattedText text, out Rect bounds)
+    {
+        bounds = default;
+        var context = RenderContext.Current;
+        if (context is not { IsValid: true } || text.FontSize <= 0) return false;
+        var format = GetOrCreateFormat(context, text.FontFamily, (float)text.FontSize, text.FontWeight, text.FontStyle);
+        return format is not null && format.TryGetFontInkBounds(text.Text, out bounds);
+    }
+
+    internal static double GetFontAspectMetric(string family, double size, int weight, int style, byte metric)
+    {
+        var context = RenderContext.Current;
+        if (context is null || !context.IsValid || size <= 0) return 0;
+        family = CssFontFaces.MaterializeSource(family, " ");
+        var format = GetOrCreateFormat(context, family, (float)size, weight, style);
+        if (format is not null && format.TryGetFontAspectMetric(metric, out double aspect)) return aspect;
+        CssDiagnostics.Report("font-size-adjust", CssDiagnosticReason.LossyConversion, null, "The native backend lacks per-face aspect metrics.");
+        return 0;
+    }
+
     internal static RenderingFont? GetRenderingFont(string family, string text, double size, int weight, int style)
     {
         var context = RenderContext.Current;
         if (!OperatingSystem.IsMacOS() || context is not { IsValid: true, Backend: RenderBackend.Metal or RenderBackend.Software }) return null;
         family = Jalium.UI.Styling.CssFontFaces.MaterializeSource(family, text);
         var format = GetOrCreateFormat(context, family, (float)size, weight, style);
-        return format is null ? null : new(format.FontFamily, format.FontSize, format.FontWeight, format.FontStyle, format.FontWidthPercentage);
+        return format is null ? null : new(format.FontFamily, format.UsedFontSize, format.FontWeight, format.FontStyle, format.FontWidthPercentage);
+    }
+
+    private static NativeTextFormat ConfigureFontFeatures(NativeTextFormat format, FontFeature[] features,
+        CssCapsVariant caps = CssCapsVariant.Normal, FontFeature[]? faceFeatures = null, FontFeatureRenderingSource.CapsContext capsContext = default, FontVariation[]? faceVariations = null, CssFontFaceMetrics? faceMetrics = null)
+    {
+        try
+        {
+            faceMetrics ??= capsContext.FaceMetrics;
+            if (faceMetrics is { IsInitial: false } && !format.TrySetFontFaceMetrics(faceMetrics))
+                CssDiagnostics.Report("@font-face", CssDiagnosticReason.LossyConversion, null, "The native backend lacks font-face size and metric overrides.");
+            var axes = CssFontOpticalSizing.Compose(capsContext.OpticalSizing, faceVariations ?? [], capsContext.Variations ?? []);
+            if (capsContext.OpticalSizing != 0 && !format.TrySetFontOpticalVariations(axes, capsContext.OpticalSizing) &&
+                (capsContext.OpticalSizing == 2 || axes.Length > 0))
+                CssDiagnostics.Report("font-optical-sizing", CssDiagnosticReason.LossyConversion,
+                    null, "The native backend cannot apply the requested optical sizing policy.");
+            if (capsContext.OpticalSizing == 0 && axes.Length > 0 && !format.TrySetFontVariations(axes))
+                CssDiagnostics.Report("font-variation-settings", CssDiagnosticReason.LossyConversion,
+                    null, "The native backend lacks variable font axis selection.");
+            if (capsContext.SizeAdjust is { Metric: > 0 } adjustment && !format.TrySetFontSizeAdjust(adjustment, capsContext))
+                CssDiagnostics.Report("font-size-adjust", CssDiagnosticReason.LossyConversion, null, "The native backend lacks per-face font size adjustment.");
+            if ((capsContext.Emoji != 0 || capsContext.EmojiAfter != 0) && !format.TrySetFontEmoji(capsContext))
+                CssDiagnostics.Report("font-variant-emoji", CssDiagnosticReason.LossyConversion,
+                    null, "The native backend lacks emoji presentation selection.");
+            if (capsContext.Position != 0 && !format.TrySetFontPosition(capsContext, features))
+            {
+                features = FontFeatureRenderingSource.Merge(
+                    [new(FontFeature.TagOf(capsContext.Position == 1 ? "subs" : "sups"), 1)], features);
+                CssDiagnostics.Report("font-variant-position", CssDiagnosticReason.LossyConversion,
+                    null, "The native backend lacks semantic position synthesis; available font features remain in use.");
+            }
+            if (caps != CssCapsVariant.Normal && !format.TrySetFontCaps(caps, capsContext, features))
+                CssDiagnostics.Report("font-variant-caps", CssDiagnosticReason.LossyConversion,
+                    null, "The native backend lacks semantic caps synthesis; available font features remain in use.");
+            var variant = CssFontCaps.Features(caps);
+            if (caps is CssCapsVariant.PetiteCaps or CssCapsVariant.AllPetiteCaps)
+            {
+                if (format.TryGetFontFeatureSupport([FontFeature.TagOf("pcap"), FontFeature.TagOf("c2pc")], out var supported))
+                    variant = CssFontCaps.Resolve(caps, supported[0] != 0, supported[1] != 0);
+                else
+                    CssDiagnostics.Report("font-variant-caps", CssDiagnosticReason.LossyConversion,
+                        null, "The native backend cannot query caps availability; the requested font features remain in use.");
+            }
+            features = FontFeatureRenderingSource.Merge(FontFeatureRenderingSource.Merge(faceFeatures ?? [], variant), features);
+            if (features.Length == 0) return format;
+            var status = format.SetFontFeatures(features);
+            if (status == JaliumResult.NotSupported)
+            {
+                Jalium.UI.Styling.CssDiagnostics.Report("font-feature-settings", Jalium.UI.Styling.CssDiagnosticReason.LossyConversion,
+                    null, "The native text backend lacks OpenType feature selection; its ordinary glyphs remain available.");
+                return format;
+            }
+            if (status != JaliumResult.Ok) throw new InvalidOperationException($"Cannot configure font features: {status}");
+            return format;
+        }
+        catch (EntryPointNotFoundException)
+        {
+            Jalium.UI.Styling.CssDiagnostics.Report("font-feature-settings", Jalium.UI.Styling.CssDiagnosticReason.LossyConversion,
+                null, "The installed native payload predates font feature selection; its ordinary glyphs remain available.");
+            return format;
+        }
+        catch { format.Dispose(); throw; }
     }
 
     private static NativeTextFormat CreateCssTextFormat(RenderContext context, Jalium.UI.Styling.CssFontRenderingPlan plan,
-        float size, int weight, int style, float width)
+        float size, int weight, int style, float width, FontFeature[] features, CssCapsVariant caps, FontFeatureRenderingSource.CapsContext capsContext)
     {
         var formats = new NativeTextFormat?[plan.Faces.Length]; NativeTextFormat? primary = null;
         void Check(JaliumResult status)
@@ -1021,10 +1114,12 @@ public static partial class TextMeasurement
                 {
                     var format = context.CreateTextFormat(family, size, face.Weight, style, (float)Math.Min(face.Width, float.MaxValue)); formats[i] = format;
                     Check(format.SetUnicodeRanges(face.Ranges));
+                    ConfigureFontFeatures(format, features, caps, face.Features, capsContext, face.Variations, face.Metrics);
                 }
             var metric = plan.MetricsFace >= 0 ? plan.Faces[plan.MetricsFace] : null;
-            primary = context.CreateTextFormat(metric?.Family ?? FrameworkElement.DefaultFontFamilyName, size,
-                metric?.Weight ?? weight, style, (float)Math.Min(metric?.Width ?? width, float.MaxValue));
+            primary = ConfigureFontFeatures(context.CreateTextFormat(metric?.Family ?? FrameworkElement.DefaultFontFamilyName, size,
+                metric?.Weight ?? weight, style, (float)Math.Min(metric?.Width ?? width, float.MaxValue)),
+                features, caps, metric?.Features, capsContext, metric?.Variations, metric?.Metrics);
             // Keep the first available face's metrics. The empty primary charset
             // makes actual glyph selection use the ordered, restricted cascade.
             Check(primary.SetFontFallbacks(formats.OfType<NativeTextFormat>().ToArray()));
@@ -1038,10 +1133,36 @@ public static partial class TextMeasurement
         }
     }
 
+    internal static NativeTextFormat.NativeLease? AcquireParagraphFormat(RenderContext context,
+        string family, float size, int weight, int style)
+    {
+        if (float.IsFinite(size) && size > 0 && !string.IsNullOrWhiteSpace(family))
+        {
+            var format = GetOrCreateFormatCore(context, family, size, weight, style, false, paragraph: true);
+            if (format?.RetainForParagraph() is { } retained) return retained;
+            // Eviction or a font-resource change can retire a lock-free hit
+            // before it is pinned. Resolve/pin once under the cache gate.
+            lock (_lock)
+            {
+                format = GetOrCreateFormatCore(context, family, size, weight, style, false, paragraph: true);
+                if (format?.RetainForParagraph() is { } retry) return retry;
+            }
+        }
+        // A captured context may have been replaced while remaining alive via
+        // the paragraph's backend lease. Do not repopulate the global cache for
+        // that generation; preserve the existing transient-format behavior.
+        using var transient = CreateTextFormatFromFamilyList(context, family, size, weight, style);
+        return transient.RetainForParagraph();
+    }
+
     private static bool IsMacOSUnboundedWidth(float width) => OperatingSystem.IsMacOS() &&
         float.IsPositiveInfinity(width);
 
     private static NativeTextFormat? GetOrCreateFormat(RenderContext context, string fontFamily, float fontSize, int fontWeight, int fontStyle = 0, bool noWrap = false)
+        => GetOrCreateFormatCore(context, fontFamily, fontSize, fontWeight, fontStyle, noWrap, paragraph: false);
+
+    private static NativeTextFormat? GetOrCreateFormatCore(RenderContext context, string fontFamily, float fontSize,
+        int fontWeight, int fontStyle, bool noWrap, bool paragraph)
     {
         if (string.IsNullOrWhiteSpace(fontFamily))
         {
@@ -1053,7 +1174,7 @@ public static partial class TextMeasurement
             fontSize = 12;
         }
 
-        var key = new FormatKey(context.Generation, fontFamily, fontSize, fontWeight, fontStyle, noWrap);
+        var key = new FormatKey(context.Generation, fontFamily, fontSize, fontWeight, fontStyle, noWrap, paragraph);
 
         var readSnapshot = Volatile.Read(ref _formatReadCache);
         if (readSnapshot.TryGetValue(key, out var readCached) && readCached.IsValid)

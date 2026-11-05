@@ -12,6 +12,8 @@
 #include <d3d11.h>
 #include <d3d11_1.h>
 
+#include <atomic>
+#include <new>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -51,9 +53,9 @@ struct jalium_video_decoder {
     // downstream wiring changes. Saves the 30-100 percent CPU otherwise spent
     // on software decode at 1080p.
     //
-    // Stage 3b (follow-up PR): MfVideoDecoderAcquireGpuDescriptor returns an
-    // NT HANDLE from IDXGIResource1::CreateSharedHandle so D3D12 can
-    // OpenSharedHandle it and sample directly, skipping the GPU->CPU readback.
+    // GPU reads publish immutable shared allocations without Lock/readback.
+    // Vulkan imports the NT handle; D3D12 uses OpenSharedHandle. A GPU-only
+    // snapshot copy keeps decoder pool reuse independent of presentation.
     ComPtr<ID3D11Device>          d3d11Device;
     ComPtr<ID3D11DeviceContext>   d3d11Context;
     ComPtr<IMFDXGIDeviceManager>  dxgiDeviceManager;
@@ -68,6 +70,8 @@ struct jalium_video_decoder {
     HANDLE                      sharedTextureHandle = nullptr;
     bool                        sharedTextureValid = false;
     ComPtr<ID3D11Query>          exportCompleted;
+    ComPtr<IMFSample>            pendingCpuSample;
+    DXGI_FORMAT                 sharedFormat = DXGI_FORMAT_UNKNOWN;
     bool                        gpuExportDisabled = false;
     bool                        gpuDiagnosticReported = false;
 };
@@ -97,8 +101,9 @@ jalium_video_codec_t MapSubtypeToCodec(const GUID& subtype)
 
 jalium_media_status_t ConfigureOutputType(IMFSourceReader* reader)
 {
-    // MFVideoFormat_RGB32 in MF terms = B G R X (alpha undefined). We force
-    // alpha = 0xFF in the copy step so the output matches the documented BGRA8 contract.
+    // Prefer BGRA with an exact Vulkan format. Older MF transforms may only
+    // expose RGB32/BGRX; preserve that native format for shared export and
+    // force opaque alpha in the CPU copy.
     ComPtr<IMFMediaType> outputType;
     HRESULT hr = MFCreateMediaType(outputType.GetAddressOf());
     if (FAILED(hr)) return JALIUM_MEDIA_E_PLATFORM;
@@ -106,13 +111,17 @@ jalium_media_status_t ConfigureOutputType(IMFSourceReader* reader)
     hr = outputType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
     if (FAILED(hr)) return JALIUM_MEDIA_E_PLATFORM;
 
-    hr = outputType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
+    hr = outputType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_ARGB32);
     if (FAILED(hr)) return JALIUM_MEDIA_E_PLATFORM;
 
     hr = reader->SetCurrentMediaType(
         static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM),
         nullptr,
         outputType.Get());
+    if (FAILED(hr)) {
+        outputType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
+        hr = reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, outputType.Get());
+    }
     if (FAILED(hr)) return JALIUM_MEDIA_E_UNSUPPORTED_CODEC;
 
     // Disable other streams to avoid spurious ReadSample work.
@@ -390,7 +399,7 @@ void TraceGpuFramePixels(jalium_video_decoder_t* dec, ID3D11Texture2D* texture, 
     std::fprintf(stderr, "Jalium video pixels: %s RGB=%.3f alpha=%.3f format=%u\n", label, rgb / (count * 3), alpha / count, desc.Format);
 }
 
-bool CreateSharedFrame(jalium_video_decoder_t* dec)
+bool CreateSharedFrame(jalium_video_decoder_t* dec, DXGI_FORMAT format)
 {
     if (!dec->d3d11Device) return false;
 
@@ -399,10 +408,9 @@ bool CreateSharedFrame(jalium_video_decoder_t* dec)
     desc.Height           = dec->height;
     desc.MipLevels        = 1;
     desc.ArraySize        = 1;
-    // MFVideoFormat_RGB32 is BGRX, not BGRA. Retain that format through the
-    // shared allocation and SRV so the unused zero X byte is never interpreted
-    // as transparent alpha by the bitmap shader.
-    desc.Format           = DXGI_FORMAT_B8G8R8X8_UNORM;
+    // Keep MF's actual format through the snapshot. BGRX and BGRA are not a
+    // legal D3D copy-format family; never relabel their texture allocation.
+    desc.Format           = format;
     desc.SampleDesc.Count = 1;
     desc.Usage            = D3D11_USAGE_DEFAULT;
     desc.BindFlags        = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
@@ -430,14 +438,15 @@ bool CreateSharedFrame(jalium_video_decoder_t* dec)
         dec->sharedTextureHandle = nullptr;
         return false;
     }
+    dec->sharedFormat = format;
     return true;
 }
 
 // Export MF's BGRX texture without changing its format or interpreting X as
 // alpha. B8G8R8X8 -> B8G8R8A8 is not a legal format-family copy, and relabeling
 // RGB32 as BGRA makes the bitmap shader discard every zero-alpha pixel.
-// On any unsupported/failed stage the already available CPU BGRA frame remains
-// the fallback; no stale shared descriptor is returned as a successful frame.
+// On failure the GPU read retains the sample for CPU fallback; no stale
+// descriptor is returned as a successful frame.
 bool TryCopySampleToSharedTexture(jalium_video_decoder_t* dec, IMFSample* sample)
 {
     if (!dec->dxvaEnabled || !dec->d3d11Context || !sample || dec->gpuExportDisabled) return false;
@@ -457,8 +466,8 @@ bool TryCopySampleToSharedTexture(jalium_video_decoder_t* dec, IMFSample* sample
     mfTex->GetDesc(&input);
     if (input.SampleDesc.Count != 1 || input.MipLevels != 1 || subresource >= input.ArraySize ||
         input.Width < dec->width || input.Height < dec->height ||
-        input.Format != DXGI_FORMAT_B8G8R8X8_UNORM) return false;
-    if (!CreateSharedFrame(dec)) {
+        (input.Format != DXGI_FORMAT_B8G8R8X8_UNORM && input.Format != DXGI_FORMAT_B8G8R8A8_UNORM)) return false;
+    if (!CreateSharedFrame(dec, input.Format)) {
         ReportGpuExport(dec, "unsupported shared texture; CPU fallback", E_NOTIMPL, input.Format);
         return false;
     }
@@ -564,19 +573,19 @@ jalium_media_status_t MfVideoDecoderGetInfo(
     return JALIUM_MEDIA_OK;
 }
 
-jalium_media_status_t MfVideoDecoderReadFrame(
-    jalium_video_decoder_t* decoder,
-    jalium_video_frame_t*   out_frame)
+static jalium_media_status_t ReadNextVideoSample(jalium_video_decoder_t* decoder,
+    ComPtr<IMFSample>& sample)
 {
-    if (!decoder || !decoder->reader || !out_frame) return JALIUM_MEDIA_E_INVALID_ARG;
-    *out_frame = {};
     ResetSharedFrame(decoder);
+    if (decoder->pendingCpuSample) {
+        sample = std::move(decoder->pendingCpuSample);
+        return JALIUM_MEDIA_OK;
+    }
     if (decoder->endOfStream) return JALIUM_MEDIA_E_END_OF_STREAM;
 
     DWORD     streamIndex   = 0;
     DWORD     flags         = 0;
     LONGLONG  pts100ns      = 0;
-    ComPtr<IMFSample> sample;
 
     // Media-type changes and stream ticks may legitimately return no sample.
     // Only ENDOFSTREAM is EOF: an empty transient result must not silently
@@ -614,12 +623,24 @@ jalium_media_status_t MfVideoDecoderReadFrame(
     }
     if (!sample) return JALIUM_MEDIA_E_DECODE_FAILED;
 
+    decoder->last_pts_us = pts100ns / 10;
+    UINT32 cleanPoint = 0;
+    sample->GetUINT32(MFSampleExtension_CleanPoint, &cleanPoint);
+    decoder->last_keyframe = cleanPoint != 0;
+    return JALIUM_MEDIA_OK;
+}
+
+jalium_media_status_t MfVideoDecoderReadFrame(
+    jalium_video_decoder_t* decoder, jalium_video_frame_t* out_frame)
+{
+    if (!decoder || !decoder->reader || !out_frame) return JALIUM_MEDIA_E_INVALID_ARG;
+    *out_frame = {};
+    ComPtr<IMFSample> sample;
+    auto readStatus = ReadNextVideoSample(decoder, sample);
+    if (readStatus != JALIUM_MEDIA_OK) return readStatus;
     auto status = CopySampleToFrame(decoder, sample.Get());
     if (status != JALIUM_MEDIA_OK) return status;
     if (decoder->dxvaEnabled) TryCopySampleToSharedTexture(decoder, sample.Get());
-
-    decoder->last_pts_us = pts100ns / 10;
-    decoder->last_keyframe = 0;
 
     out_frame->width        = decoder->width;
     out_frame->height       = decoder->height;
@@ -641,6 +662,7 @@ jalium_media_status_t MfVideoDecoderSeek(
         return JALIUM_MEDIA_E_INVALID_ARG;
     }
     ResetSharedFrame(decoder);
+    decoder->pendingCpuSample.Reset();
 
     PROPVARIANT pv;
     PropVariantInit(&pv);
@@ -685,9 +707,9 @@ void MfVideoDecoderClose(jalium_video_decoder_t* decoder)
 // into an ID3D12Resource. Returns NotImplemented when DXVA is off or the
 // shared texture hasn't been written yet (caller falls back to BGRA path).
 //
-// Note: the NT HANDLE returned here is *not* duplicated — the decoder owns
-// it until the next ReadFrame/Seek/Close. The consumer opens its own resource
-// reference before that point and must not CloseHandle the borrowed handle.
+// The descriptor owns an independent NT handle/texture lease. The consumer
+// imports the borrowed handle during wrap_external and then releases the
+// descriptor through the media API on both success and rejection.
 // Its imported immutable allocation stays valid across subsequent decoder work.
 jalium_media_status_t MfVideoDecoderAcquireGpuDescriptor(
     jalium_video_decoder_t*                decoder,
@@ -702,13 +724,65 @@ jalium_media_status_t MfVideoDecoderAcquireGpuDescriptor(
         return JALIUM_MEDIA_E_NOT_IMPLEMENTED;
     }
 
-    // 1 == JALIUM_VS_KIND_D3D11_SHARED (see jalium_video_surface.h).
-    out_descriptor->kind        = 1;
-    out_descriptor->width       = decoder->width;
-    out_descriptor->height      = decoder->height;
-    out_descriptor->handle0     = reinterpret_cast<uint64_t>(decoder->sharedTextureHandle);
-    out_descriptor->format_hint = 4;  // JALIUM_VS_FORMAT_BGRX8: X is not alpha.
+    struct FrameLease {
+        std::atomic<uint32_t> references{1};
+        ComPtr<ID3D11Texture2D> texture;
+        HANDLE handle = nullptr;
+        ~FrameLease() { if (handle) CloseHandle(handle); }
+    };
+    auto* lease = new (std::nothrow) FrameLease();
+    if (!lease) return JALIUM_MEDIA_E_OUT_OF_MEMORY;
+    if (!DuplicateHandle(GetCurrentProcess(), decoder->sharedTextureHandle,
+            GetCurrentProcess(), &lease->handle, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
+        delete lease; return JALIUM_MEDIA_E_PLATFORM;
+    }
+    lease->texture = decoder->sharedTexture;
+    out_descriptor->kind = 1; // JALIUM_VS_KIND_D3D11_SHARED
+    out_descriptor->width = decoder->width;
+    out_descriptor->height = decoder->height;
+    out_descriptor->handle0 = reinterpret_cast<uint64_t>(lease->handle);
+    out_descriptor->handle1 = GetCurrentProcessId();
+    out_descriptor->format_hint = decoder->sharedFormat == DXGI_FORMAT_B8G8R8X8_UNORM ? 4 : 0;
     out_descriptor->descriptor_flags = JALIUM_VIDEO_GPU_DESCRIPTOR_IMMUTABLE_READY;
+    out_descriptor->lifetime_context = reinterpret_cast<uint64_t>(lease);
+    out_descriptor->lifetime_retain_callback = reinterpret_cast<uint64_t>(+[](uint64_t context) {
+        reinterpret_cast<FrameLease*>(context)->references.fetch_add(1, std::memory_order_relaxed);
+    });
+    out_descriptor->lifetime_release_callback = reinterpret_cast<uint64_t>(+[](uint64_t context) {
+        auto* value = reinterpret_cast<FrameLease*>(context);
+        if (value->references.fetch_sub(1, std::memory_order_acq_rel) == 1) delete value;
+    });
+    return JALIUM_MEDIA_OK;
+}
+
+jalium_media_status_t MfVideoDecoderReadGpuFrame(jalium_video_decoder_t* decoder,
+    jalium_video_decoder_gpu_descriptor_t* descriptor, int64_t* pts, int32_t* keyframe)
+{
+    if (!decoder || !descriptor || !pts || !keyframe) return JALIUM_MEDIA_E_INVALID_ARG;
+    if (!decoder->dxvaEnabled || decoder->gpuExportDisabled) return JALIUM_MEDIA_E_NOT_IMPLEMENTED;
+    ComPtr<IMFSample> sample;
+    auto status = ReadNextVideoSample(decoder, sample);
+    if (status != JALIUM_MEDIA_OK) return status;
+    if (!TryCopySampleToSharedTexture(decoder, sample.Get())) {
+        decoder->pendingCpuSample = std::move(sample);
+        return JALIUM_MEDIA_E_PLATFORM;
+    }
+    status = MfVideoDecoderAcquireGpuDescriptor(decoder, descriptor);
+    if (status != JALIUM_MEDIA_OK) decoder->pendingCpuSample = std::move(sample);
+    *pts = decoder->last_pts_us; *keyframe = decoder->last_keyframe;
+    return status;
+}
+
+jalium_media_status_t MfVideoDecoderDisableGpuOutput(jalium_video_decoder_t* decoder)
+{
+    if (!decoder) return JALIUM_MEDIA_E_INVALID_ARG;
+    decoder->gpuExportDisabled = true;
+    ResetSharedFrame(decoder);
+    if (!decoder->pendingCpuSample && decoder->last_pts_us >= 0) {
+        // Import failed after a successful GPU read. Re-decode that exact frame
+        // on the CPU path rather than silently dropping it during negotiation.
+        return MfVideoDecoderSeek(decoder, decoder->last_pts_us);
+    }
     return JALIUM_MEDIA_OK;
 }
 

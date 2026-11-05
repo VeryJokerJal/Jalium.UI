@@ -1,0 +1,63 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:dev="clr-namespace:Jalium.UI.Controls.DevTools"
+                    xmlns:automation="clr-namespace:Jalium.UI.Automation">
+    <Style TargetType="dev:DevToolsReplView">
+        <Setter Property="Background" Value="{DynamicResource DevTools.Surface}" />
+        <Setter Property="Foreground" Value="{DynamicResource DevTools.TextPrimary}" />
+        <Setter Property="FontFamily" Value="{ThemeResource MonoFontFamily}" />
+        <Setter Property="PromptBrush" Value="{DynamicResource DevTools.Accent}" />
+        <Setter Property="ResultBrush" Value="{DynamicResource DevTools.Info}" />
+        <Setter Property="ErrorBrush" Value="{DynamicResource DevTools.Error}" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsReplView">
+            <Grid Background="{TemplateBinding Background}">
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup x:Name="OutputStates">
+                        <VisualState x:Name="OutputAvailable" />
+                        <VisualState x:Name="OutputEmpty"><VisualState.Setters><Setter TargetName="PART_Empty" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState>
+                    </VisualStateGroup>
+                    <VisualStateGroup x:Name="InputStates">
+                        <VisualState x:Name="Editable" />
+                        <VisualState x:Name="ReadOnly"><VisualState.Setters><Setter TargetName="PART_ReadOnlyStatus" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState>
+                    </VisualStateGroup>
+                    <VisualStateGroup x:Name="ExecutionStates">
+                        <VisualState x:Name="Ready" />
+                        <VisualState x:Name="Executing"><VisualState.Setters><Setter TargetName="PART_InputTextBox" Property="IsReadOnly" Value="True" /><Setter TargetName="PART_ExecutingStatus" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState>
+                    </VisualStateGroup>
+                    <VisualStateGroup x:Name="ErrorStates">
+                        <VisualState x:Name="NoError" />
+                        <VisualState x:Name="Error"><VisualState.Setters><Setter TargetName="PART_ErrorStatus" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState>
+                    </VisualStateGroup>
+                    <VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Normal" /><VisualState x:Name="Disabled"><VisualState.Setters><Setter Property="Opacity" Value="0.45" /></VisualState.Setters></VisualState></VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                <dev:DevToolsSurface Kind="Toolbar" HorizontalContentAlignment="Stretch">
+                    <WrapPanel VerticalAlignment="Center">
+                        <TextBlock Text="REPL" Style="{StaticResource DevTools.Eyebrow}" VerticalAlignment="Center" Margin="0,0,12,0" />
+                        <TextBlock Name="PART_Context" Text="{TemplateBinding ContextText}" Style="{StaticResource DevTools.MonoText}" Foreground="{DynamicResource DevTools.TextSecondary}" VerticalAlignment="Center" Margin="0,0,12,0" ToolTip="$ = selected visual; let name = expression; name.Property = value" />
+                        <dev:DevToolsTag Name="PART_HistoryCount" Text="{Binding HistoryCount, RelativeSource={RelativeSource TemplatedParent}}" ToolTip="Command history · Up / Down" VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <dev:DevToolsActionButton Name="PART_Clear" Label="Clear" Icon="×" Command="{TemplateBinding ClearCommand}" ToolTip="Clear output · Ctrl / Command + L" />
+                        <dev:DevToolsTag Name="PART_ReadOnlyStatus" Text="Read only" Visibility="Collapsed" Margin="8,0,0,0" />
+                        <dev:DevToolsTag Name="PART_ExecutingStatus" Text="Running" Visibility="Collapsed" Foreground="{DynamicResource DevTools.Warning}" Margin="8,0,0,0" />
+                        <dev:DevToolsTag Name="PART_ErrorStatus" Text="Error" Visibility="Collapsed" Foreground="{DynamicResource DevTools.Error}" ToolTip="{TemplateBinding LastError}" Margin="8,0,0,0" />
+                    </WrapPanel>
+                </dev:DevToolsSurface>
+                <Grid Grid.Row="1" Margin="8,8,8,0">
+                    <Terminal Name="PART_Terminal" Style="{StaticResource DevTools.Console}" FontFamily="{TemplateBinding FontFamily}" AutoStartShell="False" IsReadOnly="True" AutoSize="True" TerminalColumns="120" TerminalRows="40" MaxScrollbackLines="{TemplateBinding MaxScrollbackLines}" automation:AutomationProperties.Name="REPL output" />
+                    <StackPanel Name="PART_Empty" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False" Margin="12">
+                        <TextBlock Text="Run an expression" Style="{StaticResource DevTools.Text}" Foreground="{DynamicResource DevTools.TextSecondary}" HorizontalAlignment="Center" />
+                        <TextBlock Text="window.Title" Style="{StaticResource DevTools.MonoText}" Foreground="{DynamicResource DevTools.TextSecondary}" Margin="0,6,0,0" HorizontalAlignment="Center" />
+                    </StackPanel>
+                </Grid>
+                <dev:DevToolsSurface Grid.Row="2" Margin="8" Padding="10,8" HorizontalContentAlignment="Stretch">
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <TextBlock Name="PART_Prompt" Text="{TemplateBinding Prompt}" Style="{StaticResource DevTools.MonoText}" Foreground="{TemplateBinding PromptBrush}" VerticalAlignment="Center" Margin="0,0,10,0" />
+                        <TextBox Name="PART_InputTextBox" Grid.Column="1" Style="{StaticResource DevTools.TextInput}" FontFamily="{TemplateBinding FontFamily}" MinWidth="0" MinHeight="30" Text="{Binding InputText, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" IsReadOnly="{TemplateBinding IsReadOnly}" automation:AutomationProperties.Name="REPL command" ToolTip="Enter to run · Up / Down history · Escape to cancel" />
+                        <dev:DevToolsActionButton Name="PART_Submit" Grid.Column="2" Label="Run" Icon="▶" Command="{TemplateBinding SubmitCommand}" Margin="8,0,0,0" ToolTip="Run expression · Enter" />
+                    </Grid>
+                </dev:DevToolsSurface>
+            </Grid>
+        </ControlTemplate></Setter>
+    </Style>
+</ResourceDictionary>

@@ -176,8 +176,10 @@ public sealed class SwipeItem : DependencyObject
     /// </summary>
     internal void RaiseInvoked()
     {
+        var command = Command; var parameter = CommandParameter;
+        if (command is not null && !command.CanExecute(parameter)) return;
         Invoked?.Invoke(this, EventArgs.Empty);
-        Command?.Execute(CommandParameter);
+        command?.Execute(parameter);
     }
 
     #endregion

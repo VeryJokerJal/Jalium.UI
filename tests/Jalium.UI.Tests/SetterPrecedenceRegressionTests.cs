@@ -83,6 +83,51 @@ public class SetterPrecedenceRegressionTests
     }
 
     [Fact]
+    public void DerivedConstantSetterRetiresBaseBindingAndRestoresItWhenRemoved()
+    {
+        var source = new TokenSource { Token = "Base" };
+        var element = new SetterProbeElement { DataContext = source };
+        var baseline = new Style(typeof(SetterProbeElement));
+        baseline.Setters.Add(new Setter(SetterProbeElement.TokenProperty, new Binding(nameof(TokenSource.Token))));
+        var derived = new Style(typeof(SetterProbeElement)) { BasedOn = baseline };
+        derived.Setters.Add(new Setter(SetterProbeElement.TokenProperty, "Custom"));
+        element.Style = derived;
+        source.Token = "Changed base";
+        element.DataContext = new TokenSource { Token = "Other base" };
+        Assert.Equal("Custom", element.Token);
+        element.Style = baseline;
+        Assert.Equal("Other base", element.Token);
+        element.DataContext = source;
+        Assert.Equal("Changed base", element.Token);
+        source.Token = "Restored live binding";
+        Assert.Equal("Restored live binding", element.Token);
+    }
+
+    [Fact]
+    public void DerivedBindingSetterRetiresBaseSubscriptionAndSwitchesSourcesCleanly()
+    {
+        var baselineSource = new TokenSource { Token = "Base" };
+        var overrideSource = new TokenSource { Token = "Override" };
+        var element = new SetterProbeElement();
+        var baseline = new Style(typeof(SetterProbeElement));
+        baseline.Setters.Add(new Setter(SetterProbeElement.TokenProperty,
+            new Binding(nameof(TokenSource.Token)) { Source = baselineSource }));
+        var derived = new Style(typeof(SetterProbeElement)) { BasedOn = baseline };
+        derived.Setters.Add(new Setter(SetterProbeElement.TokenProperty,
+            new Binding(nameof(TokenSource.Token)) { Source = overrideSource }));
+        element.Style = derived;
+        baselineSource.Token = "Changed base";
+        Assert.Equal("Override", element.Token);
+        overrideSource.Token = "Changed override";
+        Assert.Equal("Changed override", element.Token);
+        element.Style = baseline;
+        overrideSource.Token = "Retired override";
+        Assert.Equal("Changed base", element.Token);
+        baselineSource.Token = "Restored base";
+        Assert.Equal("Restored base", element.Token);
+    }
+
+    [Fact]
     public void StyleTrigger_ShouldOutrank_TemplateTriggerOnTemplatedControlItself()
     {
         var template = new ControlTemplate(typeof(SetterProbeControl));

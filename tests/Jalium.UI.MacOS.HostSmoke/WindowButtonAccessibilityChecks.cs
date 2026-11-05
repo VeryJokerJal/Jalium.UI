@@ -59,7 +59,7 @@ internal static class WindowButtonAccessibilityChecks
         if (!int.TryParse(argument.AsSpan("--window-buttons-accessibility-case=".Length), out int index)
             || (uint)index >= s_names.Length) return 2;
         JaliumMacApplication.Initialize();
-        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Prohibited;
+        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Accessory;
         RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
         var save = new Button { Content = "保存中文", IsDefault = true, Height = 32 };
         var cancel = new Button { Content = "取消编辑", IsCancel = true, Height = 32 };

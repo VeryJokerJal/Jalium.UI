@@ -7,8 +7,23 @@ using Jalium.UI.Media.Effects;
 /// <summary>
 /// Represents a collection of drawings that can be operated upon as a single drawing.
 /// </summary>
-public sealed class DrawingGroup : Drawing
+public sealed partial class DrawingGroup : Drawing
 {
+    internal static readonly DependencyProperty IsSvgViewportProperty = DependencyProperty.Register(
+        "IsSvgViewport", typeof(bool), typeof(DrawingGroup), new PropertyMetadata(false));
+    internal bool IsSvgViewport { get => (bool)GetValue(IsSvgViewportProperty)!; set => SetValue(IsSvgViewportProperty, value); }
+    internal static readonly DependencyProperty SvgStrokeMarkerProperty = DependencyProperty.Register(
+        "SvgStrokeMarker", typeof(SvgStrokeSpace.Marker), typeof(DrawingGroup), new PropertyMetadata(null));
+    internal SvgStrokeSpace.Marker? SvgStrokeMarker { get => (SvgStrokeSpace.Marker?)GetValue(SvgStrokeMarkerProperty); set => SetValue(SvgStrokeMarkerProperty, value); }
+    internal static readonly DependencyProperty BlendModeProperty = DependencyProperty.Register(
+        "BlendMode", typeof(CssBlendMode), typeof(DrawingGroup), new PropertyMetadata(CssBlendMode.Normal));
+    internal static readonly DependencyProperty IsolatedProperty = DependencyProperty.Register(
+        "Isolated", typeof(bool), typeof(DrawingGroup), new PropertyMetadata(false));
+    internal CssBlendMode BlendMode { get => (CssBlendMode)GetValue(BlendModeProperty)!; set => SetValue(BlendModeProperty, value); }
+    internal bool Isolated { get => (bool)GetValue(IsolatedProperty)!; set => SetValue(IsolatedProperty, value); }
+    internal static readonly DependencyProperty SvgMaskProperty = DependencyProperty.Register(
+        "SvgMask", typeof(SvgMaskBinding), typeof(DrawingGroup), new PropertyMetadata(null));
+    internal SvgMaskBinding? SvgMask { get => (SvgMaskBinding?)GetValue(SvgMaskProperty); set => SetValue(SvgMaskProperty, value); }
     public static readonly DependencyProperty ChildrenProperty =
         DependencyProperty.Register(nameof(Children), typeof(DrawingCollection), typeof(DrawingGroup), new PropertyMetadata(null));
     public static readonly DependencyProperty TransformProperty =
@@ -106,6 +121,7 @@ public sealed class DrawingGroup : Drawing
     {
         get
         {
+            using var svgSpace = SvgStrokeSpace.Enter(this);
             DrawingCollection children = Children;
             if (children.Count == 0)
             {
@@ -121,10 +137,15 @@ public sealed class DrawingGroup : Drawing
                 }
             }
 
+            // ClipGeometry is in the group's local coordinate system, like its
+            // children. Intersect before applying the group's transform.
+            if (ClipGeometry != null && !bounds.IsEmpty)
+                bounds = Rect.Intersect(bounds, ClipGeometry.Bounds);
+
             // Apply transform to bounds if present
-            if (Transform != null && !bounds.IsEmpty)
+            if (SvgStrokeSpace.TransformFor(this) is { } svgTransform && !bounds.IsEmpty)
             {
-                var m = Transform.Value;
+                var m = svgTransform.Value;
                 // Transform all four corners and compute the axis-aligned bounding box
                 var tl = m.Transform(new Point(bounds.X, bounds.Y));
                 var tr = m.Transform(new Point(bounds.X + bounds.Width, bounds.Y));
@@ -135,12 +156,6 @@ public sealed class DrawingGroup : Drawing
                 var maxX = Math.Max(Math.Max(tl.X, tr.X), Math.Max(bl.X, br.X));
                 var maxY = Math.Max(Math.Max(tl.Y, tr.Y), Math.Max(bl.Y, br.Y));
                 bounds = new Rect(minX, minY, maxX - minX, maxY - minY);
-            }
-
-            // Apply clip if present
-            if (ClipGeometry != null && !bounds.IsEmpty)
-            {
-                bounds = Rect.Intersect(bounds, ClipGeometry.Bounds);
             }
 
             return bounds;
@@ -201,40 +216,8 @@ public sealed class DrawingGroup : Drawing
     /// <inheritdoc />
     public override void RenderTo(DrawingContext context)
     {
-        var popCount = 0;
-
-        // Push transform if set
-        if (Transform != null)
-        {
-            context.PushTransform(Transform);
-            popCount++;
-        }
-
-        // Push clip if set
-        if (ClipGeometry != null)
-        {
-            context.PushClip(ClipGeometry);
-            popCount++;
-        }
-
-        // Push opacity if not default
-        if (Opacity < 1.0)
-        {
-            context.PushOpacity(Opacity);
-            popCount++;
-        }
-
-        // Render children
-        foreach (var child in Children)
-        {
-            child?.RenderTo(context);
-        }
-
-        // Pop all pushed states
-        for (var i = 0; i < popCount; i++)
-        {
-            context.Pop();
-        }
+        using var svgSpace = SvgStrokeSpace.Enter(this);
+        RenderComposite(context);
     }
 
     public new DrawingGroup Clone() => (DrawingGroup)base.Clone();
@@ -259,6 +242,11 @@ public sealed class DrawingGroup : Drawing
             || ReferenceEquals(e.Property, TransformProperty)
             || ReferenceEquals(e.Property, ClipGeometryProperty)
             || ReferenceEquals(e.Property, OpacityProperty)
+            || ReferenceEquals(e.Property, IsSvgViewportProperty)
+            || ReferenceEquals(e.Property, SvgStrokeMarkerProperty)
+            || ReferenceEquals(e.Property, BlendModeProperty)
+            || ReferenceEquals(e.Property, IsolatedProperty)
+            || ReferenceEquals(e.Property, SvgMaskProperty)
             || ReferenceEquals(e.Property, OpacityMaskProperty)
             || ReferenceEquals(e.Property, GuidelineSetProperty)
             || ReferenceEquals(e.Property, BitmapEffectProperty)

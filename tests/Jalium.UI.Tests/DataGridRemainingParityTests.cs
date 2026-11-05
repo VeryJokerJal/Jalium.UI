@@ -12,8 +12,10 @@ using PrimitiveColumnHeader = Jalium.UI.Controls.Primitives.DataGridColumnHeader
 
 namespace Jalium.UI.Tests;
 
-public sealed class DataGridRemainingParityTests
+public sealed class DataGridRemainingParityTests : IDisposable
 {
+    public DataGridRemainingParityTests() => ScrollBarTemplateTestHelper.Register();
+    public void Dispose() => ScrollBarTemplateTestHelper.Reset();
     [Fact]
     public void DataGrid_DeclaresCommandsClipboardStylesConvertersAndResourceKeys()
     {

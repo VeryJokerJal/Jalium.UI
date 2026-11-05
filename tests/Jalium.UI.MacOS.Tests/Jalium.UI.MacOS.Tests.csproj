@@ -10,8 +10,116 @@
     <IsTestProject>true</IsTestProject>
     <IsPackable>false</IsPackable>
     <DefineConstants Condition="'$(JaliumMacNativeGeometryTests)' == 'true'">$(DefineConstants);JALIUM_MAC_NATIVE_GEOMETRY_TESTS</DefineConstants>
+    <JaliumMacNativeRoot Condition="'$(JaliumMacNativeRoot)' == ''">$(MSBuildThisFileDirectory)../../src/native/bin/native/osx-arm64/$(Configuration)</JaliumMacNativeRoot>
   </PropertyGroup>
+  <!-- The managed editor contracts also depend on the native text ABI. Copy
+       the validated current payload rather than reusing dylibs left by an
+       earlier test run (which can silently lack line/range metrics). -->
+  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+    <Content Include="$(JaliumMacNativeRoot)/*.dylib" Link="%(Filename)%(Extension)"
+             CopyToOutputDirectory="Always" />
+  </ItemGroup>
   <ItemGroup>
+    <Compile Include="../Jalium.UI.Tests/RadioButtonKeyboardNavigationTests.cs" Link="Shared/RadioButtonKeyboardNavigationTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/SegmentedRadioHoverResidueTests.cs" Link="Shared/SegmentedRadioHoverResidueTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/RadioButtonGroupingConcurrencyTests.cs" Link="Shared/RadioButtonGroupingConcurrencyTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ToggleButtonParityTests.cs" Link="Shared/ToggleButtonParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ButtonBasePressedParityTests.cs" Link="Shared/ButtonBasePressedParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/KeyboardNavigationTests.cs" Link="Shared/KeyboardNavigationTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/DocumentViewerParityTests.cs" Link="Shared/DocumentViewerParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/MapViewTests.cs" Link="Shared/MapViewTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ChartTests.cs" Link="Shared/ChartTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/DiffViewerTests.cs" Link="Shared/DiffViewerTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/MarkdownAndQrCodeTests.cs" Link="Shared/MarkdownAndQrCodeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/MediaElementRemainingParityTests.cs" Link="Shared/MediaElementRemainingParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/MediaElementPlaybackSessionTests.cs" Link="Shared/MediaElementPlaybackSessionTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/MediaPlaybackClockTests.cs" Link="Shared/MediaPlaybackClockTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssMediaObjectTests.cs" Link="Shared/CssMediaObjectTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/RenderBrushReuseTests.cs" Link="Shared/RenderBrushReuseTests.cs" />
+    <Content Include="Assets/**/*.ttf;Assets/**/*.otf" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../../src/native/thirdparty/unicode-vertical-18/VerticalOrientation.txt"
+             Link="Assets/VerticalOrientation.txt" CopyToOutputDirectory="PreserveNewest" />
+    <Compile Include="../Jalium.UI.Tests/DispatcherBatchFairnessTests.cs" Link="Shared/DispatcherBatchFairnessTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/VisualStateManagerParityTests.cs" Link="Shared/VisualStateManagerParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/VisualStateManagerTier1ParityTests.cs" Link="Shared/VisualStateManagerTier1ParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/SetterPrecedenceRegressionTests.cs" Link="Shared/SetterPrecedenceRegressionTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/DependencyPropertyPrecedenceTests.cs" Link="Shared/DependencyPropertyPrecedenceTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/TimePickerThemeTests.cs" Link="Shared/TimePickerThemeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/InfoBarThemeTests.cs" Link="Shared/InfoBarThemeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/PasswordBoxTests.cs" Link="Shared/PasswordBoxTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/RibbonCanonicalHierarchyTests.cs" Link="Shared/RibbonCanonicalHierarchyTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/DeferredResourceDictionaryTests.cs" Link="Shared/DeferredResourceDictionaryTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ResourceDictionaryParityTests.cs" Link="Shared/ResourceDictionaryParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/XamlResourceDictionarySourceCompatibilityTests.cs" Link="Shared/XamlResourceDictionarySourceCompatibilityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/TestCodeBehindDictionary.cs" Link="Shared/TestCodeBehindDictionary.cs" />
+    <EmbeddedResource Include="../Jalium.UI.Tests/TestAssets/Colors.jalxaml;../Jalium.UI.Tests/TestAssets/Typography.jalxaml;../Jalium.UI.Tests/TestAssets/CodeBehindDictionary.jalxaml" LogicalName="Jalium.UI.Tests.TestAssets.%(Filename)%(Extension)" />
+    <Compile Include="../Jalium.UI.Tests/PasswordBoxThemeTests.cs" Link="Shared/PasswordBoxThemeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssPasswordBoxBackgroundTests.cs" Link="Shared/CssPasswordBoxBackgroundTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/SwipeAndToggleThemeTests.cs" Link="Shared/SwipeAndToggleThemeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssOpenSelectorTests.cs" Link="Shared/CssOpenSelectorTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/DevToolsWindowTests.cs" Link="Shared/DevToolsWindowTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/TabControlParityTests.cs" Link="Shared/TabControlParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/TabControlLogicalTreeRegressionTests.cs" Link="Shared/TabControlLogicalTreeRegressionTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/TabControlSwipeTests.cs" Link="Shared/TabControlSwipeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ShellThemeTests.cs" Link="Shared/ShellThemeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/FontDialogTests.cs" Link="Shared/FontDialogTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/JsonTreeViewerTests.cs" Link="Shared/JsonTreeViewerTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/PropertyGridTests.cs" Link="Shared/PropertyGridTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/NavigationWindowParityTests.cs" Link="Navigation/NavigationWindowParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/NavigationServiceTests.cs" Link="Navigation/NavigationServiceTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/FrameParityTests.cs" Link="Navigation/FrameParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/NavigationCompatibilityThirdPassParityTests.cs" Link="Navigation/NavigationCompatibilityThirdPassParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CommandBarTests.cs" Link="Shared/CommandBarTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/FlyoutThemeTests.cs" Link="Menu/FlyoutThemeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/DependencyPropertyTests.cs" Link="Shared/DependencyPropertyTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/DependencyPropertyHelperDynamicParityTests.cs" Link="Shared/DependencyPropertyHelperDynamicParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/DependencyPropertyMetadataRuntimeConsumptionTests.cs" Link="Shared/DependencyPropertyMetadataRuntimeConsumptionTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/DependencyPropertyTypeSafetyTests.cs" Link="Shared/DependencyPropertyTypeSafetyTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/DependencyPropertyMetadataConcurrencyTests.cs" Link="Shared/DependencyPropertyMetadataConcurrencyTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/DependencyPropertyMetadataParityTests.cs" Link="Shared/DependencyPropertyMetadataParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/BindingTests.cs" Link="Shared/BindingTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/TemplateBindingPrecedenceTests.cs" Link="Shared/TemplateBindingPrecedenceTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/TemplateBindingNullGuardTests.cs" Link="Shared/TemplateBindingNullGuardTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/TemplateBindingStringConversionTests.cs" Link="Shared/TemplateBindingStringConversionTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/PriorityBindingParityTests.cs" Link="Shared/PriorityBindingParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/BindingValidationTests.cs" Link="Shared/BindingValidationTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/BindingOperationsParityTests.cs" Link="Shared/BindingOperationsParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/MultiBindingParityTests.cs" Link="Shared/MultiBindingParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssMenuSeparatorBoxTests.cs" Link="Shared/CssMenuSeparatorBoxTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/PrimitiveThemeTests.cs" Link="Shared/PrimitiveThemeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/MenuFlyoutSeparatorThemeTests.cs" Link="Shared/MenuFlyoutSeparatorThemeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/SplashScreenTests.cs" Link="Shared/SplashScreenTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ToastNotificationTests.cs" Link="Shared/ToastNotificationTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/MermaidTests.cs" Link="Shared/MermaidTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/WebBrowserAdapterTests.cs" Link="Shared/WebBrowserAdapterTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/HexEditorTests.cs" Link="Shared/HexEditorTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/DockTabPanelLayoutTests.cs" Link="Shared/DockTabPanelLayoutTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/DockRenderingTests.cs" Link="Shared/DockRenderingTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/DockThemeTests.cs" Link="Shared/DockThemeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/EditorThemeTests.cs" Link="Shared/EditorThemeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ThemeRuntimeSwitchTests.cs" Link="Shared/ThemeRuntimeSwitchTests.cs" />
+    <EmbeddedResource Include="../Jalium.UI.Tests/TestAssets/SplashScreen.bmp" LogicalName="Jalium.UI.Tests.TestAssets.SplashScreen.bmp" />
+    <Compile Include="../Jalium.UI.Tests/MultiBindingResourceSafetyTests.cs" Link="Shared/MultiBindingResourceSafetyTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/PropertyPathSurfaceParityTests.cs" Link="Shared/PropertyPathSurfaceParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/StyleTriggerPrecedenceTests.cs" Link="Shared/StyleTriggerPrecedenceTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/StyleMarkupParityTests.cs" Link="Shared/StyleMarkupParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/AppBarButtonTests.cs" Link="Shared/AppBarButtonTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ExpanderParityTests.cs" Link="Shared/ExpanderParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/TemplatePartCacheStaleRegressionTests.cs" Link="Shared/TemplatePartCacheStaleRegressionTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ItemsControlTemplateLifecycleRegressionTests.cs" Link="Shared/ItemsControlTemplateLifecycleRegressionTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ItemsControlParityTests.cs" Link="Shared/ItemsControlParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ItemContainerGeneratorRemainingParityTests.cs" Link="Shared/ItemContainerGeneratorRemainingParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/BitmapPreloadRestoreTests.cs" Link="Shared/BitmapPreloadRestoreTests.cs" />
+  </ItemGroup>
+  <Target Name="ValidateMacOSTestNativePayload" BeforeTargets="PrepareForBuild"
+          Condition="$([MSBuild]::IsOSPlatform('OSX')) and '$(DesignTimeBuild)' != 'true'">
+    <Exec Command="/usr/bin/python3 &quot;$(MSBuildThisFileDirectory)../../eng/apple/check-native-exports.py&quot; &quot;$(JaliumMacNativeRoot)&quot; --configuration &quot;$(Configuration)&quot;" />
+  </Target>
+  <ItemGroup>
+    <Compile Include="../Jalium.UI.Tests/CssBackgroundTextClipTests.cs" Link="Shared/CssBackgroundTextClipTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssUnicodeBidiTests.cs" Link="Shared/CssUnicodeBidiTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssBidiShapingProjectionTests.cs" Link="Shared/CssBidiShapingProjectionTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/RenderThread/*.cs" Link="RenderThread/%(Filename)%(Extension)" />
     <Compile Include="../Jalium.UI.Tests/ListBoxParityTests.cs" Link="ListBoxParityTests.cs" />
     <Compile Include="../Jalium.UI.Tests/FlowDocumentLogicalProjectionTests.cs" Link="FlowDocumentLogicalProjectionTests.cs" />
     <Compile Include="../Jalium.UI.Tests/FlowDocumentEmbeddedObjectProjectionTests.cs" Link="FlowDocumentEmbeddedObjectProjectionTests.cs" />
@@ -34,12 +142,96 @@
     <Compile Include="../Jalium.UI.Tests/ApplicationCollectionFixture.cs" Link="ApplicationCollectionFixture.cs" />
     <Compile Include="../Jalium.UI.Tests/WindowRenderSchedulingTests.cs" Link="WindowRenderSchedulingTests.cs" />
     <Compile Include="../Jalium.UI.Tests/RenderTargetTestNative.cs" Link="RenderTargetTestNative.cs" />
-    <Compile Include="../Jalium.UI.Tests/MouseWheelSignConsumerTests.cs" Link="MouseWheelSignConsumerTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ContentDialogRenderingTests.cs" Link="ContentDialogRenderingTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/InputMethodSubscriptionLifetimeTests.cs" Link="Shared/InputMethodSubscriptionLifetimeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/FocusedBorderThemeTests.cs" Link="Shared/FocusedBorderThemeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ComboBoxPopupInputTests.cs" Link="Shared/ComboBoxPopupInputTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/TextBoxContentHostLayoutConvergenceTests.cs" Link="Shared/TextBoxContentHostLayoutConvergenceTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/NumberBoxThemeTests.cs" Link="Shared/NumberBoxThemeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/NumberBoxTests.cs" Link="Shared/NumberBoxTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/AutoCompleteBoxThemeTests.cs" Link="Shared/AutoCompleteBoxThemeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/AutoCompleteBoxTests.cs" Link="Shared/AutoCompleteBoxTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ContentDialogTests.cs" Link="ContentDialogTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/MetalBackdropReplayTests.cs" Link="MetalBackdropReplayTests.cs" />
     <Compile Include="../../src/packaging/Jalium.UI.MacOS/FileDialogFilterSelection.cs" Link="FileDialogFilterSelection.cs" />
     <Compile Include="../../src/packaging/Jalium.UI.MacOS/MacOSSessionEndReason.cs" Link="MacOSSessionEndReason.cs" />
     <Compile Include="../Jalium.UI.Tests/TextBlockNoWrapInheritanceTests.cs" Link="TextBlockNoWrapInheritanceTests.cs" />
     <Compile Include="../Jalium.UI.Tests/TextBlockParityTests.cs" Link="TextBlockParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/FlowDocumentViewersParityTests.cs" Link="FlowDocumentViewersParityTests.cs" />
     <Compile Include="../Jalium.UI.Tests/TextBlockRenderCacheTests.cs" Link="TextBlockRenderCacheTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssAuthoringTests.cs" Link="CssAuthoringTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssStyleSheetSourceTests.cs" Link="CssStyleSheetSourceTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssDataUriLoadingTests.cs" Link="CssDataUriLoadingTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssStateInvalidationTests.cs" Link="CssStateInvalidationTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssMaskTests.cs" Link="CssMaskTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssMaskBorderTests.cs" Link="CssMaskBorderTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssSvgMaskTests.cs" Link="CssSvgMaskTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssSvgStyleSheetTests.cs" Link="CssSvgStyleSheetTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssSvgStrokeTests.cs" Link="CssSvgStrokeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssSvgTextPaintTests.cs" Link="CssSvgTextPaintTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssSvgTextImageTests.cs" Link="CssSvgTextImageTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssGeometryTransformTests.cs" Link="CssGeometryTransformTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssSvgMarkerTests.cs" Link="CssSvgMarkerTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssGradientInterpolationTests.cs" Link="CssGradientInterpolationTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssGradientTransformTests.cs" Link="CssGradientTransformTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssRadialConeTests.cs" Link="CssRadialConeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssVectorEffectTests.cs" Link="CssVectorEffectTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssSvgViewportTests.cs" Link="CssSvgViewportTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssImageIntrinsicTests.cs" Link="CssImageIntrinsicTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssVectorEffectTests.Cases.cs" Link="CssVectorEffectTests.Cases.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssCompositingPaintTests.cs" Link="CssCompositingPaintTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssCompositingStateTests.cs" Link="CssCompositingStateTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssCompositingBackgroundSvgTests.cs" Link="CssCompositingBackgroundSvgTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssBlendMathTests.cs" Link="CssBlendMathTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssPositioningTests.cs" Link="CssPositioningTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssPositioningRenderTests.cs" Link="CssPositioningRenderTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssGeneratedContentTests.cs" Link="CssGeneratedContentTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssFirstLetterTests.cs" Link="CssFirstLetterTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssFirstLineTests.cs" Link="CssFirstLineTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssInitialLetterTests.cs" Link="CssInitialLetterTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssInitialLetterLifecycleTests.cs" Link="CssInitialLetterLifecycleTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssInitialLetterBlockFlowTests.cs" Link="CssInitialLetterBlockFlowTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssInitialLetterFloatTests.cs" Link="CssInitialLetterFloatTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssSelectionTests.cs" Link="Shared/CssSelectionTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssSelectionContextTests.cs" Link="Shared/CssSelectionContextTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssTextEmphasisTests.cs" Link="Shared/CssTextEmphasisTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssEditorEmphasisTests.cs" Link="Shared/CssEditorEmphasisTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssInputForegroundTests.cs" Link="Shared/CssInputForegroundTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssThemeCurrentColorTests.cs" Link="Shared/CssThemeCurrentColorTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssCompositeInputPaintTests.cs" Link="Shared/CssCompositeInputPaintTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssInputSpacingTests.cs" Link="Shared/CssInputSpacingTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssNumberBoxBoxTests.cs" Link="Shared/CssNumberBoxBoxTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssPlaceholderTests.cs" Link="Shared/CssPlaceholderTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssGeneratedContentRenderTests.cs" Link="CssGeneratedContentRenderTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssCounterTests.cs" Link="CssCounterTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssCounterStyleTests.cs" Link="CssCounterStyleTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssListMarkerTests.cs" Link="CssListMarkerTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssContentHostTests.cs" Link="CssContentHostTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssTextContentTests.cs" Link="CssTextContentTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssInlineFragmentTests.cs" Link="CssInlineFragmentTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssSharedInlineTests.cs" Link="CssSharedInlineTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssInlineFloatTests.cs" Link="CssInlineFloatTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssFloatShapeTests.cs" Link="CssFloatShapeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssImageShapeTests.cs" Link="CssImageShapeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssShapeImageSizingTests.cs" Link="CssShapeImageSizingTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssImageSetTests.cs" Link="CssImageSetTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssImageContentTests.cs" Link="CssImageContentTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssCrossFadeTests.cs" Link="CssCrossFadeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssImageAnnotationTests.cs" Link="CssImageAnnotationTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssBorderImageTests.cs" Link="CssBorderImageTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssBorderImageInlineTests.cs" Link="CssBorderImageInlineTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssNestedInlineTests.cs" Link="CssNestedInlineTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssInlineBlockDescendantTests.cs" Link="CssInlineBlockDescendantTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/HitTestVisibilityTests.cs" Link="HitTestVisibilityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ClipToBoundsEdgesTests.cs" Link="ClipToBoundsEdgesTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/BorderClipTests.cs" Link="BorderClipTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssCounterRenderTests.cs" Link="CssCounterRenderTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/TextFormattingFinalGapParityTests.cs" Link="TextFormattingFinalGapParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ListBoxItemParityTests.cs" Link="ListBoxItemParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/TreeSelectorTests.cs" Link="TreeSelectorTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssTransformThreadTests.cs" Link="CssTransformThreadTests.cs" />
+    <EmbeddedResource Include="../Jalium.UI.Tests/TestAssets/CssSource/*.css"
+                      LogicalName="Jalium.UI.Tests.TestAssets.CssSource.%(Filename)%(Extension)" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.3.0" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5">
@@ -82,17 +274,25 @@
     <Compile Include="MacOSFontMatchingTests.cs" Condition="'$(JaliumMacNativeGeometryTests)' == 'true'" />
     <Compile Remove="MacOSShapedWordNavigationTests.cs" />
     <Compile Include="MacOSShapedWordNavigationTests.cs" Condition="'$(JaliumMacNativeGeometryTests)' == 'true'" />
-    <Compile Include="../Jalium.UI.Tests/FocusVisualAncestorClipTests.cs" Link="FocusVisualAncestorClipTests.cs" />
     <Compile Include="../Jalium.UI.Tests/PathMarkupParserTests.cs" Link="PathRendering/PathMarkupParserTests.cs" />
     <Compile Include="../Jalium.UI.Tests/PathShapeTests.cs" Link="PathRendering/PathShapeTests.cs" />
     <Compile Include="../Jalium.UI.Tests/PathIconTests.cs" Link="PathRendering/PathIconTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/IconElementThemeTests.cs" Link="PathRendering/IconElementThemeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/IconElementTextOptionsTests.cs" Link="PathRendering/IconElementTextOptionsTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ThemeResourceContractTests.cs" Link="Themes/ThemeResourceContractTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ThemeColorCompatibilityTests.cs" Link="Themes/ThemeColorCompatibilityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ThemeTemplateSmokeTests.cs" Link="Themes/ThemeTemplateSmokeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/MutableBrushOwnerInvalidationTests.cs" Link="PathRendering/MutableBrushOwnerInvalidationTests.cs" />
     <Compile Include="../Jalium.UI.Tests/GeometryPathParityTests.cs" Link="PathRendering/GeometryPathParityTests.cs" />
     <Compile Include="../Jalium.UI.Tests/ShapeStrokeDashArrayParityTests.cs" Link="PathRendering/ShapeStrokeDashArrayParityTests.cs" />
     <Compile Include="../Jalium.UI.Tests/SoftwareVectorRasterizerTests.cs" Link="PathRendering/SoftwareVectorRasterizerTests.cs" />
     <Compile Include="../Jalium.UI.Tests/PathStrokeOpacityEndToEndTests.cs" Link="PathRendering/PathStrokeOpacityEndToEndTests.cs" />
     <Compile Include="../Jalium.UI.Tests/VirtualizingWrapPanelOffsetTests.cs" Link="Shared/VirtualizingWrapPanelOffsetTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ItemHeightIndexTests.cs" Link="Shared/ItemHeightIndexTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ItemHeightIndexLargeListTests.cs" Link="Shared/ItemHeightIndexLargeListTests.cs" />
     <Compile Include="../Jalium.UI.Tests/VirtualizingWrapPanelViewportRecoveryTests.cs" Link="Shared/VirtualizingWrapPanelViewportRecoveryTests.cs" />
     <ProjectReference Include="../../src/managed/Jalium.UI.Managed/Jalium.UI.Managed.csproj" />
+    <ProjectReference Include="../../src/managed/Jalium.UI.Xaml/Jalium.UI.Xaml.csproj" />
     <Compile Include="../Jalium.UI.Tests/MacOSWindowBehaviorTests.cs" Link="MacOSWindowBehaviorTests.cs" />
     <Compile Include="../Jalium.UI.Tests/MacOSWindowVisibilityTests.cs" Link="MacOSWindowVisibilityTests.cs" />
     <Compile Include="../Jalium.UI.Tests/Manipulation*Tests.cs" Link="Shared/%(Filename)%(Extension)" />
@@ -104,13 +304,69 @@
     <Compile Include="../Jalium.UI.Tests/CursorResolutionTests.cs" Link="CursorResolutionTests.cs" />
     <Compile Include="../Jalium.UI.Tests/ImeSurroundingTextTests.cs" Link="ImeSurroundingTextTests.cs" />
     <Compile Include="../Jalium.UI.Tests/TabFocusInputTests.cs" Link="TabFocusInputTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ButtonBaseInputGateTests.cs" Link="ButtonBaseInputGateTests.cs" />
     <Compile Include="../Jalium.UI.Tests/TitleBarButtonAutomationTests.cs" Link="TitleBarButtonAutomationTests.cs" />
     <Compile Include="../Jalium.UI.Tests/AutomationPeerTests.cs" Link="AutomationPeerTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/MenuFlyoutAutomationInvocationTests.cs" Link="MenuFlyoutAutomationInvocationTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/MenuItemAutomationInvocationTests.cs" Link="MenuItemAutomationInvocationTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/PopupMenuOutlineRenderingTests.cs" Link="PopupMenuOutlineRenderingTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CascadedMenuChromeTests.cs" Link="CascadedMenuChromeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/MenuFlyoutIconRenderingTests.cs" Link="MenuFlyoutIconRenderingTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/MenuFlyoutTemplateTestHelper.cs" Link="MenuFlyoutTemplateTestHelper.cs" />
+    <Compile Include="../Jalium.UI.Tests/LegacyMenuTemplateTestHelper.cs" Link="LegacyMenuTemplateTestHelper.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssLegacyMenuBoxTests.cs" Link="CssLegacyMenuBoxTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssMenuBarBoxTests.cs" Link="CssMenuBarBoxTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/MenuThemeTests.cs" Link="MenuThemeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/MenuItemSelectionTests.cs" Link="MenuItemSelectionTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/MenuContextParityTests.cs" Link="Menu/MenuContextParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/MenuBaseParityTests.cs" Link="Menu/MenuBaseParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/MenuCollectionSyncTests.cs" Link="Menu/MenuCollectionSyncTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/MenuKeyboardTests.cs" Link="Menu/MenuKeyboardTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ContextMenuDismissOnItemClickTests.cs" Link="Menu/ContextMenuDismissOnItemClickTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/FrameworkContextMenuContractParityTests.cs" Link="Menu/FrameworkContextMenuContractParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/DatePickerTemplateTestHelper.cs" Link="DatePickerTemplateTestHelper.cs" />
+    <Compile Include="../Jalium.UI.Tests/DatePickerThemeTests.cs" Link="DatePickerThemeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssDatePickerBoxTests.cs" Link="CssDatePickerBoxTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssMenuItemBoxTests.cs" Link="CssMenuItemBoxTests.cs" />
     <Compile Include="../Jalium.UI.Tests/AutomationPeerBaseChainParityTests.cs" Link="AutomationPeerBaseChainParityTests.cs" />
     <Compile Include="../Jalium.UI.Tests/AutomationPropertiesParityTests.cs" Link="AutomationPropertiesParityTests.cs" />
     <Compile Include="../Jalium.UI.Tests/LinuxDragSourceRoutingTests.cs" Link="NativeDragSourceRoutingTests.cs" />
     <Compile Include="../Jalium.UI.Tests/DragDropPreviewSourceParityTests.cs" Link="DragDropPreviewSourceParityTests.cs" />
     <Compile Include="../Jalium.UI.Tests/DataObjectParityTests.cs" Link="DataObjectParityTests.cs" />
+  </ItemGroup>
+  <!-- Shared pen, touch and pointer contracts also run on the macOS managed host. -->
+  <ItemGroup>
+    <Compile Include="../Jalium.UI.Tests/ControlsTouchActivationTests.cs" Link="Shared/ControlsTouchActivationTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CrossPlatformPointerStateTests.cs" Link="Shared/CrossPlatformPointerStateTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/InkCanvasTouchTests.cs" Link="Shared/InkCanvasTouchTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/InkCanvasRealTimeStylusPreviewTests.cs" Link="Shared/InkCanvasRealTimeStylusPreviewTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/InputStylusPlugInsSecondPassParityTests.cs" Link="Shared/InputStylusPlugInsSecondPassParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/PointerRoutingTests.cs" Link="Shared/PointerRoutingTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/RealTimeStylusTests.cs" Link="Shared/RealTimeStylusTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/RealTimeStylusAsyncTests.cs" Link="Shared/RealTimeStylusAsyncTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/RealTimeStylusThreadTests.cs" Link="Shared/RealTimeStylusThreadTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/StylusInputMethodTouchParityTests.cs" Link="Shared/StylusInputMethodTouchParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/StylusPointDescriptionParityTests.cs" Link="Shared/StylusPointDescriptionParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/TouchCapabilitiesTests.cs" Link="Shared/TouchCapabilitiesTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/TouchCaptureTests.cs" Link="Shared/TouchCaptureTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/TouchHelperTests.cs" Link="Shared/TouchHelperTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/TouchHighFrequencyPacketsTests.cs" Link="Shared/TouchHighFrequencyPacketsTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/TouchModeOptionsTests.cs" Link="Shared/TouchModeOptionsTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/TouchesOverChainTests.cs" Link="Shared/TouchesOverChainTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/UIElementStylusManipulationParityTests.cs" Link="Shared/UIElementStylusManipulationParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/WindowStylusPipelineTests.cs" Link="Shared/WindowStylusPipelineTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ViewboxPointerHitMappingTests.cs" Link="Shared/ViewboxPointerHitMappingTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/AndroidTouchInputQueueTests.cs" Link="Shared/AndroidTouchInputQueueTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/InputStaticSurfaceParityTests.cs" Link="Shared/InputStaticSurfaceParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ScrollViewerInertiaTests.cs" Link="Shared/ScrollViewerInertiaTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ScrollViewerMacOSBehaviorTests.cs" Link="Shared/ScrollViewerMacOSBehaviorTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ScrollViewerMacOSElasticityTests.cs" Link="Shared/ScrollViewerMacOSElasticityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ScrollViewerTouchPanningTests.cs" Link="Shared/ScrollViewerTouchPanningTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/MouseWheelScrollControlTests.cs" Link="Shared/MouseWheelScrollControlTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ScrollViewerManipulationAutoEnableTests.cs" Link="Shared/ScrollViewerManipulationAutoEnableTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/PointerIntermediatePointsTests.cs" Link="Shared/PointerIntermediatePointsTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/PointerPointGetPositionTests.cs" Link="Shared/PointerPointGetPositionTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ScrollViewerOverlayScrollBarTests.cs" Link="Shared/ScrollViewerOverlayScrollBarTests.cs" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="../Jalium.UI.Tests/ComboBoxOccurrenceAutomationTests.cs" Link="ComboBoxOccurrenceAutomationTests.cs" />
@@ -140,4 +396,83 @@
     <Compile Include="../Jalium.UI.Tests/WindowThemeRefreshTests.cs" Link="WindowSystem/WindowThemeRefreshTests.cs" />
   </ItemGroup>
   <ItemGroup><Compile Include="../Jalium.UI.Tests/WritingToolsInlinePreservationTests.cs" Link="WritingToolsInlinePreservationTests.cs" /></ItemGroup>
+  <ItemGroup>
+    <Compile Include="../Jalium.UI.Tests/DataGridCellRenderingTests.cs" Link="Grid/DataGridCellRenderingTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/DataGridColumnHeaderCanonicalMergeTests.cs" Link="Grid/DataGridColumnHeaderCanonicalMergeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/DataGridContainerStyleSizingValidationParityTests.cs" Link="Grid/DataGridContainerStyleSizingValidationParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/DataGridCurrentCellRowLifecycleParityTests.cs" Link="Grid/DataGridCurrentCellRowLifecycleParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/DataGridEventApiParityTests.cs" Link="Grid/DataGridEventApiParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/DataGridLengthParityTests.cs" Link="Grid/DataGridLengthParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/DataGridRemainingParityTests.cs" Link="Grid/DataGridRemainingParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/DataGridRowCellParityTests.cs" Link="Grid/DataGridRowCellParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/DataGridThemeTests.cs" Link="Grid/DataGridThemeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/TreeDataGridTests.cs" Link="Grid/TreeDataGridTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/TreeDataGridThemeTests.cs" Link="Grid/TreeDataGridThemeTests.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../Jalium.UI.Tests/ColorPickerThemeTests.cs" Link="Shared/ColorPickerThemeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ColorPickerRenderReuseTests.cs" Link="Shared/ColorPickerRenderReuseTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssColorPickerBoxTests.cs" Link="Shared/CssColorPickerBoxTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssBorderRadiusTests.cs" Link="Shared/CssBorderRadiusTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssZeroFontSizeTests.cs" Link="Shared/CssZeroFontSizeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/TransitionTests.cs" Link="Shared/TransitionTests.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../Jalium.UI.Tests/CalendarThemeTests.cs" Link="Calendar/CalendarThemeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CalendarDatePickerParityTests.cs" Link="Calendar/CalendarDatePickerParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CalendarCanonicalContractsParityTests.cs" Link="Calendar/CalendarCanonicalContractsParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CalendarSwipeMonthTests.cs" Link="Calendar/CalendarSwipeMonthTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssCalendarBackgroundTests.cs" Link="Calendar/CssCalendarBackgroundTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ControlAutomationPeersParityTests.cs" Link="Calendar/ControlAutomationPeersParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/AutomationProviderFinalGapParityTests.cs" Link="Calendar/AutomationProviderFinalGapParityTests.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../Jalium.UI.Tests/MenuPopupAndArrowRegressionTests.cs" Link="Shared/MenuPopupAndArrowRegressionTests.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../Jalium.UI.Tests/RazorVirtualizeHostTests.cs" Link="Shared/RazorVirtualizeHostTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/TextBoxThemeTests.cs" Link="Shared/TextBoxThemeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/FlowDocumentTemplateTestHelper.cs" Link="Shared/FlowDocumentTemplateTestHelper.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../Jalium.UI.Tests/RepeatButtonLifecycleTests.cs" Link="Scroll/RepeatButtonLifecycleTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ScrollBarTemplateTestHelper.cs" Link="Scroll/ScrollBarTemplateTestHelper.cs" />
+    <Compile Include="../Jalium.UI.Tests/ScrollBarTrackPagingTests.cs" Link="Scroll/ScrollBarTrackPagingTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ScrollBarParityTests.cs" Link="Scroll/ScrollBarParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ScrollBarThemeResourceTests.cs" Link="Scroll/ScrollBarThemeResourceTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssScrollBarBorderLayoutTests.cs" Link="Scroll/CssScrollBarBorderLayoutTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssScrollBarBackgroundTests.cs" Link="Scroll/CssScrollBarBackgroundTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ScrollViewerScrollBarMetricsTests.cs" Link="Scroll/ScrollViewerScrollBarMetricsTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ScrollViewerAutoHideTests.cs" Link="Scroll/ScrollViewerAutoHideTests.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../Jalium.UI.Tests/VulkanBackendSmokeTests.cs" Link="Text/VulkanBackendSmokeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/BackendGatedFactAttributes.cs" Link="Text/BackendGatedFactAttributes.cs" />
+    <Compile Include="../Jalium.UI.Tests/AccessTextTemplateTestHelper.cs" Link="Text/AccessTextTemplateTestHelper.cs" />
+    <Compile Include="../Jalium.UI.Tests/AccessTextParityTests.cs" Link="Text/AccessTextParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssTextLogicalAlignmentTests.cs" Link="Text/CssTextLogicalAlignmentTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssTextDecorationTests.cs" Link="Text/CssTextDecorationTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssTextShadowTests.cs" Link="Text/CssTextShadowTests.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../Jalium.UI.Tests/ToolBarTemplateTestHelper.cs" Link="ToolBar/ToolBarTemplateTestHelper.cs" />
+    <Compile Include="../Jalium.UI.Tests/ToolBarParityTests.cs" Link="ToolBar/ToolBarParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ToolBarThemeTests.cs" Link="ToolBar/ToolBarThemeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssToolBarBoxTests.cs" Link="ToolBar/CssToolBarBoxTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssToolBarPanelBoxTests.cs" Link="ToolBar/CssToolBarPanelBoxTests.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../Jalium.UI.Tests/ScrollViewerLayoutConvergenceTests.cs" Link="Scroll/ScrollViewerLayoutConvergenceTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ScrollViewerOffsetDeviceSnapTests.cs" Link="Scroll/ScrollViewerOffsetDeviceSnapTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ScrollViewerParityTests.cs" Link="Scroll/ScrollViewerParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ScrollViewerResizeStabilityTests.cs" Link="Scroll/ScrollViewerResizeStabilityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ScrollViewerViewportFeedbackStabilityTests.cs" Link="Scroll/ScrollViewerViewportFeedbackStabilityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ScrollViewerVirtualizedContentRealizationTests.cs" Link="Scroll/ScrollViewerVirtualizedContentRealizationTests.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../Jalium.UI.Tests/StatusBarThemeTests.cs" Link="StatusBar/StatusBarThemeTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssStatusBarItemBoxTests.cs" Link="StatusBar/CssStatusBarItemBoxTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssStatusBarBorderLayoutTests.cs" Link="StatusBar/CssStatusBarBorderLayoutTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/CssStatusBarBackgroundTests.cs" Link="StatusBar/CssStatusBarBackgroundTests.cs" />
+  </ItemGroup>
 </Project>

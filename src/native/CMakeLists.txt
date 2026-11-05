@@ -103,6 +103,8 @@ option(JALIUM_BUILD_DEMOS "Build native diagnostic demo executables (memprobe, .
 # turn on with -DJALIUM_BUILD_VULKAN=ON to compile/link/test the Vulkan backend
 # DLL alongside D3D12 (e.g. to validate the InkCanvas GPU pipeline / effects).
 option(JALIUM_BUILD_VULKAN "Also build the Vulkan backend on Windows (dev/test)" OFF)
+option(JALIUM_VULKAN_BUILD_TESTS "Build Vulkan capability and rendering tests" OFF)
+option(JALIUM_MEDIA_ANDROID_BUILD_TESTS "Build Android decoder dispatch/lifetime regression tests" OFF)
 
 # Native smoke options are supplied on the initial CMake command line by
 # eng/linux/build-native.sh. enable_testing() must run at the source root so
@@ -112,9 +114,11 @@ option(JALIUM_BUILD_VULKAN "Also build the Vulkan backend on Windows (dev/test)"
 if(JALIUM_PLATFORM_BUILD_TESTS OR
    JALIUM_MEDIA_APPLE_BUILD_TESTS OR
    JALIUM_MEDIA_LINUX_BUILD_TESTS OR
+   JALIUM_MEDIA_ANDROID_BUILD_TESTS OR
    JALIUM_SOFTWARE_BUILD_TESTS OR
    JALIUM_TEXT_BUILD_TESTS OR
    JALIUM_D3D12_BUILD_TESTS OR
+   JALIUM_VULKAN_BUILD_TESTS OR
    JALIUM_METAL_BUILD_TESTS)
     enable_testing()
 endif()
@@ -355,6 +359,12 @@ add_subdirectory(jalium.native.platform)
 # Cross-platform media (image/video/camera) public ABI + status helpers.
 # Per-platform implementation libraries link to this for the C ABI header.
 add_subdirectory(jalium.native.media.core)
+if(JALIUM_MEDIA_ANDROID_BUILD_TESTS AND NOT ANDROID)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        message(FATAL_ERROR "Android decoder host tests require Linux with an NDK, or an Android target")
+    endif()
+    add_subdirectory(jalium.native.media.android/tests)
+endif()
 
 # ---------------------------------------------------------------------------
 # Shared audio TUs: physically live under jalium.native.media.core/src/audio/

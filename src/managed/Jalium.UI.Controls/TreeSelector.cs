@@ -2,6 +2,7 @@ using System.Collections;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Data;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
 using Jalium.UI.Styling;
@@ -26,6 +27,17 @@ public enum TreeSelectorCheckCascadeMode
 /// and clicking it opens a popup containing a checkable tree. An optional search box filters
 /// the tree as the user types.
 /// </summary>
+[TemplatePart(Name = "PART_TriggerBorder", Type = typeof(Border))]
+[TemplatePart(Name = "PART_TagsPanel", Type = typeof(ItemsControl))]
+[TemplatePart(Name = "PART_SearchTextBox", Type = typeof(TextBox))]
+[TemplatePart(Name = "PART_Popup", Type = typeof(Popup))]
+[TemplateVisualState(Name = "Empty", GroupName = "SelectionStates")]
+[TemplateVisualState(Name = "SingleSelection", GroupName = "SelectionStates")]
+[TemplateVisualState(Name = "MultipleSelection", GroupName = "SelectionStates")]
+[TemplateVisualState(Name = "SearchEnabled", GroupName = "SearchStates")]
+[TemplateVisualState(Name = "SearchDisabled", GroupName = "SearchStates")]
+[TemplateVisualState(Name = "Open", GroupName = "DropDownStates")]
+[TemplateVisualState(Name = "Closed", GroupName = "DropDownStates")]
 public class TreeSelector : ItemsControl
 {
     /// <inheritdoc />
@@ -38,12 +50,15 @@ public class TreeSelector : ItemsControl
     private readonly ObservableCollection<object> _checkedItems = new();
     private bool _isSyncingSelection;
     private bool _isSyncingCheck;
+    private readonly HashSet<TreeSelectorItem> _declaredRoots = new();
+    private bool _pruningSelection;
+    private bool _applyingSearch;
     internal Style? _cachedItemStyle;
 
     // Trigger / dropdown template parts
     private Border? _triggerBorder;
     private TextBlock? _displayText;
-    private Panel? _tagsPanel;
+    private ItemsControl? _tagsPanel;
     private TextBox? _searchTextBox;
     private TextBlock? _placeholderText;
     private Button? _clearButton;
@@ -53,6 +68,30 @@ public class TreeSelector : ItemsControl
     private bool _searchHandlersAttached;
 
     #region Dependency Properties
+
+    private static readonly DependencyPropertyKey SelectedItemsPropertyKey = DependencyProperty.RegisterReadOnly(nameof(SelectedItems), typeof(IList), typeof(TreeSelector), new PropertyMetadata(null));
+    /// <summary>Identifies the stable, observable selected-item collection.</summary>
+    public static readonly DependencyProperty SelectedItemsProperty = SelectedItemsPropertyKey.DependencyProperty;
+
+    /// <summary>Identifies the template used for selected values in the trigger.</summary>
+    public static readonly DependencyProperty SelectionBoxItemTemplateProperty = DependencyProperty.Register(nameof(SelectionBoxItemTemplate), typeof(DataTemplate), typeof(TreeSelector), new PropertyMetadata(null));
+    public DataTemplate? SelectionBoxItemTemplate { get => (DataTemplate?)GetValue(SelectionBoxItemTemplateProperty); set => SetValue(SelectionBoxItemTemplateProperty, value); }
+
+    private static readonly DependencyPropertyKey ShowSelectionTagsPropertyKey = DependencyProperty.RegisterReadOnly(nameof(ShowSelectionTags), typeof(bool), typeof(TreeSelector), new PropertyMetadata(false));
+    public static readonly DependencyProperty ShowSelectionTagsProperty = ShowSelectionTagsPropertyKey.DependencyProperty;
+    public bool ShowSelectionTags => (bool)GetValue(ShowSelectionTagsProperty)!;
+    private static readonly DependencyPropertyKey ShowSelectionPathPropertyKey = DependencyProperty.RegisterReadOnly(nameof(ShowSelectionPath), typeof(bool), typeof(TreeSelector), new PropertyMetadata(false));
+    public static readonly DependencyProperty ShowSelectionPathProperty = ShowSelectionPathPropertyKey.DependencyProperty;
+    public bool ShowSelectionPath => (bool)GetValue(ShowSelectionPathProperty)!;
+    private static readonly DependencyPropertyKey IsPlaceholderVisiblePropertyKey = DependencyProperty.RegisterReadOnly(nameof(IsPlaceholderVisible), typeof(bool), typeof(TreeSelector), new PropertyMetadata(true));
+    public static readonly DependencyProperty IsPlaceholderVisibleProperty = IsPlaceholderVisiblePropertyKey.DependencyProperty;
+    public bool IsPlaceholderVisible => (bool)GetValue(IsPlaceholderVisibleProperty)!;
+    private static readonly DependencyPropertyKey IsClearButtonVisiblePropertyKey = DependencyProperty.RegisterReadOnly(nameof(IsClearButtonVisible), typeof(bool), typeof(TreeSelector), new PropertyMetadata(false));
+    public static readonly DependencyProperty IsClearButtonVisibleProperty = IsClearButtonVisiblePropertyKey.DependencyProperty;
+    public bool IsClearButtonVisible => (bool)GetValue(IsClearButtonVisibleProperty)!;
+    private static readonly DependencyPropertyKey SelectionPathPropertyKey = DependencyProperty.RegisterReadOnly(nameof(SelectionPath), typeof(string), typeof(TreeSelector), new PropertyMetadata(string.Empty));
+    public static readonly DependencyProperty SelectionPathProperty = SelectionPathPropertyKey.DependencyProperty;
+    public string SelectionPath => (string)GetValue(SelectionPathProperty)!;
 
     /// <summary>Identifies the SelectionMode dependency property.</summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
@@ -274,6 +313,9 @@ public class TreeSelector : ItemsControl
 
     #region Constructor
 
+    static TreeSelector() => ItemsPanelProperty.OverrideMetadata(typeof(TreeSelector),
+        new PropertyMetadata(CreateItemsPanelTemplate(typeof(VirtualizingStackPanel))));
+
     /// <summary>
     /// Initializes a new instance of the <see cref="TreeSelector"/> class.
     /// </summary>
@@ -282,31 +324,41 @@ public class TreeSelector : ItemsControl
         Focusable = true;
         SetCurrentValue(UIElement.TransitionPropertyProperty, TransitionPropertyCollection.None());
 
-        if (ItemsPanel == null)
-        {
-            ItemsPanel = CreateItemsPanelTemplate(typeof(VirtualizingStackPanel));
-        }
-
         _selectedItems.CollectionChanged += OnSelectedItemsCollectionChanged;
         _checkedItems.CollectionChanged += OnCheckedItemsCollectionChanged;
-
-        // The dropdown popup is closed by default, so the standard ItemsControl path through
-        // PrepareContainerForItem does not run until first expansion. Wire the root Items
-        // collection eagerly so cascade / selection / navigation logic can rely on
-        // ParentSelector + ParentItem regardless of whether the popup has been realized.
-        ((System.Collections.Specialized.INotifyCollectionChanged)Items).CollectionChanged += OnRootItemsChanged;
+        SetValue(SelectedItemsPropertyKey, _selectedItems);
+        AddHandler(TreeSelectorSelectionItem.RemoveRequestedEvent, new RoutedEventHandler(OnRemoveSelectionRequested));
+        SizeChanged += OnSelectorSizeChanged;
 
         AddHandler(KeyDownEvent, new KeyEventHandler(OnTreeKeyDown));
     }
 
-    private void OnRootItemsChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    /// <inheritdoc />
+    protected override void OnItemsChanged(NotifyCollectionChangedEventArgs e)
     {
+        base.OnItemsChanged(e);
+        if (e.Action == NotifyCollectionChangedAction.Reset)
+        {
+            var current = Items.OfType<TreeSelectorItem>().ToHashSet();
+            foreach (var old in _declaredRoots.Except(current))
+            {
+                old.ParentSelector = null;
+                old.ParentItem = null;
+            }
+            _declaredRoots.Clear();
+            foreach (var root in current)
+            {
+                _declaredRoots.Add(root);
+                AttachRootContainer(root);
+            }
+        }
         if (e.OldItems != null)
         {
             foreach (var old in e.OldItems)
             {
                 if (old is TreeSelectorItem child)
                 {
+                    _declaredRoots.Remove(child);
                     child.ParentSelector = null;
                     child.ParentItem = null;
                 }
@@ -319,12 +371,14 @@ public class TreeSelector : ItemsControl
             {
                 if (added is TreeSelectorItem child)
                 {
+                    _declaredRoots.Add(child);
                     AttachRootContainer(child);
                 }
             }
         }
 
         // Refresh trigger display whenever the source set of items changes (e.g. binding swap).
+        PruneSelection();
         UpdateTriggerDisplay();
     }
 
@@ -348,7 +402,7 @@ public class TreeSelector : ItemsControl
         container.IsSelected = _selectedItems.Contains(data);
         if (ShowCheckBoxes)
         {
-            container.IsChecked = _checkedItems.Contains(data);
+            container.SetIsCheckedSilently(_checkedItems.Contains(data));
         }
     }
 
@@ -357,10 +411,7 @@ public class TreeSelector : ItemsControl
     #region Container Handling
 
     /// <inheritdoc />
-    protected override Panel CreateItemsPanel()
-    {
-        return new VirtualizingStackPanel { Orientation = Orientation.Vertical };
-    }
+    protected override Panel CreateItemsPanel() => base.CreateItemsPanel();
 
     /// <inheritdoc />
     protected override FrameworkElement GetContainerForItem(object item)
@@ -406,16 +457,102 @@ public class TreeSelector : ItemsControl
         container.Header = item;
         container.DataContext = item;
 
-        if (ItemTemplate != null)
-        {
-            container.HeaderTemplate = ItemTemplate;
-        }
-
+        container.PrepareHierarchy(ResolveItemTemplate(item));
         container.IsSelected = _selectedItems.Contains(item);
         if (ShowCheckBoxes)
         {
-            container.IsChecked = _checkedItems.Contains(item);
+            container.SetIsCheckedSilently(_checkedItems.Contains(item));
         }
+        ApplySearchToContainer(container);
+    }
+
+    /// <inheritdoc />
+    protected override void ClearContainerForItem(FrameworkElement element, object item)
+    {
+        if (element is TreeSelectorItem container)
+        {
+            // A declared item remains owned while its popup/template is retired.
+            // Only collection removal detaches logical ownership.
+            if (!ReferenceEquals(element, item) || !Items.Contains(item))
+            {
+                container.ParentSelector = null;
+                container.ParentItem = null;
+            }
+            if (!ReferenceEquals(element, item)) container.ResetGeneratedContainer();
+        }
+        base.ClearContainerForItem(element, item);
+    }
+
+    /// <inheritdoc />
+    protected override void OnItemsSourceChanged(IEnumerable? oldValue, IEnumerable? newValue)
+    {
+        base.OnItemsSourceChanged(oldValue, newValue);
+        UnselectAll();
+        _checkedItems.Clear();
+    }
+
+    // Logical operations may need a collapsed descendant. Use the normal generator
+    // and preparation path so data remains data and layout can reuse its container.
+    internal static IEnumerable<TreeSelectorItem> Containers(ItemsControl owner, bool realize = false)
+    {
+        for (var index = 0; index < owner.Items.Count; index++)
+        {
+            if (owner.Items[index] is TreeSelectorItem declared)
+            {
+                yield return declared;
+                continue;
+            }
+            var generator = owner.ItemContainerGenerator;
+            var container = generator.ContainerFromIndex(index) as TreeSelectorItem;
+            if (container == null && realize)
+            {
+                container = generator.GetOrCreateContainerForIndex(index, out var created) as TreeSelectorItem;
+                if (created && container != null) generator.PrepareItemContainer(container);
+            }
+            if (container != null) yield return container;
+        }
+    }
+
+    internal void PruneSelection()
+    {
+        if (_pruningSelection || (_selectedItems.Count == 0 && _checkedItems.Count == 0)) return;
+        _pruningSelection = true;
+        try
+        {
+            var available = new HashSet<object>();
+            WalkContainers(item => available.Add(ResolveDataItem(item)), realize: true);
+            var removed = _selectedItems.Where(item => !available.Contains(item)).ToArray();
+            var uncheckedItems = _checkedItems.Where(item => !available.Contains(item)).ToArray();
+            BeginSyncSelection(); BeginSyncCheck();
+            try
+            {
+                foreach (var item in removed) _selectedItems.Remove(item);
+                foreach (var item in uncheckedItems) _checkedItems.Remove(item);
+            }
+            finally { EndSyncSelection(); EndSyncCheck(); }
+            if (removed.Length > 0)
+            {
+                SetCurrentValue(SelectedItemProperty, _selectedItems.LastOrDefault());
+                RaiseSelectionChanged(removed, Array.Empty<object>());
+            }
+            if (uncheckedItems.Length > 0) RaiseEvent(new RoutedEventArgs(ItemCheckStateChangedEvent, this));
+            if (removed.Length > 0 || uncheckedItems.Length > 0) UpdateTriggerDisplay();
+        }
+        finally { _pruningSelection = false; }
+    }
+
+    internal void ReconcileChildItems(TreeSelectorItem item)
+    {
+        PruneSelection();
+        if (_isSyncingCheck || CheckCascadeMode != TreeSelectorCheckCascadeMode.Cascade) return;
+        bool changed = false;
+        for (var parent = item; parent != null; parent = parent.ParentItem)
+        {
+            var previous = parent.IsChecked;
+            RecomputeParentCheckState(parent);
+            changed |= previous != parent.IsChecked;
+        }
+        if (changed) RaiseEvent(new RoutedEventArgs(ItemCheckStateChangedEvent, item));
     }
 
     #endregion
@@ -623,7 +760,7 @@ public class TreeSelector : ItemsControl
                     item.IsSelected = true;
                     added.Add(data);
                 }
-            });
+            }, realize: true);
         }
         finally
         {
@@ -700,22 +837,19 @@ public class TreeSelector : ItemsControl
     private void OnSelectedItemsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
         if (_isSyncingSelection) return;
-
-        WalkContainers(c =>
+        BeginSyncSelection();
+        try
         {
-            var data = ResolveDataItem(c);
-            c.IsSelected = _selectedItems.Contains(data);
-        });
-
-        if (_selectedItems.Count > 0)
-        {
-            SelectedItem = _selectedItems[^1];
+            WalkContainers(c =>
+            {
+                var data = ResolveDataItem(c);
+                c.IsSelected = _selectedItems.Contains(data);
+            });
+            // The tag ItemsControl also observes this collection. Updating the
+            // scalar must not clear/add the collection during its notification.
+            SetCurrentValue(SelectedItemProperty, _selectedItems.LastOrDefault());
         }
-        else
-        {
-            SelectedItem = null;
-        }
-
+        finally { EndSyncSelection(); }
         UpdateTriggerDisplay();
     }
 
@@ -726,7 +860,7 @@ public class TreeSelector : ItemsControl
         WalkContainers(c =>
         {
             var data = ResolveDataItem(c);
-            c.IsChecked = _checkedItems.Contains(data);
+            c.SetIsCheckedSilently(_checkedItems.Contains(data));
         });
     }
 
@@ -772,7 +906,7 @@ public class TreeSelector : ItemsControl
 
     private void ApplyCascadeDown(TreeSelectorItem parent, bool checkedValue)
     {
-        foreach (var child in parent.Items)
+        foreach (var child in Containers(parent, realize: true))
         {
             if (child is TreeSelectorItem tsi)
             {
@@ -806,7 +940,7 @@ public class TreeSelector : ItemsControl
         bool anyUnchecked = false;
         bool anyMixed = false;
 
-        foreach (var child in parent.Items)
+        foreach (var child in Containers(parent, realize: true))
         {
             if (child is TreeSelectorItem tsi)
             {
@@ -866,7 +1000,7 @@ public class TreeSelector : ItemsControl
 
     private void OnTreeKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Handled || Keyboard.FocusedElement is TreeSelectorItem)
+        if (e.Handled || !IsEnabled)
         {
             return;
         }
@@ -875,9 +1009,20 @@ public class TreeSelector : ItemsControl
         if (e.Key == Key.Escape && IsDropDownOpen)
         {
             IsDropDownOpen = false;
+            Focus();
             e.Handled = true;
             return;
         }
+
+        bool toggle = e.Key == Key.F4 || (e.Key == Key.Down && (e.KeyboardModifiers & ModifierKeys.Alt) != 0);
+        if (toggle || (!IsDropDownOpen && e.Key is Key.Enter or Key.Space or Key.Down))
+        {
+            IsDropDownOpen = !IsDropDownOpen;
+            if (IsDropDownOpen) GetVisibleItems().FirstOrDefault()?.Focus();
+            e.Handled = true;
+            return;
+        }
+        if (Keyboard.FocusedElement is TreeSelectorItem) return;
 
         var visible = GetVisibleItems();
         if (visible.Count == 0) return;
@@ -915,18 +1060,18 @@ public class TreeSelector : ItemsControl
     private List<TreeSelectorItem> GetVisibleItems()
     {
         var result = new List<TreeSelectorItem>();
-        if (ItemsHost != null)
-        {
-            CollectVisible(ItemsHost, result);
-        }
+        CollectVisible(this, result);
         return result;
     }
 
-    private static void CollectVisible(Panel panel, List<TreeSelectorItem> result)
+    private static void CollectVisible(ItemsControl owner, List<TreeSelectorItem> result)
     {
-        foreach (UIElement child in panel.Children)
+        // Popup realization and virtualization must not remove declared items from
+        // range selection. Reuse generated containers for data items without
+        // creating the entire tree just to navigate it.
+        foreach (var item in Containers(owner, realize: true))
         {
-            if (child is not TreeSelectorItem item || item.Visibility != Visibility.Visible)
+            if (item.Visibility != Visibility.Visible)
             {
                 continue;
             }
@@ -935,31 +1080,24 @@ public class TreeSelector : ItemsControl
 
             if (!item.IsExpanded) continue;
 
-            var subPanel = item.GetItemsHostPanel();
-            if (subPanel != null)
-            {
-                CollectVisible(subPanel, result);
-            }
+            CollectVisible(item, result);
         }
     }
 
-    private void WalkContainers(Action<TreeSelectorItem> action)
+    private void WalkContainers(Action<TreeSelectorItem> action, bool realize = false)
     {
         // Walk the logical Items collection in addition to the realized panel — child containers
         // for collapsed nodes do not appear in ItemsHost yet, but our cascade / selection sync
         // logic still needs to reach them.
-        WalkLogicalItems(Items, action);
+        WalkLogicalItems(this, action, realize);
     }
 
-    private static void WalkLogicalItems(IEnumerable items, Action<TreeSelectorItem> action)
+    private static void WalkLogicalItems(ItemsControl owner, Action<TreeSelectorItem> action, bool realize)
     {
-        foreach (var item in items)
+        foreach (var container in Containers(owner, realize))
         {
-            if (item is TreeSelectorItem container)
-            {
-                action(container);
-                WalkLogicalItems(container.Items, action);
-            }
+            action(container);
+            WalkLogicalItems(container, action, realize);
         }
     }
 
@@ -976,9 +1114,11 @@ public class TreeSelector : ItemsControl
 
         _triggerBorder = GetTemplateChild("PART_TriggerBorder") as Border;
         _displayText = GetTemplateChild("PART_DisplayText") as TextBlock;
-        _tagsPanel = GetTemplateChild("PART_TagsPanel") as Panel;
+        _tagsPanel = GetTemplateChild("PART_TagsPanel") as ItemsControl;
         _searchTextBox = GetTemplateChild("PART_SearchTextBox") as TextBox;
+        CssPlaceholder.Unbind(_placeholderText);
         _placeholderText = GetTemplateChild("PART_PlaceholderText") as TextBlock;
+        CssPlaceholder.Bind(_placeholderText, this);
         _clearButton = GetTemplateChild("PART_ClearButton") as Button;
         _dropDownArrow = GetTemplateChild("PART_DropDownArrow") as Shapes.Path;
         _popup = GetTemplateChild("PART_Popup") as Popup;
@@ -986,11 +1126,15 @@ public class TreeSelector : ItemsControl
         AttachTriggerHandlers();
         UpdateTriggerDisplay();
         SetDropDownArrowAngle(IsDropDownOpen ? 180 : 0);
+        SyncPopupOpenState(IsDropDownOpen);
+        ApplySearchFilter();
     }
 
     /// <inheritdoc />
     internal override void OnTemplateContentClearing()
     {
+        DetachTriggerHandlers();
+        if (_popup?.IsOpen == true) _popup.SetCurrentValue(Popup.IsOpenProperty, false);
         // base clears ItemsControl's ItemsPresenter; then release our own parts. UpdateDisplay
         // otherwise keeps realizing tag chips into the detached _tagsPanel and writing display /
         // placeholder text and the dropdown open state into the discarded tree.
@@ -1002,6 +1146,7 @@ public class TreeSelector : ItemsControl
         _displayText = null;
         _tagsPanel = null;
         _searchTextBox = null;
+        CssPlaceholder.Unbind(_placeholderText);
         _placeholderText = null;
         _clearButton = null;
         _dropDownArrow = null;
@@ -1010,6 +1155,10 @@ public class TreeSelector : ItemsControl
 
     private void AttachTriggerHandlers()
     {
+        if (_popup != null)
+        {
+            _popup.Closed += OnPopupClosed;
+        }
         if (_triggerBorder != null)
         {
             _triggerBorder.AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnTriggerMouseDown), true);
@@ -1027,6 +1176,10 @@ public class TreeSelector : ItemsControl
 
     private void DetachTriggerHandlers()
     {
+        if (_popup != null)
+        {
+            _popup.Closed -= OnPopupClosed;
+        }
         if (_triggerBorder != null)
         {
             _triggerBorder.RemoveHandler(MouseDownEvent, new MouseButtonEventHandler(OnTriggerMouseDown));
@@ -1078,6 +1231,42 @@ public class TreeSelector : ItemsControl
         e.Handled = true;
     }
 
+    private void OnPopupClosed(object? sender, EventArgs e)
+    {
+        if (IsDropDownOpen)
+            SetCurrentValue(IsDropDownOpenProperty, false);
+    }
+
+    private void OnSelectorSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (!IsDropDownOpen) return;
+        SyncPopupOpenState(true);
+        _popup?.UpdatePosition();
+    }
+
+    private void OnRemoveSelectionRequested(object sender, RoutedEventArgs e)
+    {
+        if (!IsEnabled || e.OriginalSource is not TreeSelectorSelectionItem item ||
+            !IsAncestorOrSelf(item, _tagsPanel) || item.Content == null || !_selectedItems.Contains(item.Content)) return;
+        bool restoreFocus = Keyboard.FocusedElement is DependencyObject focused && IsAncestorOrSelf(focused, item);
+        RemoveFromSelection(item.Content);
+        if (restoreFocus) Focus();
+        e.Handled = true;
+    }
+
+    private void SyncPopupOpenState(bool open)
+    {
+        if (_popup is not { } popup) return;
+        if (open)
+        {
+            // Match the trigger before Popup measures its detached content.
+            var width = ActualWidth > 0 ? ActualWidth : Width;
+            if (double.IsFinite(width) && width > 0)
+                popup.SetCurrentValue(FrameworkElement.MinWidthProperty, width);
+        }
+        popup.SetCurrentValue(Popup.IsOpenProperty, open);
+    }
+
     private void OnClearButtonClick(object sender, RoutedEventArgs e)
     {
         UnselectAll();
@@ -1118,109 +1307,15 @@ public class TreeSelector : ItemsControl
         bool hasSelection = _selectedItems.Count > 0;
         bool isMulti = SelectionMode != SelectionMode.Single;
         bool hasSearchText = !string.IsNullOrEmpty(SearchText);
-
-        if (CssEngine.IsActive)
-            CssSelectorDependencies.NativeValueChanged(this, "SelectedItems");
-
-        if (_displayText != null)
-        {
-            // Single-select shows the path string; hide while the user is typing in the search box.
-            bool show = !isMulti && hasSelection && !IsSearchEnabled;
-            _displayText.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
-            if (show)
-            {
-                _displayText.Text = BuildPathString(SelectedItem);
-            }
-        }
-
-        if (_tagsPanel != null)
-        {
-            bool show = isMulti && hasSelection;
-            _tagsPanel.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
-            if (show)
-            {
-                RebuildTagsPanel();
-            }
-            else
-            {
-                _tagsPanel.Children.Clear();
-            }
-        }
-
-        if (_searchTextBox != null)
-        {
-            _searchTextBox.Visibility = IsSearchEnabled ? Visibility.Visible : Visibility.Collapsed;
-        }
-
-        if (_placeholderText != null)
-        {
-            // Placeholder shows when nothing is selected and the search box (if any) is empty.
-            bool textBoxEmpty = _searchTextBox == null || string.IsNullOrEmpty(_searchTextBox.Text);
-            bool show = !hasSelection && !hasSearchText && textBoxEmpty;
-            _placeholderText.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
-        }
-
-        if (_clearButton != null)
-        {
-            _clearButton.Visibility = (hasSelection || hasSearchText) ? Visibility.Visible : Visibility.Collapsed;
-        }
-    }
-
-    private void RebuildTagsPanel()
-    {
-        if (_tagsPanel == null) return;
-        _tagsPanel.Children.Clear();
-        foreach (var data in _selectedItems)
-        {
-            _tagsPanel.Children.Add(CreateTagChip(data));
-        }
-    }
-
-    private FrameworkElement CreateTagChip(object data)
-    {
-        var label = ResolveDisplayLabel(data);
-        var chipBorder = new Border
-        {
-            CornerRadius = new CornerRadius(4),
-            Padding = new Thickness(6, 1, 2, 1),
-            Margin = new Thickness(0, 2, 4, 2),
-            Background = TryFindResource("ControlBackgroundHover") as Brush
-                       ?? new SolidColorBrush(Color.FromRgb(60, 60, 65)),
-            BorderBrush = TryFindResource("ControlBorder") as Brush
-                       ?? new SolidColorBrush(Color.FromRgb(80, 80, 80)),
-            BorderThickness = new Thickness(1)
-        };
-
-        var stack = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-        stack.Children.Add(new TextBlock
-        {
-            Text = label,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(0, 0, 4, 0)
-        });
-
-        var closeButton = new Button
-        {
-            Content = "×",
-            Width = 16,
-            Height = 16,
-            Padding = new Thickness(0),
-            FontSize = 12,
-            Background = null,
-            BorderThickness = new Thickness(0),
-            VerticalAlignment = VerticalAlignment.Center,
-            Foreground = TryFindResource("TextSecondary") as Brush
-                       ?? new SolidColorBrush(Color.FromRgb(180, 180, 180))
-        };
-        closeButton.Click += (_, ev) =>
-        {
-            RemoveFromSelection(data);
-            ev.Handled = true;
-        };
-        stack.Children.Add(closeButton);
-
-        chipBorder.Child = stack;
-        return chipBorder;
+        if (CssEngine.IsActive) CssSelectorDependencies.NativeValueChanged(this, "SelectedItems");
+        SetValue(ShowSelectionTagsPropertyKey, isMulti && hasSelection);
+        SetValue(ShowSelectionPathPropertyKey, !isMulti && hasSelection && !IsSearchEnabled);
+        SetValue(SelectionPathPropertyKey, !isMulti && hasSelection ? BuildPathString(SelectedItem) : string.Empty);
+        SetValue(IsPlaceholderVisiblePropertyKey, !hasSelection && !hasSearchText);
+        SetValue(IsClearButtonVisiblePropertyKey, hasSelection || hasSearchText);
+        VisualStateManager.GoToState(this, !hasSelection ? "Empty" : isMulti ? "MultipleSelection" : "SingleSelection", false);
+        VisualStateManager.GoToState(this, IsSearchEnabled ? "SearchEnabled" : "SearchDisabled", false);
+        VisualStateManager.GoToState(this, IsDropDownOpen ? "Open" : "Closed", false);
     }
 
     private string BuildPathString(object? selectedData)
@@ -1248,7 +1343,7 @@ public class TreeSelector : ItemsControl
             {
                 result = c;
             }
-        });
+        }, realize: true);
         return result;
     }
 
@@ -1275,7 +1370,7 @@ public class TreeSelector : ItemsControl
             return;
         }
 
-        foreach (var item in Items)
+        foreach (var item in Containers(this, realize: true))
         {
             if (item is TreeSelectorItem tsi)
             {
@@ -1284,12 +1379,21 @@ public class TreeSelector : ItemsControl
         }
     }
 
+    internal void ApplySearchToContainer(TreeSelectorItem container)
+    {
+        var query = SearchText?.Trim() ?? string.Empty;
+        if (_applyingSearch || query.Length == 0) return;
+        _applyingSearch = true;
+        try { FilterRecurse(container, query); }
+        finally { _applyingSearch = false; }
+    }
+
     private static bool FilterRecurse(TreeSelectorItem container, string query)
     {
         bool selfMatch = ResolveDisplayLabel(container.Header).Contains(query, StringComparison.OrdinalIgnoreCase);
 
         bool childMatch = false;
-        foreach (var child in container.Items)
+        foreach (var child in Containers(container, realize: true))
         {
             if (child is TreeSelectorItem ts)
             {
@@ -1374,7 +1478,9 @@ public class TreeSelector : ItemsControl
         if (d is TreeSelector selector)
         {
             bool open = (bool)(e.NewValue ?? false);
+            selector.SyncPopupOpenState(open);
             selector.SetDropDownArrowAngle(open ? 180 : 0);
+            selector.UpdateTriggerDisplay();
             if (open)
             {
                 selector.RaiseEvent(new RoutedEventArgs(DropDownOpenedEvent, selector));
@@ -1435,6 +1541,11 @@ public class TreeSelector : ItemsControl
 /// </summary>
 public class TreeSelectorItem : HeaderedItemsControl
 {
+    private protected override bool UsesFallbackItemsHost => false;
+    /// <summary>Identifies the unselected header's background while the pointer is over it.</summary>
+    public static readonly DependencyProperty HoverBrushProperty = TreeViewItem.HoverBrushProperty.AddOwner(typeof(TreeSelectorItem));
+    public Brush? HoverBrush { get => (Brush?)GetValue(HoverBrushProperty); set => SetValue(HoverBrushProperty, value); }
+
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
@@ -1456,7 +1567,8 @@ public class TreeSelectorItem : HeaderedItemsControl
         {
             if (ReferenceEquals(_parentSelector, value)) return;
             _parentSelector = value;
-            foreach (var child in Items)
+            UpdateCheckBoxVisibility();
+            foreach (var child in TreeSelector.Containers(this))
             {
                 if (child is TreeSelectorItem c)
                 {
@@ -1469,6 +1581,9 @@ public class TreeSelectorItem : HeaderedItemsControl
 
     private int _level;
     private bool _suppressCheckCallback;
+    private bool _hasHierarchy;
+    private bool _preparingHierarchy;
+    private readonly HashSet<TreeSelectorItem> _declaredChildren = new();
 
     #region Template Parts
 
@@ -1482,6 +1597,15 @@ public class TreeSelectorItem : HeaderedItemsControl
     #endregion
 
     #region Dependency Properties
+
+    private static readonly DependencyPropertyKey IsCheckBoxVisiblePropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(IsCheckBoxVisible), typeof(bool), typeof(TreeSelectorItem), new PropertyMetadata(false));
+
+    /// <summary>Identifies whether the owning selector exposes check boxes.</summary>
+    public static readonly DependencyProperty IsCheckBoxVisibleProperty = IsCheckBoxVisiblePropertyKey.DependencyProperty;
+
+    /// <summary>Gets whether the owning selector exposes check boxes.</summary>
+    public bool IsCheckBoxVisible => (bool)GetValue(IsCheckBoxVisibleProperty)!;
 
     /// <summary>Identifies the IsExpanded dependency property.</summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
@@ -1557,7 +1681,6 @@ public class TreeSelectorItem : HeaderedItemsControl
         Focusable = true;
         SetCurrentValue(UIElement.TransitionPropertyProperty, TransitionPropertyCollection.None());
 
-        ((System.Collections.Specialized.INotifyCollectionChanged)Items).CollectionChanged += OnChildItemsChanged;
         AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
     }
 
@@ -1604,21 +1727,102 @@ public class TreeSelectorItem : HeaderedItemsControl
         child.Header = item;
         child.DataContext = item;
 
-        var template = ParentSelector?.ItemTemplate ?? ItemTemplate;
-        if (template != null)
-        {
-            child.HeaderTemplate = template;
-        }
+        var template = ResolveItemTemplate(item);
+        if (template == null && ItemTemplate == null && ItemTemplateSelector == null)
+            template = ParentSelector?.ResolveItemTemplate(item);
+        child.PrepareHierarchy(template);
+        child.IsSelected = ParentSelector?.SelectedItems.Contains(item) == true;
+        child.SetIsCheckedSilently(ParentSelector?.CheckedItems.Contains(item) == true);
+        ParentSelector?.ApplySearchToContainer(child);
     }
 
-    private void OnChildItemsChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    /// <inheritdoc />
+    protected override void ClearContainerForItem(FrameworkElement element, object item)
     {
+        if (element is TreeSelectorItem child)
+        {
+            if (!ReferenceEquals(element, item) || !Items.Contains(item))
+            {
+                child.ParentSelector = null;
+                child.ParentItem = null;
+            }
+            if (!ReferenceEquals(element, item)) child.ResetGeneratedContainer();
+        }
+        base.ClearContainerForItem(element, item);
+    }
+
+    internal void PrepareHierarchy(DataTemplate? template)
+    {
+        _preparingHierarchy = true;
+        try
+        {
+            ClearHierarchy();
+            HeaderTemplate = template;
+            if (template is not HierarchicalDataTemplate hierarchy) return;
+            _hasHierarchy = true;
+            ItemTemplate = hierarchy.ItemTemplate ?? (hierarchy.ItemTemplateSelector == null ? hierarchy : null);
+            ItemTemplateSelector = hierarchy.ItemTemplateSelector;
+            ItemContainerStyle = hierarchy.ItemContainerStyle;
+            ItemContainerStyleSelector = hierarchy.ItemContainerStyleSelector;
+            ItemStringFormat = hierarchy.ItemStringFormat;
+            ItemBindingGroup = hierarchy.ItemBindingGroup;
+            AlternationCount = hierarchy.AlternationCount;
+            if (hierarchy.ItemsSource != null) BindingOperations.SetBinding(this, ItemsSourceProperty, hierarchy.ItemsSource);
+        }
+        finally { _preparingHierarchy = false; }
+    }
+
+    internal void ClearHierarchy()
+    {
+        if (!_hasHierarchy) return;
+        _hasHierarchy = false;
+        BindingOperations.ClearBinding(this, ItemsSourceProperty);
+        ClearValue(ItemsSourceProperty);
+        ClearValue(ItemTemplateProperty);
+        ClearValue(ItemTemplateSelectorProperty);
+        ClearValue(ItemContainerStyleProperty);
+        ClearValue(ItemContainerStyleSelectorProperty);
+        ClearValue(ItemStringFormatProperty);
+        ClearValue(ItemBindingGroupProperty);
+        ClearValue(AlternationCountProperty);
+        ClearValue(HeaderTemplateProperty);
+    }
+
+    internal void ResetGeneratedContainer()
+    {
+        ClearHierarchy();
+        ClearValue(HeaderProperty);
+        ClearValue(HeaderTemplateProperty);
+        ClearValue(IsExpandedProperty);
+        ClearValue(IsSelectedProperty);
+        _suppressCheckCallback = true;
+        try { ClearValue(IsCheckedProperty); }
+        finally { _suppressCheckCallback = false; }
+        Level = 0;
+    }
+
+    /// <inheritdoc />
+    protected override void OnItemsChanged(NotifyCollectionChangedEventArgs e)
+    {
+        base.OnItemsChanged(e);
+        if (e.Action == NotifyCollectionChangedAction.Reset)
+        {
+            var current = Items.OfType<TreeSelectorItem>().ToHashSet();
+            foreach (var old in _declaredChildren.Except(current))
+            {
+                old.ParentSelector = null;
+                old.ParentItem = null;
+            }
+            _declaredChildren.Clear();
+            foreach (var child in current) _declaredChildren.Add(child);
+        }
         if (e.OldItems != null)
         {
             foreach (var old in e.OldItems)
             {
                 if (old is TreeSelectorItem child)
                 {
+                    _declaredChildren.Remove(child);
                     child.ParentSelector = null;
                     child.ParentItem = null;
                 }
@@ -1631,6 +1835,7 @@ public class TreeSelectorItem : HeaderedItemsControl
             {
                 if (added is TreeSelectorItem child)
                 {
+                    _declaredChildren.Add(child);
                     child.ParentSelector = ParentSelector;
                     child.ParentItem = this;
                     child.Level = Level + 1;
@@ -1643,6 +1848,7 @@ public class TreeSelectorItem : HeaderedItemsControl
         {
             UpdateDescendantLevels();
         }
+        if (!_preparingHierarchy) ParentSelector?.ReconcileChildItems(this);
     }
 
     /// <summary>
@@ -1651,7 +1857,7 @@ public class TreeSelectorItem : HeaderedItemsControl
     /// </summary>
     internal void UpdateDescendantLevels()
     {
-        foreach (var item in Items)
+        foreach (var item in TreeSelector.Containers(this))
         {
             if (item is TreeSelectorItem child)
             {
@@ -1701,6 +1907,7 @@ public class TreeSelectorItem : HeaderedItemsControl
         UpdateExpandedVisualState();
         UpdateCheckBoxVisibility();
         SyncCheckBoxFromState();
+        ParentSelector?.ApplySearchToContainer(this);
     }
 
     /// <inheritdoc />
@@ -1750,19 +1957,11 @@ public class TreeSelectorItem : HeaderedItemsControl
 
     private void UpdateExpanderVisibility()
     {
-        if (_expanderBorder != null)
-        {
-            _expanderBorder.Visibility = HasItems ? Visibility.Visible : Visibility.Collapsed;
-        }
         SetExpanderAngle(IsExpanded ? 0 : -90);
     }
 
     private void UpdateExpandedVisualState()
     {
-        if (_itemsHost != null)
-        {
-            _itemsHost.Visibility = IsExpanded ? Visibility.Visible : Visibility.Collapsed;
-        }
         SetExpanderAngle(IsExpanded ? 0 : -90);
     }
 
@@ -1778,10 +1977,7 @@ public class TreeSelectorItem : HeaderedItemsControl
 
     internal void UpdateCheckBoxVisibility()
     {
-        if (_checkBox == null) return;
-        _checkBox.Visibility = (ParentSelector?.ShowCheckBoxes ?? false)
-            ? Visibility.Visible
-            : Visibility.Collapsed;
+        SetValue(IsCheckBoxVisiblePropertyKey, ParentSelector?.ShowCheckBoxes == true);
     }
 
     private void SyncCheckBoxFromState()
@@ -1897,7 +2093,7 @@ public class TreeSelectorItem : HeaderedItemsControl
         }
         if (!IsExpanded) return false;
 
-        foreach (var item in Items)
+        foreach (var item in TreeSelector.Containers(this, realize: true))
         {
             if (item is TreeSelectorItem child &&
                 child.Visibility == Visibility.Visible &&

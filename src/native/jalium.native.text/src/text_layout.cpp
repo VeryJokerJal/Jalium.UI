@@ -1,4 +1,8 @@
 #include "text_layout.h"
+#include "shared_text_paragraph.h"
+#include "text_bidi.h"
+#include "text_grapheme.h"
+#include "jalium_text_glyph_ranges.h"
 #include "text_engine.h"
 #include "font_provider.h"
 #include "glyph_rasterizer.h"
@@ -7,6 +11,7 @@
 #include "jalium_text_options.h"
 #include "jalium_font_underline.h"
 #include "jalium_font_math.h"
+#include "jalium_font_features.h"
 
 #include <atomic>
 #include <cstring>
@@ -96,7 +101,86 @@ JaliumTextFormat::JaliumTextFormat(
     }
 }
 
+JaliumTextFormat::JaliumTextFormat(const JaliumTextFormat& source, SnapshotTag)
+    : TextFormat(source), engine_(source.engine_), registeredFont_(source.registeredFont_),
+      face_(source.face_ ? source.face_->Clone() : nullptr), fontId_(source.fontId_),
+      fontSizePx_(source.fontSizePx_), fontFamily_(source.fontFamily_), fontWeight_(source.fontWeight_), fontStyle_(source.fontStyle_),
+      baseDirection_(source.baseDirection_), alignment_(source.alignment_), paragraphAlignment_(source.paragraphAlignment_),
+      trimming_(source.trimming_), wrapping_(source.wrapping_), lineSpacing_(source.lineSpacing_),
+      lineSpacingBaseline_(source.lineSpacingBaseline_), lineSpacingMethod_(source.lineSpacingMethod_), maxLines_(source.maxLines_),
+      ascent_(source.ascent_), descent_(source.descent_), lineGap_(source.lineGap_), lineHeight_(source.lineHeight_), fontFeatures_(source.fontFeatures_)
+{
+    static std::atomic<uint64_t> nextSnapshot{uint64_t(1) << 63};
+    instanceId_ = nextSnapshot.fetch_add(1, std::memory_order_relaxed);
+}
+
+TextParagraph* JaliumTextFormat::CreateParagraph(const uint16_t* text, uint32_t length,
+    const JaliumTextSpan* spans, uint32_t count, float width, float minHeight, int32_t alignment, int32_t direction)
+{
+    return CreateParagraphWithWrapping(text, length, spans, count, width, minHeight, alignment, direction, 0);
+}
+
+TextParagraph* JaliumTextFormat::CreateParagraphWithWrapping(const uint16_t* text, uint32_t length,
+    const JaliumTextSpan* spans, uint32_t count, float width, float minHeight, int32_t alignment, int32_t direction, int32_t wrapping)
+{
+    return SharedTextParagraph::Create(*this, text, length, spans, count, width, minHeight, alignment, direction, wrapping);
+}
+
+TextParagraph* JaliumTextFormat::CreateSpacedParagraph(const uint16_t* text, uint32_t length,
+    const JaliumTextSpan* spans, uint32_t count, const JaliumTextSpacingUnit* units,
+    uint32_t unitCount, float width, float minHeight, int32_t direction)
+{
+    if (!units || !unitCount) return nullptr;
+    std::vector<JaliumTextAdvanceUnit> advances;
+    advances.reserve(unitCount);
+    for (uint32_t i = 0; i < unitCount; ++i)
+        advances.push_back({units[i].textPosition, units[i].length, units[i].spacing, 0, 0, units[i].flags});
+    return CreateAdvancedParagraph(text, length, spans, count, advances.data(), unitCount, width, minHeight, direction, false);
+}
+
+TextParagraph* JaliumTextFormat::CreateContextParagraph(const uint16_t* text, uint32_t length,
+    const JaliumTextSpan* spans, uint32_t count, const JaliumTextSpacingUnit* units,
+    uint32_t unitCount, float width, float minHeight, int32_t direction)
+{
+    // Equal-font styles already share shaping; draw_paragraph_slice supplies
+    // the current foreground independently of the retained neutral span paint.
+    return CreateSpacedParagraph(text, length, spans, count, units, unitCount, width, minHeight, direction);
+}
+
+TextParagraph* JaliumTextFormat::CreateAdvancedParagraph(const uint16_t* text, uint32_t length,
+    const JaliumTextSpan* spans, uint32_t count, const JaliumTextAdvanceUnit* units,
+    uint32_t unitCount, float width, float minHeight, int32_t direction, bool contextPaint)
+{
+    (void)contextPaint;
+    std::unique_ptr<SharedTextParagraph> paragraph(SharedTextParagraph::Create(*this, text, length,
+        spans, count, width, minHeight, 0, direction, JALIUM_WORD_WRAP_NONE));
+    return paragraph && paragraph->ApplyAdvances(units, unitCount) ? paragraph.release() : nullptr;
+}
+
 JaliumTextFormat::~JaliumTextFormat() = default;   // unique_ptr<FontFace> owns the faces
+
+JaliumResult JaliumTextFormat::SetFontFeatures(const JaliumFontFeature* features, uint32_t count)
+{
+    if (count > 16384 || (count && !features)) return JALIUM_ERROR_INVALID_ARGUMENT;
+    std::vector<JaliumFontFeature> values;
+    if (count) values.assign(features, features + count);
+    fontFeatures_ = std::move(values);
+    return JALIUM_OK;
+}
+
+JaliumResult JaliumTextFormat::GetFontFeatureSupport(uint32_t tables, const uint32_t* tags, uint32_t count, uint8_t* supported) const
+{
+    if (!face_) return JALIUM_ERROR_NOT_SUPPORTED;
+    std::vector<uint32_t> available;
+    const uint32_t tableTags[] = {font::kTag_GSUB, font::kTag_GPOS};
+    for (unsigned i = 0; i < 2; ++i) {
+        if (!(tables & (1u << i))) continue;
+        auto table = face_->GetTable(tableTags[i]);
+        font_features::Collect(table.Data(), table.Size(), available);
+    }
+    font_features::Query(available, tags, count, supported);
+    return JALIUM_OK;
+}
 
 void JaliumTextFormat::SetAlignment(int32_t alignment)
 {
@@ -166,7 +250,7 @@ static uint32_t DecodeCodepoint(
 
 static bool IsFallbackIgnorable(uint32_t cp)
 {
-    return cp == 0 || cp == 0x200Cu || cp == 0x200Du ||
+    return TextBidi::IsFormattingControl(cp) || cp == 0 || cp == 0x200Cu || cp == 0x200Du ||
            (cp >= 0xFE00u && cp <= 0xFE0Fu) ||
            (cp >= 0xE0100u && cp <= 0xE01EFu);
 }
@@ -252,28 +336,10 @@ FontFace* JaliumTextFormat::ChooseFaceForCluster(
     return face_.get(); // renders .notdef; GenerateGlyphQuads skips glyph index 0
 }
 
-static bool IsClusterExtender(uint32_t cp)
-{
-    return (cp >= 0x0300u && cp <= 0x036Fu) ||
-           (cp >= 0x1AB0u && cp <= 0x1AFFu) ||
-           (cp >= 0x1DC0u && cp <= 0x1DFFu) ||
-           (cp >= 0x20D0u && cp <= 0x20FFu) ||
-           (cp >= 0xFE20u && cp <= 0xFE2Fu) ||
-           (cp >= 0xFE00u && cp <= 0xFE0Fu) ||
-           (cp >= 0xE0100u && cp <= 0xE01EFu) ||
-           (cp >= 0x1F3FBu && cp <= 0x1F3FFu) ||
-           (cp >= 0xE0020u && cp <= 0xE007Fu);
-}
-
-static bool IsRegionalIndicator(uint32_t cp)
-{
-    return cp >= 0x1F1E6u && cp <= 0x1F1FFu;
-}
-
-ShapedRun JaliumTextFormat::ShapeWithFallback(const wchar_t* text, uint32_t textLength)
+ShapedRun JaliumTextFormat::ShapeWithFallback(const wchar_t* text, uint32_t textLength, const TextBidi& bidi, uint32_t offset)
 {
     if (!face_ || !text || textLength == 0)
-        return shaper_.Shape(face_.get(), fontId_, text, textLength, fontSizePx_);
+        return shaper_.Shape(face_.get(), fontId_, text, textLength, fontSizePx_, false, fontFeatures_);
 
     // Does the primary face cover every (non-control) codepoint? If so, shape
     // the whole string in one pass — byte-for-byte the pre-fallback behaviour —
@@ -291,39 +357,23 @@ ShapedRun JaliumTextFormat::ShapeWithFallback(const wchar_t* text, uint32_t text
         }
     }
 
-    if (!needsFallback)
-        return shaper_.Shape(face_.get(), fontId_, text, textLength, fontSizePx_);
+    if (!needsFallback && bidi.Uniform())
+        return shaper_.Shape(face_.get(), fontId_, text, textLength, fontSizePx_, false, fontFeatures_);
 
-    // Decode into grapheme-like clusters, then split into maximal runs sharing
-    // a font. This is deliberately a compact subset of UAX #29 covering the
-    // sequences that affect font fallback: combining marks, variation
-    // selectors, emoji modifiers, RI flags and chained ZWJ emoji.
-    struct Unit { uint32_t cp, start, end; };
-    std::vector<Unit> units;
-    for (uint32_t p = 0; p < textLength; ) {
-        uint32_t count = 0;
-        const uint32_t cp = DecodeCodepoint(text, textLength, p, count);
-        if (count == 0) count = 1;
-        units.push_back({cp, p, p + count});
-        p += count;
-    }
+    // Font fallback and caret cells use the same Unicode grapheme boundaries,
+    // including emoji sequences, Indic conjuncts, Hangul and spacing marks.
     struct Cluster { uint32_t start, end; FontFace* face; uint64_t fontId; };
     std::vector<Cluster> clusters;
-    for (size_t u = 0; u < units.size(); ) {
-        const size_t begin = u++;
-        if (IsRegionalIndicator(units[begin].cp) && u < units.size() && IsRegionalIndicator(units[u].cp)) ++u;
-        while (u < units.size() && IsClusterExtender(units[u].cp)) ++u;
-        while (u < units.size() && units[u].cp == 0x200Du) {
-            ++u; // include joiner
-            if (u < units.size()) ++u; // and the joined base
-            while (u < units.size() && IsClusterExtender(units[u].cp)) ++u;
+    const auto boundaries = grapheme::Boundaries(std::wstring_view(text, textLength));
+    for (size_t i = 0; i + 1 < boundaries.size(); ++i) {
+        std::vector<uint32_t> codepoints;
+        for (uint32_t position = boundaries[i]; position < boundaries[i + 1];) {
+            uint32_t units = 0; codepoints.push_back(DecodeCodepoint(text, textLength, position, units));
+            position += units ? units : 1;
         }
-        std::vector<uint32_t> clusterCodepoints;
-        clusterCodepoints.reserve(u - begin);
-        for (size_t j = begin; j < u; ++j) clusterCodepoints.push_back(units[j].cp);
         uint64_t selectedId = fontId_;
-        FontFace* selected = ChooseFaceForCluster(clusterCodepoints, selectedId);
-        clusters.push_back({units[begin].start, units[u - 1].end, selected, selectedId});
+        auto* selected = ChooseFaceForCluster(codepoints, selectedId);
+        clusters.push_back({boundaries[i], boundaries[i + 1], selected, selectedId});
     }
 
     // Split into maximal runs that share a face, shape each with its own face
@@ -341,15 +391,17 @@ ShapedRun JaliumTextFormat::ShapeWithFallback(const wchar_t* text, uint32_t text
         FontFace* runFace = clusters[ci].face;
         const uint64_t runFontId = clusters[ci].fontId;
         size_t endCluster = ci + 1;
-        while (endCluster < clusters.size() && clusters[endCluster].face == runFace)
+        while (endCluster < clusters.size() && clusters[endCluster].face == runFace &&
+            bidi.Level(offset + clusters[endCluster].start) == bidi.Level(offset + runStart))
             ++endCluster;
         const uint32_t runEnd = clusters[endCluster - 1].end;
 
         ShapedRun part = shaper_.Shape(
-            runFace, runFontId, text + runStart, runEnd - runStart, fontSizePx_);
+            runFace, runFontId, text + runStart, runEnd - runStart, fontSizePx_, false, fontFeatures_);
         for (auto& g : part.glyphs)
         {
             g.cluster += runStart; // run-relative -> absolute into full text
+            g.clusterEnd += runStart;
             combined.glyphs.push_back(g);
         }
         ci = endCluster;
@@ -377,7 +429,8 @@ JaliumTextFormat::LayoutResult JaliumTextFormat::PerformLayout(
 
     // Shape the entire text, splitting into per-face runs so codepoints the
     // primary face lacks (e.g. CJK) are shaped + measured with a fallback face.
-    ShapedRun run = ShapeWithFallback(text, textLength);
+    TextBidi bidi(text, textLength, baseDirection_);
+    ShapedRun run = ShapeWithFallback(bidi.MirroredText(), textLength, bidi);
 
     // Effective line height
     float effectiveLineHeight = lineHeight_;
@@ -388,169 +441,59 @@ JaliumTextFormat::LayoutResult JaliumTextFormat::PerformLayout(
     bool noWrap = (wrapping_ == JALIUM_WORD_WRAP_NONE);
     bool charWrap = (wrapping_ == JALIUM_WORD_WRAP_CHARACTER);
 
-    LayoutLine currentLine{};
-    currentLine.startIndex = 0;
-    currentLine.width = 0;
-    currentLine.baselineY = ascent_;
-
+    const auto& glyphs = run.glyphs;
+    size_t firstGlyph = 0, cursor = 0, lastWordBreak = 0;
+    uint32_t firstCharacter = 0;
     float penX = 0;
-
-    for (size_t i = 0; i < run.glyphs.size(); i++)
-    {
-        const auto& glyph = run.glyphs[i];
-        float glyphWidth = glyph.advanceX;
-
-        // Check for newline character
-        uint32_t charIndex = glyph.cluster;
-        if (charIndex < textLength && (text[charIndex] == L'\n' || text[charIndex] == L'\r'))
-        {
-            // End current line
-            currentLine.endIndex = charIndex;
-            currentLine.glyphs.assign(
-                run.glyphs.begin() + currentLine.startIndex,
-                run.glyphs.begin() + i);
-            layout.lines.push_back(std::move(currentLine));
-
-            // Skip \r\n pair
-            uint32_t nextStart = charIndex + 1;
-            if (text[charIndex] == L'\r' && nextStart < textLength && text[nextStart] == L'\n')
-                nextStart++;
-
-            // Check max lines
-            if (maxLines_ > 0 && layout.lines.size() >= maxLines_)
-                break;
-
-            // Start new line
-            currentLine = {};
-            currentLine.startIndex = static_cast<uint32_t>(i + 1);
-            currentLine.width = 0;
-            currentLine.baselineY = layout.lines.size() * effectiveLineHeight + ascent_;
-            penX = 0;
+    auto emit = [&](size_t first, size_t last, uint32_t characterStart, uint32_t characterEnd) {
+        LayoutLine line{};
+        line.startIndex = characterStart;
+        line.endIndex = characterEnd;
+        line.baselineY = layout.lines.size() * effectiveLineHeight + ascent_;
+        line.glyphs.assign(glyphs.begin() + first, glyphs.begin() + last);
+        for (const auto& glyph : line.glyphs) line.width += glyph.advanceX;
+        layout.lines.push_back(std::move(line));
+    };
+    while (cursor < glyphs.size() && (maxLines_ == 0 || layout.lines.size() < maxLines_)) {
+        const auto& glyph = glyphs[cursor];
+        const uint32_t cp = glyph.cluster < textLength ? uint32_t(text[glyph.cluster]) : 0;
+        if (TextBidi::IsLineBreak(cp)) {
+            emit(firstGlyph, cursor, firstCharacter, glyph.cluster);
+            uint32_t nextCharacter = glyph.cluster + 1;
+            ++cursor;
+            if (cp == '\r' && nextCharacter < textLength && text[nextCharacter] == L'\n') {
+                ++nextCharacter;
+                if (cursor < glyphs.size() && glyphs[cursor].cluster < nextCharacter) ++cursor;
+            }
+            firstGlyph = cursor; firstCharacter = nextCharacter; lastWordBreak = firstGlyph; penX = 0;
             continue;
         }
-
-        // Check wrap condition
-        if (!noWrap && maxWidth > 0 && penX + glyphWidth > maxWidth && penX > 0)
-        {
-            if (charWrap || wrapping_ == JALIUM_WORD_WRAP_EMERGENCY)
-            {
-                // Break at current character
-                currentLine.endIndex = charIndex;
-                currentLine.glyphs.assign(
-                    run.glyphs.begin() + currentLine.startIndex,
-                    run.glyphs.begin() + i);
-                layout.lines.push_back(std::move(currentLine));
-
-                if (maxLines_ > 0 && layout.lines.size() >= maxLines_)
-                    break;
-
-                currentLine = {};
-                currentLine.startIndex = static_cast<uint32_t>(i);
-                currentLine.width = 0;
-                currentLine.baselineY = layout.lines.size() * effectiveLineHeight + ascent_;
-                penX = 0;
-            }
-            else
-            {
-                // Word wrap: scan back to last word boundary
-                size_t breakAt = i;
-                // Only search the glyphs that belong to the current line. If
-                // we scan into an already-emitted line, a long unbroken word
-                // can repeatedly rediscover that previous line's trailing
-                // space. breakAt then equals currentLine.startIndex, no input
-                // is consumed, and the loop appends empty lines until the
-                // process runs out of memory.
-                for (size_t j = i; j > currentLine.startIndex; j--)
-                {
-                    uint32_t ci = run.glyphs[j - 1].cluster;
-                    if (ci < textLength && (text[ci] == L' ' || text[ci] == L'\t'))
-                    {
-                        breakAt = j;
-                        break;
-                    }
+        if (!noWrap && maxWidth > 0 && penX > 0 && penX + glyph.advanceX > maxWidth) {
+            size_t breakAt = firstGlyph;
+            if (charWrap || wrapping_ == JALIUM_WORD_WRAP_EMERGENCY) breakAt = cursor;
+            else if (lastWordBreak > firstGlyph) breakAt = lastWordBreak;
+            if (breakAt > firstGlyph) {
+                const uint32_t end = glyphs[breakAt].cluster;
+                emit(firstGlyph, breakAt, firstCharacter, end);
+                firstGlyph = breakAt; firstCharacter = end;
+                // Whitespace already included at the preceding break keeps its
+                // logical source range; discard only additional leading spaces.
+                while (firstGlyph < glyphs.size()) {
+                    const auto index = glyphs[firstGlyph].cluster;
+                    if (index >= textLength || (text[index] != L' ' && text[index] != L'\t')) break;
+                    firstCharacter = glyphs[firstGlyph].clusterEnd; ++firstGlyph;
                 }
-
-                if (breakAt == i && wrapping_ == JALIUM_WORD_WRAP_EMERGENCY)
-                {
-                    // No word boundary found, break at character
-                    breakAt = i;
-                }
-                else if (breakAt == i)
-                {
-                    // No word boundary found and not emergency: don't break
-                    penX += glyphWidth;
-                    currentLine.width = penX;
-                    continue;
-                }
-
-                // Recalculate line width up to break point
-                float lineW = 0;
-                for (size_t j = currentLine.startIndex; j < breakAt; j++)
-                {
-                    if (j < run.glyphs.size())
-                        lineW += run.glyphs[j].advanceX;
-                }
-
-                uint32_t breakCharIndex = (breakAt < run.glyphs.size())
-                    ? run.glyphs[breakAt].cluster : textLength;
-                currentLine.endIndex = breakCharIndex;
-                currentLine.width = lineW;
-                currentLine.glyphs.assign(
-                    run.glyphs.begin() + currentLine.startIndex,
-                    run.glyphs.begin() + breakAt);
-                layout.lines.push_back(std::move(currentLine));
-
-                if (maxLines_ > 0 && layout.lines.size() >= maxLines_)
-                    break;
-
-                // Skip whitespace at break point
-                size_t newStart = breakAt;
-                while (newStart < run.glyphs.size())
-                {
-                    uint32_t ci = run.glyphs[newStart].cluster;
-                    if (ci < textLength && (text[ci] == L' ' || text[ci] == L'\t'))
-                        newStart++;
-                    else
-                        break;
-                }
-
-                currentLine = {};
-                currentLine.startIndex = static_cast<uint32_t>(newStart);
-                currentLine.width = 0;
-                currentLine.baselineY = layout.lines.size() * effectiveLineHeight + ascent_;
-
-                // Re-accumulate pen from the new start
-                penX = 0;
-                i = newStart - 1; // Will be incremented by loop
+                cursor = firstGlyph; lastWordBreak = firstGlyph; penX = 0;
                 continue;
             }
         }
-
-        penX += glyphWidth;
-        currentLine.width = penX;
+        penX += glyph.advanceX;
+        if (cp == ' ' || cp == '\t') lastWordBreak = cursor + 1;
+        ++cursor;
     }
-
-    // Add final line
-    if (currentLine.startIndex < run.glyphs.size() &&
-        (maxLines_ == 0 || layout.lines.size() < maxLines_))
-    {
-        currentLine.endIndex = textLength;
-        currentLine.glyphs.assign(
-            run.glyphs.begin() + currentLine.startIndex,
-            run.glyphs.end());
-        layout.lines.push_back(std::move(currentLine));
-    }
-
-    // Even empty text should have one line
-    if (layout.lines.empty())
-    {
-        LayoutLine emptyLine{};
-        emptyLine.startIndex = 0;
-        emptyLine.endIndex = 0;
-        emptyLine.width = 0;
-        emptyLine.baselineY = ascent_;
-        layout.lines.push_back(emptyLine);
-    }
+    if ((maxLines_ == 0 || layout.lines.size() < maxLines_) &&
+        (firstGlyph < glyphs.size() || firstCharacter == textLength || layout.lines.empty()))
+        emit(firstGlyph, glyphs.size(), firstCharacter, textLength);
 
     // Calculate totals
     float maxLineWidth = 0.0f;
@@ -575,6 +518,9 @@ JaliumTextFormat::LayoutResult JaliumTextFormat::PerformLayout(
     layout.totalWidth = maxLineWidth;
     layout.totalWidthIncludingTrailingWhitespace = maxLineWidthIncludingTrailingWhitespace;
     layout.totalHeight = layout.lines.size() * effectiveLineHeight;
+    // Wrapping and trailing whitespace metrics use logical order. Reorder each
+    // completed line with its original paragraph context, including L1 resets.
+    for (auto& line : layout.lines) bidi.Reorder(line.glyphs, line.startIndex, line.endIndex);
 
     return layout;
 }
@@ -675,7 +621,9 @@ JaliumResult JaliumTextFormat::MeasureText(
 {
     if (!metrics) return JALIUM_ERROR_INVALID_ARGUMENT;
 
-    auto layout = PerformLayout(text, textLength, maxWidth, maxHeight);
+    LayoutResult ownedLayout;
+    if (!frozenLayout_) ownedLayout = PerformLayout(text, textLength, maxWidth, maxHeight);
+    const auto& layout = frozenLayout_ ? *frozenLayout_ : ownedLayout;
 
     metrics->width = layout.totalWidth;
     metrics->widthIncludingTrailingWhitespace = layout.totalWidthIncludingTrailingWhitespace;
@@ -763,15 +711,17 @@ JaliumResult JaliumTextFormat::HitTestPoint(
 {
     if (!result) return JALIUM_ERROR_INVALID_ARGUMENT;
 
-    auto layout = PerformLayout(text, textLength, maxWidth, maxHeight);
-    ApplyAlignment(layout, maxWidth, maxHeight);
+    LayoutResult ownedLayout;
+    if (!frozenLayout_) { ownedLayout = PerformLayout(text, textLength, maxWidth, maxHeight); ApplyAlignment(ownedLayout, maxWidth, maxHeight); }
+    const auto& layout = frozenLayout_ ? *frozenLayout_ : ownedLayout;
 
     float effectiveLineHeight = lineHeight_;
     if (lineSpacingMethod_ != 0 && lineSpacing_ > 0)
         effectiveLineHeight = lineSpacing_;
 
     // Find the line containing pointY
-    int lineIndex = static_cast<int>(pointY / effectiveLineHeight);
+    const float top = layout.lines.empty() ? 0 : layout.lines.front().baselineY - ascent_;
+    int lineIndex = static_cast<int>(std::floor((pointY - top) / effectiveLineHeight));
     if (lineIndex < 0) lineIndex = 0;
     if (lineIndex >= static_cast<int>(layout.lines.size()))
         lineIndex = static_cast<int>(layout.lines.size()) - 1;
@@ -803,50 +753,34 @@ JaliumResult JaliumTextFormat::HitTestPoint(
         break;
     }
 
-    // Find character position by walking cumulative advances
+    // Glyphs are in visual order; trailing is a logical edge and reverses for
+    // odd levels. Return that exact edge, including for clicks outside a line.
     float cumX = xOffset;
-    uint32_t hitPos = line.startIndex < layout.lines[lineIndex].glyphs.size()
-        ? layout.lines[lineIndex].glyphs.empty() ? 0 : layout.lines[lineIndex].glyphs[0].cluster
-        : 0;
+    uint32_t hitPos = line.startIndex;
     int32_t trailing = 0;
-
-    for (size_t i = 0; i < line.glyphs.size(); i++)
-    {
-        float advance = line.glyphs[i].advanceX;
-        float midX = cumX + advance * 0.5f;
-
-        if (pointX < midX)
-        {
-            hitPos = line.glyphs[i].cluster;
-            trailing = 0;
+    float caretX = xOffset;
+    for (size_t i = 0; i < line.glyphs.size(); ++i) {
+        const auto& glyph = line.glyphs[i];
+        const float advance = glyph.advanceX;
+        const bool rightHalf = pointX >= cumX + advance * .5f;
+        if (pointX < cumX + advance || i + 1 == line.glyphs.size()) {
+            hitPos = glyph.cluster;
+            trailing = rightHalf != bool(glyph.bidiLevel & 1);
+            caretX = cumX + (rightHalf ? advance : 0);
             break;
         }
-        else if (pointX < cumX + advance)
-        {
-            hitPos = line.glyphs[i].cluster;
-            trailing = 1;
-            break;
-        }
-
         cumX += advance;
-
-        // If past the last glyph
-        if (i == line.glyphs.size() - 1)
-        {
-            hitPos = line.glyphs[i].cluster;
-            trailing = 1;
-        }
     }
 
     bool inside = (pointX >= xOffset && pointX <= xOffset + line.width &&
-                   pointY >= 0 && pointY < layout.totalHeight);
+                   pointY >= top && pointY < top + layout.totalHeight);
 
     result->textPosition = hitPos;
     result->isTrailingHit = trailing;
     result->isInside = inside ? 1 : 0;
-    result->caretX = cumX;
-    result->caretY = lineIndex * effectiveLineHeight;
-    result->caretHeight = effectiveLineHeight;
+    result->caretX = caretX;
+    result->caretY = line.baselineY - (line.ascent > 0 ? line.ascent : ascent_);
+    result->caretHeight = line.height > 0 ? line.height : effectiveLineHeight;
 
     return JALIUM_OK;
 }
@@ -859,8 +793,9 @@ JaliumResult JaliumTextFormat::HitTestTextPosition(
 {
     if (!result) return JALIUM_ERROR_INVALID_ARGUMENT;
 
-    auto layout = PerformLayout(text, textLength, maxWidth, maxHeight);
-    ApplyAlignment(layout, maxWidth, maxHeight);
+    LayoutResult ownedLayout;
+    if (!frozenLayout_) { ownedLayout = PerformLayout(text, textLength, maxWidth, maxHeight); ApplyAlignment(ownedLayout, maxWidth, maxHeight); }
+    const auto& layout = frozenLayout_ ? *frozenLayout_ : ownedLayout;
 
     float effectiveLineHeight = lineHeight_;
     if (lineSpacingMethod_ != 0 && lineSpacing_ > 0)
@@ -905,25 +840,49 @@ JaliumResult JaliumTextFormat::HitTestTextPosition(
         break;
     }
 
-    // Walk glyphs to find the caret X position
+    textPosition = std::min(textPosition, textLength);
     float caretX = xOffset;
-    for (const auto& glyph : line.glyphs)
-    {
-        if (glyph.cluster >= textPosition)
-        {
-            if (glyph.cluster == textPosition && isTrailingHit)
-                caretX += glyph.advanceX;
+    bool found = false;
+    for (const auto& glyph : line.glyphs) {
+        if (textPosition >= glyph.cluster && textPosition < glyph.clusterEnd) {
+            const bool physicalRight = bool(isTrailingHit) != bool(glyph.bidiLevel & 1);
+            if (physicalRight) caretX += glyph.advanceX;
+            found = true;
             break;
         }
         caretX += glyph.advanceX;
+    }
+    if (!found && !line.glyphs.empty()) {
+        // A formatting-only position or paragraph end has zero ink. Resolve it
+        // to the nearest logical glyph edge rather than assuming visual order
+        // has increasing source offsets.
+        const ShapedGlyph* nearest = nullptr;
+        for (const auto& glyph : line.glyphs)
+            if (glyph.clusterEnd <= textPosition && (!nearest || glyph.clusterEnd > nearest->clusterEnd)) nearest = &glyph;
+        if (nearest) {
+            caretX = xOffset;
+            for (const auto& glyph : line.glyphs) {
+                if (&glyph == nearest) { if (!(glyph.bidiLevel & 1)) caretX += glyph.advanceX; break; }
+                caretX += glyph.advanceX;
+            }
+        } else {
+            const ShapedGlyph* following = nullptr;
+            for (const auto& glyph : line.glyphs)
+                if (glyph.cluster >= textPosition && (!following || glyph.cluster < following->cluster)) following = &glyph;
+            caretX = xOffset;
+            if (following) for (const auto& glyph : line.glyphs) {
+                if (&glyph == following) { if (glyph.bidiLevel & 1) caretX += glyph.advanceX; break; }
+                caretX += glyph.advanceX;
+            }
+        }
     }
 
     result->textPosition = textPosition;
     result->isTrailingHit = isTrailingHit;
     result->isInside = 1;
     result->caretX = caretX;
-    result->caretY = lineIndex * effectiveLineHeight;
-    result->caretHeight = effectiveLineHeight;
+    result->caretY = line.baselineY - (line.ascent > 0 ? line.ascent : ascent_);
+    result->caretHeight = line.height > 0 ? line.height : effectiveLineHeight;
 
     return JALIUM_OK;
 }
@@ -954,8 +913,35 @@ void JaliumTextFormat::GenerateGlyphQuads(
     float renderScale,
     int32_t renderingModeOverride)
 {
-    if (!face_ || !engine_ || !text || textLength == 0)
+    GenerateGlyphQuads(text, textLength, maxWidth, maxHeight, colorR, colorG, colorB, colorA,
+        originX, originY, outQuads, renderScale, renderingModeOverride, nullptr, 0, 0);
+}
+
+void JaliumTextFormat::GenerateGlyphQuads(
+    const wchar_t* text, uint32_t textLength, float maxWidth, float maxHeight,
+    float colorR, float colorG, float colorB, float colorA, float originX, float originY,
+    std::vector<TextGlyphQuad>& outQuads, float renderScale, int32_t renderingModeOverride,
+    const uint32_t* glyphRanges, uint32_t rangeCount, int32_t visibility)
+{
+    GenerateGlyphQuadsForEngine(engine_, text, textLength, maxWidth, maxHeight,
+        colorR, colorG, colorB, colorA, originX, originY, outQuads, renderScale, renderingModeOverride,
+        glyphRanges, rangeCount, visibility);
+}
+
+void JaliumTextFormat::GenerateGlyphQuadsForEngine(TextEngine* rasterEngine,
+    const wchar_t* text, uint32_t textLength, float maxWidth, float maxHeight,
+    float colorR, float colorG, float colorB, float colorA, float originX, float originY,
+    std::vector<TextGlyphQuad>& outQuads, float renderScale, int32_t renderingModeOverride,
+    const uint32_t* glyphRanges, uint32_t rangeCount, int32_t visibility)
+{
+    if (!face_ || !rasterEngine || !text || textLength == 0) return;
+    if (!std::isfinite(renderScale) || renderScale <= 0 || !std::isfinite(fontSizePx_ * renderScale)) renderScale = 1;
+    if (frozenLayout_) {
+        EmitGlyphQuads(rasterEngine, *frozenLayout_, text, textLength, maxWidth,
+            colorR, colorG, colorB, colorA, originX, originY, outQuads, renderScale,
+            renderingModeOverride, glyphRanges, rangeCount, visibility);
         return;
+    }
 
     // When DPI scaling is active, temporarily scale font size and metrics
     // so glyphs are rasterized at physical pixel resolution.
@@ -1004,11 +990,23 @@ void JaliumTextFormat::GenerateGlyphQuads(
         maxHeight *= renderScale;
     }
 
-    auto layout = PerformLayout(text, textLength, maxWidth, maxHeight);
-    ApplyAlignment(layout, maxWidth, maxHeight);
+    LayoutResult ownedLayout;
+    if (!frozenLayout_) { ownedLayout = PerformLayout(text, textLength, maxWidth, maxHeight); ApplyAlignment(ownedLayout, maxWidth, maxHeight); }
+    const auto& layout = frozenLayout_ ? *frozenLayout_ : ownedLayout;
 
-    GlyphAtlas* atlas = engine_->GetGlyphAtlas();
-    GlyphRasterizer* rasterizer = engine_->GetGlyphRasterizer();
+    EmitGlyphQuads(rasterEngine, layout, text, textLength, maxWidth,
+        colorR, colorG, colorB, colorA, originX, originY, outQuads, 1, renderingModeOverride,
+        glyphRanges, rangeCount, visibility);
+}
+
+void JaliumTextFormat::EmitGlyphQuads(TextEngine* rasterEngine, const LayoutResult& layout,
+    const wchar_t* text, uint32_t textLength, float maxWidth,
+    float colorR, float colorG, float colorB, float colorA, float originX, float originY,
+    std::vector<TextGlyphQuad>& outQuads, float layoutScale, int32_t renderingModeOverride,
+    const uint32_t* glyphRanges, uint32_t rangeCount, int32_t visibility) const
+{
+    GlyphAtlas* atlas = rasterEngine->GetGlyphAtlas();
+    GlyphRasterizer* rasterizer = rasterEngine->GetGlyphRasterizer();
     if (!atlas || !rasterizer) {
         return;
     }
@@ -1024,10 +1022,6 @@ void JaliumTextFormat::GenerateGlyphQuads(
     float invAtlasW = 1.0f / static_cast<float>(atlas->GetWidth());
     float invAtlasH = 1.0f / static_cast<float>(atlas->GetHeight());
 
-    float effectiveLineHeight = lineHeight_;
-    if (lineSpacingMethod_ != 0 && lineSpacing_ > 0)
-        effectiveLineHeight = lineSpacing_;
-
     // Raster-size cap. A zoomed / print-resolution run (fontSizePx_ easily in
     // the thousands once renderScale is folded in) would rasterize bitmaps
     // larger than the 4096 atlas: unrepresentable glyphs, and each insertion
@@ -1035,23 +1029,18 @@ void JaliumTextFormat::GenerateGlyphQuads(
     // scale the emitted quads back up — layout metrics keep the true size, so
     // only the bitmap is magnified (slightly soft at extreme zoom instead of
     // missing, and other text stays intact).
-    constexpr float kMaxRasterPpem = 1024.0f;
-    const uint16_t rasterPpem = static_cast<uint16_t>(std::lround(
-        std::clamp(std::min(fontSizePx_, kMaxRasterPpem), 1.0f, 4095.0f)));
-    const float rasterUpscale = fontSizePx_ > kMaxRasterPpem
-        ? fontSizePx_ / static_cast<float>(rasterPpem)
-        : 1.0f;
-    // Pin sub-pixel phase 0 for big strikes (not just capped ones): 8 phase
-    // variants of large glyphs are what overflow the atlas, and the ≤1/8-px
-    // residual is invisible at these sizes.
-    const bool rasterCapped = rasterUpscale != 1.0f || rasterPpem > 96;
-
     // The atlas auto-resets when its packer runs out of room (see
     // GlyphAtlas::GetOrInsert). A reset in the MIDDLE of this run would leave
     // the quads emitted before it pointing at overwritten pixels, so emit the
     // whole run against one atlas generation: if the generation changed while
     // emitting, discard this run's quads and emit again (the atlas is now
     // nearly empty, so the second pass fits).
+    std::vector<uint32_t> sourceOffsets;
+    if (visibility) {
+        sourceOffsets.resize(size_t(textLength) + 1);
+        for (uint32_t i = 0; i < textLength; ++i)
+            sourceOffsets[i + 1] = sourceOffsets[i] + (sizeof(wchar_t) > 2 && uint32_t(text[i]) > 0xFFFFu ? 2 : 1);
+    }
     const size_t baseQuadCount = outQuads.size();
     for (int attempt = 0; attempt < 2; ++attempt)
     {
@@ -1074,16 +1063,30 @@ void JaliumTextFormat::GenerateGlyphQuads(
             break;
         }
 
-        float penX = originX + xOffset;
-        float baselineY = originY + line.baselineY;
+        float penX = originX + (xOffset + line.originX) * layoutScale;
+        float baselineY = originY + line.baselineY * layoutScale;
 
         for (const auto& glyph : line.glyphs)
         {
-            if (glyph.glyphIndex == 0)
+            if (glyph.glyphIndex == 0 || (visibility && !TextGlyphVisible(
+                sourceOffsets[std::min(glyph.cluster, textLength)],
+                sourceOffsets[std::min(glyph.clusterEnd, textLength)], glyphRanges, rangeCount, visibility)))
             {
-                penX += glyph.advanceX;
+                penX += glyph.advanceX * layoutScale;
                 continue;
             }
+
+            const float glyphSize = (glyph.fontSize > 0 ? glyph.fontSize : fontSizePx_) * layoutScale;
+    constexpr float kMaxRasterPpem = 1024.0f;
+    const uint16_t rasterPpem = static_cast<uint16_t>(std::lround(
+        std::clamp(std::min(glyphSize, kMaxRasterPpem), 1.0f, 4095.0f)));
+    const float rasterUpscale = glyphSize > kMaxRasterPpem
+        ? glyphSize / static_cast<float>(rasterPpem)
+        : 1.0f;
+    // Pin sub-pixel phase 0 for big strikes (not just capped ones): 8 phase
+    // variants of large glyphs are what overflow the atlas, and the ≤1/8-px
+    // residual is invisible at these sizes.
+    const bool rasterCapped = rasterUpscale != 1.0f || rasterPpem > 96;
 
             // Sub-pixel quantization to 1/8 pixel (8 buckets). At 1/4 pixel the
             // size-invariant 0.25px residual is a visible fraction of a small-font
@@ -1091,7 +1094,11 @@ void JaliumTextFormat::GenerateGlyphQuads(
             // A capped (upscaled) run pins phase 0: the phases are invisible once
             // the bitmap is magnified, and 8 variants of huge glyphs would flood
             // the atlas for nothing.
-            float fractionalX = penX - std::floor(penX);
+            // Shaping and CSS advances can move a retained glyph independently
+            // of the original pen. Its final origin selects both the atlas
+            // phase and the integer quad origin.
+            const float glyphX = penX + glyph.offsetX * layoutScale;
+            float fractionalX = glyphX - std::floor(glyphX);
             uint8_t subpixelX = rasterCapped
                 ? static_cast<uint8_t>(0)
                 : static_cast<uint8_t>(fractionalX * 8.0f);
@@ -1115,8 +1122,8 @@ void JaliumTextFormat::GenerateGlyphQuads(
             if (entry.valid && entry.w > 0 && entry.h > 0)
             {
                 TextGlyphQuad quad{};
-                quad.posX = std::floor(penX) + glyph.offsetX + entry.bearingX * rasterUpscale;
-                quad.posY = baselineY + glyph.offsetY - entry.bearingY * rasterUpscale;
+                quad.posX = std::floor(glyphX) + entry.bearingX * rasterUpscale;
+                quad.posY = baselineY + glyph.offsetY * layoutScale - entry.bearingY * rasterUpscale;
                 quad.sizeX = static_cast<float>(entry.w) * rasterUpscale;
                 quad.sizeY = static_cast<float>(entry.h) * rasterUpscale;
                 quad.uvMinX = static_cast<float>(entry.x) * invAtlasW;
@@ -1131,7 +1138,7 @@ void JaliumTextFormat::GenerateGlyphQuads(
                 outQuads.push_back(quad);
             }
 
-            penX += glyph.advanceX;
+            penX += glyph.advanceX * layoutScale;
         }
     }
     if (atlas->GetGeneration() == atlasGenerationAtStart)

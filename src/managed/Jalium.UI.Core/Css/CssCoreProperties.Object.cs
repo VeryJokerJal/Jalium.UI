@@ -59,6 +59,15 @@ internal static partial class CssCoreProperties
                 TryReadBackgroundPosition(ref reader, out var position) && reader.AtEnd
                     ? new CssObjectPositionValue(position) : null,
         });
+
+        CssPropertyRegistry.Register(new CssPropertyDescriptor
+        {
+            Name = "vector-effect", Kind = CssPropertyKind.Longhand,
+            Parse = static (ref CssTokenReader reader, CssCompileContext _) =>
+                reader.TryReadIdent(out var ident) && reader.AtEnd &&
+                ident.ToString().ToLowerInvariant() is "none" or "non-scaling-stroke"
+                    ? new CssNoOpValue() : null,
+        });
     }
 
     private sealed class CssObjectPositionValue(CssBackgroundPosition position) : CssCompiledValue

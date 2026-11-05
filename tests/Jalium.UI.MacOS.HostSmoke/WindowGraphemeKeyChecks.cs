@@ -27,7 +27,7 @@ internal static class WindowGraphemeKeyChecks
     internal static int RunCase(string argument)
     {
         if (!int.TryParse(argument.AsSpan("--window-grapheme-key-case=".Length), out int index) || (uint)index >= 8) return 2;
-        JaliumMacApplication.Initialize(); NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Prohibited;
+        JaliumMacApplication.Initialize(); NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Accessory;
         RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
         var editor = new EditControl { Text = "A🙂Z", FontFamily = "Arial", FontSize = 21, FontWeight = FontWeights.Bold, FontStyle = FontStyles.Italic };
         var window = new Window { Content = editor, Width = 420, Height = 260, ShowActivated = false,

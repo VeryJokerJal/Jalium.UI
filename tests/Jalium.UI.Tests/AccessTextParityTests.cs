@@ -7,6 +7,8 @@ namespace Jalium.UI.Tests;
 
 public sealed class AccessTextParityTests
 {
+    public AccessTextParityTests() => AccessTextTemplateTestHelper.Register();
+
     [Fact]
     public void AddedDependencyPropertiesShareTextBlockIdentifiersAndDefaults()
     {
@@ -44,7 +46,7 @@ public sealed class AccessTextParityTests
         Assert.Equal("_File __Now\n_Open", accessText.Text);
         Assert.Equal("File _Now\nOpen", accessText.DisplayText);
         Assert.Equal('F', accessText.AccessKey);
-        Assert.Equal(accessText.DisplayText, Assert.IsType<TextBlock>(accessText.GetVisualChild(0)).Text);
+        Assert.Equal(accessText.DisplayText, Assert.IsType<TextBlock>(accessText.FindName("PART_TextDisplay")).Text);
     }
 
     [Fact]
@@ -79,7 +81,7 @@ public sealed class AccessTextParityTests
             TextEffects = effects,
         };
 
-        var child = Assert.IsType<TextBlock>(accessText.GetVisualChild(0));
+        var child = Assert.IsType<TextBlock>(accessText.FindName("PART_TextDisplay"));
         Assert.Same(background, child.Background);
         Assert.Same(foreground, child.Foreground);
         Assert.Equal(FontStretches.Expanded, child.FontStretch);

@@ -23,6 +23,8 @@ namespace Jalium.UI.Tests;
 [Collection("Application")]
 public class ContextMenuDismissOnItemClickTests
 {
+    public ContextMenuDismissOnItemClickTests() => LegacyMenuTemplateTestHelper.Register();
+
     private static void Invoke(MenuItem item) =>
         item.RaiseEvent(new KeyEventArgs(
             UIElement.KeyDownEvent, Key.Enter, ModifierKeys.None,

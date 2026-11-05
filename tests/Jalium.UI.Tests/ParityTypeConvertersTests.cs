@@ -72,7 +72,7 @@ public sealed class ParityTypeConvertersTests
     }
 
     [Fact]
-    public void DefaultFontStructsMatchWpfNormalValuesAndValidateOpenTypeRanges()
+    public void DefaultFontStructsHaveNormalValuesAndValidateOpenTypeRanges()
     {
         Assert.Equal(FontWeights.Normal, default(FontWeight));
         Assert.Equal(400, default(FontWeight).ToOpenTypeWeight());
@@ -83,7 +83,8 @@ public sealed class ParityTypeConvertersTests
         Assert.Equal("Normal", default(FontStretch).ToString());
 
         Assert.Throws<ArgumentOutOfRangeException>(() => FontWeight.FromOpenTypeWeight(0));
-        Assert.Throws<ArgumentOutOfRangeException>(() => FontWeight.FromOpenTypeWeight(1000));
+        Assert.Equal(1000, FontWeight.FromOpenTypeWeight(1000).ToOpenTypeWeight());
+        Assert.Throws<ArgumentOutOfRangeException>(() => FontWeight.FromOpenTypeWeight(1001));
         Assert.Throws<ArgumentOutOfRangeException>(() => FontStretch.FromOpenTypeStretch(0));
         Assert.Throws<ArgumentOutOfRangeException>(() => FontStretch.FromOpenTypeStretch(10));
     }
