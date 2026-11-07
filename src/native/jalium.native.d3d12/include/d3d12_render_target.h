@@ -52,6 +52,17 @@ public:
         return reinterpret_cast<intptr_t>(frameLatencyWaitable_);
     }
 
+    /// Override: a composition (DirectComposition) target resized inside its
+    /// reserved capacity takes the metadata-only path in Resize — the swap
+    /// chain and its queued presents are untouched, so pending retire signals
+    /// stay paired with what the caller queued. Every other resize runs
+    /// ResizeBuffers and discards in-flight presents.
+    bool ResizePreservesPendingPresents(uint32_t width, uint32_t height) const override {
+        return isComposition_ &&
+            width <= swapChainWidth_ &&
+            height <= swapChainHeight_;
+    }
+
     bool UsesSoftwareDisplayRoute() const {
         return softwareDisplayRoute_;
     }

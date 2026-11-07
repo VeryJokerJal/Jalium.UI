@@ -1029,6 +1029,19 @@ public:
     /// callers must NOT CloseHandle it.
     virtual intptr_t GetFrameLatencyWaitable() const { return 0; }
 
+    /// Predicts whether Resize(width, height) keeps the swap chain's queued
+    /// presents paired with their pending retire signals. The default is the
+    /// conservative answer — every resize invalidates pending presents — which
+    /// is correct for backends that rebuild their swap chain on resize.
+    /// D3D12 overrides this for the metadata-only DirectComposition resize
+    /// (in-capacity logical resize that never touches the swap chain).
+    virtual bool ResizePreservesPendingPresents(uint32_t width, uint32_t height) const
+    {
+        (void)width;
+        (void)height;
+        return false;
+    }
+
     /// Fills <paramref name="out"/> with the swap chain / present configuration
     /// currently in use. Lets host apps display "FLIP / tearing on / 1 frame
     /// latency" in status bars and confirm the low-latency path is actually
