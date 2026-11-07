@@ -338,6 +338,84 @@ public class PresentHandshakeTests
     }
 
     [Fact]
+    public void Window_WorkerOwnedDiscardingResize_ClearsQueueBeforeNativeResize()
+    {
+        var (window, native) = CreateWindowWithWaitable(new nint(0x900E));
+        window.IsPresentHandshakeEnabled = true;
+        native.ResizePreservesPendingPresentsValue = false;
+
+        InvokePrivate(window, "NoteSuccessfulPresent");
+        Assert.Equal(1, window.LastQueuedFrameSerial);
+
+        var cap = NewWorkerResizeCapture(
+            window,
+            (RenderTarget)GetPrivateProperty(window, "RenderTarget")!,
+            width: 400,
+            height: 300);
+        long? serialSeenByNativeResize = -1;
+        native.OnResize = (_, _) =>
+            serialSeenByNativeResize = window.LastQueuedFrameSerial;
+
+        var previousHost = Visual.RenderCacheHost;
+        Visual.RenderCacheHost = new UnreachableRenderCacheHost();
+        try
+        {
+            InvokePrivate(window, "PresentCaptureOnRenderThreadCore", cap);
+        }
+        finally
+        {
+            Visual.RenderCacheHost = previousHost;
+        }
+
+        // The worker-owned resize transaction must follow the same contract as
+        // the UI-thread path: serials are already gone when the native resize
+        // runs, so a retire callback racing the resize can never pop one of
+        // them and confirm a frame the resize is about to discard.
+        Assert.Equal(0, serialSeenByNativeResize);
+        Assert.Equal(0, window.LastQueuedFrameSerial);
+        Assert.Equal((400, 300), (native.ResizeSizes[0].Width, native.ResizeSizes[0].Height));
+    }
+
+    [Fact]
+    public void Window_WorkerOwnedPreservingResize_KeepsQueuedSerials()
+    {
+        // A composition in-capacity resize performed by the render worker is
+        // metadata-only (the swap chain and its queued presents survive), so
+        // the handshake serials must keep their retire pairing — clearing here
+        // would pair the NEXT present's serial with the old frame's retire.
+        var (window, native) = CreateWindowWithWaitable(new nint(0x900F));
+        window.IsPresentHandshakeEnabled = true;
+        native.ResizePreservesPendingPresentsValue = true;
+
+        InvokePrivate(window, "NoteSuccessfulPresent");
+        Assert.Equal(1, window.LastQueuedFrameSerial);
+
+        var cap = NewWorkerResizeCapture(
+            window,
+            (RenderTarget)GetPrivateProperty(window, "RenderTarget")!,
+            width: 400,
+            height: 300);
+        long? serialSeenByNativeResize = -1;
+        native.OnResize = (_, _) =>
+            serialSeenByNativeResize = window.LastQueuedFrameSerial;
+
+        var previousHost = Visual.RenderCacheHost;
+        Visual.RenderCacheHost = new UnreachableRenderCacheHost();
+        try
+        {
+            InvokePrivate(window, "PresentCaptureOnRenderThreadCore", cap);
+        }
+        finally
+        {
+            Visual.RenderCacheHost = previousHost;
+        }
+
+        Assert.Equal(1, serialSeenByNativeResize);
+        Assert.Equal(1, window.LastQueuedFrameSerial);
+        Assert.Equal((400, 300), (native.ResizeSizes[0].Width, native.ResizeSizes[0].Height));
+    }
+
+    [Fact]
     public void Window_ArmRetireProbe_QueuesIdenticalCaptureWhenIdle()
     {
         var (window, _) = CreateWindowWithWaitable(new nint(0x900B));
@@ -430,6 +508,49 @@ public class PresentHandshakeTests
     }
 
     // ── helpers ──────────────────────────────────────────────────────────
+
+    private static object NewWorkerResizeCapture(
+        Window window,
+        RenderTarget target,
+        int width,
+        int height)
+    {
+        var cap = NewFrameCapture(probe: false);
+        SetCaptureField(cap, "Target", target);
+        // A fake render target has no owner context; PresentCaptureOnRender
+        // ThreadCore verifies context ownership with ReferenceEquals, so null
+        // matches null, and the method returns right after the resize
+        // transaction — before any drawing happens.
+        SetCaptureField(cap, "OwnerContext", null);
+        SetCaptureField(cap, "ContextGeneration", 0);
+        SetCaptureField(
+            cap,
+            "LifecycleGeneration",
+            GetPrivateField<int>(window, "_renderLifecycleGeneration"));
+        SetCaptureField(cap, "PhysicalWidth", width);
+        SetCaptureField(cap, "PhysicalHeight", height);
+        // A resize version above the committed one makes the worker apply the
+        // native resize as part of this capture's frame transaction.
+        SetCaptureField(cap, "ResizeVersion", 1);
+        SetCaptureField(cap, "RequireNativeSameSize", false);
+        return cap;
+    }
+
+    // PresentCaptureOnRenderThreadCore bails out before the frame transaction
+    // when Visual.RenderCacheHost is null; with a context-less fake target the
+    // method never reaches the drawing stage, so this host's members are
+    // unreachable in the worker-resize tests.
+    private sealed class UnreachableRenderCacheHost : Jalium.UI.Rendering.IRenderCacheHost
+    {
+        public DrawingContext CreateRecorder(DrawingContext targetDrawingContext)
+            => throw new UnreachableException();
+
+        public object FinishRecord(DrawingContext recorder)
+            => throw new UnreachableException();
+
+        public void Replay(object drawing, DrawingContext targetDrawingContext)
+            => throw new UnreachableException();
+    }
 
     private static (Window window, RenderTargetTestNative native) CreateWindowWithWaitable(nint waitable)
     {
