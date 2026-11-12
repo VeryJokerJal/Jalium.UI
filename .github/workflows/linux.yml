@@ -42,6 +42,10 @@ jobs:
             docker-platform: linux/arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
+    # Healthy runs finish in ~35-55 minutes. The previous ceiling was the
+    # runner's 6-hour default, which let a degraded run sit as an
+    # unintelligible zombie instead of failing fast and legibly.
+    timeout-minutes: 150
 
     steps:
       - uses: actions/checkout@v7
@@ -186,9 +190,17 @@ jobs:
           # Managed outputs already contain the validated native payload. A
           # second copy via LD_LIBRARY_PATH gives musl separate core/plugin
           # instances, so backend registration lands in the wrong instance.
+          # The suite is bounded at the dotnet invocation itself: healthy
+          # runners finish in ~15-35 minutes, while the page-swap benchmark
+          # class can degrade by an order of magnitude or more on noisy
+          # hosted runners. Without the cap, one degraded run parked the
+          # whole job until the runner's 6-hour limit every time it landed
+          # on a slow machine. The timeout sits inside xvfb-run so the
+          # signal is delivered to the test host directly.
           xvfb-run -a env \
             JALIUM_WINDOW_SYSTEM=x11 \
             JALIUM_RENDER_BACKEND=software \
+            timeout --signal=TERM --kill-after=30s 60m \
             dotnet test tests/Jalium.UI.Linux.Tests/Jalium.UI.Linux.Tests.csproj \
               -c Release --no-restore --disable-build-servers -m:1 \
               -p:JaliumBuildRoot="${{ runner.temp }}/jalium-managed" \
@@ -509,6 +521,10 @@ jobs:
             # Alpine 3.23 arm64 passes the same smoke with validation enabled.
             sdk-image: mcr.microsoft.com/dotnet/sdk:10.0-alpine3.23
     runs-on: ${{ matrix.runner }}
+    # Healthy runs finish in ~35-55 minutes. The previous ceiling was the
+    # runner's 6-hour default, which let a degraded run sit as an
+    # unintelligible zombie instead of failing fast and legibly.
+    timeout-minutes: 150
 
     steps:
       - uses: actions/checkout@v7
@@ -603,10 +619,16 @@ jobs:
               # Managed outputs already contain the validated native payload.
               # Do not load a second core/plugin copy through LD_LIBRARY_PATH:
               # musl treats those as distinct backend registries.
+              # The suite is bounded at the dotnet invocation itself (see the
+              # glibc job's Run managed tests step for the rationale); the
+              # timeout sits inside xvfb-run so the signal reaches the test
+              # host directly, and managed_status keeps recording a timeout
+              # as a failure without skipping the isolated gates below.
               managed_status=0
               xvfb-run -a env \
                 JALIUM_WINDOW_SYSTEM=x11 \
                 JALIUM_RENDER_BACKEND=software \
+                timeout --signal=TERM --kill-after=30s 60m \
                 dotnet test tests/Jalium.UI.Linux.Tests/Jalium.UI.Linux.Tests.csproj \
                   -c Release --disable-build-servers -m:1 \
                   -p:JaliumBuildRoot="$managed_root" \

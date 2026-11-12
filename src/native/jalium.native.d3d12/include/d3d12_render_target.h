@@ -61,6 +61,16 @@ public:
         return reinterpret_cast<intptr_t>(frameLatencyWaitable_);
     }
 
+    /// Changed-size composition resizes schedule DXGI_PRESENT_RESTART even
+    /// inside reserved capacity, so preserving the allocation does not preserve
+    /// queued presents. Only a same-size no-op with no pending restart keeps
+    /// the existing retire pairing.
+    bool ResizePreservesPendingPresents(uint32_t width, uint32_t height) const override {
+        return width == static_cast<uint32_t>(width_) &&
+            height == static_cast<uint32_t>(height_) &&
+            !restartPresentAfterResize_;
+    }
+
     bool UsesSoftwareDisplayRoute() const {
         return softwareDisplayRoute_;
     }

@@ -175,6 +175,22 @@ JALIUM_API JaliumResult jalium_render_target_wait_for_completion(
 JALIUM_API intptr_t jalium_render_target_get_frame_latency_waitable(
     JaliumRenderTarget* rt);
 
+/// Predicts whether jalium_render_target_resize to (width, height) preserves
+/// the swap chain's pending presents — i.e. whether retire signals that have
+/// not fired yet stay paired with the presents that are queued. Returns 1 only
+/// when the backend guarantees that pending presents survive; 0 when the resize
+/// rebuilds the swap chain or restarts the present queue, or when
+/// the backend cannot answer. Callers must treat 0 as invalidating: drop any
+/// present-completion bookkeeping before performing the resize.
+/// @param rt The render target.
+/// @param width Requested resize width, in pixels.
+/// @param height Requested resize height, in pixels.
+/// @return 1 when pending presents survive the resize, 0 otherwise.
+JALIUM_API int jalium_render_target_resize_preserves_pending_presents(
+    JaliumRenderTarget* rt,
+    int width,
+    int height);
+
 /// Asks the render target's backend to drop any reusable GPU / CPU caches it
 /// has accumulated (path tessellation results, rasterized text bitmaps, glyph
 /// atlas pages, gradient stops, etc). Invoked by the managed-side idle

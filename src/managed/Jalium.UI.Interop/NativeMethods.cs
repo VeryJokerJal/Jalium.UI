@@ -455,6 +455,19 @@ internal static partial class NativeMethods
     internal static partial nint RenderTargetGetFrameLatencyWaitable(nint renderTarget);
 
     /// <summary>
+    /// Predicts whether jalium_render_target_resize to this size preserves the
+    /// swap chain's pending presents (their retire signals keep pairing with
+    /// what is queued). 1 = pending presents survive the resize;
+    /// 0 = the resize rebuilds/discards pending presents (or the backend
+    /// cannot answer — callers must treat 0 as invalidating).
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_resize_preserves_pending_presents")]
+    internal static partial int RenderTargetResizePreservesPendingPresents(
+        nint renderTarget,
+        int width,
+        int height);
+
+    /// <summary>
     /// Asks the backend to drop any reusable GPU / CPU caches it has accumulated
     /// (path tessellation results, rasterized text bitmaps, glyph atlas pages,
     /// gradient stops, etc). Invoked by the managed-side idle reclaimer once the

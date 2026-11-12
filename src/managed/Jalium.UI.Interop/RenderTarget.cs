@@ -183,9 +183,23 @@ public sealed class RenderTarget : IDisposable
     public PresentInfo? GetPresentInfo()
     {
         if (!IsValid) return null;
-        if (NativeGpuMethods.RenderTargetGetPresentInfo(_handle, out var info) == 0)
+        if (_native.GetPresentInfo(_handle, out var info) == 0)
             return info;
         return null;
+    }
+
+    /// <summary>
+    /// Predicts whether <see cref="Resize"/> with this size keeps queued-but-
+    /// unretired presents paired with their swap-chain retire signals. True
+    /// only when the backend guarantees that pending presents survive. Keeping
+    /// the swap-chain allocation is insufficient when the resize also restarts
+    /// the present queue.
+    /// Returns false when the native runtime cannot answer (conservative).
+    /// </summary>
+    internal bool ResizePreservesPendingPresents(int width, int height)
+    {
+        if (_disposed || _handle == nint.Zero) return false;
+        return _native.ResizePreservesPendingPresents(_handle, width, height);
     }
 
     /// <summary>
@@ -2754,6 +2768,12 @@ internal interface IRenderTargetNative
     void SetVSyncEnabled(nint renderTarget, bool enabled);
     void SetExternalPresentPacing(nint renderTarget, bool enabled);
     nint GetFrameLatencyWaitable(nint renderTarget) => nint.Zero;
+    int GetPresentInfo(nint renderTarget, out PresentInfo info)
+    {
+        info = default;
+        return (int)JaliumResult.NotSupported;
+    }
+    bool ResizePreservesPendingPresents(nint renderTarget, int width, int height) => false;
     void SetPathMsaaSampleCount(nint renderTarget, uint sampleCount);
     void SetFullInvalidation(nint renderTarget);
     bool SupportsPartialPresentation(nint renderTarget);
@@ -2853,6 +2873,25 @@ internal sealed class DefaultRenderTargetNative : IRenderTargetNative
 
     public nint GetFrameLatencyWaitable(nint renderTarget)
         => NativeMethods.RenderTargetGetFrameLatencyWaitable(renderTarget);
+
+    public int GetPresentInfo(nint renderTarget, out PresentInfo info)
+        => NativeGpuMethods.RenderTargetGetPresentInfo(renderTarget, out info);
+
+    public bool ResizePreservesPendingPresents(nint renderTarget, int width, int height)
+    {
+        try
+        {
+            return NativeMethods.RenderTargetResizePreservesPendingPresents(
+                renderTarget, width, height) != 0;
+        }
+        catch (EntryPointNotFoundException)
+        {
+            // A newer managed assembly deployed next to an older native core:
+            // assume the resize discards pending presents (the conservative
+            // branch — dropping handshake serials, never mislabeling them).
+            return false;
+        }
+    }
 
     public void SetPathMsaaSampleCount(nint renderTarget, uint sampleCount)
         => NativeMethods.RenderTargetSetPathMsaa(renderTarget, sampleCount);

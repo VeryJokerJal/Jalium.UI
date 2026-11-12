@@ -456,6 +456,20 @@ JALIUM_API intptr_t jalium_render_target_get_frame_latency_waitable(
     return reinterpret_cast<jalium::RenderTarget*>(rt)->GetFrameLatencyWaitable();
 }
 
+JALIUM_API int jalium_render_target_resize_preserves_pending_presents(
+    JaliumRenderTarget* rt,
+    int width,
+    int height)
+{
+    if (!rt || width <= 0 || height <= 0) return 0;
+    return reinterpret_cast<jalium::RenderTarget*>(rt)
+        ->ResizePreservesPendingPresents(
+            static_cast<uint32_t>(width),
+            static_cast<uint32_t>(height))
+        ? 1
+        : 0;
+}
+
 JALIUM_API JaliumResult jalium_render_target_reclaim_idle_resources(
     JaliumRenderTarget* rt)
 {

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Reflection;
 using Jalium.UI;
 using Jalium.UI.Controls;
@@ -206,7 +207,369 @@ public class PresentHandshakeTests
         Assert.Equal(1, window.LastPresentedFrameSerial);
     }
 
-    // ── helpers ──────────────────────────────────────────────────────────
+    [Fact]
+    public void Window_MaxFrameLatencyAboveOne_RefusesHandshake()
+    {
+        var (window, native) = CreateWindowWithWaitable(new nint(0x9006));
+        native.PresentInfoValue = new PresentInfo { MaxFrameLatency = 2, WaitableEnabled = 1 };
+        window.IsPresentHandshakeEnabled = true;
+
+        int raised = 0;
+        window.FramePresented += (_, _) => raised++;
+
+        Assert.False(window.IsPresentHandshakeSupported);
+
+        // The refusal must be diagnosable, not silent.
+        Assert.Equal(0, window.LastQueuedFrameSerial);
+
+        InvokePrivate(window, "NoteSuccessfulPresent");
+        InvokePrivate(window, "NotePresentRetired");
+
+        Assert.Equal(0, window.LastQueuedFrameSerial);
+        Assert.Equal(0, window.LastPresentedFrameSerial);
+        Assert.Equal(0, raised);
+        Assert.Equal(1L, GetPrivateField<long>(window, "_successfulPresentCount"));
+
+        // Latency 1 (the default configuration) stays supported.
+        native.PresentInfoValue = new PresentInfo { MaxFrameLatency = 1, WaitableEnabled = 1 };
+        Assert.True(window.IsPresentHandshakeSupported);
+    }
+
+    [Fact]
+    public void Window_ResetDetachesTracker_FallbackTargetStopsQueueing()
+    {
+        // Simulate a recovery fallback: a tracked D3D12 window switches to a
+        // render target without a waitable, then the reset sites run.
+        var (window, _) = CreateWindowWithWaitable(new nint(0x9007));
+        window.IsPresentHandshakeEnabled = true;
+
+        InvokePrivate(window, "NoteSuccessfulPresent");
+        Assert.Equal(1, window.LastQueuedFrameSerial);
+
+        var fallbackNative = new RenderTargetTestNative { FrameLatencyWaitableHandle = nint.Zero };
+        var fallbackTarget = new RenderTarget(
+            backend: RenderBackend.D3D12,
+            contextHandle: new nint(0x5678),
+            surface: NativeSurfaceDescriptor.ForWindowsHwnd(new nint(0x2002)),
+            width: 300,
+            height: 200,
+            useComposition: false,
+            native: fallbackNative);
+        SetPrivateProperty(window, "RenderTarget", fallbackTarget);
+
+        InvokePrivate(window, "ResetPresentHandshakeQueue");
+
+        // Detached: serials read as 0 until a supported target presents again.
+        Assert.Equal(0, window.LastQueuedFrameSerial);
+        Assert.Equal(0, window.LastPresentedFrameSerial);
+
+        int raised = 0;
+        window.FramePresented += (_, _) => raised++;
+
+        // Presents on the fallback target must not queue against a swap chain
+        // that never produces retire signals, and the non-pacing retire hook
+        // must not fire events for them.
+        InvokePrivate(window, "NoteSuccessfulPresent");
+        Assert.Equal(0, window.LastQueuedFrameSerial);
+        Assert.True((bool)InvokePrivate(window, "TryBeginDrawOrScheduleRetry")!);
+        Assert.Equal(0, raised);
+
+        // A later supported target re-establishes tracking (the rejection was
+        // cached per target, and the reset cleared it).
+        var (supportedWindow, _) = CreateWindowWithWaitable(new nint(0x9008));
+        supportedWindow.IsPresentHandshakeEnabled = true;
+        InvokePrivate(supportedWindow, "NoteSuccessfulPresent");
+        Assert.Equal(1, supportedWindow.LastQueuedFrameSerial);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Window_AdaptiveLatencyChange_InvalidatesPairingUntilReset(bool observeRetireFirst)
+    {
+        var (window, native) = CreateWindowWithWaitable(new nint(0x9011));
+        native.PresentInfoValue = new PresentInfo { MaxFrameLatency = 1, WaitableEnabled = 1 };
+        window.IsPresentHandshakeEnabled = true;
+        var observed = new List<long>();
+        window.FramePresented += (_, args) => observed.Add(args.PresentSerial);
+        InvokePrivate(window, "NoteSuccessfulPresent");
+        Assert.Equal(1L, window.LastQueuedFrameSerial);
+
+        native.PresentInfoValue = new PresentInfo { MaxFrameLatency = 2, WaitableEnabled = 1 };
+        InvokePrivate(window, observeRetireFirst ? "NotePresentRetired" : "NoteSuccessfulPresent");
+
+        Assert.Empty(observed);
+        Assert.Equal(0L, window.LastQueuedFrameSerial);
+        Assert.Equal(0L, window.LastPresentedFrameSerial);
+        Assert.False(window.IsPresentHandshakeSupported);
+
+        // Returning to depth 1 cannot identify signals left by the deeper queue.
+        native.PresentInfoValue = new PresentInfo { MaxFrameLatency = 1, WaitableEnabled = 1 };
+        Assert.False(window.IsPresentHandshakeSupported);
+        InvokePrivate(window, "NotePresentRetired");
+        Assert.Empty(observed);
+
+        InvokePrivate(window, "ResetPresentHandshakeQueue");
+        Assert.True(window.IsPresentHandshakeSupported);
+        InvokePrivate(window, "NoteSuccessfulPresent");
+        long newSerial = window.LastQueuedFrameSerial;
+        Assert.True(newSerial > 1);
+        InvokePrivate(window, "NotePresentRetired");
+        Assert.Equal(new[] { newSerial }, observed);
+    }
+
+    [Fact]
+    public void Window_DiscardingResize_ClearsQueueBeforeNativeResize()
+    {
+        var (window, native) = CreateWindowWithWaitable(new nint(0x9009));
+        window.IsPresentHandshakeEnabled = true;
+        native.ResizePreservesPendingPresentsValue = false;
+
+        InvokePrivate(window, "NoteSuccessfulPresent");
+        Assert.Equal(1, window.LastQueuedFrameSerial);
+
+        // The queue must already be empty when the native resize runs — a
+        // retire callback racing the ResizeBuffers window must not be able to
+        // pop a serial the resize is invalidating.
+        long? serialSeenByNativeResize = -1;
+        native.OnResize = (_, _) =>
+            serialSeenByNativeResize = window.LastQueuedFrameSerial;
+
+        var result = InvokePrivate(
+            window,
+            "ApplyRenderTargetResize",
+            400, 300, "test-stage", false);
+
+        Assert.Equal("Completed", result!.ToString());
+        Assert.Equal(0, serialSeenByNativeResize);
+        Assert.Equal(0, window.LastQueuedFrameSerial);
+        Assert.Equal((400, 300), (native.ResizeSizes[0].Width, native.ResizeSizes[0].Height));
+    }
+
+    [Fact]
+    public void Window_PreservingResize_KeepsQueuedSerials()
+    {
+        var (window, native) = CreateWindowWithWaitable(new nint(0x900A));
+        window.IsPresentHandshakeEnabled = true;
+        // Simulate a metadata-only resize without a present-queue restart.
+        // Pending presents keep their pairing — clearing here would mislabel
+        // the NEXT present's serial with the old frame's retire signal.
+        native.ResizePreservesPendingPresentsValue = true;
+
+        InvokePrivate(window, "NoteSuccessfulPresent");
+        Assert.Equal(1, window.LastQueuedFrameSerial);
+
+        long? serialSeenByNativeResize = -1;
+        native.OnResize = (_, _) =>
+            serialSeenByNativeResize = window.LastQueuedFrameSerial;
+
+        var result = InvokePrivate(
+            window,
+            "ApplyRenderTargetResize",
+            400, 300, "test-stage", false);
+
+        Assert.Equal("Completed", result!.ToString());
+        Assert.Equal(1, serialSeenByNativeResize);
+        Assert.Equal(1, window.LastQueuedFrameSerial);
+    }
+
+    [Fact]
+    public void Window_WorkerOwnedDiscardingResize_ClearsQueueBeforeNativeResize()
+    {
+        var (window, native) = CreateWindowWithWaitable(new nint(0x900E));
+        window.IsPresentHandshakeEnabled = true;
+        native.ResizePreservesPendingPresentsValue = false;
+
+        InvokePrivate(window, "NoteSuccessfulPresent");
+        Assert.Equal(1, window.LastQueuedFrameSerial);
+
+        var cap = NewWorkerResizeCapture(
+            window,
+            (RenderTarget)GetPrivateProperty(window, "RenderTarget")!,
+            width: 400,
+            height: 300);
+        long? serialSeenByNativeResize = -1;
+        native.OnResize = (_, _) =>
+            serialSeenByNativeResize = window.LastQueuedFrameSerial;
+
+        var previousHost = Visual.RenderCacheHost;
+        Visual.RenderCacheHost = new UnreachableRenderCacheHost();
+        try
+        {
+            InvokePrivate(window, "PresentCaptureOnRenderThreadCore", cap);
+        }
+        finally
+        {
+            Visual.RenderCacheHost = previousHost;
+        }
+
+        // The worker-owned resize transaction must follow the same contract as
+        // the UI-thread path: serials are already gone when the native resize
+        // runs, so a retire callback racing the resize can never pop one of
+        // them and confirm a frame the resize is about to discard.
+        Assert.Equal(0, serialSeenByNativeResize);
+        Assert.Equal(0, window.LastQueuedFrameSerial);
+        Assert.Equal((400, 300), (native.ResizeSizes[0].Width, native.ResizeSizes[0].Height));
+    }
+
+    [Fact]
+    public void Window_WorkerOwnedPreservingResize_KeepsQueuedSerials()
+    {
+        // A backend-guaranteed preserving resize performed by the render worker
+        // must keep its retire pairing — clearing here would pair the NEXT
+        // present's serial with the old frame's retire.
+        var (window, native) = CreateWindowWithWaitable(new nint(0x900F));
+        window.IsPresentHandshakeEnabled = true;
+        native.ResizePreservesPendingPresentsValue = true;
+
+        InvokePrivate(window, "NoteSuccessfulPresent");
+        Assert.Equal(1, window.LastQueuedFrameSerial);
+
+        var cap = NewWorkerResizeCapture(
+            window,
+            (RenderTarget)GetPrivateProperty(window, "RenderTarget")!,
+            width: 400,
+            height: 300);
+        long? serialSeenByNativeResize = -1;
+        native.OnResize = (_, _) =>
+            serialSeenByNativeResize = window.LastQueuedFrameSerial;
+
+        var previousHost = Visual.RenderCacheHost;
+        Visual.RenderCacheHost = new UnreachableRenderCacheHost();
+        try
+        {
+            InvokePrivate(window, "PresentCaptureOnRenderThreadCore", cap);
+        }
+        finally
+        {
+            Visual.RenderCacheHost = previousHost;
+        }
+
+        Assert.Equal(1, serialSeenByNativeResize);
+        Assert.Equal(1, window.LastQueuedFrameSerial);
+        Assert.Equal((400, 300), (native.ResizeSizes[0].Width, native.ResizeSizes[0].Height));
+    }
+
+    [Fact]
+    public void Window_ArmRetireProbe_QueuesIdenticalCaptureWhenIdle()
+    {
+        var (window, _) = CreateWindowWithWaitable(new nint(0x900B));
+        window.IsPresentHandshakeEnabled = true;
+
+        InvokePrivate(window, "NoteSuccessfulPresent");
+
+        var cap = NewFrameCapture(probe: false);
+        InvokePrivate(window, "ArmRetireProbeIfIdle", cap);
+
+        var queued = GetPrivateField<object?>(window, "_rtPendingFrame");
+        Assert.NotNull(queued);
+        Assert.True(GetCaptureField<bool>(queued!, "IsRetireProbe"));
+        Assert.True(GetCaptureField<long>(queued!, "RetireProbeDeadlineTicks") > 0);
+
+        // A probe never arms another probe.
+        InvokePrivate(window, "ArmRetireProbeIfIdle", queued!);
+        Assert.Same(queued, GetPrivateField<object?>(window, "_rtPendingFrame"));
+    }
+
+    [Fact]
+    public void Window_RetireProbe_KeepsDrawingAliveUntilMailboxIsCleared()
+    {
+        var (window, _) = CreateWindowWithWaitable(new nint(0x9010));
+        window.IsPresentHandshakeEnabled = true;
+        InvokePrivate(window, "NoteSuccessfulPresent");
+
+        var drawing = new RetainedTestDrawing();
+        var cap = NewFrameCapture(probe: false);
+        SetCaptureField(cap, "Drawing", drawing);
+
+        InvokePrivate(window, "ArmRetireProbeIfIdle", cap);
+
+        Assert.Same(cap, GetPrivateField<object?>(window, "_rtPendingFrame"));
+        Assert.Equal(2, drawing.References);
+
+        // The worker releases its reference at the end of the current frame.
+        Jalium.UI.Rendering.DrawingLifetime.Release(drawing);
+        Assert.Equal(1, drawing.References);
+
+        // A probe must not keep re-arming and retaining the same drawing.
+        InvokePrivate(window, "ArmRetireProbeIfIdle", cap);
+        Assert.Equal(1, drawing.References);
+
+        InvokePrivate(window, "ClearPendingRenderThreadCapture");
+        Assert.Null(GetPrivateField<object?>(window, "_rtPendingFrame"));
+        Assert.Equal(0, drawing.References);
+    }
+
+    [Fact]
+    public void Window_ArmRetireProbe_SkippedWhenMailboxBusyOrNothingPending()
+    {
+        var (window, _) = CreateWindowWithWaitable(new nint(0x900C));
+        window.IsPresentHandshakeEnabled = true;
+
+        // Nothing queued: no retire to observe.
+        var idleCap = NewFrameCapture(probe: false);
+        InvokePrivate(window, "ArmRetireProbeIfIdle", idleCap);
+        Assert.Null(GetPrivateField<object?>(window, "_rtPendingFrame"));
+        Assert.False(GetCaptureField<bool>(idleCap, "IsRetireProbe"));
+
+        // Queued serial, but a real capture is already in the mailbox — its
+        // BeginDraw observes the retire, so no probe.
+        InvokePrivate(window, "NoteSuccessfulPresent");
+        var realCap = NewFrameCapture(probe: false);
+        SetPrivateField(window, "_rtPendingFrame", realCap);
+        var secondCap = NewFrameCapture(probe: false);
+        InvokePrivate(window, "ArmRetireProbeIfIdle", secondCap);
+        Assert.Same(realCap, GetPrivateField<object?>(window, "_rtPendingFrame"));
+        Assert.False(GetCaptureField<bool>(secondCap, "IsRetireProbe"));
+    }
+
+    [Fact]
+    public void Window_ExpiredRetireProbe_DroppedWithoutReplay()
+    {
+        var (window, _) = CreateWindowWithWaitable(new nint(0x900D));
+        window.IsPresentHandshakeEnabled = true;
+
+        InvokePrivate(window, "NoteSuccessfulPresent");
+
+        // An expired probe with a live tracker and a matching lifecycle must
+        // return before touching the capture's target — without the deadline
+        // guard this reaches cap.Target (null here) and throws.
+        var cap = NewFrameCapture(probe: true);
+        SetCaptureField(
+            cap,
+            "RetireProbeDeadlineTicks",
+            Stopwatch.GetTimestamp() - Stopwatch.Frequency);
+        SetCaptureField(
+            cap,
+            "LifecycleGeneration",
+            GetPrivateField<int>(window, "_renderLifecycleGeneration"));
+
+        InvokePrivate(window, "PresentCaptureOnRenderThreadCore", cap);
+
+        Assert.Null(GetPrivateField<object?>(window, "_rtPendingFrame"));
+        Assert.Equal(1, window.LastQueuedFrameSerial);
+    }
+
+    [Fact]
+    public void Window_PublicHandshakeSurface_MatchesReflectionContract()
+    {
+        // The ink layer bridges these symbols BY NAME through reflection; a
+        // rename must fail here instead of silently breaking the bridge.
+        Assert.NotNull(typeof(Window).GetEvent("FramePresented"));
+        Assert.Equal(
+            typeof(EventHandler<FramePresentedEventArgs>),
+            typeof(Window).GetEvent("FramePresented")!.EventHandlerType);
+
+        Assert.NotNull(typeof(FramePresentedEventArgs).GetProperty("PresentSerial"));
+        Assert.Equal(typeof(long), typeof(FramePresentedEventArgs).GetProperty("PresentSerial")!.PropertyType);
+        Assert.NotNull(typeof(FramePresentedEventArgs).GetProperty("Timestamp"));
+        Assert.Equal(typeof(long), typeof(FramePresentedEventArgs).GetProperty("Timestamp")!.PropertyType);
+
+        Assert.NotNull(typeof(Window).GetProperty("IsPresentHandshakeEnabled"));
+        Assert.NotNull(typeof(Window).GetProperty("IsPresentHandshakeSupported"));
+        Assert.NotNull(typeof(Window).GetProperty("LastQueuedFrameSerial"));
+        Assert.NotNull(typeof(Window).GetProperty("LastPresentedFrameSerial"));
+    }
 
     [Fact]
     public void Window_RecordedPresent_RefreshesActivityAndQueuesExactlyOneSerial()
@@ -228,6 +591,60 @@ public class PresentHandshakeTests
 
         Assert.Equal(new long[] { 1 }, serials);
         Assert.Equal(1L, window.LastPresentedFrameSerial);
+    }
+
+    // ── helpers ──────────────────────────────────────────────────────────
+
+    private sealed class RetainedTestDrawing : Jalium.UI.Rendering.IRetainedDrawingLifetime
+    {
+        public int References { get; private set; } = 1;
+
+        public void Retain() => References++;
+
+        public void Release() => References--;
+    }
+
+    private static object NewWorkerResizeCapture(
+        Window window,
+        RenderTarget target,
+        int width,
+        int height)
+    {
+        var cap = NewFrameCapture(probe: false);
+        SetCaptureField(cap, "Target", target);
+        // A fake render target has no owner context; PresentCaptureOnRender
+        // ThreadCore verifies context ownership with ReferenceEquals, so null
+        // matches null, and the method returns right after the resize
+        // transaction — before any drawing happens.
+        SetCaptureField(cap, "OwnerContext", null);
+        SetCaptureField(cap, "ContextGeneration", 0);
+        SetCaptureField(
+            cap,
+            "LifecycleGeneration",
+            GetPrivateField<int>(window, "_renderLifecycleGeneration"));
+        SetCaptureField(cap, "PhysicalWidth", width);
+        SetCaptureField(cap, "PhysicalHeight", height);
+        // A resize version above the committed one makes the worker apply the
+        // native resize as part of this capture's frame transaction.
+        SetCaptureField(cap, "ResizeVersion", 1);
+        SetCaptureField(cap, "RequireNativeSameSize", false);
+        return cap;
+    }
+
+    // PresentCaptureOnRenderThreadCore bails out before the frame transaction
+    // when Visual.RenderCacheHost is null; with a context-less fake target the
+    // method never reaches the drawing stage, so this host's members are
+    // unreachable in the worker-resize tests.
+    private sealed class UnreachableRenderCacheHost : Jalium.UI.Rendering.IRenderCacheHost
+    {
+        public DrawingContext CreateRecorder(DrawingContext targetDrawingContext)
+            => throw new UnreachableException();
+
+        public object FinishRecord(DrawingContext recorder)
+            => throw new UnreachableException();
+
+        public void Replay(object drawing, DrawingContext targetDrawingContext)
+            => throw new UnreachableException();
     }
 
     private static (Window window, RenderTargetTestNative native) CreateWindowWithWaitable(nint waitable)
@@ -262,6 +679,49 @@ public class PresentHandshakeTests
         {
             throw ex.InnerException;
         }
+    }
+
+    private static object? InvokePrivate(object instance, string methodName, params object?[] args)
+    {
+        var method = instance.GetType().GetMethod(
+            methodName,
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        try
+        {
+            return method!.Invoke(instance, args);
+        }
+        catch (TargetInvocationException ex) when (ex.InnerException is not null)
+        {
+            throw ex.InnerException;
+        }
+    }
+
+    private static object NewFrameCapture(bool probe)
+    {
+        var captureType = typeof(Window).GetNestedType(
+            "FrameCapture", BindingFlags.NonPublic);
+        Assert.NotNull(captureType);
+        var cap = Activator.CreateInstance(captureType!)!;
+        if (probe)
+        {
+            SetCaptureField(cap, "IsRetireProbe", true);
+        }
+        return cap;
+    }
+
+    private static T GetCaptureField<T>(object capture, string fieldName)
+    {
+        var field = capture.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.Public);
+        Assert.NotNull(field);
+        return (T)field!.GetValue(capture)!;
+    }
+
+    private static void SetCaptureField(object capture, string fieldName, object? value)
+    {
+        var field = capture.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.Public);
+        Assert.NotNull(field);
+        field!.SetValue(capture, value);
     }
 
     private static T GetPrivateField<T>(object instance, string fieldName)

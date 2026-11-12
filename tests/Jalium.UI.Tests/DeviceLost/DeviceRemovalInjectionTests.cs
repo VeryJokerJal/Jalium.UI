@@ -137,6 +137,31 @@ public sealed class DeviceRemovalInjectionTests
             ]);
 
     /// <summary>
+    /// Real-GPU runtime verification for the present-handshake idle case (PR
+    /// review P1): on the D3D12 render worker (the Windows default), the retire
+    /// of the final present of an idle period must still raise FramePresented —
+    /// pre-fix, the frame-latency waitable's only consumer is the next frame's
+    /// BeginDraw, so a pen-up commit was never confirmed and callers could
+    /// only time out. Child process because JALIUM_RENDER_THREAD=1 must be
+    /// latched at process start.
+    /// </summary>
+    [RequiresDeviceLostHarnessFact]
+    public void PresentHandshake_IdleFinalFrame_StillRaisesFramePresented()
+        => RunScenario(
+            "presenthandshake",
+            renderThread: true,
+            requiredMarkers:
+            [
+                "HANDSHAKE_WORKER_ALIVE=1",
+                "HANDSHAKE_ENABLED=1",
+                "HANDSHAKE_BUSY presented=",
+                "HANDSHAKE_PEN_UP before=",
+                "HANDSHAKE_PRESENTED_IDLE before=",
+                "HANDSHAKE_PROBE_PRESENTS delta=",   // informational: the probe's identical re-presents
+                "SCENARIO presenthandshake complete",
+            ]);
+
+    /// <summary>
     /// Backend-agnostic device-lost core on D3D12: mid-frame device removal, then
     /// recovery replaced the render target, advanced to a fresh context generation,
     /// stayed on D3D12, and a second incident did

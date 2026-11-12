@@ -134,6 +134,33 @@ internal sealed class RenderTargetTestNative : IRenderTargetNative
 
     public nint GetFrameLatencyWaitable(nint renderTarget) => FrameLatencyWaitableHandle;
 
+    /// <summary>
+    /// Fake present configuration returned to present-handshake tests; null keeps
+    /// <see cref="RenderTarget.GetPresentInfo"/> on its "older native runtime" path.
+    /// </summary>
+    public PresentInfo? PresentInfoValue { get; set; }
+
+    public int GetPresentInfo(nint renderTarget, out PresentInfo info)
+    {
+        if (PresentInfoValue is { } value)
+        {
+            info = value;
+            return 0;
+        }
+
+        info = default;
+        return (int)JaliumResult.NotSupported;
+    }
+
+    /// <summary>
+    /// Fake answer for the resize/pending-presents predicate consumed by the
+    /// resize handshake-reset tests (see <see cref="IRenderTargetNative.ResizePreservesPendingPresents"/>).
+    /// </summary>
+    public bool ResizePreservesPendingPresentsValue { get; set; }
+
+    public bool ResizePreservesPendingPresents(nint renderTarget, int width, int height)
+        => ResizePreservesPendingPresentsValue;
+
     public void SetFullInvalidation(nint renderTarget)
     {
     }
