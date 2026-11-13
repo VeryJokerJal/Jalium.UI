@@ -120,6 +120,8 @@ internal static class CssContainerProperties
 
     private static void Changed(DependencyObject target, DependencyPropertyChangedEventArgs _)
     {
+        if (target is UIElement ui)
+            CssPositionedLayout.ContainingBlockChanged(ui);
         if (target is not (FrameworkElement or FrameworkContentElement)) return;
         var node = CssNode.Get(target);
         node.InvalidateMeasure();

@@ -1,8 +1,14 @@
 #define JALIUM_VULKAN_CLIP
 #include "../../jalium.native.core/shaders/elliptical_clip.hlsli"
 
+#ifdef JALIUM_VIDEO_YCBCR
+// YCbCr conversion requires a combined image sampler with an immutable
+// sampler. This variant shares all bitmap clipping and opacity behavior.
+[[vk::binding(0, 0)]] sampler2D videoTexture;
+#else
 Texture2D bitmapTexture : register(t0);
 SamplerState bitmapSampler : register(s1);
+#endif
 
 struct PushConstants
 {
@@ -37,7 +43,11 @@ struct PushConstants
 };
 
 [[vk::push_constant]]
+#ifdef JALIUM_VIDEO_YCBCR
+ConstantBuffer<PushConstants> gPushConstants;
+#else
 PushConstants gPushConstants;
+#endif
 
 struct PsInput
 {
@@ -137,9 +147,13 @@ float CoveragePerCornerRoundRect(float2 pixel, float4 rect, float4 rxs, float4 r
 
 float4 SamplePixelated(float2 uv)
 {
+#ifdef JALIUM_VIDEO_YCBCR
+    float2 sourceSize = max(gPushConstants.padding, float2(1, 1));
+#else
     uint texWidth, texHeight;
     bitmapTexture.GetDimensions(texWidth, texHeight);
     float2 sourceSize = float2(texWidth, texHeight);
+#endif
     float2 texelPerPixel = float2(
         length(float2(ddx(uv.x), ddy(uv.x))) * sourceSize.x,
         length(float2(ddx(uv.y), ddy(uv.y))) * sourceSize.y);
@@ -152,10 +166,19 @@ float4 SamplePixelated(float2 uv)
     int2 p10 = clamp(int2(floor((lower + float2(1, 0)) / step)), int2(0, 0), lastPixel);
     int2 p01 = clamp(int2(floor((lower + float2(0, 1)) / step)), int2(0, 0), lastPixel);
     int2 p11 = clamp(int2(floor((lower + 1.0f) / step)), int2(0, 0), lastPixel);
+#ifdef JALIUM_VIDEO_YCBCR
+    // Converted formats cannot use texelFetch/Load. Texel-center samples of
+    // the combined sampler preserve the same pixelated RGB reconstruction.
+    float4 c00 = tex2D(videoTexture, (float2(p00) + 0.5f) / sourceSize);
+    float4 c10 = tex2D(videoTexture, (float2(p10) + 0.5f) / sourceSize);
+    float4 c01 = tex2D(videoTexture, (float2(p01) + 0.5f) / sourceSize);
+    float4 c11 = tex2D(videoTexture, (float2(p11) + 0.5f) / sourceSize);
+#else
     float4 c00 = bitmapTexture.Load(int3(p00, 0));
     float4 c10 = bitmapTexture.Load(int3(p10, 0));
     float4 c01 = bitmapTexture.Load(int3(p01, 0));
     float4 c11 = bitmapTexture.Load(int3(p11, 0));
+#endif
     return lerp(lerp(c00, c10, blend.x), lerp(c01, c11, blend.x), blend.y);
 }
 
@@ -166,9 +189,17 @@ float4 UnclippedMain(PsInput input) : SV_Target
 #endif
 {
     // Evaluate texture derivatives before any rounded-clip discard.
+#ifdef JALIUM_VIDEO_YCBCR
+    float2 sourceSize = max(gPushConstants.padding, float2(1, 1));
+    float2 uv = gPushConstants.padding3.y > 0.5f
+        ? (floor(input.uv * sourceSize) + 0.5f) / sourceSize : input.uv;
+    float4 color = gPushConstants.padding3.x > 0.5f
+        ? SamplePixelated(input.uv) : tex2D(videoTexture, uv);
+#else
     float4 color = gPushConstants.padding3.x > 0.5f
         ? SamplePixelated(input.uv)
         : bitmapTexture.Sample(bitmapSampler, input.uv);
+#endif
     float coverage = 1.0f;
 
     // Outer rounded clip. Coverage (not boolean discard) so the clip edge is

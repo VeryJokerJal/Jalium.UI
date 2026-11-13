@@ -139,6 +139,9 @@ public class JsonTreeNode : INotifyPropertyChanged
         }
     }
 
+    /// <inheritdoc />
+    public override string ToString() => Key == null ? DisplayValue : $"{Key}: {DisplayValue}";
+
     private string BuildPath()
     {
         if (Parent == null)

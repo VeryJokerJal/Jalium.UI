@@ -146,8 +146,8 @@ internal static class CssTextDecorationProperties
         TextDecorationCollection? collection = null;
         if (lines != CssTextDecorationLine.None)
         {
-            var nativeForeground = CssDependencyPropertyLookup.Find(element.GetType(), "Foreground") is { } foregroundProperty
-                ? element.GetValue(foregroundProperty) as Brush : null;
+            var nativeForeground = CssUsedForeground.Get(element.Target, element);
+            CssColorBrushObserver.Observe(element, nativeForeground as SolidColorBrush);
             var brush = values.TryGetValue(ColorProperty, out var color)
                 ? color.Value as Brush : foreground ?? nativeForeground;
             var thickness = values.TryGetValue(ThicknessProperty, out var size) &&

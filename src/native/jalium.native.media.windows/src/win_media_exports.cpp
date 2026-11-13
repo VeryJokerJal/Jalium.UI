@@ -167,7 +167,8 @@ jalium_video_decoder_read_gpu_frame_descriptor(
     out_descriptor->acquire_fence_fd = -1;
     *out_pts_microseconds = 0;
     *out_is_keyframe = 0;
-    return JALIUM_MEDIA_E_NOT_IMPLEMENTED;
+    return jalium::media::win::MfVideoDecoderReadGpuFrame(
+        decoder, out_descriptor, out_pts_microseconds, out_is_keyframe);
 }
 
 JALIUM_MEDIA_API void
@@ -175,6 +176,10 @@ jalium_video_decoder_release_gpu_surface_descriptor(
     jalium_video_decoder_gpu_descriptor_t* descriptor)
 {
     if (!descriptor) return;
+    if (descriptor->lifetime_context && descriptor->lifetime_release_callback) {
+        auto release = reinterpret_cast<void (*)(uint64_t)>(static_cast<uintptr_t>(descriptor->lifetime_release_callback));
+        release(descriptor->lifetime_context);
+    }
     std::memset(descriptor, 0, sizeof(*descriptor));
     for (auto& plane : descriptor->planes) plane.fd = -1;
     descriptor->acquire_fence_fd = -1;
@@ -183,8 +188,7 @@ jalium_video_decoder_release_gpu_surface_descriptor(
 JALIUM_MEDIA_API jalium_media_status_t
 jalium_video_decoder_disable_gpu_output(jalium_video_decoder_t* decoder)
 {
-    return decoder ? JALIUM_MEDIA_E_NOT_IMPLEMENTED
-                   : JALIUM_MEDIA_E_INVALID_ARG;
+    return jalium::media::win::MfVideoDecoderDisableGpuOutput(decoder);
 }
 
 // ----- Camera capture ----------------------------------------------------

@@ -8,12 +8,15 @@ internal sealed partial class CssFlowLayout
         long version, CssFloatEnvironment exclusions)
     {
         var space = new CssFloatSpace(exclusions.Offset(-insets.Left, -insets.Top));
-        var height = owner.CssPreferredHeight(owner.CssParentBox?.ContainingBlock.Height ?? owner.PreviousAvailableSize.Height);
-        var minHeight = owner.CssHeightBounds(containing.Height).Min;
+        var height = PreferredBlockSize;
+        var autoHeight = double.IsNaN(height) && !HasIntrinsicBlockSize;
+        var bounds = BlockBounds(containing.Height);
+        var minHeight = bounds.Min;
+        var maxHeight = bounds.Max;
         var topEscapes = sharesParent && insets.Top == 0;
-        var bottomEscapes = sharesParent && insets.Bottom == 0 && double.IsNaN(height) && minHeight == 0;
+        var canBottomEscape = sharesParent && insets.Bottom == 0 && autoHeight;
         var canThrough = sharesParent && insets.Top == 0 && insets.Bottom == 0 && minHeight == 0 &&
-            (double.IsNaN(height) || height == 0);
+            (autoHeight || height == 0);
         var cursor = 0d; var width = 0d; var firstBaseline = double.NaN; var baseline = double.NaN;
         var pending = default(CssMarginStrut); var before = default(CssMarginStrut); var after = default(CssMarginStrut);
         var inlineLines = new List<InlineLine>();
@@ -25,6 +28,20 @@ internal sealed partial class CssFlowLayout
             {
                 var start = i;
                 while (i < entries.Count && (entries[i].Inline || entries[i].Float != CssFloatSide.None)) i++;
+                if (entries.GetRange(start, i - start).Any(static entry => TextBlock.CssTextFlowLayout.HasNestedBlocks(entry.Box.Element)))
+                {
+                    var nested = FormatSharedRun(entries.GetRange(start, i - start), containing.Width, cursor,
+                        atStart, true, null, inlineLines, space, new(containing, pending, atStart && topEscapes));
+                    var split = entries.GetRange(start, i - start).Select(static entry => entry.InlineParagraph?.Layout.SplitFlow)
+                        .First(static result => result is not null)!.Value;
+                    before = before.Merge(split.Before); pending = split.Pending;
+                    width = Math.Max(width, nested.Width); cursor = nested.Bottom;
+                    if (!double.IsFinite(firstBaseline) && double.IsFinite(nested.FirstBaseline)) firstBaseline = nested.FirstBaseline + insets.Top;
+                    if (double.IsFinite(nested.Baseline)) baseline = nested.Baseline + insets.Top;
+                    atStart &= split.Through;
+                    if (!split.Through) lastClearEmpty = split.LastClearEmpty;
+                    continue;
+                }
                 var lineY = atStart && topEscapes ? cursor : cursor + pending.Value;
                 var run = PlaceInlineAndFloats(entries, start, i, containing.Width, lineY, space,
                     atStart, inlineLines);
@@ -45,13 +62,13 @@ internal sealed partial class CssFlowLayout
             var adjoining = pending.Merge(item.Before);
             width = Math.Max(width, item.Width + item.Margin.Left + item.Margin.Right);
             space.NoteSourceTop(item.Rect.Y - item.Margin.Top);
-            if (item.Box.Element is Panel panel && CssDisplayLayout.IsFlow(panel) && !CssFloatProperties.IsIndependentBox(panel))
-                space.AddRange(CssDisplayLayout.FlowFor(panel).ExportedFloats.Select(region => region.Offset(item.Rect.X, item.Rect.Y)));
+            if (item.Box.Element is FrameworkElement panel && CssDisplayLayout.IsFlow(panel) && !CssFloatProperties.IsIndependentBox(panel))
+                space.AddRange(ExportedRegions(panel).Select(region => region.Offset(item.Rect.X, item.Rect.Y)));
             if (item.Through && !item.HasClearance)
                 pending = adjoining.Merge(item.After);
             else
             {
-                if (atStart && topEscapes && !item.HasClearance) before = before.Merge(adjoining);
+                if (atStart && topEscapes) before = before.Merge(item.HasClearance ? pending : adjoining);
                 cursor = item.Rect.Y + item.Height;
                 pending = item.After; atStart = false;
                 lastClearEmpty = item.HasClearance && item.Height == 0;
@@ -65,31 +82,48 @@ internal sealed partial class CssFlowLayout
             before = before.Merge(pending);
             if (through) after = before;
         }
-        else if (bottomEscapes && !lastClearEmpty) after = pending;
+        else if (canBottomEscape && !lastClearEmpty)
+        {
+            var innerMinHeight = Math.Max(0, minHeight - insets.Top - insets.Bottom);
+            var innerMaxHeight = Math.Max(innerMinHeight, maxHeight - insets.Top - insets.Bottom);
+            if (cursor >= innerMinHeight && cursor <= innerMaxHeight) after = pending;
+            else cursor = Math.Clamp(cursor, innerMinHeight, innerMaxHeight);
+        }
         else cursor += pending.Value;
-        if (!sharesParent) { cursor = Math.Max(cursor, space.OwnBottom); through = false; }
+        if (!sharesParent) { if (!CssLineClampProperties.Active(owner)) cursor = Math.Max(cursor, space.OwnBottom); through = false; }
         foreach (var region in space.OwnRegions) width = Math.Max(width, Math.Max(region.Width, region.Right));
-        if (!owner.CssInlineOuter && CssFloatProperties.ActiveSide(owner) == CssFloatSide.None && double.IsFinite(containing.Width) &&
+        if (double.IsPositiveInfinity(containing.Width)) width = Math.Max(width, space.OwnIntrinsicWidth);
+        if (!owner.CssIntrinsicMeasure && !owner.CssInlineOuter && CssFloatProperties.ActiveSide(owner) == CssFloatSide.None && double.IsFinite(containing.Width) &&
             (!owner.HasLocalOrAnimatedValue(FrameworkElement.HorizontalAlignmentProperty) || owner.HorizontalAlignment == HorizontalAlignment.Stretch))
             width = containing.Width;
         return new(containing, insets, new Size(Math.Max(0, width), Math.Max(0, cursor)), entries.ToArray(), before, after,
             through, firstBaseline, baseline, sharesParent, version, exclusions,
             space.OwnRegions.Select(region => region.Offset(insets.Left, insets.Top)).ToArray(),
-            group.Lines, group.Padding, group.Remaining);
+            group.Lines, group.Padding, group.Remaining, owner.CssIntrinsicMeasure);
     }
 
     private Entry PlaceBlockBesideFloats(Entry item, Size containing, CssFloatSpace space, double cursor,
         CssMarginStrut pending, bool topEscapes)
     {
+        // The entry was already measured at this containing width. With no
+        // preceding exclusions a second measure cannot change its placement,
+        // but can rebuild a deferred first-line projection before installation.
+        if (!space.HasFloats)
+        {
+            var y = topEscapes ? 0 : cursor + pending.Merge(item.Before).Value;
+            item.Rect = new(item.X, y, item.Width, item.Height);
+            return item;
+        }
         var independent = CssFloatProperties.IsIndependentBox(item.Box.Element);
         double? previousY = null;
         for (var pass = 0; pass < 8; pass++)
         {
             var adjoining = pending.Merge(item.Before);
             var hypothetical = topEscapes ? 0 : cursor + adjoining.Value;
-            var clearBottom = space.ClearBottom(item.Clear);
+            var clearBottom = Math.Max(space.ClearBottom(item.Clear), space.InitialBottom(independent ? CssClearSide.Both : item.Clear));
             var clearance = clearBottom > hypothetical + 0.000001;
-            var y = clearance ? Math.Max(cursor + adjoining.Value, clearBottom) : hypothetical;
+            var uncollapsed = topEscapes ? cursor + item.Before.Value : cursor + adjoining.Value;
+            var y = clearance ? Math.Max(uncollapsed, clearBottom) : hypothetical;
             var x = item.X;
             if (independent)
             {
@@ -120,7 +154,8 @@ internal sealed partial class CssFlowLayout
                 var nextAdjoining = pending.Merge(measured.Before);
                 var nextHypothetical = topEscapes ? 0 : cursor + nextAdjoining.Value;
                 var nextClearance = clearBottom > nextHypothetical + 0.000001;
-                var nextY = nextClearance ? Math.Max(cursor + nextAdjoining.Value, clearBottom) : nextHypothetical;
+                var nextUncollapsed = topEscapes ? cursor + measured.Before.Value : cursor + nextAdjoining.Value;
+                var nextY = nextClearance ? Math.Max(nextUncollapsed, clearBottom) : nextHypothetical;
                 item = measured;
                 if (Math.Abs(nextY - y) > 0.000001 && previousY != nextY)
                 { previousY = y; continue; }
@@ -137,25 +172,36 @@ internal sealed partial class CssFlowLayout
     private void PlaceFloat(Entry item, double containingWidth, double lineY, CssFloatSpace space,
         double occupiedInlineWidth = 0, double lineHeight = 0)
     {
-        var y = Math.Max(0, Math.Max(lineY, Math.Max(space.LastTop, space.ClearBottom(item.Clear))));
+        var y = Math.Max(0, Math.Max(lineY, Math.Max(space.LastTop,
+            Math.Max(space.ClearBottom(item.Clear), space.InitialFloatBottom(item.Float, lineY)))));
+        CssMultiColumnLayout.AdjustFloatTop(owner, item.Box.Element, ref y);
+        var shape = CssShapeOutsideProperties.Resolve(item.Box.Element, new(item.Width, item.Height), item.Margin, containingWidth);
         while (true)
         {
             var band = space.Band(containingWidth, y, item.OuterHeight);
             var reserve = Math.Abs(y - lineY) < 0.000001 ? occupiedInlineWidth : 0;
-            if (item.OuterWidth + reserve <= band.Right - band.Left + 0.000001 || !band.Obstructed && reserve == 0)
+            var x = item.Float == CssFloatSide.Right && double.IsFinite(band.Right) ? band.Right - item.OuterWidth : band.Left;
+            var regionHeight = CssMultiColumnLayout.AdjustFloatRegionHeight(owner, item.Box.Element, y, item.OuterHeight);
+            var candidate = new CssFloatRegion(item.Float, x, y, item.OuterWidth, regionHeight, shape);
+            var inlineBand = reserve == 0 ? default : space.Band(containingWidth, lineY, lineHeight,
+                useShapes: true, additional: candidate);
+            // Margin boxes position floats; the resulting contours decide
+            // whether preceding inline content still fits on its source line.
+            if ((item.OuterWidth <= band.Right - band.Left + 0.000001 || !band.Obstructed) &&
+                (reserve == 0 || reserve <= inlineBand.Right - inlineBand.Left + .000001))
             {
-                var x = item.Float == CssFloatSide.Right && double.IsFinite(band.Right) ? band.Right - item.OuterWidth : band.Left;
                 item.Rect = new(x + item.Margin.Left, y + item.Margin.Top, item.Width, item.Height);
-                space.Add(new(item.Float, x, y, item.OuterWidth, item.OuterHeight));
+                space.Add(candidate);
                 return;
             }
             var next = space.NextBottom(y);
             if (reserve != 0 && lineHeight > 0) next = Math.Min(next, lineY + lineHeight);
             if (!double.IsFinite(next) || next <= y)
             {
-                var x = item.Float == CssFloatSide.Right && double.IsFinite(containingWidth) ? containingWidth - item.OuterWidth : 0;
+                x = item.Float == CssFloatSide.Right && double.IsFinite(containingWidth) ? containingWidth - item.OuterWidth : 0;
                 item.Rect = new(x + item.Margin.Left, y + item.Margin.Top, item.Width, item.Height);
-                space.Add(new(item.Float, x, y, item.OuterWidth, item.OuterHeight));
+                var fallbackRegionHeight = CssMultiColumnLayout.AdjustFloatRegionHeight(owner, item.Box.Element, y, item.OuterHeight);
+                space.Add(new(item.Float, x, y, item.OuterWidth, fallbackRegionHeight, shape));
                 return;
             }
             y = next;
@@ -166,6 +212,14 @@ internal sealed partial class CssFlowLayout
         List<Entry> entries, int start, int end, double available, double y, CssFloatSpace space,
         bool firstFormattedLine, List<InlineLine> inlineLines)
     {
+        if (entries.GetRange(start, end - start).Any(static item => item.Inline) &&
+            (CssLineClampLayout.Participates(owner) ||
+            entries.GetRange(start, end - start).Any(static item => TextBlock.CssTextFlowLayout.IsFragmentable(item.Box.Element))))
+        {
+            var result = FormatSharedRun(entries.GetRange(start, end - start), available, y,
+                firstFormattedLine, true, available, inlineLines, space);
+            return (result.Bottom, result.FirstBaseline, result.Baseline, result.Width, double.IsFinite(result.FirstBaseline));
+        }
         var noWrap = owner.GetValueSourceInternal(TextBlock.TextWrappingProperty).BaseValueSource != BaseValueSource.Default &&
             (TextWrapping)owner.GetValue(TextBlock.TextWrappingProperty)! == TextWrapping.NoWrap;
         var textIndent = (CssTextIndent)owner.GetValue(CssFlowProperties.TextIndentProperty)!;
@@ -184,7 +238,7 @@ internal sealed partial class CssFlowLayout
         {
             if (buffer.Count == 0) return;
             var metrics = InlineMetrics(buffer);
-            var band = space.Band(available, y, metrics.Height);
+            var band = space.Band(available, y, metrics.Height, useShapes: true);
             var bandWidth = Math.Max(0, band.Right - band.Left);
             var lineAvailable = bandWidth - CurrentIndent() - 2 * linePadding;
             var free = double.IsFinite(lineAvailable)
@@ -220,12 +274,12 @@ internal sealed partial class CssFlowLayout
                 buffer.Add(item);
                 var metrics = InlineMetrics(buffer);
                 var used = buffer.Sum(entry => entry.OuterWidth);
-                var band = space.Band(available, y, metrics.Height);
+                var band = space.Band(available, y, metrics.Height, useShapes: true);
                 if (used <= band.Right - band.Left - CurrentIndent() - 2 * linePadding + 0.000001 ||
                     noWrap && buffer.Count > 1 || !band.Obstructed && buffer.Count == 1) break;
                 buffer.RemoveAt(buffer.Count - 1);
                 if (buffer.Count > 0) { Flush(); continue; }
-                var next = space.NextBottom(y);
+                var next = space.NextFit(available, y, metrics.Height, used + CurrentIndent() + 2 * linePadding);
                 if (!double.IsFinite(next)) { buffer.Add(item); break; }
                 y = next;
             }

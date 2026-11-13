@@ -28,7 +28,7 @@ internal static partial class CssCoreProperties
         RegisterShorthand("background",
             (ref CssTokenReader reader, CssCompileContext context, List<CssCompiledDeclaration> output) =>
         {
-            var images = new List<Brush?>();
+            var images = new List<CssImageValue?>();
             var sizes = new List<CssBackgroundSize>();
             var repeats = new List<CssBackgroundRepeat>();
             var positions = new List<CssBackgroundPosition>();
@@ -40,7 +40,7 @@ internal static partial class CssCoreProperties
                 if (!reader.TryReadUntilTopLevelComma(out var segment) || segment.IsEmpty)
                     return false;
                 var layer = new CssTokenReader(segment, reader.NumericContext);
-                Brush? image = null;
+                CssImageValue? image = null;
                 var size = new CssBackgroundSize(CssBackgroundSizeMode.Auto);
                 var repeat = CssBackgroundRepeat.Both;
                 var position = CssBackgroundPosition.Initial;
@@ -51,6 +51,8 @@ internal static partial class CssCoreProperties
                 var hasRepeat = false;
                 var hasPosition = false;
                 var boxCount = 0;
+                var hasTextClip = false;
+                var hasBorderAreaClip = false;
                 var sawAnything = false;
                 while (!layer.AtEnd)
                 {
@@ -109,12 +111,27 @@ internal static partial class CssCoreProperties
                     }
 
                     probe = layer;
-                    if (TryReadBackgroundBox(ref probe, out var parsedBox))
+                    if (CssBackgroundProperties.TryReadSingleClipBox(ref probe, out var parsedBox))
                     {
-                        if (++boxCount > 2) return false;
+                        if (parsedBox == CssBackgroundBox.Text)
+                        {
+                            if (hasTextClip || boxCount > 1) return false;
+                            hasTextClip = true;
+                            clip = hasBorderAreaClip ? CssBackgroundProperties.BorderAreaText : CssBackgroundBox.Text;
+                        }
+                        else if (parsedBox == CssBackgroundProperties.BorderArea)
+                        {
+                            if (hasBorderAreaClip || boxCount > 1) return false;
+                            hasBorderAreaClip = true;
+                            clip = hasTextClip ? CssBackgroundProperties.BorderAreaText : CssBackgroundProperties.BorderArea;
+                        }
+                        else
+                        {
+                            if (++boxCount > (hasTextClip || hasBorderAreaClip ? 1 : 2)) return false;
+                            if (boxCount == 1) origin = parsedBox;
+                            if (!hasTextClip && !hasBorderAreaClip) clip = parsedBox;
+                        }
                         layer = probe;
-                        if (boxCount == 1) origin = clip = parsedBox;
-                        else clip = parsedBox;
                         sawAnything = true;
                         continue;
                     }
@@ -247,7 +264,7 @@ internal static partial class CssCoreProperties
                 if (!reader.TryReadUntilTopLevelComma(out var segment) || segment.IsEmpty)
                     return null;
                 var layer = new CssTokenReader(segment, reader.NumericContext);
-                if (!TryReadBackgroundBox(ref layer, out var box) || !layer.AtEnd)
+                if (!CssBackgroundProperties.TryReadClipValue(ref layer, out var box) || !layer.AtEnd)
                     return null;
                 boxes.Add(box);
                 if (!reader.TryReadComma()) break;
@@ -276,7 +293,7 @@ internal static partial class CssCoreProperties
 
     private static CssCompiledValue? ParseBackgroundImage(ref CssTokenReader reader, CssCompileContext context)
     {
-        var images = new List<Brush?>();
+        var images = new List<CssImageValue?>();
         do
         {
             if (!reader.TryReadUntilTopLevelComma(out var segment) || segment.IsEmpty)
@@ -367,7 +384,7 @@ internal static partial class CssCoreProperties
 
     private readonly record struct BackgroundPositionGroup(BackgroundPositionToken Token, CssLength? Offset);
 
-    private static bool TryReadBackgroundPosition(ref CssTokenReader reader,
+    internal static bool TryReadBackgroundPosition(ref CssTokenReader reader,
         out CssBackgroundPosition position, int maxTokens = 4)
     {
         position = default;
@@ -576,7 +593,7 @@ internal static partial class CssCoreProperties
         return true;
     }
 
-    private static bool TryReadBackgroundBox(ref CssTokenReader reader, out CssBackgroundBox box)
+    private static bool TryReadBackgroundBox(ref CssTokenReader reader, out CssBackgroundBox box, bool allowText = false)
     {
         var probe = reader;
         if (probe.TryReadIdent(out var ident))
@@ -585,6 +602,8 @@ internal static partial class CssCoreProperties
                 box = CssBackgroundBox.Border;
             else if (ident.Equals("padding-box", StringComparison.OrdinalIgnoreCase))
                 box = CssBackgroundBox.Padding;
+            else if (allowText && ident.Equals("text", StringComparison.OrdinalIgnoreCase))
+                box = CssBackgroundBox.Text;
             else if (ident.Equals("content-box", StringComparison.OrdinalIgnoreCase))
                 box = CssBackgroundBox.Content;
             else
@@ -604,68 +623,17 @@ internal static partial class CssCoreProperties
            ident.Equals("fixed", StringComparison.OrdinalIgnoreCase) ||
            ident.Equals("local", StringComparison.OrdinalIgnoreCase);
 
-    private static bool TryReadBackgroundImage(ref CssTokenReader reader, CssCompileContext context, out Brush? brush)
+    private static bool TryReadBackgroundImage(ref CssTokenReader reader, CssCompileContext context, out CssImageValue? image)
     {
         var probe = reader;
         if (probe.TryReadIdent(out var ident) && ident.Equals("none", StringComparison.OrdinalIgnoreCase))
         {
             reader = probe;
-            brush = null;
+            image = null;
             return true;
         }
 
-        probe = reader;
-        if (probe.TryReadFunction(out var fn, out var args))
-        {
-            if (CssGradientParser.TryParseGradientFunction(fn, ref args, out brush))
-            {
-                reader = probe;
-                return true;
-            }
-            if (fn.Equals("url", StringComparison.OrdinalIgnoreCase) &&
-                TryCreateImageBrush(ref args, context, out brush))
-            {
-                reader = probe;
-                return true;
-            }
-        }
-
-        brush = null;
-        return false;
-    }
-
-    private static bool TryCreateImageBrush(ref CssTokenReader args, CssCompileContext context, out Brush? brush)
-    {
-        brush = null;
-        string url;
-        if (args.TryReadString(out var quoted))
-        {
-            if (!args.AtEnd) return false;
-            url = quoted;
-        }
-        else
-        {
-            url = args.Remaining.ToString().Trim();
-        }
-
-        if (url.Length == 0)
-        {
-            return false;
-        }
-
-        try
-        {
-            var uri = context.BaseUri is not null
-                ? new Uri(context.BaseUri, url)
-                : new Uri(url, UriKind.RelativeOrAbsolute);
-            var source = new BitmapImage(uri);
-            brush = new ImageBrush(source) { Stretch = Stretch.Fill };
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
+        return CssImageValue.TryRead(ref reader, context, out image);
     }
 
     private static void RegisterBorder()
@@ -769,6 +737,8 @@ internal static partial class CssCoreProperties
             if (!TryReadBorderComponents(ref reader, out var parts)) return false;
             foreach (var side in new[] { "top", "right", "bottom", "left" })
                 AddBorderSide(output, side, parts);
+            for (var index = 0; index < BorderImageNames.Length; index++)
+                output.Add(new(BorderImageNames[index], BorderImageInitial(index), false));
             return true;
         });
 

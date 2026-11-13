@@ -8,6 +8,7 @@ public sealed class NavigationService
     private readonly Stack<JournalEntry> _backStack = new();
     private readonly Stack<JournalEntry> _forwardStack = new();
     private readonly Frame? _frame;
+    private readonly NavigationWindow? _window;
     private object? _content;
     private object? _extraData;
     private Uri? _currentSource;
@@ -26,6 +27,8 @@ public sealed class NavigationService
         var visited = new HashSet<DependencyObject>(ReferenceEqualityComparer.Instance);
         while (current is not null && visited.Add(current))
         {
+            if (current is NavigationWindow window) return window.NavigationService;
+
             if (current is Frame frame)
             {
                 return frame.NavigationService;
@@ -47,6 +50,8 @@ public sealed class NavigationService
     {
         _frame = frame;
     }
+
+    internal NavigationService(NavigationWindow window) => _window = window;
 
     public static Func<Uri, object?>? DefaultContentLoader { get; set; }
 
@@ -335,6 +340,7 @@ public sealed class NavigationService
             _content = oldContent;
             _extraData = oldExtraData;
             _frame?.SetNavigationContent(oldContent, oldSource, oldExtraData);
+            _window?.SetNavigationContent(oldContent, oldSource);
             RaiseNavigationFailed(entry.Source, entry.ExtraData, exception);
         }
         finally
@@ -361,6 +367,10 @@ public sealed class NavigationService
         _content = content;
         _extraData = extraData;
 
+        // Attach a navigation window's content before page callbacks so the
+        // page can resolve its actual service and configure navigation chrome.
+        if (_window != null && content is Page windowPage) windowPage.Frame = null;
+        _window?.SetNavigationContent(content, source);
         if (content is Page newPage)
         {
             if (_frame != null)
@@ -471,7 +481,7 @@ public sealed class NavigationService
     private NavigationEventArgs CreateNavigationEventArgs(Uri? source, object? content, object? extraData)
         => new(source, content, extraData, null, Navigator, isNavigationInitiator: true);
 
-    private object Navigator => (object?)_frame ?? this;
+    private object Navigator => (object?)_frame ?? _window ?? (object)this;
 
     private void CompleteNavigation()
     {

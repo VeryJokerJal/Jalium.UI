@@ -35,7 +35,7 @@ internal static class WindowEditingActionChecks
         if (!int.TryParse(argument.AsSpan("--window-editing-actions-case=".Length), out int index)
             || (uint)index >= 5) return 2;
         JaliumMacApplication.Initialize();
-        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Prohibited;
+        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Accessory;
         RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
         UIElement target = index switch
         {
@@ -122,6 +122,9 @@ internal static class WindowEditingActionChecks
                     SendAction(view, action);
                     Require(events.Count == disabledCount, $"disabled window accepted {action}");
                     window.IsEnabled = true;
+                    // Disabling a window invalidates its keyboard focus. Each
+                    // subsequent selector needs a current, enabled receiver.
+                    Require(target.Focus(), $"re-enabled receiver rejected focus after {action}");
                 }
                 window.Close();
                 int closedCount = events.Count;

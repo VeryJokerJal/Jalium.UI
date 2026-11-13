@@ -192,6 +192,9 @@ public class InlineCollection : TextElementCollection<Inline>
             case LineBreak:
                 builder.Append('\n');
                 break;
+            case InlineUIContainer:
+                builder.Append('\uFFFC');
+                break;
             case Span span:
                 foreach (var child in span.Inlines)
                 {
@@ -687,7 +690,16 @@ public sealed class InlineUIContainer : Inline
                 return;
             }
 
+            var previous = _child;
+            Styling.CssNode.SetDocumentContainerParent(previous, null);
             _child = value;
+            Styling.CssNode.SetDocumentContainerParent(_child, this);
+            if (previous is FrameworkElement prevElement) Styling.CssEngine.InvalidateSelectorDependents(prevElement);
+            if (_child is FrameworkElement nextElement)
+            {
+                if (Styling.CssEngine.IsActive) Styling.CssEvaluationScheduler.InvalidateSubtree(nextElement);
+                Styling.CssEngine.InvalidateSelectorDependents(nextElement);
+            }
             NotifyTextContentChanged();
         }
     }

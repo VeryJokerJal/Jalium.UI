@@ -76,6 +76,17 @@ public class TableColumn : FrameworkContentElement
         base.OnPropertyChanged(e);
         if (Parent is Table table) table.NotifyTextContentChanged();
     }
+    internal override void OnEffectiveValueSourceChanged(DependencyProperty property)
+    {
+        base.OnEffectiveValueSourceChanged(property);
+        if (property == WidthProperty || property == FrameworkElement.WidthProperty ||
+            property == FrameworkElement.MinWidthProperty || property == FrameworkElement.MaxWidthProperty)
+        {
+            Styling.CssEvaluationScheduler.InvalidateSubtree(Styling.CssNode.Get(this));
+            if (Parent is Table table) table.NotifyTextContentChanged();
+        }
+    }
+
     /// <summary>
     /// Identifies the Width dependency property.
     /// </summary>
@@ -447,7 +458,14 @@ public sealed class TableCell : TextElement
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty BorderBrushProperty =
         DependencyProperty.Register(nameof(BorderBrush), typeof(Brush), typeof(TableCell),
-            new PropertyMetadata(null));
+            new PropertyMetadata(CreateDefaultBorderBrush()));
+
+    private static Brush CreateDefaultBorderBrush()
+    {
+        var brush = new SolidColorBrush(Color.FromRgb(200, 200, 200));
+        brush.Freeze();
+        return brush;
+    }
 
     /// <summary>
     /// Identifies the Padding dependency property.
@@ -555,7 +573,6 @@ public sealed class TableCell : TextElement
     public TableCell()
     {
         Blocks = new BlockCollection(this);
-        BorderBrush = new SolidColorBrush(Color.FromRgb(200, 200, 200));
     }
 
     /// <summary>

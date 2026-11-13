@@ -24,7 +24,7 @@ internal static class WindowClipboardFileChecks
 
     internal static int Run()
     {
-        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Prohibited;
+        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Accessory;
         using var lease = new ClipboardLease();
         string[] files = Fixtures();
         int passed = 0, count = 6;

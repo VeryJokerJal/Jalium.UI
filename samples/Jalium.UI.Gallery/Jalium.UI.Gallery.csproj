@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\packaging\Jalium.UI.Desktop\Jalium.UI.Desktop.csproj" />
+    <EmbeddedResource Include="Themes\SampleGallery.jalxaml" LogicalName="Jalium.UI.Gallery.Themes.SampleGallery.jalxaml" />
   </ItemGroup>
 
 </Project>

@@ -7,6 +7,11 @@ namespace Jalium.UI.Controls.Primitives;
 /// Represents a control that displays items and information in a horizontal bar.
 /// </summary>
 [StyleTypedProperty(Property = nameof(ItemContainerStyle), StyleTargetType = typeof(StatusBarItem))]
+[TemplatePart(Name = "PART_ItemsPresenter", Type = typeof(ItemsPresenter))]
+[TemplateVisualState(Name = "Normal", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Disabled", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Empty", GroupName = "ItemsStates")]
+[TemplateVisualState(Name = "HasItems", GroupName = "ItemsStates")]
 public class StatusBar : ItemsControl
 {
     private Border? _cssBorderPainter;
@@ -60,6 +65,32 @@ public class StatusBar : ItemsControl
     public StatusBar()
     {
         IsTabStop = false;
+        DefaultStyleKey = typeof(StatusBar);
+    }
+
+    public override void OnApplyTemplate()
+    {
+        base.OnApplyTemplate();
+        UpdatePresentation();
+    }
+
+    protected override void OnIsEnabledChanged(bool oldValue, bool newValue)
+    {
+        base.OnIsEnabledChanged(oldValue, newValue);
+        UpdatePresentation();
+    }
+
+    protected override void OnItemsChanged(System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
+    {
+        base.OnItemsChanged(e);
+        UpdatePresentation();
+    }
+
+    private void UpdatePresentation()
+    {
+        if (TemplateRootInternal is null) return;
+        VisualStateManager.GoToState(this, IsEnabled ? "Normal" : "Disabled", false);
+        VisualStateManager.GoToState(this, HasItems ? "HasItems" : "Empty", false);
     }
 
     /// <inheritdoc />
@@ -114,6 +145,7 @@ public class StatusBar : ItemsControl
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
+        UpdateDefaultStyle();
         if (Template != null)
             return base.MeasureOverride(availableSize);
 
@@ -141,6 +173,7 @@ public class StatusBar : ItemsControl
     /// <inheritdoc />
     protected override void OnRender(DrawingContext drawingContext)
     {
+        if (Template is not null) { base.OnRender(drawingContext); return; }
         var rect = new Rect(RenderSize);
 
         if (Background is { } background)
@@ -166,7 +199,7 @@ public class StatusBar : ItemsControl
     protected override void OnPostRender(DrawingContext drawingContext)
     {
         base.OnPostRender(drawingContext);
-        CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter);
+        if (Template is null) CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter);
     }
 
     private static void OnContainerTemplateChanged(

@@ -2,6 +2,15 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
+    <!-- Binary editor palette -->
+    <SolidColorBrush x:Key="HexEditorOffsetForeground" Color="#569CD6" />
+    <SolidColorBrush x:Key="HexEditorHexForeground" Color="#D4D4D4" />
+    <SolidColorBrush x:Key="HexEditorAsciiForeground" Color="#CE9178" />
+    <SolidColorBrush x:Key="HexEditorModifiedByteBrush" Color="#FF5050" />
+    <SolidColorBrush x:Key="HexEditorSelectionBrush" Color="#643399FF" />
+    <SolidColorBrush x:Key="HexEditorGutterBackground" Color="#252526" />
+    <SolidColorBrush x:Key="HexEditorColumnSeparatorBrush" Color="#3C3C3C" />
+
     <!-- Xcode-inspired editor syntax colors -->
     <SolidColorBrush x:Key="EditorSyntaxPlainText" Color="#F5F5F7" />
     <SolidColorBrush x:Key="EditorSyntaxKeyword" Color="#FC5FA3" />

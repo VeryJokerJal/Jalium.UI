@@ -67,14 +67,28 @@ internal sealed class CssSourceEmitter
                 $"{Array(font.Sources.Select(s => Array(s.Technologies.Select(Quote))))}, {Number(font.MinimumWeight)}, {Number(font.MaximumWeight)}, " +
                 $"{Number(font.Style)}, {Number(font.MinimumWidth)}, {Number(font.MaximumWidth)}, " +
                 $"{Array(font.Ranges.SelectMany(r => new[] { Number(r.Start), Number(r.End) }))}, {Quote(font.Display)}, " +
-                $"{Number(font.Offset)}, {Node(font.Condition)}, {LayerName(font.LayerName)});");
+                $"{Number(font.Offset)}, {Node(font.Condition)}, {LayerName(font.LayerName)}, {Quote(font.FeatureSettings.ToCss())}, {Bool(font.DisplaySpecified)}, {Quote(font.VariationSettings.ToCss())}, {Array(font.Metrics.Values.Select(Number))});");
         }
+        foreach (var feature in sheet.FontFeatureValues)
+            Line($"b.FontFeatureValues({Array(feature.Families.Select(Quote))}, {Array(feature.Values.Select(value => Quote(value.Kind)))}, " +
+                $"{Array(feature.Values.Select(value => Quote(value.Name)))}, {Array(feature.Values.Select(value => Array(value.Indices.Select(Number))))}, " +
+                $"{Quote(feature.Display)}, {Number(feature.Offset)}, {Node(feature.Condition)}, {LayerName(feature.LayerName)});");
         foreach (var keyframes in sheet.Keyframes)
         {
             Line($"b.Keyframes({Quote(keyframes.Name)}, " +
                 $"{Array(keyframes.Blocks.Select(frame => Array(frame.Offsets.Select(Number))))}, " +
                 $"{Array(keyframes.Blocks.Select(frame => Nodes(frame.Declarations)))}, " +
                 $"{Number(keyframes.Offset)}, {Node(keyframes.Condition)}, {Node(keyframes.Namespaces)});");
+        }
+        foreach (var counter in sheet.CounterStyles)
+            Line($"b.CounterStyle({Quote(counter.Name)}, {Nodes(counter.Descriptors)}, {Number(counter.Offset)}, {Node(counter.Condition)}, {LayerName(counter.LayerName)});");
+        foreach (var page in sheet.PageRules)
+        {
+            Line($"b.PageRule({Array(page.Selectors.Select(s => Quote(s.PageName)))}, " +
+                $"{Array(page.Selectors.Select(s => Number((byte)s.Pseudos)))}, {Nodes(page.Declarations)}, " +
+                $"{Array(page.MarginRules.Select(m => Number((byte)m.Kind)))}, " +
+                $"{Array(page.MarginRules.Select(m => Nodes(m.Declarations)))}, " +
+                $"{Number(page.Offset)}, {Node(page.Condition)}, {LayerName(page.LayerName)});");
         }
         return _source.ToString();
     }
@@ -93,7 +107,8 @@ internal sealed class CssSourceEmitter
             CssCompound c => $"Compound({Quote(c.TypeName)}, {Bool(c.Universal)}, {Quote(c.NamespaceUri)}, " +
                 $"{Bool(c.ExpandedTypeName)}, {Bool(c.ExplicitTypeSelector)}, {Bool(c.DefaultNamespaceApplied)}, {Quote(c.Id)}, " +
                 $"{(c.Classes is null ? "null" : Array(c.Classes.Select(Quote)))}, " +
-                $"{(c.Pseudos is null ? "null" : Array(c.Pseudos.Select(p => Number((byte)p))))}, {Number((uint)c.StateMask)}, {Nodes(c.Attributes)}, {Nodes(c.Functions)})",
+                $"{(c.Pseudos is null ? "null" : Array(c.Pseudos.Select(p => Number((byte)p))))}, {Number((uint)c.StateMask)}, {Nodes(c.Attributes)}, {Nodes(c.Functions)}" +
+                (c.PseudoElement == CssPseudoElement.None ? ")" : $", {Number((byte)c.PseudoElement)})"),
             CssSelector s => $"Selector({Nodes(s.Compounds)}, {Array(s.Combinators.Select(c => Number((byte)c)))}, " +
                 $"{Number(s.Specificity)}, {Number((uint)s.RightmostStates)}, {Number((uint)s.AncestorStates)}, {Bool(s.ContainsNesting)}, {Bool(s.ContainsScope)})",
             CssScopeRule s => $"Scope({Nodes(s.Starts)}, {Nodes(s.Limits)}, {Node(s.Parent)})",

@@ -57,15 +57,19 @@ internal static class CssGapProperties
         }
     }
 
-    internal static double Resolve(Panel owner, bool row, double basis)
+    internal static double Resolve(FrameworkElement owner, bool row, double basis)
     {
         var native = owner is Grid ? row ? Grid.RowSpacingProperty : Grid.ColumnSpacingProperty
             : row ? FlexPanel.RowSpacingProperty : FlexPanel.ColumnSpacingProperty;
         var gap = (CssLayoutLength)owner.GetValue(row ? RowProperty : ColumnProperty)!;
-        return gap.IsSet && !owner.HasLocalOrAnimatedValue(native) ? Math.Max(0, gap.Resolve(basis, 0)) : (double)owner.GetValue(native)!;
+        if (!gap.IsSet || owner.HasLocalOrAnimatedValue(native)) return (double)owner.GetValue(native)!;
+        if (!double.IsFinite(basis) || row &&
+            (owner is FlexPanel || owner.CssDisplayMode == CssDisplayMode.Flex) &&
+            !owner.CssHasDefiniteHeight(owner.CssParentBox?.ContainingBlock.Height ?? owner.CssNativeBox?.ContainingBlock.Height ?? basis)) basis = 0;
+        return Math.Max(0, gap.Resolve(basis, 0));
     }
 
-    internal static bool IsNormal(Panel owner, bool row)
+    internal static bool IsNormal(FrameworkElement owner, bool row)
     {
         var native = owner is Grid ? row ? Grid.RowSpacingProperty : Grid.ColumnSpacingProperty
             : row ? FlexPanel.RowSpacingProperty : FlexPanel.ColumnSpacingProperty;
@@ -90,7 +94,7 @@ internal sealed class CssGapParts
         {
             sink.CurrentValueIsState = _row.HasValue ? _rowState : _columnState;
             sink.Set(context.Element.Target is StackPanel ? StackPanel.SpacingProperty : DockPanel.SpacingProperty,
-                Math.Max(0, (_row ?? _column)!.Value.Resolve(double.NaN, 0)));
+                Math.Max(0, (_row ?? _column)!.Value.Resolve(0, 0)));
         }
     }
 
@@ -98,8 +102,8 @@ internal sealed class CssGapParts
     {
         sink.CurrentValueIsState = state;
         sink.Set(row ? CssGapProperties.RowProperty : CssGapProperties.ColumnProperty, value);
-        var pixels = Math.Max(0, value.Resolve(double.NaN, 0));
-        if (context.Element.Target is Panel) sink.Set(row ? FlexPanel.RowSpacingProperty : FlexPanel.ColumnSpacingProperty, pixels);
+        var pixels = Math.Max(0, value.Resolve(0, 0));
+        if (context.Element.Target is FrameworkElement { IsCssContentHost: true }) sink.Set(row ? FlexPanel.RowSpacingProperty : FlexPanel.ColumnSpacingProperty, pixels);
         var native = context.Element.Target switch
         {
             Grid => row ? Grid.RowSpacingProperty : Grid.ColumnSpacingProperty,

@@ -40,6 +40,7 @@ public abstract class AutomationPeer : DispatcherObject
             }
         }
 
+        if (Styling.CssReplacedContent.TryAlternative(owner, out var alternative)) return alternative;
         return GetNameCore() ?? string.Empty;
     }
 
@@ -156,9 +157,10 @@ public abstract class AutomationPeer : DispatcherObject
 
     public List<AutomationPeer> GetChildren()
     {
+        if (Styling.CssContainmentProperties.HidesContentsFromUserAgent(Owner)) return [];
         if (_childrenCache is null)
         {
-            _childrenCache = GetChildrenCore() ?? [];
+            _childrenCache = Styling.CssReplacedContent.IsActive(Owner) ? [] : GetChildrenCore() ?? [];
         }
 
         return _childrenCache;

@@ -1,268 +1,101 @@
-﻿using Jalium.UI.Controls.Themes;
-using Jalium.UI.Media;
-
 namespace Jalium.UI.Controls.Primitives;
 
-/// <summary>
-/// Represents a row header in a DataGrid.
-/// </summary>
+/// <summary>A templated row header with selection, pointer and content states.</summary>
+[TemplatePart(Name = "PART_ContentPresenter", Type = typeof(ContentPresenter))]
+[TemplateVisualState(Name = "Normal", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "PointerOver", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Pressed", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Disabled", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Selected", GroupName = "SelectionStates")]
+[TemplateVisualState(Name = "Unselected", GroupName = "SelectionStates")]
+[TemplateVisualState(Name = "Content", GroupName = "ContentStates")]
+[TemplateVisualState(Name = "Indicator", GroupName = "ContentStates")]
 public class DataGridRowHeader : ButtonBase
 {
-    private static readonly SolidColorBrush s_selectedBackgroundBrush = new(ThemeColors.SelectedItemBackground);
-    private static readonly SolidColorBrush s_pressedBackgroundBrush = new(Color.FromRgb(60, 60, 60));
-    private static readonly SolidColorBrush s_defaultBackgroundBrush = new(Color.FromRgb(45, 45, 45));
-    private static readonly SolidColorBrush s_defaultSeparatorBrush = new(Color.FromRgb(67, 67, 70));
-    private static readonly SolidColorBrush s_selectionIndicatorBrush = new(Color.White);
+    public DataGridRowHeader() => ClearValue(FocusableProperty);
 
-    // Cached pens
-    private Pen? _separatorPen;
-    private Brush? _separatorPenBrush;
-    private Pen? _arrowPen;
-    private Brush? _arrowPenBrush;
-
-    #region Dependency Properties
-
-    /// <summary>
-    /// Identifies the IsRowSelected dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public static readonly DependencyProperty IsRowSelectedProperty =
-        DependencyProperty.Register(nameof(IsRowSelected), typeof(bool), typeof(DataGridRowHeader),
-            new PropertyMetadata(false, OnVisualPropertyChanged));
-
-    /// <summary>
-    /// Identifies the RowIndex dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
-    public static readonly DependencyProperty RowIndexProperty =
-        DependencyProperty.Register(nameof(RowIndex), typeof(int), typeof(DataGridRowHeader),
-            new PropertyMetadata(-1, OnVisualPropertyChanged));
-
-    /// <summary>
-    /// Identifies the SeparatorBrush dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
-    public static readonly DependencyProperty SeparatorBrushProperty =
-        DependencyProperty.Register(nameof(SeparatorBrush), typeof(Brush), typeof(DataGridRowHeader),
-            new PropertyMetadata(null, OnVisualPropertyChanged));
-
-    /// <summary>
-    /// Identifies the SeparatorVisibility dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public static readonly DependencyProperty SeparatorVisibilityProperty =
-        DependencyProperty.Register(nameof(SeparatorVisibility), typeof(Visibility), typeof(DataGridRowHeader),
-            new PropertyMetadata(Visibility.Visible, OnVisualPropertyChanged));
-
-    #endregion
-
-    #region CLR Properties
-
-    /// <summary>
-    /// Gets or sets a value indicating whether the row is selected.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public bool IsRowSelected
+    static DataGridRowHeader()
     {
-        get => (bool)GetValue(IsRowSelectedProperty)!;
-        internal set => SetValue(IsRowSelectedProperty, value);
+        DefaultStyleKeyProperty.OverrideMetadata(typeof(DataGridRowHeader), new PropertyMetadata(typeof(DataGridRowHeader)));
+        WidthProperty.OverrideMetadata(typeof(DataGridRowHeader), new PropertyMetadata(30.0));
+        FocusableProperty.OverrideMetadata(typeof(DataGridRowHeader), new PropertyMetadata(false));
+        HorizontalContentAlignmentProperty.OverrideMetadata(typeof(DataGridRowHeader), new PropertyMetadata(HorizontalAlignment.Center));
+        VerticalContentAlignmentProperty.OverrideMetadata(typeof(DataGridRowHeader), new PropertyMetadata(VerticalAlignment.Center));
     }
 
-    /// <summary>
-    /// Gets or sets the index of the row.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
-    public int RowIndex
+    public static readonly DependencyProperty IsRowSelectedProperty = DependencyProperty.Register(
+        nameof(IsRowSelected), typeof(bool), typeof(DataGridRowHeader), new PropertyMetadata(false));
+    public static readonly DependencyProperty RowIndexProperty = DependencyProperty.Register(
+        nameof(RowIndex), typeof(int), typeof(DataGridRowHeader), new PropertyMetadata(-1));
+    public static readonly DependencyProperty SeparatorBrushProperty = DependencyProperty.Register(
+        nameof(SeparatorBrush), typeof(Jalium.UI.Media.Brush), typeof(DataGridRowHeader), new PropertyMetadata(null));
+    public static readonly DependencyProperty SeparatorVisibilityProperty = DependencyProperty.Register(
+        nameof(SeparatorVisibility), typeof(Visibility), typeof(DataGridRowHeader), new PropertyMetadata(Visibility.Visible));
+    private static readonly DependencyPropertyKey HasHeaderContentPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(HasHeaderContent), typeof(bool), typeof(DataGridRowHeader), new PropertyMetadata(false));
+    public static readonly DependencyProperty HasHeaderContentProperty = HasHeaderContentPropertyKey.DependencyProperty;
+
+    public bool IsRowSelected { get => (bool)GetValue(IsRowSelectedProperty)!; internal set => SetValue(IsRowSelectedProperty, value); }
+    public int RowIndex { get => (int)GetValue(RowIndexProperty)!; set => SetValue(RowIndexProperty, value); }
+    public Jalium.UI.Media.Brush? SeparatorBrush { get => (Jalium.UI.Media.Brush?)GetValue(SeparatorBrushProperty); set => SetValue(SeparatorBrushProperty, value); }
+    public Visibility SeparatorVisibility { get => (Visibility)GetValue(SeparatorVisibilityProperty)!; set => SetValue(SeparatorVisibilityProperty, value); }
+    /// <summary>Whether explicit header content or a header data template is available.</summary>
+    public bool HasHeaderContent => (bool)GetValue(HasHeaderContentProperty)!;
+
+    private bool _usesItemContent;
+    private bool _settingRowContent;
+
+    // Keep the item available to template selectors without displaying its ToString()
+    // as a header when the owning row has no explicit header.
+    internal void SetRowContent(object? content, bool usesItemContent)
     {
-        get => (int)GetValue(RowIndexProperty)!;
-        set => SetValue(RowIndexProperty, value);
+        _usesItemContent = usesItemContent;
+        _settingRowContent = true;
+        try { SetCurrentValue(ContentProperty, content); }
+        finally { _settingRowContent = false; }
+        UpdateContentState();
     }
 
-    /// <summary>
-    /// Gets or sets the brush used for the separator.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
-    public Brush? SeparatorBrush
+    protected override void OnContentChanged(object? oldContent, object? newContent)
     {
-        get => (Brush?)GetValue(SeparatorBrushProperty);
-        set => SetValue(SeparatorBrushProperty, value);
+        base.OnContentChanged(oldContent, newContent);
+        if (!_settingRowContent) _usesItemContent = false;
+        UpdateContentState();
     }
 
-    /// <summary>
-    /// Gets or sets the visibility of the separator.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public Visibility SeparatorVisibility
+    protected override void OnContentTemplateChanged(DataTemplate? oldContentTemplate, DataTemplate? newContentTemplate)
     {
-        get => (Visibility)GetValue(SeparatorVisibilityProperty)!;
-        set => SetValue(SeparatorVisibilityProperty, value);
+        base.OnContentTemplateChanged(oldContentTemplate, newContentTemplate);
+        UpdateContentState();
     }
 
-    #endregion
-
-    #region Private Fields
-
-    private const double DefaultWidth = 30;
-
-    #endregion
-
-    #region Constructor
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="DataGridRowHeader"/> class.
-    /// </summary>
-    public DataGridRowHeader()
+    protected override void OnContentTemplateSelectorChanged(DataTemplateSelector? oldContentTemplateSelector, DataTemplateSelector? newContentTemplateSelector)
     {
-        Width = DefaultWidth;
-        HorizontalContentAlignment = HorizontalAlignment.Center;
-        VerticalContentAlignment = VerticalAlignment.Center;
+        base.OnContentTemplateSelectorChanged(oldContentTemplateSelector, newContentTemplateSelector);
+        UpdateContentState();
     }
 
-    #endregion
-
-    #region Layout
-
-    /// <inheritdoc />
-    protected override Size MeasureOverride(Size availableSize)
+    private void UpdateContentState()
     {
-        return new Size(Width > 0 ? Width : DefaultWidth, availableSize.Height);
+        SetValue(HasHeaderContentPropertyKey, Content != null &&
+            (!_usesItemContent || ContentTemplate != null || ContentTemplateSelector != null));
+        UpdateVisualState();
     }
 
-    #endregion
+    public override void OnApplyTemplate() { base.OnApplyTemplate(); UpdateVisualState(); }
 
-    #region Rendering
-
-    private Brush ResolveSelectedBackgroundBrush()
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
     {
-        return ResolveThemeBrush("AccentBrush", s_selectedBackgroundBrush, "AccentFillColorDefaultBrush");
+        base.OnPropertyChanged(e);
+        if (e.Property == IsEnabledProperty || e.Property == IsMouseOverProperty ||
+            e.Property == IsPressedProperty || e.Property == IsRowSelectedProperty)
+            UpdateVisualState();
     }
 
-    private Brush ResolvePressedBackgroundBrush()
+    private void UpdateVisualState()
     {
-        return ResolveThemeBrush("ControlBackgroundPressed", s_pressedBackgroundBrush, "HighlightBackground");
+        VisualStateManager.GoToState(this, !IsEnabled ? "Disabled" : IsPressed ? "Pressed" : IsMouseOver ? "PointerOver" : "Normal", false);
+        VisualStateManager.GoToState(this, IsRowSelected ? "Selected" : "Unselected", false);
+        VisualStateManager.GoToState(this, HasHeaderContent ? "Content" : "Indicator", false);
     }
-
-    private Brush ResolveDefaultBackgroundBrush()
-    {
-        return Background
-            ?? ResolveThemeBrush("ControlBackground", s_defaultBackgroundBrush, "SurfaceBackground");
-    }
-
-    private Brush ResolveSeparatorBrush()
-    {
-        return SeparatorBrush
-            ?? BorderBrush
-            ?? ResolveThemeBrush("ControlBorder", s_defaultSeparatorBrush, "DividerStrokeColorDefaultBrush");
-    }
-
-    private Brush ResolveSelectionIndicatorBrush()
-    {
-        if (HasLocalValue(Control.ForegroundProperty) && Foreground != null)
-        {
-            return Foreground;
-        }
-
-        return ResolveThemeBrush("TextOnAccent", s_selectionIndicatorBrush, "TextOnAccentFillColorPrimaryBrush");
-    }
-
-    private Brush ResolveThemeBrush(string resourceKey, Brush fallback, string? secondaryResourceKey = null)
-    {
-        if (TryFindResource(resourceKey) is Brush brush)
-        {
-            return brush;
-        }
-
-        if (secondaryResourceKey != null && TryFindResource(secondaryResourceKey) is Brush secondaryBrush)
-        {
-            return secondaryBrush;
-        }
-
-        return fallback;
-    }
-
-    /// <inheritdoc />
-    protected override void OnRender(DrawingContext drawingContext)
-    {
-        var dc = drawingContext;
-
-        var rect = new Rect(RenderSize);
-
-        // Draw background
-        Brush bgBrush;
-        if (IsRowSelected)
-        {
-            bgBrush = ResolveSelectedBackgroundBrush();
-        }
-        else if (IsPressed)
-        {
-            bgBrush = ResolvePressedBackgroundBrush();
-        }
-        else
-        {
-            bgBrush = ResolveDefaultBackgroundBrush();
-        }
-        dc.DrawRectangle(bgBrush, null, rect);
-
-        // Draw selection indicator arrow
-        if (IsRowSelected)
-        {
-            DrawSelectionIndicator(dc, rect);
-        }
-
-        // Draw separator
-        if (SeparatorVisibility == Visibility.Visible)
-        {
-            var separatorBrush = ResolveSeparatorBrush();
-            if (_separatorPen == null || _separatorPenBrush != separatorBrush)
-            {
-                _separatorPen = new Pen(separatorBrush, 1);
-                _separatorPenBrush = separatorBrush;
-            }
-            dc.DrawLine(_separatorPen, new Point(rect.Width - 1, 0), new Point(rect.Width - 1, rect.Height));
-            dc.DrawLine(_separatorPen, new Point(0, rect.Height - 1), new Point(rect.Width, rect.Height - 1));
-        }
-    }
-
-    // Right-pointing chevron in 6×8 design space, cached
-    private static readonly PathGeometry s_selectionChevron = (PathGeometry)Geometry.Parse("M 0,0 L 6,4 L 0,8");
-
-    private void DrawSelectionIndicator(DrawingContext dc, Rect rect)
-    {
-        var arrowBrush = ResolveSelectionIndicatorBrush();
-        if (_arrowPen == null || _arrowPenBrush != arrowBrush)
-        {
-            _arrowPen = new Pen(arrowBrush, 2);
-            _arrowPenBrush = arrowBrush;
-        }
-
-        var bounds = s_selectionChevron.Bounds;
-        var ox = rect.Width / 2 - bounds.X - bounds.Width / 2;
-        var oy = rect.Height / 2 - bounds.Y - bounds.Height / 2;
-
-        foreach (var figure in s_selectionChevron.Figures)
-        {
-            var tf = new PathFigure
-            {
-                StartPoint = new Point(figure.StartPoint.X + ox, figure.StartPoint.Y + oy),
-                IsClosed = figure.IsClosed,
-                IsFilled = false
-            };
-            foreach (var seg in figure.Segments)
-                if (seg is LineSegment ls)
-                    tf.Segments.Add(new LineSegment(new Point(ls.Point.X + ox, ls.Point.Y + oy), ls.IsStroked));
-            var geo = new PathGeometry();
-            geo.Figures.Add(tf);
-            dc.DrawGeometry(null, _arrowPen, geo);
-        }
-    }
-
-    private static new void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        if (d is DataGridRowHeader header)
-        {
-            header.InvalidateVisual();
-        }
-    }
-
-    #endregion
 }

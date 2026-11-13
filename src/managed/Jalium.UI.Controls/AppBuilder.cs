@@ -30,6 +30,9 @@ public sealed class AppBuilderSettings
     /// </summary>
     public string? ApplicationName { get; set; }
 
+    /// <summary>Linux desktop file identity, without the .desktop suffix. The host name is the default when the Application has not supplied an identity.</summary>
+    public string? DesktopApplicationId { get; set; }
+
     /// <summary>
     /// Environment name (<c>Development</c>/<c>Staging</c>/<c>Production</c>).
     /// Falls back to the <c>DOTNET_ENVIRONMENT</c> environment variable when null.
@@ -113,6 +116,12 @@ public sealed class AppBuilder : IHostApplicationBuilder
             _hostBuilder = new HostApplicationBuilder(hostSettings);
         }
         Args = settings?.Args;
+        string desktopApplicationId = settings?.DesktopApplicationId ??
+            Application.CreateDefaultDesktopApplicationId(_hostBuilder.Environment.ApplicationName);
+        Application.ValidateDesktopApplicationId(desktopApplicationId);
+        bool explicitDesktopApplicationId = settings?.DesktopApplicationId != null;
+        _configureApplication.Add(application => application.ConfigureDesktopApplicationIdFromHost(
+            desktopApplicationId, explicitDesktopApplicationId));
 
         // Core Jalium services are always available — keeps consumer code
         // from having to opt-in for basic MVVM and options support. Users can

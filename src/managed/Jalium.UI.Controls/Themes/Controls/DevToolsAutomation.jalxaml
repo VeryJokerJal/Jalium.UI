@@ -1,0 +1,106 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:dev="clr-namespace:Jalium.UI.Controls.DevTools"
+                    xmlns:automation="clr-namespace:Jalium.UI.Automation">
+    <Style TargetType="dev:DevToolsAutomationPeerRow">
+        <Setter Property="MinHeight" Value="32" /><Setter Property="Padding" Value="4,3" />
+        <Setter Property="Foreground" Value="{DynamicResource DevTools.TextPrimary}" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsAutomationPeerRow">
+            <Grid Margin="{TemplateBinding Padding}" ToolTip="{Binding Item.AutomationName, RelativeSource={RelativeSource TemplatedParent}}">
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup x:Name="PeerStates"><VisualState x:Name="Peer" /><VisualState x:Name="Issue"><VisualState.Setters><Setter TargetName="PART_Name" Property="Foreground" Value="{DynamicResource DevTools.Warning}" /></VisualState.Setters></VisualState></VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                <TextBlock Name="PART_Name" Text="{Binding Item.DisplayName, RelativeSource={RelativeSource TemplatedParent}}" Foreground="{TemplateBinding Foreground}" Style="{StaticResource DevTools.Text}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                <dev:DevToolsTag Name="PART_Role" Grid.Column="1" Text="{Binding Item.Role, RelativeSource={RelativeSource TemplatedParent}}" Margin="8,0,0,0" Foreground="{DynamicResource DevTools.Info}" />
+                <TextBlock Name="PART_Class" Grid.Row="1" Grid.ColumnSpan="2" Text="{Binding Item.ClassName, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.MonoText}" Foreground="{DynamicResource DevTools.TextSecondary}" FontSize="10" TextTrimming="CharacterEllipsis" Margin="0,3,0,0" />
+            </Grid>
+        </ControlTemplate></Setter>
+    </Style>
+    <DataTemplate x:Key="DevTools.AutomationNode"><dev:DevToolsAutomationPeerRow Item="{Binding}" /></DataTemplate>
+    <Style x:Key="DevTools.AutomationReadout" TargetType="dev:DevToolsReadout">
+        <Setter Property="Foreground" Value="{DynamicResource DevTools.TextSecondary}" /><Setter Property="ValueBrush" Value="{DynamicResource DevTools.TextPrimary}" />
+        <Setter Property="Margin" Value="0,0,0,12" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsReadout">
+            <StackPanel>
+                <TextBlock Name="PART_Label" Text="{TemplateBinding Label}" Foreground="{TemplateBinding Foreground}" Style="{StaticResource DevTools.Text}" FontSize="10" />
+                <TextBlock Name="PART_Value" Text="{TemplateBinding ValueText}" ToolTip="{TemplateBinding ValueText}" Foreground="{TemplateBinding ValueBrush}" Style="{StaticResource DevTools.MonoText}" TextWrapping="Wrap" Margin="0,4,0,0" />
+            </StackPanel>
+        </ControlTemplate></Setter>
+    </Style>
+    <DataTemplate x:Key="DevTools.AutomationProperty">
+        <dev:DevToolsReadout Name="PART_Readout" Style="{StaticResource DevTools.AutomationReadout}" Label="{Binding Name}" ValueText="{Binding Value}" />
+        <DataTemplate.Triggers>
+            <DataTrigger Binding="{Binding Kind}" Value="String"><Setter TargetName="PART_Readout" Property="ValueBrush" Value="{DynamicResource DevTools.TokenString}" /></DataTrigger>
+            <DataTrigger Binding="{Binding Kind}" Value="Boolean"><Setter TargetName="PART_Readout" Property="ValueBrush" Value="{DynamicResource DevTools.Info}" /></DataTrigger>
+            <DataTrigger Binding="{Binding Kind}" Value="Number"><Setter TargetName="PART_Readout" Property="ValueBrush" Value="{DynamicResource DevTools.TokenNumber}" /></DataTrigger>
+            <DataTrigger Binding="{Binding Kind}" Value="Enum"><Setter TargetName="PART_Readout" Property="ValueBrush" Value="{DynamicResource DevTools.TokenEnum}" /></DataTrigger>
+            <DataTrigger Binding="{Binding Kind}" Value="Error"><Setter TargetName="PART_Readout" Property="ValueBrush" Value="{DynamicResource DevTools.Error}" /></DataTrigger>
+        </DataTemplate.Triggers>
+    </DataTemplate>
+    <DataTemplate x:Key="DevTools.AutomationPattern"><dev:DevToolsTag Text="{Binding}" Foreground="{DynamicResource DevTools.Success}" Margin="0,0,6,6" /></DataTemplate>
+    <Style TargetType="dev:DevToolsAutomationView">
+        <Setter Property="Background" Value="{DynamicResource DevTools.Surface}" /><Setter Property="Foreground" Value="{DynamicResource DevTools.TextPrimary}" />
+        <Setter Property="NodeTemplate" Value="{StaticResource DevTools.AutomationNode}" /><Setter Property="PropertyTemplate" Value="{StaticResource DevTools.AutomationProperty}" /><Setter Property="PatternTemplate" Value="{StaticResource DevTools.AutomationPattern}" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsAutomationView">
+            <Grid Background="{TemplateBinding Background}">
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup x:Name="DataStates"><VisualState x:Name="PeersAvailable" /><VisualState x:Name="PeersEmpty"><VisualState.Setters><Setter TargetName="PART_PeerTree" Property="Visibility" Value="Collapsed" /><Setter TargetName="PART_Empty" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup x:Name="SelectionStates"><VisualState x:Name="SelectionAvailable" /><VisualState x:Name="SelectionEmpty"><VisualState.Setters><Setter TargetName="PART_Details" Property="Visibility" Value="Collapsed" /><Setter TargetName="PART_NoSelection" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup x:Name="BuildStates"><VisualState x:Name="Ready" /><VisualState x:Name="Building"><VisualState.Setters><Setter TargetName="PART_Status" Property="Foreground" Value="{DynamicResource DevTools.Warning}" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup x:Name="PatternStates"><VisualState x:Name="PatternsAvailable" /><VisualState x:Name="PatternsEmpty"><VisualState.Setters><Setter TargetName="PART_Patterns" Property="Visibility" Value="Collapsed" /><Setter TargetName="PART_NoPatterns" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup x:Name="LayoutStates"><VisualState x:Name="Wide"><VisualState.Setters>
+                        <Setter TargetName="PART_TreeRow" Property="Height" Value="*" /><Setter TargetName="PART_GapRow" Property="Height" Value="0" /><Setter TargetName="PART_DetailsRow" Property="Height" Value="0" />
+                    </VisualState.Setters></VisualState><VisualState x:Name="Compact"><VisualState.Setters>
+                        <Setter TargetName="PART_TreeColumn" Property="Width" Value="*" /><Setter TargetName="PART_GapColumn" Property="Width" Value="0" /><Setter TargetName="PART_DetailsColumn" Property="Width" Value="0" />
+                        <Setter TargetName="PART_TreeRow" Property="Height" Value="*" /><Setter TargetName="PART_GapRow" Property="Height" Value="6" /><Setter TargetName="PART_DetailsRow" Property="Height" Value="*" />
+                        <Setter TargetName="PART_DetailsSurface" Property="Grid.Column" Value="0" /><Setter TargetName="PART_DetailsSurface" Property="Grid.Row" Value="2" />
+                        <Setter TargetName="PART_Splitter" Property="Grid.Column" Value="0" /><Setter TargetName="PART_Splitter" Property="Grid.Row" Value="1" /><Setter TargetName="PART_Splitter" Property="Width" Value="NaN" /><Setter TargetName="PART_Splitter" Property="Height" Value="6" /><Setter TargetName="PART_Splitter" Property="ResizeDirection" Value="Rows" />
+                    </VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Normal" /><VisualState x:Name="Disabled"><VisualState.Setters><Setter Property="Opacity" Value="0.45" /></VisualState.Setters></VisualState></VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                <dev:DevToolsSurface Kind="Toolbar">
+                    <WrapPanel VerticalAlignment="Center">
+                        <dev:DevToolsActionButton Name="PART_Refresh" Label="Refresh" Icon="↻" Command="{TemplateBinding RefreshCommand}" />
+                        <TextBlock Text="Peers" Style="{StaticResource DevTools.MutedText}" Margin="10,0,5,0" VerticalAlignment="Center" /><dev:DevToolsTag Name="PART_NodeCount" Text="{Binding NodeCount, RelativeSource={RelativeSource TemplatedParent}}" VerticalAlignment="Center" />
+                        <TextBlock Text="Issues" Style="{StaticResource DevTools.MutedText}" Margin="10,0,5,0" VerticalAlignment="Center" /><dev:DevToolsTag Text="{Binding IssueCount, RelativeSource={RelativeSource TemplatedParent}}" Foreground="{DynamicResource DevTools.Warning}" VerticalAlignment="Center" />
+                        <TextBlock Name="PART_Status" Text="{TemplateBinding StatusText}" Style="{StaticResource DevTools.MutedText}" Margin="12,0,0,0" VerticalAlignment="Center" />
+                    </WrapPanel>
+                </dev:DevToolsSurface>
+                <Grid Name="PART_Body" Grid.Row="1" Margin="8">
+                    <Grid.RowDefinitions><RowDefinition Name="PART_TreeRow" Height="*" /><RowDefinition Name="PART_GapRow" Height="0" /><RowDefinition Name="PART_DetailsRow" Height="0" /></Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions><ColumnDefinition Name="PART_TreeColumn" Width="*" /><ColumnDefinition Name="PART_GapColumn" Width="6" /><ColumnDefinition Name="PART_DetailsColumn" Width="1.2*" /></Grid.ColumnDefinitions>
+                    <dev:DevToolsSurface Name="PART_TreeSurface" Padding="8" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch">
+                        <Grid><Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                            <TextBlock Text="AUTOMATION TREE" Style="{StaticResource DevTools.Eyebrow}" Margin="0,0,0,8" />
+                            <TreeView Name="PART_PeerTree" Grid.Row="1" Style="{StaticResource DevTools.Tree}" ItemsSource="{TemplateBinding ItemsSource}" BorderThickness="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled" automation:AutomationProperties.Name="Automation peers">
+                                <TreeView.ItemTemplate><HierarchicalDataTemplate ItemsSource="{Binding Children}">
+                                    <ContentPresenter Content="{Binding}" ContentTemplate="{Binding NodeTemplate, RelativeSource={RelativeSource AncestorType={x:Type dev:DevToolsAutomationView}}}" />
+                                </HierarchicalDataTemplate></TreeView.ItemTemplate>
+                            </TreeView>
+                            <TextBlock Name="PART_Empty" Grid.Row="1" Text="No automation peers." Style="{StaticResource DevTools.MutedText}" VerticalAlignment="Center" HorizontalAlignment="Center" Visibility="Collapsed" />
+                        </Grid>
+                    </dev:DevToolsSurface>
+                    <GridSplitter Name="PART_Splitter" Grid.Column="1" Width="6" Background="{DynamicResource DevTools.BorderSubtle}" ResizeDirection="Columns" />
+                    <dev:DevToolsSurface Name="PART_DetailsSurface" Grid.Column="2" Padding="12" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch">
+                        <Grid>
+                            <ScrollViewer Name="PART_Details" Background="Transparent" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                                <StackPanel>
+                                    <TextBlock Text="PROPERTIES" Style="{StaticResource DevTools.Eyebrow}" Margin="0,0,0,12" />
+                                    <ItemsControl Name="PART_Properties" ItemsSource="{Binding SelectedItem.Properties, RelativeSource={RelativeSource TemplatedParent}}" ItemTemplate="{TemplateBinding PropertyTemplate}" />
+                                    <Border Height="1" Background="{DynamicResource DevTools.BorderSubtle}" Margin="0,0,0,12" />
+                                    <TextBlock Text="SUPPORTED PATTERNS" Style="{StaticResource DevTools.Eyebrow}" Margin="0,0,0,10" />
+                                    <ItemsControl Name="PART_Patterns" ItemsSource="{Binding SelectedItem.Patterns, RelativeSource={RelativeSource TemplatedParent}}" ItemTemplate="{TemplateBinding PatternTemplate}"><ItemsControl.ItemsPanel><ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate></ItemsControl.ItemsPanel></ItemsControl>
+                                    <TextBlock Name="PART_NoPatterns" Text="No patterns exposed." Style="{StaticResource DevTools.MutedText}" Visibility="Collapsed" />
+                                </StackPanel>
+                            </ScrollViewer>
+                            <TextBlock Name="PART_NoSelection" Text="Select a peer." Style="{StaticResource DevTools.MutedText}" VerticalAlignment="Center" HorizontalAlignment="Center" Visibility="Collapsed" />
+                        </Grid>
+                    </dev:DevToolsSurface>
+                </Grid>
+            </Grid>
+        </ControlTemplate></Setter>
+    </Style>
+</ResourceDictionary>

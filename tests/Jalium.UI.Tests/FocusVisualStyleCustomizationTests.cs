@@ -17,6 +17,32 @@ namespace Jalium.UI.Tests;
 public class FocusVisualStyleCustomizationTests
 {
     [Fact]
+    public void UnshownMacOSWindow_DoesNotAcceptKeyboardFocusOrCreateARing()
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        ResetApplicationState();
+        _ = new Application();
+        var button = new Button { Content = "Go", Width = 80, Height = 32 };
+        var window = new Window { Content = button };
+        try
+        {
+            SetShowFocusCues(true);
+            Assert.Equal(Visibility.Collapsed, window.Visibility);
+            Assert.False(button.IsVisible);
+            Assert.False(button.Focus());
+            Assert.False(button.IsKeyboardFocused);
+            Assert.Null(window.AdornerLayer!.GetAdorners(button));
+            Assert.Equal(nint.Zero, window.Handle);
+        }
+        finally
+        {
+            window.Close();
+            SetShowFocusCues(false);
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
     public void FocusVisualStyle_FromStyleSetter_IsWhatTheRingUses()
     {
         ResetApplicationState();
@@ -421,13 +447,19 @@ public class FocusVisualStyleCustomizationTests
     {
         var panel = new StackPanel();
         panel.Children.Add(content);
-        return new Window
+        // These are managed focus/adorner tests. Use the existing displayed logical root
+        // so macOS's correctly collapsed, unshown Window does not suppress focus or layout.
+        // No native window is created on the xUnit worker thread.
+        var window = new DisplayedTestWindow
         {
             TitleBarStyle = WindowTitleBarStyle.Native,
             Width = 320,
             Height = 240,
             Content = panel,
         };
+        Assert.True(window.IsVisible);
+        Assert.True(content.IsVisible);
+        return window;
     }
 
     private static void ArrangeWindow(Window window)

@@ -37,7 +37,7 @@ public partial class Window
             }
         }
         catch (Exception error) { failure = ExceptionDispatchInfo.Capture(error); }
-        finally { HostedLifecycleCleanup.Attempt(CloseOwnedMacOSWindow, ref failure); }
+        finally { HostedLifecycleCleanup.Attempt(CloseOwnedDesktopWindow, ref failure); }
         failure?.Throw();
     }
 }

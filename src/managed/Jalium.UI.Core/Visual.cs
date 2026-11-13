@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Media;
+using Jalium.UI.Media;
 using Jalium.UI.Media.Effects;
 using Jalium.UI.Media.Media3D;
 using Jalium.UI.Rendering;
@@ -61,6 +61,9 @@ public abstract class Visual : DependencyObject
     // composites this layer as a transformed quad instead of re-walking the
     // subtree (see RenderChildVisualInline / TryCompositeChildLayer).
     private nint _cachedLayer;
+    private Point _layerRasterPhase;
+    private DpiScale _layerRasterScale;
+    private Point _layerRasterOrientation;
 
     // True when the layer's baked content can no longer be trusted (this visual
     // or a descendant changed CONTENT) and must be re-realized before compositing.
@@ -307,7 +310,9 @@ public abstract class Visual : DependencyObject
         }
 
         if (_cachedDrawing == null) return;
+        var previousDrawing = _cachedDrawing;
         _cachedDrawing = null;
+        global::Jalium.UI.Rendering.DrawingLifetime.Release(previousDrawing);
         // Force RenderDirect's record-or-replay branch to re-record next time.
         _isRenderDirty = true;
     }
@@ -374,6 +379,27 @@ public abstract class Visual : DependencyObject
     // (DP defaults / Header / Foreground sets fire InvalidateMeasure before
     // AddVisualChild ever runs).
     private bool _isDiagnosticsIgnored = Diagnostics.DiagnosticsScope.IsInIgnoredCreationScope;
+    private byte _backdropReplayKinds;
+    private int _backdropReplayCandidates;
+    internal const byte BackdropReplayEffect = 1, BackdropReplayGlass = 2, BackdropReplayBlend = 4;
+    internal bool HasBackdropReplayCandidates => _backdropReplayCandidates != 0;
+
+    // Track potential backdrop readers through physical ownership. Visibility,
+    // opacity and mutable effect settings are evaluated live only on these
+    // sparse paths; ordinary scrolling trees need no per-frame property walk.
+    internal void SetBackdropReplayCandidate(byte kind, bool present)
+    {
+        byte previous = _backdropReplayKinds;
+        _backdropReplayKinds = present ? (byte)(previous | kind) : (byte)(previous & ~kind);
+        int delta = (_backdropReplayKinds == 0 ? 0 : 1) - (previous == 0 ? 0 : 1);
+        if (delta != 0) AdjustBackdropReplayCandidates(delta);
+    }
+
+    private void AdjustBackdropReplayCandidates(int delta)
+    {
+        for (Visual? current = this; current != null; current = current._parent)
+            current._backdropReplayCandidates += delta;
+    }
     [ThreadStatic]
     private static HashSet<Visual>? _renderPath;
     [ThreadStatic]
@@ -410,9 +436,20 @@ public abstract class Visual : DependencyObject
 
     internal Visual? InternalVisualParent => _parent;
 
-    internal int InternalVisualChildrenCount => VisualChildrenCount;
+    // Container overrides expose native content only. CSS formatting children
+    // share the real visual parent while retaining the native public contracts.
+    internal bool HasCssGeneratedChildren;
+    internal int NativeVisualChildrenCount => VisualChildrenCount;
+    internal Visual? NativeGetVisualChild(int index) => GetVisualChild(index);
 
-    internal Visual? InternalGetVisualChild(int index) => GetVisualChild(index);
+    // Retain access to the attached source tree when CSS supplies a different
+    // formatting view. Snapshot before callbacks that can change the tree.
+    internal Visual[] SnapshotAttachedVisualChildren() => _children.ToArray();
+    internal int InternalVisualChildrenCount => HasCssGeneratedChildren && this is FrameworkElement owner
+        ? Styling.CssGeneratedContent.VisualCount(owner) : VisualChildrenCount;
+
+    internal Visual? InternalGetVisualChild(int index) => HasCssGeneratedChildren && this is FrameworkElement owner
+        ? Styling.CssGeneratedContent.VisualChild(owner, index) : GetVisualChild(index);
 
     /// <summary>
     /// Adds a child visual.
@@ -445,7 +482,10 @@ public abstract class Visual : DependencyObject
             if (!_children.Any(candidate => ReferenceEquals(candidate, child)))
             {
                 _children.Add(child);
-                ((DependencyObject)this).VisualChildrenCount = VisualChildrenCount;
+                if (child._backdropReplayCandidates != 0)
+                    AdjustBackdropReplayCandidates(child._backdropReplayCandidates);
+                Styling.CssCompositingProperties.TreeChanged();
+                ((DependencyObject)this).VisualChildrenCount = InternalVisualChildrenCount;
             }
             ((DependencyObject)child).VisualParent = this;
             return;
@@ -461,7 +501,10 @@ public abstract class Visual : DependencyObject
         child._parent = this;
         ((DependencyObject)child).VisualParent = this;
         _children.Add(child);
-        ((DependencyObject)this).VisualChildrenCount = VisualChildrenCount;
+        if (child._backdropReplayCandidates != 0)
+            AdjustBackdropReplayCandidates(child._backdropReplayCandidates);
+        Styling.CssCompositingProperties.TreeChanged();
+        ((DependencyObject)this).VisualChildrenCount = InternalVisualChildrenCount;
 
         // Propagate diagnostics-ignored flag down. Doing this at attach time
         // (not at ShouldIgnore query time) means the check is O(1) later,
@@ -529,8 +572,14 @@ public abstract class Visual : DependencyObject
         child._parent = null;
         ((DependencyObject)child).VisualParent = null;
         int index = _children.FindIndex(candidate => ReferenceEquals(candidate, child));
-        if (index >= 0) _children.RemoveAt(index);
-        ((DependencyObject)this).VisualChildrenCount = VisualChildrenCount;
+        if (index >= 0)
+        {
+            _children.RemoveAt(index);
+            if (child._backdropReplayCandidates != 0)
+                AdjustBackdropReplayCandidates(-child._backdropReplayCandidates);
+        }
+        Styling.CssCompositingProperties.TreeChanged();
+        ((DependencyObject)this).VisualChildrenCount = InternalVisualChildrenCount;
 
         OnVisualChildrenChanged(null, child);
         child.OnVisualParentChanged(oldParent);
@@ -551,7 +600,7 @@ public abstract class Visual : DependencyObject
     /// </summary>
     protected void SyncVisualChildrenCount()
     {
-        ((DependencyObject)this).VisualChildrenCount = VisualChildrenCount;
+        ((DependencyObject)this).VisualChildrenCount = InternalVisualChildrenCount;
     }
 
     /// <summary>
@@ -644,6 +693,7 @@ public abstract class Visual : DependencyObject
         // Content changed → any cached GPU layer for this visual is stale and must
         // be re-realized (the texture is reused; only its pixels are re-rendered).
         _layerContentDirty = true;
+        InvalidateAncestorTextClips();
         MarkSubtreeDirtyUp();
     }
 
@@ -657,7 +707,18 @@ public abstract class Visual : DependencyObject
     /// </summary>
     internal void MarkSubtreeDirtyForComposition()
     {
+        InvalidateAncestorTextClips();
         MarkSubtreeCompositionDirtyUp();
+    }
+
+    private void InvalidateAncestorTextClips()
+    {
+        for (var ancestor = _parent; ancestor is not null; ancestor = ancestor._parent)
+            if (ancestor is DependencyObject dependency && CssBackgroundPaintProperties.Get(dependency)?.UsesTextClip == true)
+            {
+                ancestor._isRenderDirty = true;
+                ancestor._layerContentDirty = true;
+            }
     }
 
     /// <summary>
@@ -804,6 +865,12 @@ public abstract class Visual : DependencyObject
     /// <summary>Controls that paint their backdrop in OnRender opt out of the shared paint step.</summary>
     internal virtual bool RendersBackdropEffectInOnRender => false;
 
+    /// <summary>A template part owns the backdrop; the control must not also sample its own bounds.</summary>
+    internal virtual bool RendersBackdropEffectInTemplate => false;
+
+    /// <summary>A template part owns the element effect and its capture bounds.</summary>
+    internal virtual bool RendersEffectInTemplate => false;
+
     /// <summary>Returns retained vector content for VisualTreeHelper.GetDrawing.</summary>
     internal virtual DrawingGroup? DrawingCore => null;
 
@@ -814,6 +881,20 @@ public abstract class Visual : DependencyObject
     /// <param name="drawingContext">The drawing context.</param>
     public void Render(DrawingContext drawingContext)
     {
+        if (Styling.CssContainmentProperties.SuppressedBySkippedAncestor(this)) return;
+        if (CssBackgroundTextClip.Active)
+        {
+            if (!CssBackgroundTextClip.IsRoot(this) && this is FrameworkElement { CssLayout.IsOutOfFlow: true }) return;
+            if (CssBackgroundTextClip.TryEnterRoot(this))
+            {
+                _renderPath ??= new HashSet<Visual>();
+                bool added = _renderPath.Add(this);
+                try { RenderTextClipContent(drawingContext); }
+                finally { if (added) _renderPath.Remove(this); }
+                return;
+            }
+        }
+        if (Jalium.UI.Controls.CssFirstLinePainter.Skip(this)) return;
         _renderPath ??= new HashSet<Visual>();
 
         if (_renderDepth > MaxRenderDepth)
@@ -842,12 +923,39 @@ public abstract class Visual : DependencyObject
         }
     }
 
+    private void RenderTextClipContent(DrawingContext drawingContext)
+    {
+        var dirty = _isRenderDirty;
+        var subtree = _isSubtreeDirty;
+        var composition = _isSubtreeCompositionDirty;
+        var renderedTick = _lastRenderedTickMs;
+        try { RenderDirectCore(drawingContext); }
+        finally
+        {
+            _isRenderDirty = dirty;
+            _isSubtreeDirty = subtree;
+            _isSubtreeCompositionDirty = composition;
+            _lastRenderedTickMs = renderedTick;
+        }
+    }
+
     private void RenderDirect(DrawingContext drawingContext)
+    {
+        if (CssBackgroundTextClip.Active) { RenderTextClipContent(drawingContext); return; }
+        using var blending = Jalium.UI.Controls.CssCompositingPainter.Begin(this, drawingContext);
+        using var mask = Jalium.UI.Controls.CssMaskPainter.Begin(this, drawingContext);
+        RenderDirectCore(drawingContext);
+        mask?.Complete();
+        blending?.Complete();
+    }
+
+    private void RenderDirectCore(DrawingContext drawingContext)
     {
         // Respect UIElement visibility at render entry.
         // Hidden and Collapsed should not render.
         if (this is UIElement thisElementVisibility &&
             (thisElementVisibility.Visibility != Visibility.Visible ||
+             Styling.CssLineClampLayout.VisuallySuppressed(thisElementVisibility) ||
              Styling.CssDisplayProperties.IsCollapsedFlexItem(thisElementVisibility)))
         {
             _isRenderDirty = false;
@@ -855,8 +963,35 @@ public abstract class Visual : DependencyObject
             _isSubtreeCompositionDirty = false;
             return;
         }
+        if (!Styling.CssTransform3D.IsActivePlane(this) &&
+            this is UIElement backfaceElement &&
+            Styling.CssTransform3D.IsBackfaceCulled(backfaceElement))
+        {
+            _isRenderDirty = false;
+            _isSubtreeDirty = false;
+            _isSubtreeCompositionDirty = false;
+            return;
+        }
+        if (!Styling.CssTransform3D.IsActivePlane(this) &&
+            this is UIElement root3D &&
+            Styling.CssTransform3D.IsEffectivePreserve3D(root3D))
+        {
+            Styling.CssTransform3D.RenderRoot3DContext(drawingContext, root3D);
+            _isRenderDirty = false;
+            _isSubtreeDirty = false;
+            _isSubtreeCompositionDirty = false;
+            return;
+        }
         var suppressOwnPaint = this is UIElement cssVisibilityElement &&
             Styling.CssDisplayProperties.EffectiveVisibility(cssVisibilityElement) != Visibility.Visible;
+        suppressOwnPaint |= Jalium.UI.Controls.CssFirstLinePainter.SuppressOwn(this);
+        if (Styling.CssContentsLayout.IsContents(this))
+        {
+            RenderContentsChildren(drawingContext);
+            _isRenderDirty = _isSubtreeDirty = _isSubtreeCompositionDirty = false;
+            return;
+        }
+        if (Styling.CssContentsLayout.Suppressed(this)) return;
 
         // Stamp the "last rendered" tick so the idle-resource reclaimer can
         // tell how long this visual has been off-screen. Updated AFTER the
@@ -867,7 +1002,7 @@ public abstract class Visual : DependencyObject
         // child.Render() call entirely.
         _lastRenderedTickMs = Environment.TickCount64;
         var renderedObserver = VisualRenderedObserver;
-        if (renderedObserver != null)
+        if (!CssBackgroundTextClip.Active && renderedObserver != null)
         {
             renderedObserver(this);
         }
@@ -881,12 +1016,15 @@ public abstract class Visual : DependencyObject
         IEffectDrawingContext? effectDc = null;
         float captureX = 0, captureY = 0, captureW = 0, captureH = 0;
         bool effectCaptureOpen = false;
-        int pushedClip = 0;
+        bool pushedClip = false;
         bool pushedChildClip = false;
         bool pushedCssClip = false;
         Geometry? cssClipGeometry = null;
+        var hasTableDecorationBox = this is FrameworkElement tableDecorationOwner &&
+            Styling.CssTableLayout.DecorationBox(tableDecorationOwner) is not null;
+        var compositeShadowBeforeChildren = CanCompositeCssBoxShadowBeforeChildren && !hasTableDecorationBox;
 
-        if (this is UIElement effectElement &&
+        if (!RendersEffectInTemplate && this is UIElement effectElement &&
             effectElement.Effect is IEffect eff &&
             eff.HasEffect &&
             !(suppressOwnPaint && eff is Media.Effects.Effect { CssBoxShadowLayer: true } &&
@@ -895,9 +1033,18 @@ public abstract class Visual : DependencyObject
             edc.IsElementEffectCaptureEnabled &&
             drawingContext is IOffsetDrawingContext offsetDc)
         {
-            if (eff is Media.Effects.EffectGroup { CssCombinedShadowAndFilter: true } combined &&
+            if (eff is Media.Effects.Effect { CssBoxShadowLayer: true } &&
+                eff is not Media.Effects.EffectGroup { CssCombinedShadowAndFilter: true } &&
+                edc.SupportsCssShadowLayers)
+            {
+                // CSS box shadows use the box contour, not captured content alpha.
+                // Native layer providers can paint them directly; avoid allocating
+                // and compositing a full offscreen surface for every styled input.
+                combinedCssShadows = eff;
+            }
+            else if (eff is Media.Effects.EffectGroup { CssCombinedShadowAndFilter: true } combined &&
                 combined.Children.Count == 2 && (suppressOwnPaint ||
-                    edc.SupportsCssShadowLayers && CanCompositeCssBoxShadowBeforeChildren))
+                    edc.SupportsCssShadowLayers && compositeShadowBeforeChildren))
             {
                 if (!suppressOwnPaint) combinedCssShadows = combined.Children[0];
                 activeEffect = combined.Children[1];
@@ -940,8 +1087,11 @@ public abstract class Visual : DependencyObject
             captureW = (float)Math.Max(0.0, snappedRight - snappedLeft);
             captureH = (float)Math.Max(0.0, snappedBottom - snappedTop);
 
-            effectDc.BeginEffectCapture(captureX, captureY, captureW, captureH);
-            effectCaptureOpen = true;
+            if (activeEffect != null)
+            {
+                effectDc.BeginEffectCapture(captureX, captureY, captureW, captureH);
+                effectCaptureOpen = true;
+            }
         }
 
         try
@@ -960,7 +1110,7 @@ public abstract class Visual : DependencyObject
             // A backdrop belongs beneath the element's own background, template,
             // and children. Paint it at the border-box edge before overflow clips
             // are pushed; Border and ScrollBar use their own backdrop placement.
-            if (!suppressOwnPaint && !RendersBackdropEffectInOnRender &&
+            if (!suppressOwnPaint && !hasTableDecorationBox && !RendersBackdropEffectInOnRender && !RendersBackdropEffectInTemplate &&
                 this is UIElement backdropElement &&
                 backdropElement.BackdropEffect is { HasEffect: true } backdrop &&
                 backdropElement.RenderSize is { Width: > 0, Height: > 0 } backdropSize)
@@ -997,11 +1147,13 @@ public abstract class Visual : DependencyObject
             {
                 clipGeometry = thisElement.GetLayoutClip();
             }
+            clipGeometry = Styling.CssTableLayout.WrapperClip(this, clipGeometry);
 
             var deferLayoutClip = this is UIElement { LayoutClipIncludesSelf: false };
             if (!deferLayoutClip && clipGeometry != null && drawingContext is IClipDrawingContext clipContext)
             {
-                pushedClip = LayoutClipStack.Push(drawingContext, clipContext, clipGeometry);
+                clipContext.PushClip(clipGeometry);
+                pushedClip = true;
             }
 
         // Templated-background layer. Painted BEFORE OnRender so that a
@@ -1013,7 +1165,9 @@ public abstract class Visual : DependencyObject
         // is a no-op virtual call. The live drawing context is used directly
         // — the template's own cacheable visuals recurse through Render()
         // and pick up the retained-mode cache themselves.
-        RenderTemplatedBackground(drawingContext);
+        Jalium.UI.Controls.CssBorderImagePainter.PrepareTemplate(this);
+        var suppressTableFrame = Styling.CssTableLayout.SuppressFrame(this);
+        if (!suppressTableFrame) RenderTemplatedBackground(drawingContext);
 
         // Retained-mode cache path. When a render cache host is installed
         // AND the live drawing context opts in via ICacheableDrawingContext,
@@ -1037,7 +1191,7 @@ public abstract class Visual : DependencyObject
         //    OnRender has its matching pop recorded too, so drawingContext's
         //    state stacks remain balanced post-replay.
         var cacheHost = RenderCacheHost;
-        var useRenderCache = !suppressOwnPaint && cacheHost != null &&
+        var useRenderCache = !CssBackgroundTextClip.Active && !suppressOwnPaint && !Jalium.UI.Controls.CssFirstLinePainter.Active && !Jalium.UI.Controls.CssInlineSelectionPainter.Active && cacheHost != null &&
             ParticipatesInRenderCache && drawingContext is ICacheableDrawingContext;
         // A direct render can show the new content without replacing a retained
         // drawing from an earlier frame. Keep its dirty bit until a cacheable
@@ -1049,8 +1203,27 @@ public abstract class Visual : DependencyObject
             if (_isRenderDirty || _cachedDrawing == null)
             {
                 var recorder = cacheHost.CreateRecorder(drawingContext);
-                OnRender(recorder);
-                _cachedDrawing = cacheHost.FinishRecord(recorder);
+                bool recorded = false;
+                object? replacement = null;
+                try
+                {
+                    if (!Jalium.UI.Controls.CssColumnBoxPainter.PaintOwn(this, recorder) && !Styling.CssTableLayout.PaintOwn(this, recorder))
+                    {
+                        Jalium.UI.Controls.CssBorderImagePainter.EmptyBackground(this, recorder);
+                        if (!Styling.CssReplacedContent.Background(this, recorder)) OnRender(recorder);
+                    }
+                    Styling.CssTableLayout.PaintColumns(this, recorder);
+                    Jalium.UI.Controls.CssColumnBoxPainter.PaintRules(this, recorder);
+                    recorded = true;
+                }
+                finally
+                {
+                    replacement = cacheHost.FinishRecord(recorder);
+                    if (!recorded) global::Jalium.UI.Rendering.DrawingLifetime.Release(replacement);
+                }
+                var previousDrawing = _cachedDrawing;
+                _cachedDrawing = replacement;
+                global::Jalium.UI.Rendering.DrawingLifetime.Release(previousDrawing);
                 System.Threading.Interlocked.Increment(ref s_retainedCacheRecords);
             }
             else
@@ -1061,24 +1234,28 @@ public abstract class Visual : DependencyObject
         }
         else if (!suppressOwnPaint)
         {
-            OnRender(drawingContext);
+            if (!Jalium.UI.Controls.CssColumnBoxPainter.PaintOwn(this, drawingContext) && !Styling.CssTableLayout.PaintOwn(this, drawingContext))
+            {
+                Jalium.UI.Controls.CssBorderImagePainter.EmptyBackground(this, drawingContext);
+                if (!Styling.CssReplacedContent.Background(this, drawingContext)) OnRender(drawingContext);
+            }
+            Styling.CssTableLayout.PaintColumns(this, drawingContext);
+            Jalium.UI.Controls.CssColumnBoxPainter.PaintRules(this, drawingContext);
             System.Threading.Interlocked.Increment(ref s_retainedCacheBypasses);
         }
 
         if ((activeEffect is Media.Effects.Effect { CssBoxShadowLayer: true } &&
-             CanCompositeCssBoxShadowBeforeChildren) || combinedCssShadows != null)
+             compositeShadowBeforeChildren) ||
+            (combinedCssShadows != null && compositeShadowBeforeChildren))
         {
             // A CSS box shadow is part of the box decoration. Finish the
             // background capture now, leaving descendants and the later border
             // stroke above the inset shadow. Its outer part must not inherit
             // this element's temporary layout clip.
-            if (pushedClip > 0 && drawingContext is IClipDrawingContext shadowClipContext)
+            if (pushedClip && drawingContext is IClipDrawingContext shadowClipContext)
             {
-                while (pushedClip > 0)
-                {
-                    pushedClip--;
-                    shadowClipContext.Pop();
-                }
+                pushedClip = false;
+                shadowClipContext.Pop();
             }
             if (combinedCssShadows != null)
                 PaintCombinedCssShadowLayer(inset: true);
@@ -1087,51 +1264,28 @@ public abstract class Visual : DependencyObject
             if (!deferLayoutClip && clipGeometry != null &&
                 drawingContext is IClipDrawingContext restoredClipContext)
             {
-                pushedClip = LayoutClipStack.Push(drawingContext, restoredClipContext, clipGeometry);
+                restoredClipContext.PushClip(clipGeometry);
+                pushedClip = true;
             }
         }
 
         if (deferLayoutClip && clipGeometry != null && drawingContext is IClipDrawingContext childClipContext)
         {
-            pushedClip = LayoutClipStack.Push(drawingContext, childClipContext, clipGeometry);
+            childClipContext.PushClip(clipGeometry);
+            pushedClip = true;
         }
 
         var childClipGeometry = this is UIElement childClipElement
             ? childClipElement.GetChildLayoutClip()
             : null;
+        childClipGeometry = Styling.CssTableLayout.WrapperClip(this, childClipGeometry);
         if (childClipGeometry != null && drawingContext is IClipDrawingContext insetClipContext)
         {
             insetClipContext.PushClip(childClipGeometry);
             pushedChildClip = true;
         }
 
-        var childCount = VisualChildrenCount;
-        for (int i = 0; i < childCount && i < VisualChildrenCount; i++)
-        {
-            var child = GetVisualChild(i);
-            if (child == null) continue;
-
-            // Skip the ControlTemplate root — it was already painted as the
-            // background layer by RenderTemplatedBackground above. Rendering
-            // it again here would double-paint, reintroducing the very
-            // overlay-obscures-OnRender bug this split is meant to fix.
-            if (child.IsTemplatedRoot)
-            {
-                continue;
-            }
-
-            var additionalChildClip = this is UIElement perChildClipElement
-                ? perChildClipElement.GetAdditionalChildLayoutClip(child)
-                : null;
-            if (additionalChildClip != null && drawingContext is IClipDrawingContext perChildClipContext)
-            {
-                perChildClipContext.PushClip(additionalChildClip);
-                try { RenderChildVisualInline(drawingContext, child); }
-                finally { perChildClipContext.Pop(); }
-            }
-            else
-                RenderChildVisualInline(drawingContext, child);
-        }
+        var tableBorderPainted = RenderVisualChildren(drawingContext, suppressOwnPaint);
 
         // Pop child clip BEFORE OnPostRender so OnPostRender executes outside the
         // layout clip. This matters for Border: its stroke is rendered in
@@ -1150,16 +1304,20 @@ public abstract class Visual : DependencyObject
             pushedChildClip = false;
             insetClipContext2.Pop();
         }
-        if (pushedClip > 0 && drawingContext is IClipDrawingContext clipContext2)
+        if (pushedClip && drawingContext is IClipDrawingContext clipContext2)
         {
-            while (pushedClip > 0)
-            {
-                pushedClip--;
-                clipContext2.Pop();
-            }
+            pushedClip = false;
+            clipContext2.Pop();
         }
 
-        if (!suppressOwnPaint) OnPostRender(drawingContext);
+        if (!suppressOwnPaint && !tableBorderPainted && !Jalium.UI.Controls.CssColumnBoxPainter.PaintBorder(this, drawingContext) && !Styling.CssTableLayout.PaintGridBorder(this, drawingContext) && !Styling.CssTableLayout.SuppressBorder(this) && !Styling.CssReplacedContent.Border(this, drawingContext)) OnPostRender(drawingContext);
+        if (!suppressOwnPaint) Styling.CssTableLayout.PaintFlowBorders(this, drawingContext);
+        if (!suppressOwnPaint) Styling.CssLineClampLayout.PaintMarkers(this, drawingContext);
+
+        // Self-drawing/templated controls historically composite their inset
+        // shadow after their painted group. Preserve that order without a capture.
+        if (combinedCssShadows != null && !compositeShadowBeforeChildren)
+            PaintCombinedCssShadowLayer(inset: true);
 
         // CSS filters consume the completed painted group, including its
         // outline. Native XAML effects keep the established sharp outline
@@ -1177,6 +1335,13 @@ public abstract class Visual : DependencyObject
                 new Point(captureX, captureY);
             var size = (this as UIElement)?.RenderSize ??
                 new Size(captureW, captureH);
+            var tableGridBox = this is FrameworkElement shadowTableElement
+                ? Styling.CssTableLayout.DecorationBox(shadowTableElement) : null;
+            if (tableGridBox is { } gridBox)
+            {
+                offset = new Point(offset.X + gridBox.X, offset.Y + gridBox.Y);
+                size = gridBox.Size;
+            }
             var cssRadius = this is UIElement cssElement
                 ? Styling.CssBorderRadiusProperties.Get(cssElement)?.Resolve(size)
                 : null;
@@ -1185,10 +1350,36 @@ public abstract class Visual : DependencyObject
             var borderProperty = this is UIElement borderElement
                 ? Styling.CssDependencyPropertyLookup.Find(borderElement.GetType(), "BorderThickness")
                 : null;
-            var border = borderProperty is not null &&
-                this is UIElement borderOwner &&
-                borderOwner.GetValue(borderProperty) is Thickness thickness
+            var border = tableGridBox is { } borderGridBox && this is FrameworkElement borderTableOwner
+                ? Styling.CssBoxMetrics.BackgroundInsets(borderTableOwner, borderTableOwner.CssLayout?.ContainingWidthCache ?? borderGridBox.Width).Border
+                : borderProperty is not null &&
+                  this is UIElement borderOwner &&
+                  borderOwner.GetValue(borderProperty) is Thickness thickness
                 ? thickness : default;
+            if (this is FrameworkElement { IsCssColumnFrame: true, CssColumnBox: { } columnBox } columnOwner &&
+                columnBox.InlineFragments is null && columnBox.Pieces.Length > 0)
+            {
+                var clone = Styling.CssBoxDecorationBreakProperties.Value(columnOwner) == Styling.CssBoxDecorationBreak.Clone;
+                foreach (var piece in columnBox.Pieces)
+                {
+                    var dest = piece.Destination;
+                    var hasTop = clone || piece.Source.Top <= 0.0001;
+                    var hasBottom = clone || piece.Source.Bottom >= columnBox.NaturalSize.Height - 0.0001;
+                    var pieceRadius = Styling.CssBorderRadiusProperties.Get(columnOwner)?.Resolve(clone ? dest.Size : columnBox.NaturalSize);
+                    var pieceBorder = new Thickness(border.Left, hasTop ? border.Top : 0, border.Right, hasBottom ? border.Bottom : 0);
+                    effectDc.PaintCssShadowLayers(combinedCssShadows, inset,
+                        (float)(offset.X + dest.X), (float)(offset.Y + dest.Y), (float)dest.Width, (float)dest.Height,
+                        hasTop ? (float)(pieceRadius?.TopLeft.Width ?? nativeRadius.TopLeft) : 0f,
+                        hasTop ? (float)(pieceRadius?.TopLeft.Height ?? nativeRadius.TopLeft) : 0f,
+                        hasTop ? (float)(pieceRadius?.TopRight.Width ?? nativeRadius.TopRight) : 0f,
+                        hasTop ? (float)(pieceRadius?.TopRight.Height ?? nativeRadius.TopRight) : 0f,
+                        hasBottom ? (float)(pieceRadius?.BottomRight.Width ?? nativeRadius.BottomRight) : 0f,
+                        hasBottom ? (float)(pieceRadius?.BottomRight.Height ?? nativeRadius.BottomRight) : 0f,
+                        hasBottom ? (float)(pieceRadius?.BottomLeft.Width ?? nativeRadius.BottomLeft) : 0f,
+                        hasBottom ? (float)(pieceRadius?.BottomLeft.Height ?? nativeRadius.BottomLeft) : 0f, pieceBorder);
+                }
+                return;
+            }
             effectDc.PaintCssShadowLayers(combinedCssShadows, inset,
                 (float)offset.X, (float)offset.Y, (float)size.Width, (float)size.Height,
                 (float)(cssRadius?.TopLeft.Width ?? nativeRadius.TopLeft),
@@ -1233,6 +1424,13 @@ public abstract class Visual : DependencyObject
             }
             var elemOffset = (drawingContext is IOffsetDrawingContext odc2) ? odc2.Offset : new Point(captureX, captureY);
             var elemSize = (this is UIElement ue) ? ue.RenderSize : new Size(captureW, captureH);
+            var tableGridBox = this is FrameworkElement effectTableElement
+                ? Styling.CssTableLayout.DecorationBox(effectTableElement) : null;
+            if (tableGridBox is { } gridBox)
+            {
+                elemOffset = new Point(elemOffset.X + gridBox.X, elemOffset.Y + gridBox.Y);
+                elemSize = gridBox.Size;
+            }
 
             // CSS keeps two used radii per corner outside the public circular CornerRadius.
             // Preserve that contour through retained recording and the optional native effect
@@ -1244,8 +1442,10 @@ public abstract class Visual : DependencyObject
                 var used = cssRadius.Resolve(elemSize);
                 var borderProperty = Styling.CssDependencyPropertyLookup.Find(
                     cornerElement.GetType(), "BorderThickness");
-                var border = borderProperty is not null &&
-                    cornerElement.GetValue(borderProperty) is Thickness thickness
+                var border = tableGridBox is { } borderGridBox && cornerElement is FrameworkElement borderTableOwner
+                    ? Styling.CssBoxMetrics.BackgroundInsets(borderTableOwner, borderTableOwner.CssLayout?.ContainingWidthCache ?? borderGridBox.Width).Border
+                    : borderProperty is not null &&
+                      cornerElement.GetValue(borderProperty) is Thickness thickness
                     ? thickness : default;
                 effectDc.ApplyElementEffectEllipticalWithBorder(activeEffect,
                     (float)elemOffset.X, (float)elemOffset.Y,
@@ -1275,8 +1475,10 @@ public abstract class Visual : DependencyObject
                 {
                     var borderProperty = Styling.CssDependencyPropertyLookup.Find(
                         insetElement.GetType(), "BorderThickness");
-                    var border = borderProperty is not null &&
-                        insetElement.GetValue(borderProperty) is Thickness thickness
+                    var border = tableGridBox is { } borderGridBox && insetElement is FrameworkElement borderTableOwner
+                        ? Styling.CssBoxMetrics.BackgroundInsets(borderTableOwner, borderTableOwner.CssLayout?.ContainingWidthCache ?? borderGridBox.Width).Border
+                        : borderProperty is not null &&
+                          insetElement.GetValue(borderProperty) is Thickness thickness
                         ? thickness : default;
                     effectDc.ApplyElementEffectEllipticalWithBorder(activeEffect,
                         (float)elemOffset.X, (float)elemOffset.Y,
@@ -1342,6 +1544,7 @@ public abstract class Visual : DependencyObject
         _isRenderDirty = retainedCacheNeedsRefresh;
         _isSubtreeDirty = false;
         _isSubtreeCompositionDirty = false;
+        if (!CssBackgroundTextClip.Active && this is FrameworkElement contentsHost) Styling.CssContentsLayout.CompletePaint(contentsHost);
         }
         finally
         {
@@ -1356,13 +1559,10 @@ public abstract class Visual : DependencyObject
                     pushedChildClip = false;
                     insetClipContext.Pop();
                 }
-                if (pushedClip > 0 && drawingContext is IClipDrawingContext clipContext)
+                if (pushedClip && drawingContext is IClipDrawingContext clipContext)
                 {
-                    while (pushedClip > 0)
-                    {
-                        pushedClip--;
-                        clipContext.Pop();
-                    }
+                    pushedClip = false;
+                    clipContext.Pop();
                 }
                 if (pushedCssClip && drawingContext is IClipDrawingContext cssClipContext)
                 {
@@ -1466,6 +1666,18 @@ public abstract class Visual : DependencyObject
         Point childOffset,
         Rect localBounds)
     {
+        if (Styling.CssTransform3D.Needs3DRendering(child))
+        {
+            var m3d = Styling.CssTransform3D.GetElementMatrix3DInParent(child, includeRenderOffset: true);
+            var vb = child.VisualBounds;
+            var ro = child.RenderOffset;
+            var baseX = childOffset.X - vb.X - ro.X;
+            var baseY = childOffset.Y - vb.Y - ro.Y;
+            var proj = Styling.CssTransform3D.TransformLocalRectBounds(m3d, localBounds);
+            if (!proj.IsEmpty)
+                return new Rect(proj.X + baseX, proj.Y + baseY, proj.Width, proj.Height);
+        }
+
         var transform = child.RenderTransform;
         if (transform == null)
         {
@@ -1622,10 +1834,10 @@ public abstract class Visual : DependencyObject
     internal static void ReleaseRetainedLayersRecursive(Visual root)
     {
         ReleaseLayerIfAny(root);
-        int count = root.VisualChildrenCount;
+        int count = root.InternalVisualChildrenCount;
         for (int i = 0; i < count; i++)
         {
-            if (root.GetVisualChild(i) is Visual child)
+            if (root.InternalGetVisualChild(i) is Visual child)
                 ReleaseRetainedLayersRecursive(child);
         }
     }
@@ -1655,7 +1867,8 @@ public abstract class Visual : DependencyObject
             effectContext.IsElementEffectCaptureEnabled;
         // Extra ink (outline ring) paints outside RenderSize, but the retained layer
         // texture is sized exactly (childOffset, RenderSize) — capturing would clip it.
-        if (!child.ParticipatesInRenderCache || child.HasUnboundedContent ||
+        if (!child.ParticipatesInRenderCache || child.HasUnboundedContent || Styling.CssCompositingProperties.ContainsBlend(child) ||
+            Styling.CssTransform3D.Needs3DRendering(child) ||
             (elementEffectsEnabled && child.Effect is IEffect ce && ce.HasEffect) ||
             child.GetExtraDirtyPadding() > 0)
         {
@@ -1690,7 +1903,7 @@ public abstract class Visual : DependencyObject
         var size = child.RenderSize;
         bool eligible = (child._isCompositorBoundary || hasComposite) && !rotation && !rescalesLayer
             && size.Width >= 1.0 && size.Height >= 1.0
-            && child.VisualChildrenCount > 0;
+            && child.InternalVisualChildrenCount > 0;
 
         if (!eligible)
         {
@@ -1712,14 +1925,48 @@ public abstract class Visual : DependencyObject
             return false;
         }
 
-        var worldBounds = new Rect(childOffset.X, childOffset.Y, size.Width, size.Height);
+        // A border's antialiased outer edge can cover pixels just outside its
+        // layout rectangle. Preserve that apron when a clean subtree switches
+        // from direct painting to a retained layer on a composition-only frame.
+        var worldBounds = new Rect(childOffset.X - 1, childOffset.Y - 1, size.Width + 2, size.Height + 2);
+
+        // Capture at the same translated pixel phase as direct painting. A
+        // logical integer translation can be fractional at the target DPI.
+        // Reuse remains cheap for integer physical movement; a different phase
+        // must rasterize again rather than filtering already-antialiased text.
+        var translation = transform?.Value ?? Matrix.Identity;
+        var origin = child.RenderTransformOrigin;
+        double originX = origin.X * size.Width, originY = origin.Y * size.Height;
+        var captureOffset = new Point(childOffset.X + translation.OffsetX + originX * (1 - translation.M11),
+            childOffset.Y + translation.OffsetY + originY * (1 - translation.M22));
+        var orientation = new Point(translation.M11, translation.M22);
+        var rasterScale = layerCtx.RetainedLayerRasterScale;
+        static double PixelPhase(double value, double scale)
+        {
+            double physical = (float)value * (float)scale;
+            return physical - Math.Floor(physical);
+        }
+        var phase = new Point(PixelPhase(captureOffset.X, rasterScale.DpiScaleX),
+            PixelPhase(captureOffset.Y, rasterScale.DpiScaleY));
+        static bool SamePhase(double a, double b)
+        {
+            double delta = Math.Abs(a - b);
+            return delta < 0.0001 || Math.Abs(delta - 1) < 0.0001;
+        }
 
         nint layer = child._cachedLayer;
-        if (layer == 0 || child._layerContentDirty)
+        if (layer == 0 || child._layerContentDirty || child._layerRasterScale != rasterScale ||
+            child._layerRasterOrientation != orientation ||
+            !SamePhase(child._layerRasterPhase.X, phase.X) || !SamePhase(child._layerRasterPhase.Y, phase.Y))
         {
-            nint realized = layerCtx.BeginLayerCapture(layer, worldBounds);
+            var savedOffset = offsetContext.Offset;
+            offsetContext.Offset = childOffset;
+            nint realized;
+            try { realized = layerCtx.BeginLayerCapture(layer, worldBounds, transform, originX, originY); }
+            catch { offsetContext.Offset = savedOffset; throw; }
             if (realized == 0)
             {
+                offsetContext.Offset = savedOffset;
                 if (child._isCompositorBoundary) Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.CB_REFUSED);
                 // A refused handle must not stay cached. After device-lost
                 // recovery, a stale-device layer that escaped the recovery
@@ -1733,14 +1980,20 @@ public abstract class Visual : DependencyObject
                 return false; // ancestor transform/opacity, nested capture, or unsupported → fall back
             }
 
-            var savedOffset = offsetContext.Offset;
-            offsetContext.Offset = childOffset;
-            child.Render(drawingContext); // CONTENT only — no transform/opacity pushed
-            offsetContext.Offset = savedOffset;
-
-            layerCtx.EndLayerCapture(realized);
+            try
+            {
+                child.Render(drawingContext);
+            }
+            finally
+            {
+                layerCtx.EndLayerCapture(realized);
+                offsetContext.Offset = savedOffset;
+            }
             child._cachedLayer = realized;
             child._layerContentDirty = false;
+            child._layerRasterPhase = phase;
+            child._layerRasterScale = rasterScale;
+            child._layerRasterOrientation = orientation;
             layer = realized;
         }
 
@@ -1750,13 +2003,6 @@ public abstract class Visual : DependencyObject
         // normal child path.
         var saved = offsetContext.Offset;
         offsetContext.Offset = childOffset;
-        double originX = 0, originY = 0;
-        if (transform != null)
-        {
-            var origin = child.RenderTransformOrigin;
-            originX = origin.X * size.Width;
-            originY = origin.Y * size.Height;
-        }
         layerCtx.CompositeLayer(layer, worldBounds, opacity, transform, originX, originY);
         offsetContext.Offset = saved;
 
@@ -1779,10 +2025,10 @@ public abstract class Visual : DependencyObject
         if (visual is UIElement ue &&
             ((ue.Effect is IEffect e && e.HasEffect) || ue.GetExtraDirtyPadding() > 0))
             return true;
-        int n = visual.VisualChildrenCount;
+        int n = visual.InternalVisualChildrenCount;
         for (int i = 0; i < n; i++)
         {
-            var c = visual.GetVisualChild(i);
+            var c = visual.InternalGetVisualChild(i);
             if (c != null && SubtreeHasEffectOrExtraInk(c))
                 return true;
         }
@@ -1819,12 +2065,12 @@ public abstract class Visual : DependencyObject
     /// </remarks>
     private static bool SubtreeHasNonTranslateTransform(Visual visual)
     {
-        int n = visual.VisualChildrenCount;
+        int n = visual.InternalVisualChildrenCount;
         for (int i = 0; i < n; i++)
         {
-            var c = visual.GetVisualChild(i);
+            var c = visual.InternalGetVisualChild(i);
             if (c == null) continue;
-            if (c is UIElement ce && ce.RenderTransform is { } t && !IsPureTranslate(t))
+            if (c is UIElement ce && (Styling.CssTransform3D.Needs3DRendering(ce) || (ce.RenderTransform is { } t && !IsPureTranslate(t))))
                 return true;
             if (SubtreeHasNonTranslateTransform(c))
                 return true;
@@ -1839,6 +2085,76 @@ public abstract class Visual : DependencyObject
         const double epsilon = 1e-6;
         return Math.Abs(m.M11 - 1.0) <= epsilon && Math.Abs(m.M12) <= epsilon
             && Math.Abs(m.M21) <= epsilon && Math.Abs(m.M22 - 1.0) <= epsilon;
+    }
+
+    private void RenderContentsChildren(DrawingContext context)
+    {
+        Jalium.UI.Controls.CssInlineSelectionPainter.Paragraph(this, context, () =>
+            Jalium.UI.Controls.CssInlineSelectionPainter.Children(this, context, () =>
+            {
+                foreach (var child in new Styling.CssPanelChildren((FrameworkElement)this))
+                    RenderChildVisualInline(context, child);
+            }));
+    }
+
+    private bool RenderVisualChildren(DrawingContext context, bool suppressOwnPaint)
+    {
+        if (this is FrameworkElement skipped && Styling.CssContainmentProperties.IsContentSkipped(skipped)) return false;
+        if (Styling.CssTransform3D.SuppressesChildrenOf(this))
+            return false;
+        var positioned = Styling.CssPositionedLayout.PaintChildren(this);
+        var table = positioned is null ? Styling.CssTableLayout.CaptionPaintChildren(this) : null;
+        var count = positioned?.Count ?? table?.Length ?? InternalVisualChildrenCount;
+        if (Jalium.UI.Controls.CssInlineSelectionPainter.NeedsParagraphPass(this))
+        {
+            return RenderParagraphChildren(context, suppressOwnPaint, positioned, table, count);
+        }
+
+        // Ordinary controls need neither pseudo-line passes nor shared selection
+        // groups. Keep their traversal free of per-visual delegate/closure chains.
+        bool background = false, border = false;
+        RenderVisualChildrenCore(context, suppressOwnPaint, positioned, table, count, ref background, ref border);
+        if (!suppressOwnPaint) Styling.CssTableLayout.PaintGridBeforeChild(this, null, context, ref background, ref border);
+        return border;
+    }
+
+    private bool RenderParagraphChildren(DrawingContext context, bool suppressOwnPaint,
+        List<Styling.CssPositionedLayout.PaintChild>? positioned, Visual[]? table, int count)
+    {
+        bool background = false, border = false;
+        Jalium.UI.Controls.CssInlineSelectionPainter.Paragraph(this, context, () =>
+            Jalium.UI.Controls.CssInlineSelectionPainter.Children(this, context, () =>
+                RenderVisualChildrenCore(context, suppressOwnPaint, positioned, table, count, ref background, ref border)));
+        if (!suppressOwnPaint) Styling.CssTableLayout.PaintGridBeforeChild(this, null, context, ref background, ref border);
+        return border;
+    }
+
+    private void RenderVisualChildrenCore(DrawingContext context, bool suppressOwnPaint,
+        List<Styling.CssPositionedLayout.PaintChild>? positioned, Visual[]? table, int count,
+        ref bool background, ref bool border)
+    {
+        for (int i = 0; i < count && (positioned is not null || i < InternalVisualChildrenCount); i++)
+        {
+            var child = positioned is not null ? positioned[i].Visual : table is not null ? table[i] : InternalGetVisualChild(i);
+            if (child is null) continue;
+            if (!suppressOwnPaint) Styling.CssTableLayout.PaintGridBeforeChild(this, child, context, ref background, ref border);
+            if (positioned is not null && positioned[i].Promoted)
+            {
+                Styling.CssPositionedLayout.RenderPromoted(this, context, positioned[i]);
+                continue;
+            }
+            // The template root was already painted by RenderTemplatedBackground.
+            if (child.IsTemplatedRoot) continue;
+            var clip = this is UIElement owner ? owner.GetAdditionalChildLayoutClip(child) : null;
+            clip ??= Styling.CssTableLayout.GridChildClip(this, child);
+            if (clip is not null && context is IClipDrawingContext clipped)
+            {
+                clipped.PushClip(clip);
+                try { RenderChildVisualInline(context, child); }
+                finally { clipped.Pop(); }
+            }
+            else RenderChildVisualInline(context, child);
+        }
     }
 
     /// <summary>
@@ -1863,6 +2179,7 @@ public abstract class Visual : DependencyObject
     /// </returns>
     internal bool RenderChildVisualInline(DrawingContext drawingContext, Visual child)
     {
+        if (Styling.CssPositionedLayout.DefersPaint(child)) return false;
         if (child is UIElement uiVisibility && uiVisibility.Visibility != Visibility.Visible)
         {
             return false;
@@ -1872,7 +2189,7 @@ public abstract class Visual : DependencyObject
         {
             // A fully transparent subtree cannot contribute a pixel. Cull it
             // before bounds work and before walking its retained drawing tree.
-            if (uiChild.Opacity <= 0)
+            if (uiChild.Opacity <= 0 && !CssBackgroundTextClip.Active)
             {
                 return false;
             }
@@ -1889,12 +2206,18 @@ public abstract class Visual : DependencyObject
                 return false;
             }
 
+            if (!Styling.CssTransform3D.IsActivePlane(child) &&
+                Styling.CssTransform3D.Needs3DRendering(uiChild))
+            {
+                return Styling.CssTransform3D.RenderChild3D(drawingContext, uiChild, savedOffset);
+            }
+
             // Damage-driven composited-animation fast path: if this child's CONTENT
             // is clean and it is animating Opacity/RenderTransform, composite its
             // cached GPU layer (one transformed quad) instead of re-walking and
             // re-emitting the whole subtree. Transparently falls back when not
             // eligible or unsupported by the backend.
-            if (!Styling.CssDisplayProperties.HasVisibilityStyleOnPath(uiChild) &&
+            if (!CssBackgroundTextClip.Active && !Jalium.UI.Controls.CssFirstLinePainter.Active && !Jalium.UI.Controls.CssInlineSelectionPainter.Active && !Styling.CssDisplayProperties.HasVisibilityStyleOnPath(uiChild) &&
                 TryCompositeChildLayer(drawingContext, uiChild, childOffset))
             {
                 return true;
@@ -1929,19 +2252,15 @@ public abstract class Visual : DependencyObject
                 pushedTransform = true;
             }
 
-            child.Render(drawingContext);
-
-            if (pushedTransform && drawingContext is ITransformDrawingContext transformContextPop)
+            try { child.Render(drawingContext); }
+            finally
             {
-                transformContextPop.PopTransform();
+                if (pushedTransform && drawingContext is ITransformDrawingContext transformContextPop)
+                    transformContextPop.PopTransform();
+                if (pushedOpacity && drawingContext is IOpacityDrawingContext opacityContext2)
+                    opacityContext2.PopOpacity();
+                offsetContext.Offset = savedOffset;
             }
-
-            if (pushedOpacity && drawingContext is IOpacityDrawingContext opacityContext2)
-            {
-                opacityContext2.PopOpacity();
-            }
-
-            offsetContext.Offset = savedOffset;
             return true;
         }
 
@@ -2147,6 +2466,7 @@ public abstract class Visual : DependencyObject
         DpiScale oldDpi = _dpiScale;
         _dpiScale = dpiScale;
         OnDpiChanged(oldDpi, dpiScale);
+        Jalium.UI.Styling.CssDocumentConsumers.RootDpiChanged(this);
         if (this is FrameworkElement { FrameworkParent: null,
                 CssRuntimeState: { ObservesViewport: true } } root)
             Styling.CssEvaluationScheduler.InvalidateSubtree(root);
@@ -2177,6 +2497,18 @@ public abstract class Visual : DependencyObject
         {
             // Transform to root coordinates
             return GetTransformToRoot();
+        }
+
+        if (this is UIElement thisUi && visual.IsAncestorOf(this) &&
+            Styling.CssTransform3D.ChainHas3DTransform(thisUi, visual))
+        {
+            return Styling.CssTransform3D.GetGeneralTransformTo(thisUi, visual, includeRenderOffset: true);
+        }
+
+        if (visual is UIElement targetUi && IsAncestorOf(visual) &&
+            Styling.CssTransform3D.ChainHas3DTransform(targetUi, this))
+        {
+            return Styling.CssTransform3D.GetGeneralTransformTo(targetUi, this, includeRenderOffset: true).Inverse;
         }
 
         // Get transforms from both visuals to the root
@@ -2235,7 +2567,11 @@ public abstract class Visual : DependencyObject
         // Only UIElements contribute layout offset / render transforms; other visuals are
         // pass-through (identity). GetRenderMatrix already walks the whole chain up to the window.
         if (this is UIElement uiElement)
+        {
+            if (Styling.CssTransform3D.ChainHas3DTransform(uiElement))
+                return Styling.CssTransform3D.GetGeneralTransformTo(uiElement, null, includeRenderOffset: true);
             return new MatrixTransform(uiElement.GetRenderMatrix());
+        }
 
         return new MatrixTransform(Matrix.Identity);
     }

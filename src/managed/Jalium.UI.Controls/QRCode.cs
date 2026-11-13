@@ -43,7 +43,7 @@ public enum QRCodeEncoding
 /// <summary>
 /// Displays a QR code generated from text content. Pure managed encoder, no third-party dependencies.
 /// </summary>
-public class QRCode : Control
+public partial class QRCode : Control
 {
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
@@ -194,6 +194,7 @@ public class QRCode : Control
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
+        base.MeasureOverride(availableSize);
         EnsureSymbol();
 
         var chromeWidth = BorderThickness.TotalWidth + Padding.TotalWidth;
@@ -239,15 +240,12 @@ public class QRCode : Control
     /// <inheritdoc />
     protected override void OnRender(DrawingContext drawingContext)
     {
+        base.OnRender(drawingContext);if(TemplateRootInternal is null)RenderSymbol(drawingContext);
+    }
+    protected override Size ArrangeOverride(Size finalSize){base.ArrangeOverride(finalSize);return finalSize;}
+    internal void RenderSymbol(DrawingContext drawingContext)
+    {
         EnsureSymbol();
-
-        var outerRect = new Rect(RenderSize);
-        var borderPen = CreateBorderPen();
-        if (Background != null || borderPen != null)
-        {
-            drawingContext.DrawRoundedRectangle(Background, borderPen, outerRect, CornerRadius);
-        }
-
         if (_symbol == null)
         {
             return;
@@ -266,7 +264,8 @@ public class QRCode : Control
         }
 
         var qrRect = AlignSquare(contentRect, side);
-        var foreground = Foreground ?? new SolidColorBrush(Color.Black);
+        if(Background is { } paper)drawingContext.DrawRectangle(paper,null,qrRect);
+        var foreground = Foreground ?? Brushes.Black;
         var quietZone = QuietZoneModules;
         var totalModules = TotalModuleCount;
         var moduleSize = Math.Max(1.0, Math.Floor(qrRect.Width / totalModules));
@@ -449,7 +448,7 @@ public class QRCode : Control
         if (d is not QRCode qrCode) return;
         qrCode.InvalidateQrCode();
         qrCode.InvalidateMeasure();
-        qrCode.InvalidateVisual();
+        qrCode.InvalidateSymbolView();
     }
 
     private static object CoerceQuietZoneModules(DependencyObject d, object? value)
@@ -523,15 +522,6 @@ public class QRCode : Control
         QRCodeEncoding.ShiftJis => QRByteEncoding.ShiftJis,
         _ => QRByteEncoding.Auto,
     };
-
-    private Pen? CreateBorderPen()
-    {
-        if (BorderBrush == null) return null;
-        var thickness = Math.Max(
-            Math.Max(BorderThickness.Left, BorderThickness.Right),
-            Math.Max(BorderThickness.Top, BorderThickness.Bottom));
-        return thickness > 0 ? new Pen(BorderBrush, thickness) : null;
-    }
 
     private Rect GetContentRect()
     {

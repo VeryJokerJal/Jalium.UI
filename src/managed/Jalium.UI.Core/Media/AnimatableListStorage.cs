@@ -7,29 +7,19 @@ namespace Jalium.UI.Media;
 /// must remain <see cref="Animation.Animatable"/>.  Keeping storage out of their inheritance
 /// chain preserves the exact public metadata while retaining the same Freezable ownership and
 /// clone/freeze behaviour as <see cref="AnimatableCollection{T}"/>.
+/// Stored inline in its owner: the immutable wrapper holds references to the owner and its
+/// mutable list, avoiding a separate allocation for every small geometry collection.
 /// </summary>
-internal sealed class AnimatableListStorage<T>
+internal readonly struct AnimatableListStorage<T>
 {
     private readonly List<T> _items;
-    private readonly Action _readPreamble;
-    private readonly Action _writePreamble;
-    private readonly Action _writePostscript;
-    private readonly Action<DependencyObject?, DependencyObject?> _changeOwner;
-    private readonly Func<bool> _isFrozen;
+    private readonly Freezable _owner;
 
     internal AnimatableListStorage(
-        Action readPreamble,
-        Action writePreamble,
-        Action writePostscript,
-        Action<DependencyObject?, DependencyObject?> changeOwner,
-        Func<bool> isFrozen,
+        Freezable owner,
         int capacity = 0)
     {
-        _readPreamble = readPreamble;
-        _writePreamble = writePreamble;
-        _writePostscript = writePostscript;
-        _changeOwner = changeOwner;
-        _isFrozen = isFrozen;
+        _owner = owner;
         _items = capacity == 0 ? new List<T>() : new List<T>(capacity);
     }
 
@@ -37,41 +27,42 @@ internal sealed class AnimatableListStorage<T>
     {
         get
         {
-            _readPreamble();
+            _owner.ReadCollectionPreamble();
             return _items[index];
         }
-        set
-        {
-            EnsureItem(value);
-            _writePreamble();
-            T old = _items[index];
-            Detach(old);
-            _items[index] = value;
-            Attach(value);
-            _writePostscript();
-        }
+    }
+
+    internal void SetItem(int index, T value)
+    {
+        EnsureItem(value);
+        _owner.WriteCollectionPreamble();
+        T old = _items[index];
+        Detach(old);
+        _items[index] = value;
+        Attach(value);
+        _owner.WriteCollectionPostscript();
     }
 
     internal int Count
     {
         get
         {
-            _readPreamble();
+            _owner.ReadCollectionPreamble();
             return _items.Count;
         }
     }
 
-    internal bool IsReadOnly => _isFrozen();
+    internal bool IsReadOnly => _owner.IsFrozen;
 
-    internal bool IsSynchronized => _isFrozen();
+    internal bool IsSynchronized => _owner.IsFrozen;
 
     internal void Add(T item)
     {
         EnsureItem(item);
-        _writePreamble();
+        _owner.WriteCollectionPreamble();
         Attach(item);
         _items.Add(item);
-        _writePostscript();
+        _owner.WriteCollectionPostscript();
     }
 
     internal void AddRange(IEnumerable<T> items)
@@ -85,59 +76,59 @@ internal sealed class AnimatableListStorage<T>
 
     internal void Clear()
     {
-        _writePreamble();
+        _owner.WriteCollectionPreamble();
         foreach (T item in _items)
         {
             Detach(item);
         }
 
         _items.Clear();
-        _writePostscript();
+        _owner.WriteCollectionPostscript();
     }
 
     internal bool Contains(T item)
     {
-        _readPreamble();
+        _owner.ReadCollectionPreamble();
         return _items.Contains(item);
     }
 
     internal void CopyTo(T[] array, int arrayIndex)
     {
-        _readPreamble();
+        _owner.ReadCollectionPreamble();
         _items.CopyTo(array, arrayIndex);
     }
 
     internal void CopyTo(Array array, int index)
     {
-        _readPreamble();
+        _owner.ReadCollectionPreamble();
         ArgumentNullException.ThrowIfNull(array);
         ((ICollection)_items).CopyTo(array, index);
     }
 
     internal List<T>.Enumerator GetEnumerator()
     {
-        _readPreamble();
+        _owner.ReadCollectionPreamble();
         return _items.GetEnumerator();
     }
 
     internal int IndexOf(T item)
     {
-        _readPreamble();
+        _owner.ReadCollectionPreamble();
         return _items.IndexOf(item);
     }
 
     internal void Insert(int index, T item)
     {
         EnsureItem(item);
-        _writePreamble();
+        _owner.WriteCollectionPreamble();
         Attach(item);
         _items.Insert(index, item);
-        _writePostscript();
+        _owner.WriteCollectionPostscript();
     }
 
     internal bool Remove(T item)
     {
-        _writePreamble();
+        _owner.WriteCollectionPreamble();
         int index = _items.IndexOf(item);
         if (index < 0)
         {
@@ -147,17 +138,17 @@ internal sealed class AnimatableListStorage<T>
         T removed = _items[index];
         _items.RemoveAt(index);
         Detach(removed);
-        _writePostscript();
+        _owner.WriteCollectionPostscript();
         return true;
     }
 
     internal void RemoveAt(int index)
     {
-        _writePreamble();
+        _owner.WriteCollectionPreamble();
         T removed = _items[index];
         _items.RemoveAt(index);
         Detach(removed);
-        _writePostscript();
+        _owner.WriteCollectionPostscript();
     }
 
     internal bool Freeze(bool isChecking)
@@ -169,16 +160,9 @@ internal sealed class AnimatableListStorage<T>
                 continue;
             }
 
-            if (isChecking)
+            if (!Freezable.Freeze(freezable, isChecking))
             {
-                if (!freezable.CanFreeze)
-                {
-                    return false;
-                }
-            }
-            else if (!freezable.IsFrozen)
-            {
-                freezable.Freeze();
+                return false;
             }
         }
 
@@ -187,6 +171,15 @@ internal sealed class AnimatableListStorage<T>
 
     internal void CopyFrom(AnimatableListStorage<T> source, AnimatableListCloneMode mode)
     {
+        // Value items cannot own child Freezables. Copy their contiguous data
+        // once, rather than growing several intermediate arrays point by point.
+        if (typeof(T).IsValueType)
+        {
+            _items.AddRange(source._items);
+            return;
+        }
+
+        _items.EnsureCapacity(checked(_items.Count + source._items.Count));
         foreach (T item in source._items)
         {
             T copy = item;
@@ -220,7 +213,7 @@ internal sealed class AnimatableListStorage<T>
     {
         if (item is DependencyObject dependencyObject)
         {
-            _changeOwner(null, dependencyObject);
+            _owner.ChangeCollectionOwner(null, dependencyObject);
         }
     }
 
@@ -228,7 +221,7 @@ internal sealed class AnimatableListStorage<T>
     {
         if (item is DependencyObject dependencyObject)
         {
-            _changeOwner(dependencyObject, null);
+            _owner.ChangeCollectionOwner(dependencyObject, null);
         }
     }
 

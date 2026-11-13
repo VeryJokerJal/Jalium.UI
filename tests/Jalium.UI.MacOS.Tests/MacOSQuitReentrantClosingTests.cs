@@ -163,6 +163,42 @@ public sealed class MacOSQuitReentrantClosingTests : MacOSGeometryTestBase
         return application;
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AsynchronousCloseDecisionKeepsQuitPendingUntilItsAcceptedOrCancelledResult(bool cancel)
+    {
+        var window = new DisplayedTestWindow();
+        var other = new DisplayedTestWindow();
+        var application = ApplicationFor(window, other);
+        var replies = new List<bool>();
+        using var request = new MacOSWindowCloseRequest(application, replies.Add);
+        IDisposable? decision = null;
+        EventHandler<CancelEventArgs> callback = (_, args) =>
+        {
+            // Model One's asynchronous save/flush and scheduled second Close.
+            // Before the API exists the same cancellable callback reproduces the lost quit.
+            decision = (IDisposable?)typeof(Window).GetMethod("DeferCloseDecision")?.Invoke(window, null);
+            args.Cancel = true;
+        };
+        window.Closing += callback;
+        try
+        {
+            Assert.Equal(MacOSWindowCloseResult.Pending, request.Begin());
+            Assert.Empty(replies);
+            Assert.False(other.IsCloseRequestedForPlatformTermination);
+            window.Closing -= callback;
+            if (!cancel) window.Close();
+            decision!.Dispose();
+            Assert.Equal(cancel ? MacOSWindowCloseResult.Cancelled : MacOSWindowCloseResult.Complete, request.Result);
+            Assert.Equal([!cancel], replies);
+            Assert.Equal(!cancel, other.IsClosedForPlatformTermination);
+            decision.Dispose();
+            Assert.Equal([!cancel], replies);
+        }
+        finally { window.Closing -= callback; decision?.Dispose(); window.Close(); other.Close(); }
+    }
+
     private static void SetField(Window window, string name, object? value) => typeof(Window)
         .GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, value);
     private static void SetRendering(Window window, bool value) => SetField(window, "_renderState", value ? 1 << 1 : 0);

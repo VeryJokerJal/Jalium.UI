@@ -12,11 +12,11 @@ public partial class Window
     // Repaint visible backdrop scenes in full; idle frames are still skipped.
     internal static bool RequiresFullReplayForBackdrop(RenderBackend backend, Visual root)
     {
-        if (backend != RenderBackend.Metal)
+        if (!root.HasBackdropReplayCandidates)
             return false;
 
-        // A deep visible subtree still participates in retained rendering.
-        // Walk it without a recursion cutoff that could miss its backdrop.
+        // Preserve deep and mutable effects without scanning ordinary branches.
+        // Candidate counts change on effect/ownership updates, not on scrolling.
         var pending = new Stack<Visual>();
         pending.Push(root);
         while (pending.TryPop(out var visual))
@@ -25,13 +25,15 @@ public partial class Window
             {
                 if (element.Visibility != Visibility.Visible || element.Opacity <= 0)
                     continue;
-                if (element.BackdropEffect is { HasEffect: true })
+                if(Styling.CssCompositingProperties.Mix(element)!=CssBlendMode.Normal)return true;
+                if (backend == RenderBackend.Metal && !visual.RendersBackdropEffectInTemplate &&
+                    element.BackdropEffect is { HasEffect: true })
                     return true;
-                if (element is Border { LiquidGlass: true })
+                if (backend == RenderBackend.Metal && element is Border { LiquidGlass: true })
                     return true;
             }
             for (var i = visual.InternalVisualChildrenCount - 1; i >= 0; i--)
-                if (visual.InternalGetVisualChild(i) is { } child)
+                if (visual.InternalGetVisualChild(i) is { HasBackdropReplayCandidates: true } child)
                     pending.Push(child);
         }
         return false;

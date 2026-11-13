@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Documents;
+using Jalium.UI.Documents;
 using Jalium.UI.Input;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Interop;
@@ -26,7 +26,6 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
 
     #region Static Brushes
 
-    private static readonly SolidColorBrush s_defaultForegroundBrush = new(Color.White);
     private static readonly SolidColorBrush s_defaultSelectionBrush = new(Color.FromArgb(180, 0x1E, 0x79, 0x3F));
     private static readonly SolidColorBrush s_defaultCaretBrush = new(Color.White);
     private static readonly SolidColorBrush s_compositionBgBrush = new(Color.FromRgb(60, 60, 80));
@@ -85,7 +84,6 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
     private SolidColorBrush? _caretFadeBrush;
 
     /// <summary>边框画笔。BorderBrush/厚度不变时跨帧复用，光标闪烁的重绘不再每帧建 Pen。</summary>
-    private RenderPenCache _borderPen;
     private Border? _cssBorderPainter;
 
     /// <summary>
@@ -431,7 +429,10 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
     {
         if (_selection != null && !_selection.IsEmpty)
         {
-            WpfClipboard.SetText(_selection.Text);
+            PrepareCssEditingLayout();
+            WpfClipboard.SetText(_cssDocumentView is { } view
+                ? view.EditorExposedText[view.EditorExposedOffset(_selection.Start.DocumentOffset)..view.EditorExposedOffset(_selection.End.DocumentOffset)]
+                : _selection.Text);
         }
     }
 
@@ -623,6 +624,14 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
 
     internal void SetPlainText(string text) => SetText(text);
 
+    protected override void AppendTextCore(string textData)
+    {
+        if (textData.Length == 0) return;
+        // Programmatic append preserves the original flow tree and remains
+        // available on read-only controls, just like setting their content.
+        TryReplaceImeText(_document.GetText().Length, 0, textData, programmaticAppend: true);
+    }
+
     /// <inheritdoc />
     protected override double GetLineHeight()
     {
@@ -713,13 +722,17 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
     /// <inheritdoc />
     internal override void RenderTextContent(DrawingContext drawingContext)
     {
-        // RichTextBox owns its document renderer. The template content host is
-        // transparent; the document is painted by OnRender to keep TextPointer
-        // layout, embedded elements, selection, IME and caret in one pass.
+        var origin = GetTextContentOrigin();
+        drawingContext.PushTransform(new TranslateTransform(-origin.X, -origin.Y));
+        try { RenderDocumentTextView(drawingContext); }
+        finally { drawingContext.Pop(); }
     }
 
     private List<(int Start, int Length)> GetPlainTextLines()
     {
+        PrepareCssEditingLayout();
+        if (_cssDocumentView is not null)
+            return CssEditorLines.Select(line => (line.Start, line.End - line.Start)).DefaultIfEmpty((0, 0)).ToList();
         string text = GetText();
         var lines = new List<(int Start, int Length)>();
         int start = 0;
@@ -879,6 +892,14 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
                             yield return element;
                     }
                 }
+                break;
+            case Table table:
+                foreach (var group in table.RowGroups)
+                    foreach (var row in group.Rows)
+                        foreach (var cell in row.Cells)
+                            foreach (var nestedBlock in cell.Blocks)
+                                foreach (var element in EnumerateDocumentElements(nestedBlock))
+                                    yield return element;
                 break;
         }
     }
@@ -1368,6 +1389,13 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         _layoutDirty = true;
         _layoutCache?.Dispose();
         _layoutCache = null;
+        if (_documentTextView is not null || HasContentHost || _cssDocumentView is not null || UsesCssDocumentLayout())
+        {
+            _documentTextView?.InvalidateMeasure();
+            InvalidateTextContentMeasure();
+            InvalidateMeasure();
+            InvalidateArrange();
+        }
         RefreshLinuxImeContext();
     }
 
@@ -1398,27 +1426,15 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
     {
         ApplyDocumentEnabledState();
         base.OnRender(drawingContext);
+        // Unthemed text-engine consumers can still draw document ink. Once a
+        // template exists, its optional text surface owns presentation completely.
+        if (TemplateRootInternal is null) RenderDocumentTextView(drawingContext);
+    }
 
+    internal void RenderDocumentTextView(DrawingContext drawingContext)
+    {
+        ApplyDocumentEnabledState();
         var dc = drawingContext;
-
-        var bounds = new Rect(0, 0, RenderSize.Width, RenderSize.Height);
-
-        // Draw background
-        if (Background != null)
-        {
-            if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty, Background, dc,
-                    bounds, default, BorderThickness, Padding,
-                    brush => dc.DrawRectangle(brush, null, bounds)))
-                dc.DrawRectangle(Background, null, bounds);
-        }
-
-        // Draw border
-        if (CssBorderPaintProperties.Get(this) is null && BorderBrush != null && BorderThickness.Left > 0)
-        {
-            dc.DrawRectangle(null, _borderPen.Get(BorderBrush, BorderThickness.Left), bounds);
-        }
-
-        // Focus indicator is painted by FocusVisualManager into the adorner layer.
 
         // Calculate content area
         var contentBounds = new Rect(
@@ -1442,6 +1458,14 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
             {
                 double surfacesY = contentBounds.Top - _verticalOffset;
                 DrawTableSurfaces(dc, surfaces.Blocks, contentBounds.Left - _horizontalOffset, ref surfacesY);
+            }
+            EnsureLayout(contentBounds.Width);
+            // The shared view paints as a private visual child. Editing overlays
+            // follow it in OnPostRender, so selection, glyphs and caret agree.
+            if (_cssDocumentView is not null)
+            {
+                MacOSWritingToolsPresentation.PrepareInactive(this);
+                return;
             }
             // Render document content
             RenderDocument(dc, contentBounds);
@@ -1468,6 +1492,18 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
     protected override void OnPostRender(DrawingContext drawingContext)
     {
         base.OnPostRender(drawingContext);
+        if (ShowsDocument && _cssDocumentView is not null)
+        {
+            var bounds = GetContentBounds();
+            drawingContext.PushClip(new RectangleGeometry(bounds));
+            try
+            {
+                MacOSWritingToolsPresentation.DrawInactive(this, drawingContext);
+                if (_isImeComposing && !string.IsNullOrEmpty(_imeCompositionString)) RenderImeComposition(drawingContext, bounds);
+                if (IsKeyboardFocused && !IsReadOnly && _caretPosition is not null) RenderCaret(drawingContext, bounds);
+            }
+            finally { drawingContext.Pop(); }
+        }
         CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter);
     }
 
@@ -1477,16 +1513,26 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         if (layout == null)
             return;
 
+        if (_cssDocumentView is { } view)
+        {
+            RenderChildVisualInline(MacOSWritingToolsPresentation.IsPreviewing(this)
+                ? new MacOSWritingToolsPresentation.CssTextContext(dc) : dc, _cssDocumentHost!);
+            return;
+        }
+
         DrawDocumentInlineBackgrounds(dc, layout, contentBounds);
         var y = contentBounds.Top - _verticalOffset;
 
-        if (!MacOSWritingToolsPresentation.IsPreviewing(this) && _selection is { IsEmpty: false })
-            RenderSelection(dc, contentBounds);
-
-        foreach (var blockLayout in layout.Blocks)
+        _styledSelectionPainting = !MacOSWritingToolsPresentation.IsPreviewing(this) && _selection is { IsEmpty: false } &&
+            (SelectionTextBrush is not null || HasCssDocumentSelection(CssNode.Get(_document)));
+        try
         {
-            RenderBlockLayout(dc, blockLayout, contentBounds.Left - _horizontalOffset, ref y, contentBounds);
+            if (!_styledSelectionPainting && !MacOSWritingToolsPresentation.IsPreviewing(this) && _selection is { IsEmpty: false })
+                RenderSelection(dc, contentBounds);
+            foreach (var blockLayout in layout.Blocks)
+                RenderBlockLayout(dc, blockLayout, contentBounds.Left - _horizontalOffset, ref y, contentBounds);
         }
+        finally { _styledSelectionPainting = false; }
     }
 
     private void RenderBlockLayout(DrawingContext dc, BlockLayoutInfo blockLayout, double x, ref double y, Rect contentBounds)
@@ -1516,6 +1562,13 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
 
     private void RenderLine(DrawingContext dc, LineLayoutInfo lineLayout, double x, double y)
     {
+        if (_styledSelectionPainting && RenderStyledSelection(dc, lineLayout, x, y)) return;
+        RenderLineCore(dc, lineLayout, x, y);
+    }
+
+    private void RenderLineCore(DrawingContext dc, LineLayoutInfo lineLayout, double x, double y)
+    {
+        using var textInk = MacOSWritingToolsPresentation.BeginCssTextInk(CssSelectionPainter.Unwrap(dc));
         using var presentation = MacOSWritingToolsPresentation.PushTextClip(this, dc);
         var pad = Math.Max(1, lineLayout.Height);
         var bounds = new Rect(x - pad, y - pad,
@@ -1571,6 +1624,17 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
                     CollectRunTextDecorations(runLayout, runX, fontFamily, fontSize,
                         fontWeight, fontStyle, ref decorations);
                 }
+            }
+            var ownerLines = CssTextDecorationProperties.Line(this);
+            if (ownerLines != CssTextDecorationLine.None && lineLayout.Runs.Count > 0)
+            {
+                var left = lineLayout.Runs.Min(run => run.X);
+                var right = lineLayout.Runs.Max(run => run.X + run.Width);
+                using var clip = MacOSWritingToolsPresentation.PushDecorationRanges(this, dc);
+                CssTextDecorationPainter.Draw(dc, this, this,
+                    CssTextDecorationProperties.Color(this) ?? ResolveDocumentForegroundBrush(), ownerLines,
+                    x + left, x + right, y, y + lineLayout.Baseline, FontSize,
+                    y + lineLayout.Height, right - left);
             }
             if (decorations is not null)
                 using (MacOSWritingToolsPresentation.PushDecorationRanges(this, dc))
@@ -1712,7 +1776,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
     private void DrawTextDecorationSegment(DrawingContext context, DecorationSegment segment, double lineTop)
     {
         var source = segment.Source;
-        var foreground = source.GetEffectiveForeground();
+        var foreground = CssUsedForeground.Get(source) ?? ResolveDocumentForegroundBrush();
         var baseline = lineTop + segment.Ascent;
         if (segment.CssLines != CssTextDecorationLine.None)
         {
@@ -1950,7 +2014,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         };
         TextMeasurement.MeasureText(text);
 
-        double lineHeight = GetLineHeightForFormatting(formatting.FontSize);
+        double lineHeight = CssImeLineHeight(anchorPosition, GetLineHeightForFormatting(formatting.FontSize));
         double width = Math.Max(1, text.Width);
 
         dc.DrawRectangle(s_compositionBgBrush, null, new Rect(anchorPoint.X, anchorPoint.Y, width, lineHeight));
@@ -1991,6 +2055,12 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         var layout = EnsureLayout(contentBounds.Width);
         if (layout == null)
             return null;
+
+        if (_cssDocumentView is { } view)
+        {
+            var caret = view.EditorCaret(position.DocumentOffset, position.LogicalDirection == LogicalDirection.Backward);
+            return caret is { } rect ? CssToEditor(rect).Location : contentBounds.Location;
+        }
 
         var lines = new List<(LineLayoutInfo line, double y, double x)>();
         double y = contentBounds.Top - _verticalOffset;
@@ -2049,6 +2119,8 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         if (_caretPosition is null) return GetDefaultLineHeight();
         var layout = EnsureLayout(GetContentBounds().Width);
         if (layout is null) return GetDefaultLineHeight();
+        if (_cssDocumentView is { } view)
+            return view.EditorCaret(_caretPosition.DocumentOffset, _caretPosition.LogicalDirection == LogicalDirection.Backward)?.Height ?? GetDefaultLineHeight();
         var lines = new List<(LineLayoutInfo line, double y, double x)>();
         double y = 0;
         CollectAllLines(layout.Blocks, 0, ref y, lines);
@@ -2123,13 +2195,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         }
     }
 
-    private Brush ResolveDocumentForegroundBrush()
-    {
-        if (HasLocalValue(Control.ForegroundProperty) && Foreground != null)
-            return Foreground;
-
-        return ResolveThemeBrush("TextPrimary", s_defaultForegroundBrush, "TextFillColorPrimaryBrush");
-    }
+    private Brush ResolveDocumentForegroundBrush() => ResolveTextForegroundBrush();
 
     private new Brush? ResolveSelectionBrush()
     {
@@ -2194,6 +2260,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
 
     private FlowDocumentLayoutInfo? EnsureLayout(double maxWidth)
     {
+        if (EnsureCssDocument(Math.Max(1, maxWidth), out var css)) return css;
         if (!_layoutDirty && _layoutCache != null && _layoutWidth == maxWidth &&
             ReferenceEquals(_layoutContext, RenderContext.Current) && NativePresentationIsCurrent(_layoutCache.Blocks))
             return _layoutCache;
@@ -2904,6 +2971,8 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         if (layout == null)
             return _document.ContentStart;
 
+        if (_cssDocumentView is not null) return CssPosition(point) ?? _document.ContentStart;
+
         return HitTableDocument(layout, point, contentBounds);
     }
 
@@ -2920,6 +2989,9 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         var layout = EnsureLayout(contentBounds.Width);
         if (layout == null)
             return false;
+
+        if (_cssDocumentView is { } view)
+            return view.EditorTextBounds(0, _document.GetText().Length).Any(rect => CssToEditor(rect).Contains(point));
 
         var lines = new List<(LineLayoutInfo line, double y, double x)>();
         double bottom = contentBounds.Top - _verticalOffset;
@@ -3148,7 +3220,8 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
             ? FindPreviousWordBoundary(_caretPosition)
             : _caretPosition.GetNextInsertionPosition(LogicalDirection.Backward);
 
-                    newPosition ??= _document.ContentStart;
+        newPosition ??= _document.ContentStart;
+        newPosition = CssVisiblePosition(newPosition, forward: false) ?? newPosition;
 
         if (shift)
         {
@@ -3177,6 +3250,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
             : _caretPosition.GetNextInsertionPosition(LogicalDirection.Forward);
 
         newPosition ??= _caretPosition;
+        newPosition = CssVisiblePosition(newPosition, forward: true) ?? newPosition;
 
         if (shift)
         {
@@ -3240,6 +3314,8 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         var layout = EnsureLayout(contentBounds.Width);
         if (layout == null)
             return direction < 0 ? _document.ContentStart : _document.ContentEnd;
+
+        if (_cssDocumentView is not null) return CssAdjacentLine(direction);
 
         // Find the current caret screen position to preserve horizontal position
         var caretPos = GetCaretScreenPosition(contentBounds);
@@ -3347,6 +3423,15 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         if (_caretPosition == null) return;
         var layout = EnsureLayout(GetContentBounds().Width);
         if (layout == null) return;
+        if (_cssDocumentView is not null)
+        {
+            var destination = CssLineBoundary(_caretPosition, end);
+            if (destination is null) return;
+            if (shift) ExtendSelection(destination);
+            else { _caretPosition = destination; ClearSelection(); }
+            ResetCaretBlink(); EnsureCaretVisible(); InvalidateVisual();
+            return;
+        }
         var lines = new List<(LineLayoutInfo line, double y, double x)>();
         double y = 0;
         CollectAllLines(layout.Blocks, 0, ref y, lines);
@@ -3449,6 +3534,8 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
     /// </summary>
     private TextPointer? FindLineStart(TextPointer? position)
     {
+        PrepareCssEditingLayout();
+        if (_cssDocumentView is not null) return CssLineBoundary(position, false);
         if (position == null)
             return _document.ContentStart;
 
@@ -3482,6 +3569,8 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
     /// </summary>
     private TextPointer? FindLineEnd(TextPointer? position)
     {
+        PrepareCssEditingLayout();
+        if (_cssDocumentView is not null) return CssLineBoundary(position, true);
         if (position == null)
             return _document.ContentEnd;
 
@@ -3513,6 +3602,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
     {
         if (IsReadOnly) return;
         if (_selection is { IsEmpty: false }) DeleteSelection();
+        else if (DeleteCssVisibleText(backward: true, word: ctrl || optionWord)) { }
         else if (_caretPosition is { } caret)
         {
             // ContentEnd can select the final paragraph terminator. Editing
@@ -3535,6 +3625,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
     {
         if (IsReadOnly) return;
         if (_selection is { IsEmpty: false }) DeleteSelection();
+        else if (DeleteCssVisibleText(backward: false, word: ctrl || optionWord)) { }
         else if (_caretPosition is { } caret)
         {
             var next = optionWord
@@ -3767,14 +3858,16 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         return true;
     }
 
-    private bool TryReplaceImeText(int start, int length, string text)
+    private bool TryReplaceImeText(int start, int length, string text, bool programmaticAppend = false)
     {
-        if (IsReadOnly || !ImeTextEncoding.TryNormalizeUtf16Range(_document.GetText(), start, length,
+        if ((!programmaticAppend && IsReadOnly) || !ImeTextEncoding.TryNormalizeUtf16Range(_document.GetText(), start, length,
                 out start, out length)) return false;
         using var change = DeclareChangeBlock();
         PushUndo();
         TrySetImeSelection(start, length);
-        _caretPosition = DocumentTextEditing.Replace(_document, start, length, text);
+        PrepareCssEditingLayout();
+        _caretPosition = DocumentTextEditing.Replace(_document, start, length, text,
+            programmaticAppend ? null : _cssDocumentView?.EditorInsertionPosition(start));
         _selection = CreateOwnedSelection(_caretPosition, _caretPosition);
         _selectionAnchor = _caretPosition;
         OnSelectionChanged();
@@ -3793,6 +3886,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         int anchorOffset = _isImeComposing ? GetImeAnchorOffset() : (_caretPosition?.DocumentOffset ?? 0);
         var anchorPosition = _document.GetPositionAtOffset(anchorOffset, LogicalDirection.Forward) ?? _document.ContentStart;
         var caretPoint = GetCaretScreenPosition(contentBounds, anchorPosition) ?? new Point(contentBounds.Left, contentBounds.Top);
+        lineHeight = CssImeLineHeight(anchorPosition, lineHeight);
 
         if (_isImeComposing && !string.IsNullOrEmpty(_imeCompositionString) && _imeCompositionCursor > 0)
         {
@@ -3805,7 +3899,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
             };
             TextMeasurement.MeasureText(text);
             caretPoint = new Point(caretPoint.X + text.Width, caretPoint.Y);
-            lineHeight = GetLineHeightForFormatting(formatting.FontSize);
+            lineHeight = CssImeLineHeight(anchorPosition, GetLineHeightForFormatting(formatting.FontSize));
         }
 
         return new Point(caretPoint.X, caretPoint.Y + lineHeight);
@@ -3828,8 +3922,8 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         var anchor = _document.GetPositionAtOffset(GetImeAnchorOffset(), LogicalDirection.Forward) ?? _document.ContentStart;
         var point = GetCaretScreenPosition(GetContentBounds(), anchor) ?? new Point(GetContentBounds().X, GetContentBounds().Y);
         var format = GetImeFormatting(anchor);
-        return ImeTextGeometry.GetFormattedCaret(_imeCompositionString, index, trailing, point,
-            GetLineHeightForFormatting(format.FontSize), format.FontFamily, format.FontSize,
+        var rectangle = ImeTextGeometry.GetFormattedCaret(_imeCompositionString, index, trailing, point,
+            CssImeLineHeight(anchor, GetLineHeightForFormatting(format.FontSize)), format.FontFamily, format.FontSize,
             format.FontWeight.ToOpenTypeWeight(), format.FontStyle.ToOpenTypeStyle(), 100000f,
             text =>
             {
@@ -3838,6 +3932,10 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
                 TextMeasurement.MeasureText(formatted);
                 return formatted.Width;
             });
+        // The native hit's height is the unstyled font height. Its horizontal
+        // caret remains useful, while the editing row owns the CSS line box.
+        return _cssDocumentView is null ? rectangle : new Rect(rectangle.X, rectangle.Y, rectangle.Width,
+            CssImeLineHeight(anchor, rectangle.Height));
     }
 
     bool IImeSupport.TryGetImeTextRangeGeometry(int start, int length, bool composition, out ImeTextRangeGeometry geometry)
@@ -3851,6 +3949,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         Rect bounds = GetContentBounds();
         var layout = EnsureLayout(bounds.Width);
         if (layout == null) return false;
+        if (_cssDocumentView is not null) return CssRangeGeometry(start, length, out geometry);
         double y = bounds.Top - _verticalOffset;
         var lines = new List<(LineLayoutInfo line, double y, double x)>();
         CollectAllLines(layout.Blocks, bounds.Left - _horizontalOffset, ref y, lines);
@@ -4000,7 +4099,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
         }
     }
 
-    private Rect GetContentBounds()
+    internal Rect GetContentBounds()
     {
         return new Rect(
             BorderThickness.Left + Padding.Left,
@@ -4104,6 +4203,7 @@ public partial class RichTextBox : TextBoxBase, IImeSupport
     /// </summary>
     private class FlowDocumentLayoutInfo : IDisposable
     {
+        internal List<InlinePaint>? InlinePaints;
         public List<BlockLayoutInfo> Blocks { get; } = new();
         public Dictionary<LineLayoutInfo, Rect> CellClips { get; } = new();
         public List<(LineLayoutInfo line, double y, double x)> TextPositionLines { get; } = new();

@@ -1,12 +1,16 @@
-﻿using Jalium.UI.Media;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Primitives;
 
 /// <summary>
 /// Represents a resize grip for Window controls.
 /// </summary>
+[TemplatePart(Name = "PART_Grip", Type = typeof(Jalium.UI.Shapes.Path))]
+[TemplateVisualState(Name = "Normal", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Disabled", GroupName = "CommonStates")]
 public class ResizeGrip : Control
 {
+    static ResizeGrip() => DefaultStyleKeyProperty.OverrideMetadata(typeof(ResizeGrip), new PropertyMetadata(typeof(ResizeGrip)));
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
         => new Jalium.UI.Automation.Peers.GenericAutomationPeer(this, Jalium.UI.Automation.Peers.AutomationControlType.Thumb);
@@ -16,6 +20,20 @@ public class ResizeGrip : Control
     private const double DefaultSize = 12;
 
     #endregion
+
+    public override void OnApplyTemplate()
+    {
+        base.OnApplyTemplate();
+        UpdateGripState();
+    }
+
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        if (e.Property == IsEnabledProperty) UpdateGripState();
+    }
+
+    private void UpdateGripState() => VisualStateManager.GoToState(this, IsEnabled ? "Normal" : "Disabled", false);
 
     #region Constructor
 
@@ -38,50 +56,10 @@ public class ResizeGrip : Control
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
+        base.MeasureOverride(availableSize);
         return new Size(DefaultSize, DefaultSize);
     }
 
     #endregion
 
-    #region Rendering
-
-    /// <inheritdoc />
-    protected override void OnRender(DrawingContext drawingContext)
-    {
-        var dc = drawingContext;
-
-        var rect = new Rect(RenderSize);
-
-        // Draw diagonal grip lines (bottom-right corner style)
-        var gripBrush = new SolidColorBrush(Color.FromRgb(120, 120, 120));
-        var gripPen = new Pen(gripBrush, 1);
-
-        // Draw 3 diagonal lines from bottom-left to top-right
-        var offset = 3.0;
-        for (var i = 0; i < 3; i++)
-        {
-            var startX = rect.Width - (i + 1) * offset;
-            var startY = rect.Height;
-            var endX = rect.Width;
-            var endY = rect.Height - (i + 1) * offset;
-
-            dc.DrawLine(gripPen, new Point(startX, startY), new Point(endX, endY));
-        }
-
-        // Draw highlight lines (slightly offset)
-        var highlightBrush = new SolidColorBrush(Color.FromRgb(180, 180, 180));
-        var highlightPen = new Pen(highlightBrush, 1);
-
-        for (var i = 0; i < 3; i++)
-        {
-            var startX = rect.Width - (i + 1) * offset - 1;
-            var startY = rect.Height;
-            var endX = rect.Width;
-            var endY = rect.Height - (i + 1) * offset - 1;
-
-            dc.DrawLine(highlightPen, new Point(startX, startY), new Point(endX, endY));
-        }
-    }
-
-    #endregion
 }

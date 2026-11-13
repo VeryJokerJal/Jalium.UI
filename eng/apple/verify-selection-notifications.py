@@ -16,6 +16,8 @@ import subprocess
 import tempfile
 import time
 
+from native_payload_proof import capture_payload, verify_software_payload
+
 LIBRARIES = tuple("libjalium.native." + name + ".dylib" for name in
                   ("core", "text", "metal", "software", "platform", "media.core", "media", "browser"))
 ASSEMBLIES = ("Jalium.UI.MacOS.HostSmoke.dll", "Jalium.UI.Managed.dll", "Jalium.UI.MacOS.dll", 'Jalium.UI.Xaml.dll')
@@ -33,6 +35,7 @@ def stop_owned_app(app):
             except ProcessLookupError: pass
 
 def run_case(work,app,client_binary,observer_binary,index,libraries,collection_writes=False,public_mutations=False):
+    native_before = capture_payload(libraries)
     internal=work
     output=work/('case-'+str(index))
     output.mkdir(mode=0o700)
@@ -126,12 +129,12 @@ def run_case(work,app,client_binary,observer_binary,index,libraries,collection_w
      hostPath=output/'host-result.json'
      host=json.loads(hostPath.read_text()) if hostPath.exists() else None
      errPath=output/'app.err';err=errPath.read_text(errors='replace') if errPath.exists() else ''
-     loaded={name:any(str(path) in err for path in copies) for name,copies in libraries.items()}
+     native_proof=verify_software_payload(libraries,native_before,err);failures.extend(native_proof['errors'])
+     loaded={name:name in native_proof['loadedNames'] for name in libraries}
      if not host or host.get('timedOut') or not host.get('closed') or host.get('phase')!=5:failures.append('host did not finish the close-during-selection callback')
-     if not all(loaded.values()):failures.append('host did not load all copied native libraries')
      for name,process in [('launcher',p),('observer',observer),('client',client)]:
       if process is not None and process.returncode!=0:failures.append(name+' exited unsuccessfully')
-     result={'index':index,'passed':not failures,'checks':checks,'failures':failures,'initial':initial,'final':final,'host':host,'commands':commands,'events':events(),'observerPID':None if observer is None else observer.pid,'clientPID':None if client is None else client.pid,'hostPID':pid,'loadedNative':loaded,'physicalInput':False,'externalAX':True,'publicMutations':public_mutations,'seconds':round(time.monotonic()-started,3),'output':str(output)}
+     result={'index':index,'passed':not failures,'checks':checks,'failures':failures,'initial':initial,'final':final,'host':host,'commands':commands,'events':events(),'observerPID':None if observer is None else observer.pid,'clientPID':None if client is None else client.pid,'hostPID':pid,'loadedNative':loaded,'nativePayloadProof':native_proof,'physicalInput':False,'externalAX':True,'publicMutations':public_mutations,'seconds':round(time.monotonic()-started,3),'output':str(output)}
      (output/'receipt.json').write_text(json.dumps(result,ensure_ascii=False))
     return result
 

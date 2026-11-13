@@ -103,7 +103,7 @@ public sealed class TextEffectCollection : Animation.Animatable, IList<TextEffec
         _items.AddRange(collection);
     }
 
-    public TextEffect this[int index] { get => _items[index]; set => _items[index] = value; }
+    public TextEffect this[int index] { get => _items[index]; set => _items.SetItem(index, value); }
     object? IList.this[int index] { get => this[index]; set => this[index] = AnimatableListStorage<TextEffect>.Cast(value); }
     public int Count => _items.Count;
     bool ICollection<TextEffect>.IsReadOnly => _items.IsReadOnly;
@@ -155,13 +155,7 @@ public sealed class TextEffectCollection : Animation.Animatable, IList<TextEffec
         }
     }
 
-    private AnimatableListStorage<TextEffect> CreateStorage(int capacity = 0) => new(
-        () => ReadPreamble(),
-        () => WritePreamble(),
-        () => WritePostscript(),
-        (oldValue, newValue) => OnFreezablePropertyChanged(oldValue, newValue),
-        () => IsFrozen,
-        capacity);
+    private AnimatableListStorage<TextEffect> CreateStorage(int capacity = 0) => new(this, capacity);
 }
 
 /// <summary>

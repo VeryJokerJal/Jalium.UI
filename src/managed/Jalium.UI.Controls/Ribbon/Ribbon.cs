@@ -11,7 +11,7 @@ namespace Jalium.UI.Controls.Ribbon;
 /// Displays a Ribbon user interface.
 /// </summary>
 [Jalium.UI.Markup.ContentProperty("Items")]
-public class Ribbon : Selector
+public partial class Ribbon : Selector
 {
     private static readonly DependencyPropertyKey IsHostedInRibbonWindowPropertyKey =
         DependencyProperty.RegisterReadOnly(nameof(IsHostedInRibbonWindow), typeof(bool), typeof(Ribbon),
@@ -376,6 +376,7 @@ public class Ribbon : Selector
         {
             _isSynchronizingTabSelection = false;
         }
+        RefreshPresentation();
     }
 
     internal void OnTabSelectionChanged(RibbonTab tab, bool isSelected)
@@ -434,7 +435,7 @@ public class Ribbon : Selector
 /// Represents a tab on a Ribbon control.
 /// </summary>
 [Jalium.UI.Markup.ContentProperty("Items")]
-public class RibbonTab : HeaderedItemsControl
+public partial class RibbonTab : HeaderedItemsControl
 {
     private static readonly DependencyPropertyKey ContextualTabGroupPropertyKey =
         DependencyProperty.RegisterReadOnly(nameof(ContextualTabGroup), typeof(RibbonContextualTabGroup), typeof(RibbonTab),
@@ -579,7 +580,7 @@ public class RibbonTab : HeaderedItemsControl
 /// Represents a group of controls within a RibbonTab.
 /// </summary>
 [Jalium.UI.Markup.ContentProperty("Items")]
-public class RibbonGroup : HeaderedItemsControl
+public partial class RibbonGroup : HeaderedItemsControl
 {
     public static readonly DependencyProperty LargeImageSourceProperty =
         DependencyProperty.Register(nameof(LargeImageSource), typeof(ImageSource), typeof(RibbonGroup),

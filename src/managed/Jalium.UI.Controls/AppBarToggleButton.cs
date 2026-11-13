@@ -8,6 +8,14 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class AppBarToggleButton : ToggleButton, ICommandBarElement
 {
+    static AppBarToggleButton()
+    {
+        DefaultStyleKeyProperty.OverrideMetadata(typeof(AppBarToggleButton), new PropertyMetadata(typeof(AppBarToggleButton)));
+    }
+
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Automation.Peers.AppBarToggleButtonAutomationPeer(this);
+
     #region Dependency Properties
 
     /// <summary>

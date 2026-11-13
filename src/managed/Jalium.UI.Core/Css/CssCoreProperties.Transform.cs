@@ -1,3 +1,5 @@
+using Jalium.UI.Media;
+
 namespace Jalium.UI.Styling;
 
 internal static partial class CssCoreProperties
@@ -33,6 +35,7 @@ internal static partial class CssCoreProperties
 
     internal static bool TryGetTransitionTargetName(string cssName, out string dpName)
     {
+        if (cssName.Equals("unicode-bidi", StringComparison.OrdinalIgnoreCase) || cssName.Equals("direction", StringComparison.OrdinalIgnoreCase)) { dpName = ""; return false; }
         var descriptor = CssPropertyRegistry.LookupForCompile(cssName.ToLowerInvariant(), out var canonical);
         if (descriptor?.TransitionTargetDpName is { } registeredTarget)
         {
@@ -81,19 +84,163 @@ internal static partial class CssCoreProperties
             }
 
             var relativeLengths = CssTransformParser.RelativeLengths(text);
+            // Compiled inline declarations are cached across dispatchers.
+            // Absolute transforms must be immutable just like contextual ones.
+            if (relativeLengths.Length == 0 && transform?.CanFreeze == true)
+                transform.Freeze();
             return relativeLengths.Length > 0 ? new CssContextTransformValue(text, relativeLengths)
                 : new CssImmediateValue(UIElement.RenderTransformProperty, transform);
         });
 
         RegisterLonghand("transform-origin", (ref CssTokenReader reader, CssCompileContext ctx_) =>
         {
-            if (!TryReadBackgroundPosition(ref reader, out var position, maxTokens: 2) || !reader.AtEnd)
+            if (!TryReadTransformOrigin(ref reader, out var position, out var zOffset) || !reader.AtEnd)
             {
                 return null;
             }
 
-            return new CssTransformOriginValue(position);
+            return new CssTransformOriginValue(position, zOffset);
         });
 
+        CssPropertyRegistry.Register(new CssPropertyDescriptor
+        {
+            Name = "perspective",
+            Kind = CssPropertyKind.Longhand,
+            StorageProperty = CssTransform3D.PerspectiveProperty,
+            TransitionTargetDpName = CssTransform3D.PerspectiveProperty.Name,
+            Parse = (ref CssTokenReader reader, CssCompileContext ctx_) =>
+            {
+                var probe = reader;
+                if (probe.TryReadIdent(out var ident))
+                {
+                    if (ident.Equals("none", StringComparison.OrdinalIgnoreCase) && probe.AtEnd)
+                    {
+                        reader = probe;
+                        return new CssImmediateValue(CssTransform3D.PerspectiveProperty, double.NaN);
+                    }
+                    return null;
+                }
+
+                if (!reader.TryReadLength(out var length) || !reader.AtEnd ||
+                    length.UsesPercent || !length.IsLengthUnit ||
+                    (length.Unit == CssUnit.None && length.Value != 0))
+                {
+                    return null;
+                }
+
+                if (length.IsAbsolute)
+                {
+                    var px = length.ToPxAbsolute();
+                    if (!double.IsFinite(px) || px < 0) return null;
+                    return new CssImmediateValue(CssTransform3D.PerspectiveProperty, px);
+                }
+
+                return new CssPerspectiveValue(length);
+            },
+        });
+
+        CssPropertyRegistry.Register(new CssPropertyDescriptor
+        {
+            Name = "perspective-origin",
+            Kind = CssPropertyKind.Longhand,
+            StorageProperty = CssTransform3D.PerspectiveOriginProperty,
+            TransitionTargetDpName = CssTransform3D.PerspectiveOriginProperty.Name,
+            Parse = (ref CssTokenReader reader, CssCompileContext ctx_) =>
+            {
+                if (!TryReadBackgroundPosition(ref reader, out var position, maxTokens: 4) || !reader.AtEnd)
+                {
+                    return null;
+                }
+
+                return new CssPerspectiveOriginValue(position);
+            },
+        });
+
+        CssPropertyRegistry.Register(new CssPropertyDescriptor
+        {
+            Name = "transform-style",
+            Kind = CssPropertyKind.Longhand,
+            StorageProperty = CssTransform3D.TransformStyleProperty,
+            TransitionTargetDpName = CssTransform3D.TransformStyleProperty.Name,
+            Parse = (ref CssTokenReader reader, CssCompileContext ctx_) =>
+            {
+                if (!reader.TryReadIdent(out var ident) || !reader.AtEnd) return null;
+                var style = ident.ToString().ToLowerInvariant() switch
+                {
+                    "flat" => CssTransformStyle.Flat,
+                    "preserve-3d" => CssTransformStyle.Preserve3D,
+                    _ => (CssTransformStyle?)null,
+                };
+                return style is { } value
+                    ? new CssImmediateValue(CssTransform3D.TransformStyleProperty, value) : null;
+            },
+        });
+
+        CssPropertyRegistry.Register(new CssPropertyDescriptor
+        {
+            Name = "backface-visibility",
+            Kind = CssPropertyKind.Longhand,
+            StorageProperty = CssTransform3D.BackfaceVisibilityProperty,
+            TransitionTargetDpName = CssTransform3D.BackfaceVisibilityProperty.Name,
+            Parse = (ref CssTokenReader reader, CssCompileContext ctx_) =>
+            {
+                if (!reader.TryReadIdent(out var ident) || !reader.AtEnd) return null;
+                var visibility = ident.ToString().ToLowerInvariant() switch
+                {
+                    "visible" => CssBackfaceVisibility.Visible,
+                    "hidden" => CssBackfaceVisibility.Hidden,
+                    _ => (CssBackfaceVisibility?)null,
+                };
+                return visibility is { } value
+                    ? new CssImmediateValue(CssTransform3D.BackfaceVisibilityProperty, value) : null;
+            },
+        });
+    }
+
+    private static bool TryReadTransformOrigin(
+        ref CssTokenReader reader,
+        out CssBackgroundPosition position,
+        out CssLength? zOffset)
+    {
+        position = default;
+        zOffset = null;
+        var probe = reader;
+        var tokens = new BackgroundPositionToken[3];
+        var count = 0;
+        while (TryReadBackgroundPositionToken(ref probe, out var token))
+        {
+            if (count == 3)
+                return false;
+            tokens[count++] = token;
+        }
+
+        if (count is 1 or 2)
+        {
+            if (!TryBuildBackgroundPosition(tokens.AsSpan(0, count), out position))
+                return false;
+            reader = probe;
+            return true;
+        }
+
+        if (count == 3)
+        {
+            var third = tokens[2];
+            if (third.Kind != BackgroundPositionTokenKind.Length ||
+                third.Length.UsesPercent ||
+                !third.Length.IsLengthUnit ||
+                (third.Length.Unit == CssUnit.None && third.Length.Value != 0))
+            {
+                return false;
+            }
+
+            if (!TryBuildBackgroundPosition(tokens.AsSpan(0, 2), out position))
+                return false;
+
+            zOffset = third.Length;
+            reader = probe;
+            return true;
+        }
+
+        return false;
     }
 }

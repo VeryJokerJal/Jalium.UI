@@ -31,7 +31,26 @@ public class ContentElementAutomationPeer : AutomationPeer
     protected override DependencyObject GetAutomationOwnerCore() => Owner;
     protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.Custom;
     protected override string GetClassNameCore() => Owner.GetType().Name;
-    protected override string GetNameCore() => string.Empty;
+    protected override string GetNameCore() => ExtractPlainText(Owner);
+
+    private static string ExtractPlainText(DependencyObject? node) => node is null ||
+        Styling.CssContainmentProperties.HidesContentsFromUserAgent(node) ? string.Empty : node switch
+    {
+        Documents.Run run => run.Text,
+        Documents.LineBreak => "\n",
+        Documents.Span span => string.Concat(span.Inlines.Select(ExtractPlainText)),
+        Documents.Paragraph paragraph => string.Concat(paragraph.Inlines.Select(ExtractPlainText)),
+        Documents.Section section => string.Join("\n", section.Blocks.Select(ExtractPlainText).Where(static s => s.Length > 0)),
+        Documents.List list => string.Join("\n", list.ListItems.Select(ExtractPlainText).Where(static s => s.Length > 0)),
+        Documents.ListItem item => string.Join("\n", item.Blocks.Select(ExtractPlainText).Where(static s => s.Length > 0)),
+        Documents.Table table => string.Join("\n", table.RowGroups.SelectMany(static g => g.Rows).Select(ExtractPlainText).Where(static s => s.Length > 0)),
+        Documents.TableRow row => string.Join("\t", row.Cells.Select(ExtractPlainText)),
+        Documents.TableCell cell => string.Join("\n", cell.Blocks.Select(ExtractPlainText).Where(static s => s.Length > 0)),
+        Documents.FlowDocument doc => doc.GetText().TrimEnd('\r', '\n'),
+        Documents.InlineUIContainer { Child: UIElement child } => UIElementAutomationPeer.CreatePeerForElement(child)?.GetName() ?? string.Empty,
+        Documents.BlockUIContainer { Child: UIElement child } => UIElementAutomationPeer.CreatePeerForElement(child)?.GetName() ?? string.Empty,
+        _ => string.Empty,
+    };
     protected override string GetAutomationIdCore() => string.Empty;
     protected override string GetHelpTextCore() => string.Empty;
     protected override string GetAcceleratorKeyCore() => string.Empty;

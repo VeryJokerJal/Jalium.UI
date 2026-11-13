@@ -246,26 +246,30 @@ public sealed class RichTextBoxInlineBackgroundTests
     }
     private static Recorder Paint(RichTextBox editor)
     {
-        var context = new Recorder(); typeof(RichTextBox).GetMethod("OnRender", BindingFlags.Instance | BindingFlags.NonPublic,
-            new[] { typeof(DrawingContext) })!.Invoke(editor, new object[] { context }); return context;
+        // Shared document formatting paints through its presentation children.
+        // Exercise the complete public render entry for either editor path.
+        var context = new Recorder(); editor.Render(context); return context;
     }
-    private sealed class Recorder : DrawingContextAdapter
+    private sealed class Recorder : DrawingContextAdapter, IOffsetDrawingContext
     {
         private int _order;
         private readonly List<Rect> _clips = [];
         private readonly Stack<int> _states = [];
+        public Point Offset { get; set; }
+        private Rect Place(Rect rectangle) { rectangle.Offset(Offset.X, Offset.Y); return rectangle; }
         internal readonly List<(Brush? Brush, Rect Bounds, int Order, double Opacity, List<Rect> Clips)> Rectangles = [];
         internal readonly List<(string Value, Point Origin, int Order)> Text = [];
-        public override void DrawRectangle(Brush? brush, Pen? pen, Rect rect) => Rectangles.Add((brush, rect, _order++, brush?.Opacity ?? 1, new(_clips)));
-        public override void DrawText(FormattedText text, Point point) => Text.Add((text.Text, point, _order++));
-        public override void PushClip(Geometry clip) { _states.Push(_clips.Count); _clips.Add(clip.Bounds); }
+        public override void DrawRectangle(Brush? brush, Pen? pen, Rect rect) => Rectangles.Add((brush, Place(rect), _order++, brush?.Opacity ?? 1, new(_clips)));
+        public override void DrawText(FormattedText text, Point point) => Text.Add((text.Text, new(point.X + Offset.X, point.Y + Offset.Y), _order++));
+        public override void PushClip(Geometry clip) { _states.Push(_clips.Count); _clips.Add(Place(clip.Bounds)); }
         public override void PushTransform(Transform transform) => _states.Push(_clips.Count);
         public override void PushOpacity(double opacity) => _states.Push(_clips.Count);
         public override void Pop() { int count = _states.Pop(); _clips.RemoveRange(count, _clips.Count - count); }
         public override void DrawLine(Pen pen, Point a, Point b) { }
-        public override void DrawRoundedRectangle(Brush? brush, Pen? pen, Rect rect, double x, double y) { }
+        public override void DrawRoundedRectangle(Brush? brush, Pen? pen, Rect rect, double x, double y) => DrawRectangle(brush, pen, rect);
         public override void DrawEllipse(Brush? brush, Pen? pen, Point center, double x, double y) { }
-        public override void DrawGeometry(Brush? brush, Pen? pen, Geometry geometry) { }
+        public override void DrawGeometry(Brush? brush, Pen? pen, Geometry geometry)
+        { if (brush is not null) DrawRectangle(brush, pen, geometry.Bounds); }
         public override void DrawImage(ImageSource source, Rect rect) { }
         public override void DrawBackdropEffect(Rect rect, IBackdropEffect effect, CornerRadius radius) { }
         public override void Close() { }

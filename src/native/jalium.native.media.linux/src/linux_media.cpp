@@ -2,6 +2,7 @@
 #include "jalium_media_internal.h"
 #include "jalium_audio.h"
 #include "audio_internal.h"
+#include "jalium_video_surface.h"
 
 #include <algorithm>
 #include <atomic>
@@ -40,6 +41,7 @@
 
 #if JALIUM_HAS_GSTREAMER
 #include "gstreamer_loader.h"
+#include "linux_dmabuf_export.h"
 #endif
 
 #if JALIUM_HAS_GSTREAMER
@@ -108,7 +110,7 @@ bool g_media_available = false;
 // This is deliberately evidence-based rather than a plugin-presence guess.
 // It becomes true only after this process has exported a descriptor whose
 // exact layout is accepted by the current Vulkan importer.
-std::atomic<bool> g_renderable_rgb_dmabuf_observed{false};
+std::atomic<bool> g_dmabuf_descriptor_observed{false};
 
 bool IsSupportedFormat(jalium_pixel_format_t format) noexcept
 {
@@ -1133,93 +1135,6 @@ jalium_media_status_t CopyVideoSample(
     return JALIUM_MEDIA_OK;
 }
 
-constexpr uint32_t DrmFourcc(char a, char b, char c, char d) noexcept
-{
-    return static_cast<uint32_t>(static_cast<uint8_t>(a)) |
-           (static_cast<uint32_t>(static_cast<uint8_t>(b)) << 8) |
-           (static_cast<uint32_t>(static_cast<uint8_t>(c)) << 16) |
-           (static_cast<uint32_t>(static_cast<uint8_t>(d)) << 24);
-}
-
-uint32_t DrmFormatFromCaps(
-    const GstStructure* structure,
-    uint64_t& modifier,
-    jalium_pixel_format_t requested_format,
-    uint32_t& format_hint) noexcept
-{
-    modifier = 0;
-    format_hint = 0;
-    const char* format = structure
-        ? gst_structure_get_string(structure, "format") : nullptr;
-    const char* drm_format = structure
-        ? gst_structure_get_string(structure, "drm-format") : nullptr;
-    const char* value = drm_format && *drm_format ? drm_format : format;
-    if (!value) return 0;
-
-    const char* modifier_separator = std::strchr(value, ':');
-    if (modifier_separator && modifier_separator[1]) {
-        char* end = nullptr;
-        const uint64_t parsed = std::strtoull(
-            modifier_separator + 1, &end, 0);
-        if (end && end != modifier_separator + 1) modifier = parsed;
-    }
-
-    if (std::strncmp(value, "NV12", 4) == 0) {
-        format_hint = 1; // JALIUM_VS_FORMAT_NV12
-        return DrmFourcc('N', 'V', '1', '2');
-    }
-    if (std::strncmp(value, "P010", 4) == 0 ||
-        std::strncmp(value, "P010_10LE", 9) == 0) {
-        format_hint = 2; // JALIUM_VS_FORMAT_P010
-        return DrmFourcc('P', '0', '1', '0');
-    }
-    if (std::strncmp(value, "AR24", 4) == 0 ||
-        std::strcmp(value, "BGRA") == 0) {
-        format_hint = 0;
-        return DrmFourcc('A', 'R', '2', '4');
-    }
-    if (std::strncmp(value, "XR24", 4) == 0 ||
-        std::strcmp(value, "BGRx") == 0) {
-        format_hint = 0;
-        return DrmFourcc('X', 'R', '2', '4');
-    }
-    if (std::strncmp(value, "AB24", 4) == 0 ||
-        std::strcmp(value, "RGBA") == 0) {
-        format_hint = 0;
-        return DrmFourcc('A', 'B', '2', '4');
-    }
-    if (std::strncmp(value, "XB24", 4) == 0 ||
-        std::strcmp(value, "RGBx") == 0) {
-        format_hint = 0;
-        return DrmFourcc('X', 'B', '2', '4');
-    }
-    (void)requested_format;
-    return 0;
-}
-
-bool IsVulkanRenderableRgbDmabuf(
-    const GstStructure* structure,
-    uint32_t drm_fourcc,
-    uint32_t format_hint,
-    uint32_t plane_count,
-    guint memory_count) noexcept
-{
-    // The Vulkan importer currently has no immutable YCbCr sampler and does
-    // not consume generic DMA_DRM/multi-plane layouts. Keep the producer's
-    // success contract identical to what the renderer can actually import:
-    // one DMABuf-backed packed RGB plane with an explicit supported fourcc.
-    const char* format = structure
-        ? gst_structure_get_string(structure, "format") : nullptr;
-    if (!format || std::strcmp(format, "DMA_DRM") == 0 ||
-        format_hint != 0 || plane_count != 1 || memory_count != 1) {
-        return false;
-    }
-    return drm_fourcc == DrmFourcc('A', 'R', '2', '4') ||
-           drm_fourcc == DrmFourcc('X', 'R', '2', '4') ||
-           drm_fourcc == DrmFourcc('A', 'B', '2', '4') ||
-           drm_fourcc == DrmFourcc('X', 'B', '2', '4');
-}
-
 jalium_media_status_t ExportDmabufSample(
     GstSample* sample,
     jalium_pixel_format_t requested_format,
@@ -1227,94 +1142,9 @@ jalium_media_status_t ExportDmabufSample(
     int64_t* pts_microseconds,
     int32_t* keyframe) noexcept
 {
-    if (!sample || !descriptor) return JALIUM_MEDIA_E_INVALID_ARG;
-    ResetGpuDescriptor(descriptor);
-    GstCaps* caps = gst_sample_get_caps(sample);
+    const auto status = jalium::media::dmabuf::ExportLayout(sample, requested_format, descriptor);
+    if (status != JALIUM_MEDIA_OK) return status;
     GstBuffer* buffer = gst_sample_get_buffer(sample);
-    if (!caps || !buffer || gst_caps_get_size(caps) == 0) {
-        return JALIUM_MEDIA_E_DECODE_FAILED;
-    }
-    GstCapsFeatures* features = gst_caps_get_features(caps, 0);
-    if (!features ||
-        !gst_caps_features_contains(features, GST_CAPS_FEATURE_MEMORY_DMABUF)) {
-        return JALIUM_MEDIA_E_NOT_IMPLEMENTED;
-    }
-
-    const GstStructure* structure = gst_caps_get_structure(caps, 0);
-    gint width = 0;
-    gint height = 0;
-    if (!structure ||
-        !gst_structure_get_int(structure, "width", &width) ||
-        !gst_structure_get_int(structure, "height", &height) ||
-        width <= 0 || height <= 0) {
-        return JALIUM_MEDIA_E_DECODE_FAILED;
-    }
-
-    uint64_t modifier = 0;
-    uint32_t format_hint = 0;
-    const uint32_t drm_fourcc = DrmFormatFromCaps(
-        structure, modifier, requested_format, format_hint);
-    if (drm_fourcc == 0) return JALIUM_MEDIA_E_UNSUPPORTED_FORMAT;
-
-    GstVideoMeta* meta = gst_buffer_get_video_meta(buffer);
-    uint32_t plane_count = meta && meta->n_planes > 0
-        ? static_cast<uint32_t>(meta->n_planes)
-        : (format_hint == 1 || format_hint == 2 ? 2u : 1u);
-    const guint memory_count = gst_buffer_n_memory(buffer);
-    if (!IsVulkanRenderableRgbDmabuf(
-            structure, drm_fourcc, format_hint, plane_count, memory_count)) {
-        // NV12/P010, DMA_DRM and all multi-plane layouts use the precise-PTS
-        // CPU reopen path until Vulkan YCbCr import is implemented.
-        return JALIUM_MEDIA_E_UNSUPPORTED_FORMAT;
-    }
-
-    descriptor->kind = 7; // JALIUM_VS_KIND_LINUX_DMABUF
-    descriptor->width = static_cast<uint32_t>(width);
-    descriptor->height = static_cast<uint32_t>(height);
-    descriptor->format_hint = format_hint;
-    descriptor->plane_count = plane_count;
-    descriptor->drm_fourcc = drm_fourcc;
-
-    for (uint32_t plane_index = 0; plane_index < plane_count; ++plane_index) {
-        gsize global_offset = meta
-            ? meta->offset[plane_index]
-            : (plane_index == 0 ? 0 :
-                static_cast<gsize>(width) * static_cast<gsize>(height));
-        guint memory_index = std::min<guint>(plane_index, memory_count - 1);
-        guint memory_length = 1;
-        gsize skip = 0;
-        if (meta) {
-            (void)gst_buffer_find_memory(
-                buffer, global_offset, 1, &memory_index, &memory_length, &skip);
-        }
-        GstMemory* memory = gst_buffer_peek_memory(buffer, memory_index);
-        if (!memory || !gst_is_dmabuf_memory(memory)) {
-            CloseGpuDescriptorFds(descriptor);
-            return JALIUM_MEDIA_E_NOT_IMPLEMENTED;
-        }
-        const int source_fd = gst_dmabuf_memory_get_fd(memory);
-        const int exported_fd = source_fd >= 0 ? dup(source_fd) : -1;
-        if (exported_fd < 0) {
-            CloseGpuDescriptorFds(descriptor);
-            return JALIUM_MEDIA_E_PLATFORM;
-        }
-        gsize memory_offset = 0;
-        gsize maximum_size = 0;
-        const gsize visible_size =
-            gst_memory_get_sizes(memory, &memory_offset, &maximum_size);
-        auto& output = descriptor->planes[plane_index];
-        output.fd = exported_fd;
-        output.stride_bytes = meta
-            ? static_cast<uint32_t>(std::max<gint>(0, meta->stride[plane_index]))
-            : (format_hint == 0 ? static_cast<uint32_t>(width) * 4u
-                                : static_cast<uint32_t>(width) *
-                                      (format_hint == 2 ? 2u : 1u));
-        output.offset_bytes = static_cast<uint32_t>(memory_offset + skip);
-        output.modifier = modifier;
-        output.size_bytes = maximum_size != 0 ? maximum_size : visible_size;
-    }
-    descriptor->handle0 = static_cast<uint64_t>(
-        static_cast<uint32_t>(descriptor->planes[0].fd));
     const GstClockTime pts = GST_BUFFER_PTS(buffer);
     if (pts_microseconds) {
         *pts_microseconds = GST_CLOCK_TIME_IS_VALID(pts)
@@ -1335,7 +1165,7 @@ jalium_media_status_t ExportDmabufSample(
         reinterpret_cast<uintptr_t>(&RetainGstSampleLifetime));
     descriptor->lifetime_release_callback = static_cast<uint64_t>(
         reinterpret_cast<uintptr_t>(&ReleaseGstSampleLifetime));
-    g_renderable_rgb_dmabuf_observed.store(true, std::memory_order_release);
+    g_dmabuf_descriptor_observed.store(true, std::memory_order_release);
     return JALIUM_MEDIA_OK;
 }
 
@@ -2045,10 +1875,7 @@ jalium_media_status_t OpenDmabufVideoPipeline(
 
     GstCaps* caps = gst_caps_from_string(
         "video/x-raw(memory:DMABuf),"
-        // Only negotiate layouts the current Vulkan importer can consume.
-        // Common VA NV12/P010 and generic DMA_DRM layouts intentionally fail
-        // this branch and reopen at the same PTS through the CPU pipeline.
-        "format=(string){BGRA,BGRx,RGBA,RGBx}");
+        "format=(string){NV12,P010_10LE,BGRA,BGRx,RGBA,RGBx,DMA_DRM}");
     if (!caps) {
         gst_object_unref(postprocess);
         return JALIUM_MEDIA_E_NOT_IMPLEMENTED;
@@ -2660,8 +2487,8 @@ JALIUM_MEDIA_API uint32_t jalium_linux_media_capabilities(void)
     // Creating a VA post-process element proves only that a plugin exists; it
     // does not prove the active driver can negotiate/export a layout Vulkan
     // accepts. Advertise this bit only after an actual decoder sample has
-    // exported a single-plane packed RGB descriptor successfully.
-    if (g_renderable_rgb_dmabuf_observed.load(std::memory_order_acquire)) {
+    // exported a supported RGB/NV12/P010 descriptor successfully.
+    if (g_dmabuf_descriptor_observed.load(std::memory_order_acquire)) {
         capabilities |= JALIUM_LINUX_MEDIA_DMABUF_EXPORT;
     }
     return capabilities;

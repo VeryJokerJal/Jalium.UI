@@ -6,13 +6,24 @@ using Jalium.UI.Input;
 namespace Jalium.UI.Tests;
 
 [Collection("Application")]
-public class PointerRoutingTests
+public class PointerRoutingTests : IDisposable
 {
+    private Window? _window;
+
+    private Window CreateWindow() => _window = new DisplayedTestWindow();
+
+    public void Dispose()
+    {
+        try { _window?.Close(); }
+        finally { ResetInputState(); }
+    }
+
     private static void ResetInputState()
     {
         Keyboard.Initialize();
         Keyboard.ClearFocus();
         UIElement.ForceReleaseMouseCapture();
+        Mouse.UpdateState(default, null, MouseButtonStates.AllReleased);
     }
 
     [Fact]
@@ -22,7 +33,7 @@ public class PointerRoutingTests
 
         try
         {
-            var window = new Window();
+            var window = CreateWindow();
             window.TitleBarStyle = WindowTitleBarStyle.Native;
             Assert.True(window.CaptureMouse());
             bool pointerDownRaised = false;
@@ -47,7 +58,7 @@ public class PointerRoutingTests
 
         try
         {
-            var window = new Window();
+            var window = CreateWindow();
             window.TitleBarStyle = WindowTitleBarStyle.Native;
             Assert.True(window.CaptureMouse());
             int pointerCancelCount = 0;
@@ -81,7 +92,7 @@ public class PointerRoutingTests
 
         try
         {
-            var window = new Window();
+            var window = CreateWindow();
             window.TitleBarStyle = WindowTitleBarStyle.Native;
             Assert.True(window.CaptureMouse());
             var order = new List<string>();
@@ -108,7 +119,7 @@ public class PointerRoutingTests
 
         try
         {
-            var window = new Window();
+            var window = CreateWindow();
             window.TitleBarStyle = WindowTitleBarStyle.Native;
             Assert.True(window.CaptureMouse());
             uint downPointerId = 0;
@@ -141,17 +152,9 @@ public class PointerRoutingTests
 
     private static void InvokeMouseButtonDown(Window window, MouseButton button, int x, int y, int clickCount = 1)
     {
-        var method = typeof(Window).GetMethod("OnMouseButtonDown", BindingFlags.Instance | BindingFlags.NonPublic);
-        Assert.NotNull(method);
-
-        nint wParam = (nint)0x0001; // MK_LBUTTON
-        nint lParam = PackPointToLParam(x, y);
-        method!.Invoke(window, new object[] { button, wParam, lParam, clickCount });
-    }
-
-    private static nint PackPointToLParam(int x, int y)
-    {
-        int packed = (y << 16) | (x & 0xFFFF);
-        return (nint)packed;
+        var field = typeof(Window).GetField("_inputDispatcher", BindingFlags.Instance | BindingFlags.NonPublic);
+        var input = Assert.IsType<WindowInputDispatcher>(field!.GetValue(window));
+        input.HandleMouseDown(button, new Point(x, y), MouseButtonStates.AllReleased.WithButton(button, MouseButtonState.Pressed),
+            ModifierKeys.None, clickCount, Environment.TickCount);
     }
 }

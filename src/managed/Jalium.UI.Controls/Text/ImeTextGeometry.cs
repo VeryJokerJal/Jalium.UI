@@ -1,4 +1,5 @@
 using Jalium.UI.Interop;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
 
@@ -7,9 +8,17 @@ internal static class ImeTextGeometry
 {
     internal static bool TryGetFormattedRange(string text, int start, int length, Point origin,
         string fontFamily, double fontSize, int fontWeight, int fontStyle, float maxWidth,
-        out ImeTextRangeGeometry geometry)
+        out ImeTextRangeGeometry geometry, Control? owner = null)
     {
         geometry = default;
+        if (owner is not null && CssInputTextSpacing.For(owner).Active)
+        {
+            if (!ImeTextEncoding.TryNormalizeUtf16Range(text, start, length, out start, out length)) return false;
+            using var layout = CssInputTextSpacing.Composition(owner, text, maxWidth, Brushes.Black);
+            if (!layout.Range((uint)start, (uint)length, out var box)) return false;
+            geometry = new(new Rect(origin.X + box.X, origin.Y + box.Y, box.Width, box.Height), start, length);
+            return true;
+        }
         if (!ImeTextEncoding.TryNormalizeUtf16Range(text, start, length, out start, out length) ||
             !TextMeasurement.HitTestTextRangeWrapped(text, fontFamily, fontSize, fontWeight, fontStyle,
                 maxWidth, (uint)start, (uint)length, out var range) ||
@@ -54,8 +63,14 @@ internal static class ImeTextGeometry
 
     internal static Rect GetFormattedCaret(string text, int index, bool trailing, Point origin, double height,
         string fontFamily, double fontSize, int fontWeight, int fontStyle, float maxWidth,
-        Func<string, double> measure)
+        Func<string, double> measure, Control? owner = null)
     {
+        if (owner is not null && CssInputTextSpacing.For(owner).Active)
+        {
+            using var layout = CssInputTextSpacing.Composition(owner, text, maxWidth, Brushes.Black);
+            layout.Caret((uint)Math.Clamp(index, 0, text.Length), trailing, out var caret);
+            return new Rect(origin.X + caret.CaretX, origin.Y + caret.CaretY, 0, Math.Max(1, caret.CaretHeight));
+        }
         if (text.Length > 0 && TextMeasurement.HitTestTextPositionWrapped(text, fontFamily, fontSize,
             fontWeight, fontStyle, maxWidth, (uint)index, trailing, out var hit))
             return new Rect(origin.X + hit.CaretX, origin.Y + hit.CaretY, 0,
@@ -66,9 +81,19 @@ internal static class ImeTextGeometry
 
     internal static bool TryHitTest(string text, Point point, Point origin, double height,
         string fontFamily, double fontSize, int fontWeight, int fontStyle, float maxWidth,
-        Func<string, double> measure, bool requireTextBounds, out int index)
+        Func<string, double> measure, bool requireTextBounds, out int index, Control? owner = null)
     {
         index = -1;
+        if (owner is not null && CssInputTextSpacing.For(owner).Active)
+        {
+            using var layout = CssInputTextSpacing.Composition(owner, text, maxWidth, Brushes.Black);
+            var x = point.X - origin.X; var y = point.Y - origin.Y;
+            if (requireTextBounds && (!layout.Range(0, (uint)text.Length, out var bounds) ||
+                x < bounds.X || x > bounds.X + bounds.Width || y < 0 || y >= layout.Height)) return false;
+            layout.Hit((float)x, (float)y, out var spacedHit);
+            index = ImeTextEncoding.SnapToGraphemeBoundary(text, Math.Clamp((int)spacedHit.TextPosition, 0, text.Length), false);
+            return true;
+        }
         if (TextMeasurement.HitTestPointWrapped(text, fontFamily, fontSize, fontWeight, fontStyle,
             maxWidth, (float)(point.X - origin.X), (float)(point.Y - origin.Y), out var hit))
         {

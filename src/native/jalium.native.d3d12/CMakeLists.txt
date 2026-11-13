@@ -2,16 +2,22 @@ project(jalium.native.d3d12)
 
 set(HEADERS
     include/d3d12_backend.h
+    include/d3d12_coverage_rect.h
     include/d3d12_brush_shader.h
     include/d3d12_direct_renderer.h
     include/d3d12_glyph_atlas.h
+    include/d3d12_frame_latency_selection.h
     include/d3d12_impeller_engine.h
+    include/d3d12_stroke_mask_cache.h
     include/d3d12_ink_layer.h
     include/d3d12_pipeline.h
+    include/d3d12_path_engine_selection.h
     include/d3d12_render_target.h
+    include/d3d12_window_composition.h
     include/d3d12_resources.h
     include/d3d12_shader_bytecode.h
     include/d3d12_shader_source.h
+    include/d3d12_simple_stroke.h
     include/d3d12_triangulate.h
     include/d3d12_vello.h
     include/d3d12_vello_engine.h
@@ -31,6 +37,7 @@ set(SOURCES
     src/d3d12_path_pipeline.cpp
     src/d3d12_pipeline.cpp
     src/d3d12_render_target.cpp
+    src/d3d12_window_composition.cpp
     src/d3d12_text.cpp
     src/d3d12_video_surface.cpp
     src/d3d12_vello.cpp
@@ -38,6 +45,8 @@ set(SOURCES
 )
 
 set(SHADER_SOURCES
+    shaders/coverage_rect.ps.hlsl
+    shaders/coverage_rect.vs.hlsl
     shaders/rounded_clip.hlsli
     shaders/sdf_rect.ps.hlsl
     shaders/sdf_rect.vs.hlsl

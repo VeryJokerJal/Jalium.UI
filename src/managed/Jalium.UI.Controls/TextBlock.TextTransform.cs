@@ -8,6 +8,8 @@ namespace Jalium.UI.Controls;
 public partial class TextBlock
 {
     private Dictionary<int, Rune>? _textTransformClassification;
+    private TextTransformContextData? _sharedTransformContext;
+    private int _sharedTransformOffset;
 
     private bool HasAuthoredWordSpaceTransformOnInlines()
     {
@@ -17,22 +19,121 @@ public partial class TextBlock
         return false;
     }
 
+    internal bool HasTextTransformRequest()
+    {
+        var blockMode = (CssTextTransformMode)GetValue(CssFlowProperties.TextTransformProperty)!;
+        var blockWordSpaceMode = (CssWordSpaceTransform)GetValue(CssFlowProperties.WordSpaceTransformProperty)!;
+        if (blockMode != CssTextTransformMode.None || blockWordSpaceMode != CssWordSpaceTransform.None)
+            return true;
+        foreach (var range in GetInlineTextRanges())
+            if ((CssTextTransformMode)range.Run.GetValue(CssFlowProperties.TextTransformProperty)! != CssTextTransformMode.None ||
+                (CssWordSpaceTransform)range.Run.GetValue(CssFlowProperties.WordSpaceTransformProperty)! != CssWordSpaceTransform.None)
+                return true;
+        return false;
+    }
+
+    internal void AppendTransformContext(StringBuilder text, List<bool> hidden, List<byte> caseModes)
+    {
+        var blockCase = (byte)((CssTextTransformMode)GetValue(CssFlowProperties.TextTransformProperty)! & CssTextTransformMode.CaseMask);
+        var ranges = GetInlineTextRanges();
+        var rangeIndex = 0;
+        Run? activeRun = null;
+        var activeCase = blockCase;
+        var visual = _whitespaceVisualText;
+        text.Append(visual);
+        for (var index = 0; index < visual.Length;)
+        {
+            var validRune = Rune.TryGetRuneAt(visual, index, out var rune);
+            var length = validRune ? rune.Utf16SequenceLength : 1;
+            var isHidden = WhitespacePaintSlice(index, length).Length == 0;
+            while (rangeIndex < ranges.Count && ranges[rangeIndex].End <= index)
+                rangeIndex++;
+            var run = rangeIndex < ranges.Count && ranges[rangeIndex].Start <= index
+                ? ranges[rangeIndex].Run : null;
+            if (!ReferenceEquals(run, activeRun))
+            {
+                activeRun = run;
+                activeCase = run is null ? blockCase
+                    : (byte)((CssTextTransformMode)run.GetValue(CssFlowProperties.TextTransformProperty)! & CssTextTransformMode.CaseMask);
+            }
+            for (var u = 0; u < length; u++)
+            {
+                hidden.Add(isHidden);
+                caseModes.Add(activeCase);
+            }
+            index += length;
+        }
+    }
+
+    private TextTransformContextData BuildOwnTransformContext()
+    {
+        var visual = _whitespaceVisualText;
+        var text = new StringBuilder(visual.Length);
+        var hidden = new List<bool>(visual.Length);
+        var caseModes = new List<byte>(visual.Length);
+        AppendTransformContext(text, hidden, caseModes);
+        return new TextTransformContextData(text.ToString(), hidden.ToArray(), caseModes.ToArray());
+    }
+
+    internal bool SetSharedTransformContext(TextTransformContextData? context, int offset)
+    {
+        if (context is null)
+        {
+            if (_sharedTransformContext is null && _sharedTransformOffset == 0) return false;
+            _sharedTransformContext = null;
+            _sharedTransformOffset = 0;
+            _layoutDirty = true;
+            return false;
+        }
+        if (ReferenceEquals(_sharedTransformContext, context) && _sharedTransformOffset == offset)
+            return false;
+        _sharedTransformContext = context;
+        _sharedTransformOffset = offset;
+        if (!HasTextTransformRequest()) return false;
+        var oldPaint = _paintText;
+        var oldVisual = _visualText;
+        var oldOffsets = _paintOffsets;
+        RebuildTextTransform();
+        if (string.Equals(oldPaint, _paintText, StringComparison.Ordinal) &&
+            string.Equals(oldVisual, _visualText, StringComparison.Ordinal) &&
+            ((oldOffsets is null && _paintOffsets is null) ||
+             (oldOffsets is not null && _paintOffsets is not null && oldOffsets.AsSpan().SequenceEqual(_paintOffsets))))
+            return false;
+        ClearShapedSpacing();
+        ClearNativeBidiLines();
+        _inlineFontMeasurements.Clear();
+        _textWidthCache.Clear();
+        _justifiedLineCache.Clear();
+        _paintWrapJustificationCache.Clear();
+        _formattedLinesCacheDirty = true;
+        RebuildTextCombine();
+        RebuildHyphenation();
+        RebuildAutospaceReplacement();
+        RebuildLinePadding();
+        _hasPreservedTabs = (_whiteSpaceMode is CssWhiteSpaceCollapse.Preserve or
+            CssWhiteSpaceCollapse.BreakSpaces) && _visualText.Contains('\t') &&
+            HasAuthoredWhiteSpace();
+        _usesInlineFontLayout = HasInlineFontOverrides();
+        RebuildCapsContext();
+        RebuildWordSpacing();
+        RebuildLetterSpacing();
+        RebuildHangingPunctuation();
+        PrepareCssClamp();
+        return true;
+    }
+
     private void RebuildTextTransform()
     {
         _textTransformClassification = null;
-        if (_visualText.Length == 0) return;
+        _visualText = _whitespaceVisualText;
+        _paintText = _whitespacePaintText;
+        _paintOffsets = _whitespacePaintOffsets;
+        _hasPaintTextChanges = _whitespaceHasPaintChanges;
+        if (_visualText.Length == 0 || !HasTextTransformRequest()) return;
         var blockMode = (CssTextTransformMode)GetValue(CssFlowProperties.TextTransformProperty)!;
         var blockWordSpaceMode = (CssWordSpaceTransform)GetValue(
             CssFlowProperties.WordSpaceTransformProperty)!;
         var ranges = GetInlineTextRanges();
-        if (blockMode == CssTextTransformMode.None &&
-            blockWordSpaceMode == CssWordSpaceTransform.None &&
-            !ranges.Any(static range =>
-                (CssTextTransformMode)range.Run.GetValue(
-                    CssFlowProperties.TextTransformProperty)! != CssTextTransformMode.None ||
-                (CssWordSpaceTransform)range.Run.GetValue(
-                    CssFlowProperties.WordSpaceTransformProperty)! != CssWordSpaceTransform.None))
-            return;
 
         // The layout and interaction indices remain in source UTF-16 space.
         // Rebuild only paint text and its source-boundary map; this also handles
@@ -41,7 +142,11 @@ public partial class TextBlock
         var classification = _visualText.ToCharArray();
         Dictionary<int, Rune>? classificationOverrides = null;
         var offsets = new int[_visualText.Length + 1];
-        var finalSigma = _visualText.Contains('\u03A3') ? ComputeFinalSigma() : null;
+        var context = _sharedTransformContext is { } shared &&
+            _sharedTransformOffset >= 0 &&
+            _sharedTransformOffset + _visualText.Length <= shared.Length
+            ? shared : BuildOwnTransformContext();
+        var contextOffset = ReferenceEquals(context, _sharedTransformContext) ? _sharedTransformOffset : 0;
         var rangeIndex = 0;
         Run? activeRun = null;
         var mode = blockMode;
@@ -50,15 +155,12 @@ public partial class TextBlock
         var culture = CaseCulture(Language.IetfLanguageTag);
         var turkic = UsesTurkicLatinCasing(Language.IetfLanguageTag);
         var lithuanian = UsesLithuanianCasing(Language.IetfLanguageTag);
-        var titlecasedSource = new bool[_visualText.Length];
-        var insideWord = false;
-        var firstLetterPending = false;
         for (var index = 0; index < _visualText.Length;)
         {
             var validRune = Rune.TryGetRuneAt(_visualText, index, out var rune);
             if (!validRune) rune = Rune.ReplacementChar;
             var length = validRune ? rune.Utf16SequenceLength : 1;
-            var paintPiece = PaintSlice(index, length);
+            var paintPiece = WhitespacePaintSlice(index, length);
             var paintStart = transformed.Length;
             if (paintPiece.Length > 0)
             {
@@ -79,11 +181,7 @@ public partial class TextBlock
                     turkic = UsesTurkicLatinCasing(language);
                     lithuanian = UsesLithuanianCasing(language);
                 }
-                var firstLetter = UpdateCapitalizationWordState(rune, index + length,
-                    ref insideWord, ref firstLetterPending);
-                titlecasedSource[index] = validRune && firstLetter &&
-                    (mode & CssTextTransformMode.CaseMask) == CssTextTransformMode.Capitalize &&
-                    Rune.GetUnicodeCategory(rune) == UnicodeCategory.LowercaseLetter;
+                var contextIndex = contextOffset + index;
                 var expandedSeparator = validRune && rune.Value == 0x200B &&
                     wordSpaceMode != CssWordSpaceTransform.None &&
                     !HasForcedBreakAdjacentTo(index, explicitBreaks);
@@ -91,8 +189,8 @@ public partial class TextBlock
                     paintPiece = (wordSpaceMode & CssWordSpaceTransform.IdeographicSpace) != 0
                         ? "\u3000" : " ";
                 var result = validRune
-                    ? TransformCase(rune, paintPiece, mode, firstLetter,
-                        culture, turkic, lithuanian, titlecasedSource, finalSigma, index, length)
+                    ? TransformCase(rune, paintPiece, mode, context, contextIndex,
+                        culture, turkic, lithuanian)
                     : paintPiece;
                 if ((mode & (CssTextTransformMode.FullWidth | CssTextTransformMode.FullSizeKana)) != 0)
                     result = TransformWidthAndKana(result, mode, expandedSeparator);
@@ -127,54 +225,15 @@ public partial class TextBlock
            index + 1 < _visualText.Length && IsForcedBreakAt(index + 1, explicitBreaks);
 
     private bool IsForcedBreakAt(int index, bool[]? explicitBreaks)
-        => explicitBreaks?[index] == true || _visualText[index] is '\r' or '\n' or '\f';
-
-    private bool UpdateCapitalizationWordState(Rune rune, int next,
-        ref bool insideWord, ref bool firstLetterPending)
-    {
-        var category = Rune.GetUnicodeCategory(rune);
-        var isWordUnit = Rune.IsLetterOrDigit(rune) || category is
-            UnicodeCategory.NonSpacingMark or UnicodeCategory.SpacingCombiningMark or
-            UnicodeCategory.EnclosingMark or UnicodeCategory.ConnectorPunctuation ||
-            (rune.Value is '\'' or 0x2019) && insideWord &&
-            NextVisibleRuneIsLetter(next);
-        if (!isWordUnit)
-        {
-            insideWord = false;
-            firstLetterPending = false;
-            return false;
-        }
-        if (!insideWord)
-        {
-            insideWord = true;
-            firstLetterPending = true;
-        }
-        if (!Rune.IsLetter(rune) || !firstLetterPending) return false;
-        firstLetterPending = false;
-        return true;
-    }
-
-    private bool NextVisibleRuneIsLetter(int start)
-    {
-        for (var index = start; index < _visualText.Length;)
-        {
-            if (!Rune.TryGetRuneAt(_visualText, index, out var rune)) return false;
-            var length = rune.Utf16SequenceLength;
-            if (PaintSlice(index, length).Length > 0) return Rune.IsLetter(rune);
-            index += length;
-        }
-        return false;
-    }
+        => explicitBreaks?[index] == true || IsTextLineBreak(_visualText[index]) || _visualText[index] == '\f';
 
     private string TransformCase(Rune rune, string paintPiece, CssTextTransformMode mode,
-        bool firstLetter, CultureInfo culture, bool turkic, bool lithuanian,
-        bool[] titlecasedSource, bool[]? finalSigma, int index, int length)
+        TextTransformContextData context, int contextIndex, CultureInfo culture, bool turkic, bool lithuanian)
     {
         var caseMode = mode & CssTextTransformMode.CaseMask;
         if (lithuanian && rune.Value == 0x0307 &&
-            AfterSoftDotted(index, out var softDottedStart) &&
-            (caseMode == CssTextTransformMode.Uppercase ||
-             caseMode == CssTextTransformMode.Capitalize && titlecasedSource[softDottedStart]))
+            (caseMode == CssTextTransformMode.Uppercase && context.IsAfterSoftDotted(contextIndex) ||
+             caseMode == CssTextTransformMode.Capitalize && context.IsAfterTitlecasedSoftDotted(contextIndex)))
             return string.Empty;
 
         return caseMode switch
@@ -183,9 +242,8 @@ public partial class TextBlock
                 turkic && rune.Value == 'i' ? "\u0130" :
                 CssUnicodeSpecialCasing.Upper(rune.Value) ?? paintPiece.ToUpper(culture),
             CssTextTransformMode.Lowercase =>
-                Lowercase(rune, paintPiece, culture, turkic, lithuanian,
-                    finalSigma, index, length),
-            CssTextTransformMode.Capitalize when firstLetter &&
+                Lowercase(rune, paintPiece, context, contextIndex, culture, turkic, lithuanian),
+            CssTextTransformMode.Capitalize when context.IsFirstLetter(contextIndex) &&
                 Rune.GetUnicodeCategory(rune) == UnicodeCategory.LowercaseLetter =>
                 turkic && rune.Value == 'i' ? "\u0130" :
                 CssUnicodeSpecialCasing.Title(rune.Value) ?? culture.TextInfo.ToTitleCase(paintPiece),
@@ -214,15 +272,15 @@ public partial class TextBlock
         return output.ToString();
     }
 
-    private string Lowercase(Rune rune, string paintPiece, CultureInfo culture,
-        bool turkic, bool lithuanian, bool[]? finalSigma, int index, int length)
+    private static string Lowercase(Rune rune, string paintPiece, TextTransformContextData context,
+        int contextIndex, CultureInfo culture, bool turkic, bool lithuanian)
     {
         if (turkic)
         {
             if (rune.Value == 0x0130) return "i";
             if (rune.Value == 'I')
-                return BeforeDot(index + length) ? "i" : "\u0131";
-            if (rune.Value == 0x0307 && AfterI(index))
+                return context.IsBeforeDot(contextIndex) ? "i" : "\u0131";
+            if (rune.Value == 0x0307 && context.IsAfterI(contextIndex))
                 return string.Empty;
         }
         if (lithuanian)
@@ -230,7 +288,7 @@ public partial class TextBlock
             if (rune.Value == 0x00CC) return "i\u0307\u0300";
             if (rune.Value == 0x00CD) return "i\u0307\u0301";
             if (rune.Value == 0x0128) return "i\u0307\u0303";
-            if (MoreAbove(index + length))
+            if (context.IsMoreAbove(contextIndex))
             {
                 if (rune.Value == 'I') return "i\u0307";
                 if (rune.Value == 'J') return "j\u0307";
@@ -238,103 +296,136 @@ public partial class TextBlock
             }
         }
         if (rune.Value == 0x03A3)
-            return finalSigma?[index] == true ? "\u03C2" : "\u03C3";
+            return context.IsFinalSigma(contextIndex) ? "\u03C2" : "\u03C3";
         return CssUnicodeSpecialCasing.Lower(rune.Value) ?? paintPiece.ToLower(culture);
     }
 
-    private bool MoreAbove(int index)
+    internal sealed class TextTransformContextData
     {
-        while (index < _visualText.Length)
-        {
-            if (!Rune.TryGetRuneAt(_visualText, index, out var rune)) return false;
-            if (CssUnicodeCasingData.IsAbove(rune.Value)) return true;
-            if (!CssUnicodeCasingData.IsOtherCombining(rune.Value)) return false;
-            index += rune.Utf16SequenceLength;
-        }
-        return false;
-    }
+        private const byte FlagFirstLetter = 1;
+        private const byte FlagFinalSigma = 2;
+        private const byte FlagBeforeDot = 4;
+        private const byte FlagAfterI = 8;
+        private const byte FlagMoreAbove = 16;
+        private const byte FlagAfterSoftDotted = 32;
+        private const byte FlagAfterTitlecasedSoftDotted = 64;
 
-    private bool BeforeDot(int index)
-    {
-        while (index < _visualText.Length)
-        {
-            if (!Rune.TryGetRuneAt(_visualText, index, out var rune)) return false;
-            if (rune.Value == 0x0307) return true;
-            if (!CssUnicodeCasingData.IsOtherCombining(rune.Value)) return false;
-            index += rune.Utf16SequenceLength;
-        }
-        return false;
-    }
+        private readonly byte[] _flags;
+        internal int Length => _flags.Length;
 
-    private bool AfterI(int index)
-    {
-        while (TryPreviousSourceRune(ref index, out var rune))
-        {
-            if (rune.Value == 'I') return true;
-            if (!CssUnicodeCasingData.IsOtherCombining(rune.Value)) return false;
-        }
-        return false;
-    }
+        internal bool IsFirstLetter(int index) => (_flags[index] & FlagFirstLetter) != 0;
+        internal bool IsFinalSigma(int index) => (_flags[index] & FlagFinalSigma) != 0;
+        internal bool IsBeforeDot(int index) => (_flags[index] & FlagBeforeDot) != 0;
+        internal bool IsAfterI(int index) => (_flags[index] & FlagAfterI) != 0;
+        internal bool IsMoreAbove(int index) => (_flags[index] & FlagMoreAbove) != 0;
+        internal bool IsAfterSoftDotted(int index) => (_flags[index] & FlagAfterSoftDotted) != 0;
+        internal bool IsAfterTitlecasedSoftDotted(int index) => (_flags[index] & FlagAfterTitlecasedSoftDotted) != 0;
 
-    private bool AfterSoftDotted(int index, out int baseIndex)
-    {
-        while (TryPreviousSourceRune(ref index, out var rune))
+        internal TextTransformContextData(string text, bool[] hidden, byte[] caseModes)
         {
-            if (CssUnicodeCasingData.IsSoftDotted(rune.Value))
+            _flags = new byte[text.Length];
+            bool insideWord = false, firstLetterPending = false;
+            bool casedBefore = false, afterI = false, afterSoftDotted = false, afterTitlecasedSoftDotted = false;
+            for (var index = 0; index < text.Length;)
             {
-                baseIndex = index;
-                return true;
+                var validRune = Rune.TryGetRuneAt(text, index, out var rune);
+                if (!validRune) rune = Rune.ReplacementChar;
+                var length = validRune ? rune.Utf16SequenceLength : 1;
+                if (!hidden[index])
+                {
+                    var firstLetter = UpdateCapitalizationWordState(text, hidden, rune, index + length,
+                        ref insideWord, ref firstLetterPending);
+                    byte f = 0;
+                    if (firstLetter) f |= FlagFirstLetter;
+                    if (rune.Value == 0x03A3 && casedBefore) f |= FlagFinalSigma;
+                    if (afterI) f |= FlagAfterI;
+                    if (afterSoftDotted) f |= FlagAfterSoftDotted;
+                    if (afterTitlecasedSoftDotted) f |= FlagAfterTitlecasedSoftDotted;
+                    _flags[index] = f;
+                    var value = rune.Value;
+                    if (!CssUnicodeCasingData.IsCaseIgnorable(value))
+                        casedBefore = CssUnicodeCasingData.IsCased(value);
+                    if (!CssUnicodeCasingData.IsOtherCombining(value))
+                    {
+                        afterI = value == 'I';
+                        afterSoftDotted = CssUnicodeCasingData.IsSoftDotted(value);
+                        var caseMode = (CssTextTransformMode)caseModes[index];
+                        afterTitlecasedSoftDotted = afterSoftDotted &&
+                            (caseMode == CssTextTransformMode.Uppercase ||
+                             caseMode == CssTextTransformMode.Capitalize && firstLetter &&
+                             Rune.GetUnicodeCategory(rune) == UnicodeCategory.LowercaseLetter);
+                    }
+                }
+                index += length;
             }
-            if (!CssUnicodeCasingData.IsOtherCombining(rune.Value)) break;
-        }
-        baseIndex = -1;
-        return false;
-    }
 
-    private bool TryPreviousSourceRune(ref int index, out Rune rune)
-    {
-        if (index <= 0)
+            bool casedAfter = false, beforeDot = false, moreAbove = false;
+            for (var index = text.Length; index > 0;)
+            {
+                var start = index - 1;
+                if (char.IsLowSurrogate(text[start]) && start > 0 && char.IsHighSurrogate(text[start - 1]))
+                    start--;
+                if (!Rune.TryGetRuneAt(text, start, out var rune))
+                    rune = Rune.ReplacementChar;
+                if (!hidden[start])
+                {
+                    var f = _flags[start];
+                    if (casedAfter) f = (byte)(f & ~FlagFinalSigma);
+                    if (beforeDot) f |= FlagBeforeDot;
+                    if (moreAbove) f |= FlagMoreAbove;
+                    _flags[start] = f;
+                    var value = rune.Value;
+                    if (!CssUnicodeCasingData.IsCaseIgnorable(value))
+                        casedAfter = CssUnicodeCasingData.IsCased(value);
+                    if (value == 0x0307)
+                        beforeDot = true;
+                    else if (!CssUnicodeCasingData.IsOtherCombining(value))
+                        beforeDot = false;
+                    if (CssUnicodeCasingData.IsAbove(value))
+                        moreAbove = true;
+                    else if (!CssUnicodeCasingData.IsOtherCombining(value))
+                        moreAbove = false;
+                }
+                index = start;
+            }
+        }
+
+        private static bool UpdateCapitalizationWordState(string text, bool[] hidden, Rune rune, int next,
+            ref bool insideWord, ref bool firstLetterPending)
         {
-            rune = default;
+            var category = Rune.GetUnicodeCategory(rune);
+            var isWordUnit = Rune.IsLetterOrDigit(rune) || category is
+                UnicodeCategory.NonSpacingMark or UnicodeCategory.SpacingCombiningMark or
+                UnicodeCategory.EnclosingMark or UnicodeCategory.ConnectorPunctuation ||
+                (rune.Value is '\'' or 0x2019) && insideWord &&
+                NextVisibleRuneIsLetter(text, hidden, next);
+            if (!isWordUnit)
+            {
+                insideWord = false;
+                firstLetterPending = false;
+                return false;
+            }
+            if (!insideWord)
+            {
+                insideWord = true;
+                firstLetterPending = true;
+            }
+            if (!Rune.IsLetter(rune) || !firstLetterPending) return false;
+            firstLetterPending = false;
+            return true;
+        }
+
+        private static bool NextVisibleRuneIsLetter(string text, bool[] hidden, int start)
+        {
+            for (var index = start; index < text.Length;)
+            {
+                if (!Rune.TryGetRuneAt(text, index, out var rune)) return false;
+                var length = rune.Utf16SequenceLength;
+                if (!hidden[index]) return Rune.IsLetter(rune);
+                index += length;
+            }
             return false;
         }
-        index--;
-        if (index > 0 && char.IsLowSurrogate(_visualText[index]) &&
-            char.IsHighSurrogate(_visualText[index - 1])) index--;
-        if (Rune.TryGetRuneAt(_visualText, index, out rune)) return true;
-        rune = Rune.ReplacementChar;
-        return true;
-    }
-
-    private bool[] ComputeFinalSigma()
-    {
-        var preceding = new bool[_visualText.Length];
-        var result = new bool[_visualText.Length];
-        var cased = false;
-        for (var index = 0; index < _visualText.Length;)
-        {
-            if (!Rune.TryGetRuneAt(_visualText, index, out var rune))
-                rune = Rune.ReplacementChar;
-            preceding[index] = cased;
-            if (!CssUnicodeCasingData.IsCaseIgnorable(rune.Value))
-                cased = CssUnicodeCasingData.IsCased(rune.Value);
-            index += rune.Utf16SequenceLength;
-        }
-        cased = false;
-        for (var index = _visualText.Length; index > 0;)
-        {
-            var start = index - 1;
-            if (char.IsLowSurrogate(_visualText[start]) && start > 0 &&
-                char.IsHighSurrogate(_visualText[start - 1])) start--;
-            if (!Rune.TryGetRuneAt(_visualText, start, out var rune))
-                rune = Rune.ReplacementChar;
-            if (rune.Value == 0x03A3 && preceding[start] && !cased)
-                result[start] = true;
-            if (!CssUnicodeCasingData.IsCaseIgnorable(rune.Value))
-                cased = CssUnicodeCasingData.IsCased(rune.Value);
-            index = start;
-        }
-        return result;
     }
 
     private static bool UsesTurkicLatinCasing(string language)

@@ -3,7 +3,7 @@ using Jalium.UI.Input;
 
 namespace Jalium.UI.Tests;
 
-[Collection(nameof(ParityFoundationBehaviorCollection))]
+[Collection("ParityFoundationBehaviorCollection")]
 public sealed class InputStaticSurfaceParityTests
 {
     [Fact]

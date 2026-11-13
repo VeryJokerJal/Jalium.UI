@@ -1,3 +1,4 @@
+#include "jalium_text_glyph_ranges.h"
 #pragma once
 #include "jalium_font_resource.h"
 
@@ -57,6 +58,7 @@ struct SoftwareGradientRaster {
     float bottom = 0.0f;
     float opacity = 1.0f;
     bool opaque = false;
+    float deviceToBrush[6] = {1,0,0,1,0,0};
     std::vector<uint8_t> pixels;
 };
 
@@ -68,13 +70,14 @@ public:
     JaliumBrushType GetType() const override { return JALIUM_BRUSH_SOLID; }
 };
 
-class SoftwareLinearGradientBrush : public Brush {
+class SoftwareLinearGradientBrush : public Brush, public GradientColorInterpolationProvider, public GradientPaintTransformState {
 public:
     float startX, startY, endX, endY;
     float deltaX = 0, deltaY = 0, inverseLengthSquared = 0;
     uint32_t spreadMethod; // 0=Pad, 1=Repeat, 2=Reflect
-    // RGB channels are converted to linear light once at brush creation;
-    // positions and alpha retain their wire values.
+    uint32_t colorInterpolationMode = 0;
+    // Encoded-sRGB wire values; interpolation mode is explicit. Legacy factories
+    // retain the historical linear-light default.
     std::vector<JaliumGradientStop> stops;
     std::vector<uint32_t> colorLut;
     std::vector<float> alphaLut;
@@ -82,13 +85,14 @@ public:
                                 const JaliumGradientStop* s, uint32_t count,
                                 uint32_t spread);
     ~SoftwareLinearGradientBrush() override;
+    JaliumResult SetColorInterpolationMode(uint32_t mode) override;
     JaliumBrushType GetType() const override { return JALIUM_BRUSH_LINEAR_GRADIENT; }
 
     void SampleColor(float px, float py, float& outR, float& outG, float& outB, float& outA) const;
     void SampleColor8(float px, float py,
                       uint8_t& outR, uint8_t& outG, uint8_t& outB, float& outA) const;
     std::shared_ptr<const SoftwareGradientRaster> GetOrCreateRaster(
-        float left, float top, float right, float bottom, float opacity) const;
+        float left, float top, float right, float bottom, float opacity, const float* deviceToBrush) const;
 
 private:
     mutable std::mutex rasterCacheMutex_;
@@ -96,10 +100,11 @@ private:
     mutable size_t rasterCacheBytes_ = 0;
 };
 
-class SoftwareRadialGradientBrush : public Brush {
+class SoftwareRadialGradientBrush : public Brush, public GradientColorInterpolationProvider, public GradientPaintTransformState, public RadialGradientGeometryState {
 public:
     float centerX, centerY, radiusX, radiusY, originX, originY;
     uint32_t spreadMethod; // 0=Pad, 1=Repeat, 2=Reflect
+    uint32_t colorInterpolationMode = 0;
     std::vector<JaliumGradientStop> stops;
     std::vector<uint32_t> colorLut;
     std::vector<float> alphaLut;
@@ -108,13 +113,16 @@ public:
                                  const JaliumGradientStop* s, uint32_t count,
                                  uint32_t spread);
     ~SoftwareRadialGradientBrush() override;
+    JaliumResult SetColorInterpolationMode(uint32_t mode) override;
+    JaliumResult SetRadialGeometry(float focalRadius, uint32_t flags) override;
+    float averageR = 0, averageG = 0, averageB = 0, averageA = 0;
     JaliumBrushType GetType() const override { return JALIUM_BRUSH_RADIAL_GRADIENT; }
 
     void SampleColor(float px, float py, float& outR, float& outG, float& outB, float& outA) const;
     void SampleColor8(float px, float py,
                       uint8_t& outR, uint8_t& outG, uint8_t& outB, float& outA) const;
     std::shared_ptr<const SoftwareGradientRaster> GetOrCreateRaster(
-        float left, float top, float right, float bottom, float opacity) const;
+        float left, float top, float right, float bottom, float opacity, const float* deviceToBrush) const;
 
 private:
     mutable std::mutex rasterCacheMutex_;
@@ -324,6 +332,17 @@ struct SoftwareTransform {
         return {{1, 0, 0, 1, 0, 0}};
     }
 
+    bool TryInverse(SoftwareTransform& inverse) const {
+        const double determinant = static_cast<double>(m[0]) * m[3] - static_cast<double>(m[1]) * m[2];
+        if (determinant == 0 || !std::isfinite(determinant)) return false;
+        inverse = {{static_cast<float>(m[3] / determinant), static_cast<float>(-m[1] / determinant),
+            static_cast<float>(-m[2] / determinant), static_cast<float>(m[0] / determinant),
+            static_cast<float>((static_cast<double>(m[2]) * m[5] - static_cast<double>(m[3]) * m[4]) / determinant),
+            static_cast<float>((static_cast<double>(m[1]) * m[4] - static_cast<double>(m[0]) * m[5]) / determinant)}};
+        for (float value : inverse.m) if (!std::isfinite(value)) return false;
+        return true;
+    }
+
     SoftwareTransform Multiply(const SoftwareTransform& b) const {
         SoftwareTransform r;
         // Push the child's local transform under the current parent transform.
@@ -400,11 +419,9 @@ class SoftwareRenderTarget : public RenderTarget, public CpuFramebufferStoragePr
     public EllipticalClipProvider, public PathClipProvider,
     public EllipticalEffectProvider, public SpreadShadowProvider,
     public CssBoxShadowProvider, public CssShadowLayerProvider,
-    public FilterDropShadowProvider, public CssTextShadowProvider, public ColorMatrixChainProvider,
-    public InsetShadowLayerProvider
-#ifdef __APPLE__
-    , public TextGlyphRangeRenderProvider, public TextParagraphRenderProvider
-#endif
+    public FilterDropShadowProvider, public CssTextShadowProvider, public ColorMatrixChainProvider, public AlphaMaskEffectProvider, public BlendEffectProvider,
+    public InsetShadowLayerProvider, public TextGlyphRangeRenderProvider
+    , public TextParagraphRenderProvider, public TextParagraphSliceRenderProvider, public TextParagraphBrushRenderProvider
 {
 public:
     SoftwareRenderTarget(SoftwareBackend* backend, int32_t width, int32_t height);
@@ -441,10 +458,12 @@ public:
         float blRadius, float brRadius,
         Brush* fillBrush, Brush* strokeBrush, float strokeWidth) override;
 
-#ifdef __APPLE__
     JaliumResult SetTextGlyphRanges(const uint32_t* pairs, uint32_t count, int32_t mode) override;
     void RenderParagraphLine(TextParagraph* paragraph, uint32_t line, float x, float y, float opacity) override;
-#endif
+    JaliumResult RenderParagraphSlice(TextParagraph* paragraph, uint32_t line,
+        float x, float y, uint32_t start, uint32_t length, const float* rgba) override;
+    JaliumResult RenderParagraphBrush(TextParagraph* paragraph, uint32_t line,
+        float x, float y, uint32_t start, uint32_t length, Brush* brush) override;
     bool SupportsRetainedLayers() const override { return true; }
     void* RealizeLayerBegin(void* existingLayer, float x, float y, float w, float h) override;
     void RealizeLayerEnd(void* layer) override;
@@ -616,6 +635,11 @@ public:
         float cornerTL, float cornerTR, float cornerBR, float cornerBL) override;
     void DrawColorMatrixEffect(float x, float y, float w, float h,
         const float* matrix) override;
+    JaliumResult BeginAlphaMaskCapture(float x, float y, float w, float h) override;
+    bool SupportsBlendModes() const override { return true; }
+    JaliumResult DrawBlendEffect(uint32_t mode, float x, float y, float w, float h) override;
+    JaliumResult DrawAlphaMaskEffect(const uint8_t* pixels,uint32_t bytes,uint32_t width,uint32_t height,uint32_t stride,
+        float maskX,float maskY,float maskW,float maskH,float captureX,float captureY,float captureW,float captureH) override;
     JaliumResult DrawColorMatrixChainEffect(float x, float y, float w, float h,
         const float* matrices, uint32_t matrixCount) override;
     void DrawEmbossEffect(float x, float y, float w, float h,
@@ -650,9 +674,8 @@ public:
 private:
 #ifdef __APPLE__
     void CompositeAppleGlyphs(const std::vector<uint8_t>& pixels, uint32_t width, uint32_t height, float x, float y);
-    std::vector<uint32_t> glyphRanges_;
-    int32_t glyphVisibility_ = 0;
 #endif
+    TextGlyphRanges textGlyphRanges_;
     struct CompactFramebufferStorage {
         std::vector<uint8_t> prefixPixels;
         uint8_t suffixBgra[4] = {};
@@ -696,12 +719,25 @@ private:
         const SoftwareRadialGradientBrush* radial = nullptr;
         uint8_t r = 0, g = 0, b = 0, a = 0;
         uint32_t packedBgra = 0;
+        SoftwareTransform deviceToBrush = SoftwareTransform::Identity();
 
         bool IsValid() const { return kind != PreparedPaintKind::Invalid; }
         bool IsSolid() const { return kind == PreparedPaintKind::Solid; }
     };
 
+    struct GlyphBrushState {
+        PreparedPaint paint;
+        float opacity = 1.0f;
+        bool active = false;
+    };
+    GlyphBrushState glyphBrush_;
+    void BlendTextPixel(int32_t x, int32_t y, uint8_t r, uint8_t g, uint8_t b, uint8_t a);
+    void BlendTextPixelSubpixel(int32_t x, int32_t y, uint8_t r, uint8_t g, uint8_t b,
+                               uint8_t ar, uint8_t ag, uint8_t ab);
+
     PreparedPaint PreparePaint(Brush* brush) const;
+    void GetDeviceBrushColor(Brush* brush, float px, float py,
+                             uint8_t& r, uint8_t& g, uint8_t& b, uint8_t& a) const;
     void SamplePaint(const PreparedPaint& paint, float px, float py,
                      uint8_t& r, uint8_t& g, uint8_t& b, uint8_t& a) const;
     void CompositeSpan(int32_t y, int32_t x0, int32_t x1,
@@ -827,6 +863,10 @@ private:
     // framebuffer snapshot and capture bounds.
     struct EffectCaptureState {
         SoftwareFramebuffer savedRegion;
+        std::stack<SoftwareClipRect> savedClips;
+        std::vector<SoftwareClipRect> savedRoundedClips;
+        std::vector<PathClipCapture> savedPathClips;
+        float savedOpacity = 1;
         float x = 0;
         float y = 0;
         float width = 0;
@@ -837,6 +877,7 @@ private:
 
     SoftwareFramebuffer effectCaptureFb_;
     std::vector<EffectCaptureState> effectCaptureStack_;
+    std::vector<bool> effectCaptureAttempts_;
     float lastEffectCaptureX_ = 0, lastEffectCaptureY_ = 0;
     float lastEffectCaptureW_ = 0, lastEffectCaptureH_ = 0;
     bool effectCaptureReady_ = false;
@@ -864,6 +905,9 @@ private:
         std::vector<uint8_t> capturedPixels;
         SoftwareRetainedLayer* layer = nullptr;
         int32_t x = 0, y = 0, width = 0, height = 0;
+        double normalizedOffsetX = 0.0, normalizedOffsetY = 0.0;
+        double normalizedWidth = 1.0, normalizedHeight = 1.0;
+        bool mirrorX = false, mirrorY = false;
     };
     std::vector<std::unique_ptr<SoftwareRetainedLayer>> retainedLayers_;
     std::vector<RetainedCaptureState> retainedCaptureStack_;

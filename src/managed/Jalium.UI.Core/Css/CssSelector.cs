@@ -1,5 +1,37 @@
 namespace Jalium.UI.Styling;
 
+[Flags]
+internal enum CssPseudoElement : ushort
+{
+    None = 0,
+    Before = 1,
+    After = 2,
+    Marker = 4,
+    FirstLetter = 8,
+    FirstLine = 16,
+    Selection = 32,
+    Placeholder = 64,
+    BeforeMarker = 128,
+    AfterMarker = 256,
+    Highlight = 1 << 11,
+    SearchText = 1 << 12,
+    TargetText = 1 << 13,
+    SpellingError = 1 << 14,
+    GrammarError = 1 << 15,
+}
+
+internal static class CssPseudoElementExtensions
+{
+    public const CssPseudoElement HighlightMask = CssPseudoElement.Selection | CssPseudoElement.Highlight |
+        CssPseudoElement.SearchText | CssPseudoElement.TargetText | CssPseudoElement.SpellingError | CssPseudoElement.GrammarError;
+
+    public static bool IsMarker(this CssPseudoElement kind)
+        => kind is CssPseudoElement.Marker or CssPseudoElement.BeforeMarker or CssPseudoElement.AfterMarker;
+
+    public static bool IsHighlight(this CssPseudoElement kind)
+        => (kind & HighlightMask) != 0 && (kind & ~HighlightMask) == 0 && kind != CssPseudoElement.None;
+}
+
 internal enum CssCombinator : byte
 {
     /// <summary>Whitespace combinator: any ancestor.</summary>
@@ -95,6 +127,9 @@ internal sealed class CssCompound
     public CssStateMask StateMask;
     public CssAttributeSelector[]? Attributes;
     public CssFunctionalPseudo[]? Functions;
+    public CssPseudoElement PseudoElement;
+    public string? HighlightName;
+    public bool SearchCurrent;
 
     /// <summary>Lazily resolved element type; <see cref="CssSelectorMatching.UnresolvableType"/> marks a failed lookup.</summary>
     public Type? ResolvedType;
@@ -142,6 +177,10 @@ internal sealed class CssSelector
     internal bool ContainsScope;
 
     public bool HasCombinators => Compounds.Length > 1;
+    public CssPseudoElement PseudoElement => CssSelection.EffectivePseudoElement(Compounds[0]);
+    public CssPseudoElement DeclaredPseudoElement => Compounds[0].PseudoElement;
+    public string? HighlightName => Compounds[0].HighlightName;
+    public bool SearchCurrent => Compounds[0].SearchCurrent;
     public bool HasStructuralDependencies => Combinators.Any(c => c is CssCombinator.AdjacentSibling or CssCombinator.GeneralSibling) ||
         Compounds.Any(c => c.Attributes is { Length: > 0 } || c.Functions is { Length: > 0 } ||
             c.Pseudos?.Any(p => p is >= CssPseudoClass.Scope and <= CssPseudoClass.RelativeAnchor) == true);

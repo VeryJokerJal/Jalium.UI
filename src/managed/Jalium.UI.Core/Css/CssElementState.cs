@@ -23,6 +23,7 @@ internal sealed class CssElementState
     public Dictionary<string, CssInheritedBoxObserver>? InheritedBoxObservers;
     public HashSet<string>? ObservedInheritedBoxes;
     public List<CssColorBrushObserver>? ColorBrushObservers;
+    public CssUsedForeground.Observer? NativeForegroundObserver;
     public CssContainerDependent? ContainerDependent;
     public CssFontDependency? FontDependency;
     public CssMediaPreferenceDependency? MediaPreferenceDependency;
@@ -62,6 +63,9 @@ internal sealed class CssElementState
     /// <summary>The sheet parsed from <c>Css.StyleSheet</c>, tracked so a re-set can replace it.</summary>
     public CssStyleSheet? DeclaredStyleSheet;
 
+    /// <summary>The sheet loaded from <c>Css.StyleSheetSource</c>, tracked independently of inline sheet text.</summary>
+    public CssStyleSheet? SourceStyleSheet;
+
     /// <summary>DP values the CSS engine currently owns on this element, by layer.</summary>
     public Dictionary<DependencyProperty, AppliedCssValue>? Applied;
     public CssAnimationRunner? AnimationRunner;
@@ -88,6 +92,9 @@ internal sealed class CssElementState
 
     /// <summary>Union of ancestor-position pseudo-classes across the sheets in scope.</summary>
     public CssStateMask ScopeAncestorStates;
+
+    /// <summary>All pseudo-class states used by sheets in scope, including sibling and functional selectors.</summary>
+    public CssStateMask ScopeStates;
 
     /// <summary>True when any sheet in scope uses #id selectors (Name changes then re-match).</summary>
     public bool ScopeUsesId;

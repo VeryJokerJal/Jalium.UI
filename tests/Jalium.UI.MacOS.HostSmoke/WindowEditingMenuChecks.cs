@@ -43,7 +43,7 @@ internal static class WindowEditingMenuChecks
             || (uint)index >= CaseCount) return 2;
         int kind = index % 7;
         JaliumMacApplication.Initialize();
-        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Prohibited;
+        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Accessory;
         RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
         UIElement editor = kind switch
         {

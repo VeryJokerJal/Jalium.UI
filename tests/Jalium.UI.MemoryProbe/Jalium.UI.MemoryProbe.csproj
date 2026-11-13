@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RootNamespace>Jalium.UI.MemoryProbe</RootNamespace>
+    <AssemblyName>Jalium.UI.MemoryProbe</AssemblyName>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Match DeviceLostHarness: exercise the source projects directly instead
+         of resolving a previously packed Jalium.UI build. -->
+    <ProjectReference Include="..\..\src\managed\Jalium.UI.Controls\Jalium.UI.Controls.csproj" />
+    <ProjectReference Include="..\..\src\managed\Jalium.UI.Core\Jalium.UI.Core.csproj" />
+    <ProjectReference Include="..\..\src\managed\Jalium.UI.Gpu\Jalium.UI.Gpu.csproj" />
+    <ProjectReference Include="..\..\src\managed\Jalium.UI.Media\Jalium.UI.Media.csproj" />
+    <ProjectReference Include="..\..\src\managed\Jalium.UI.Interop\Jalium.UI.Interop.csproj" />
+    <ProjectReference Include="..\..\src\managed\Jalium.UI.Xaml\Jalium.UI.Xaml.csproj" />
+    <ProjectReference Include="..\..\src\packaging\Jalium.UI.Desktop\Jalium.UI.Desktop.csproj" />
+  </ItemGroup>
+
+</Project>

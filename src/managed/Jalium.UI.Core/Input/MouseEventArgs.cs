@@ -196,34 +196,20 @@ public class MouseEventArgs : InputEventArgs
         if (relativeTo is not UIElement relativeElement)
             return Position;
 
-        // Walk up from relativeTo collecting the ancestor chain.
-        // chain[0] = relativeTo, chain[last] = topmost ancestor reached.
-        var chain = new List<Visual>();
-        Visual? current = relativeElement;
-        while (current != null)
+        // Compose parent-to-child inverse maps while walking upwards. Prepending
+        // each map gives the same root-to-leaf order without allocating a list
+        // for every pointer event. The topmost visual remains the host space.
+        var inverse = Matrix.Identity;
+        for (Visual? child = relativeElement; child?.VisualParent != null; child = child.VisualParent)
         {
-            chain.Add(current);
-            current = current.VisualParent;
-        }
-
-        // Start at the topmost visual's parent-local space (which is what
-        // `Position` is expressed in for a window-rooted visual tree) and
-        // descend to relativeTo, undoing each step:
-        //   parent → child:  translate by -child.VisualBounds.position,
-        //                    then apply child.RenderTransform.Inverse around
-        //                    child's RenderTransformOrigin.
-        // This mirrors the render-side `PushTransform(child.RenderTransform,
-        // originX, originY)` in Visual.RenderDirect.
-        var p = Position;
-        for (int i = chain.Count - 2; i >= 0; i--)
-        {
-            var child = chain[i];
-
+            double offsetX = 0, offsetY = 0;
             if (child is FrameworkElement fe)
             {
-                p = new Point(p.X - fe.VisualBounds.X, p.Y - fe.VisualBounds.Y);
+                offsetX = fe.VisualBounds.X;
+                offsetY = fe.VisualBounds.Y;
             }
 
+            var level = new Matrix(1, 0, 0, 1, -offsetX, -offsetY);
             if (child is UIElement ui && ui.RenderTransform is { } rt
                 && rt.Value.TryInvert(out var inv))
             {
@@ -231,13 +217,14 @@ public class MouseEventArgs : InputEventArgs
                 var size = ui.RenderSize;
                 var ox = origin.X * size.Width;
                 var oy = origin.Y * size.Height;
-                var translated = new Point(p.X - ox, p.Y - oy);
-                var inverted = inv.Transform(translated);
-                p = new Point(inverted.X + ox, inverted.Y + oy);
+                level = Matrix.Multiply(
+                    Matrix.Multiply(new Matrix(1, 0, 0, 1, -offsetX - ox, -offsetY - oy), inv),
+                    new Matrix(1, 0, 0, 1, ox, oy));
             }
+            inverse = Matrix.Multiply(level, inverse);
         }
 
-        return p;
+        return inverse.Transform(Position);
     }
 
     /// <summary>

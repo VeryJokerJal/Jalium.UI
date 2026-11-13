@@ -122,7 +122,6 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
 
     // 边框画笔。光标闪烁定时器每个周期都触发一次整控件重绘，BorderBrush 实例本身不变，
     // 复用画笔省掉这条路径上每帧一个 DependencyObject 的分配。
-    private RenderPenCache _borderPen;
 
     // Input state
     private bool _isDragging;
@@ -170,7 +169,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
     private const double MinimapViewportDragActivationDistance = 2;
     private readonly MinimapRenderer _minimapRenderer = new();
     private Popup? _minimapTooltipPopup;
-    private MinimapTooltipPresenter? _minimapTooltipPresenter;
+    private EditorTextHint? _minimapTooltipPresenter;
     private Rect _verticalScrollTrackRect = Rect.Empty;
     private Rect _verticalScrollThumbRect = Rect.Empty;
     private Rect _horizontalScrollTrackRect = Rect.Empty;
@@ -218,71 +217,6 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
     private const double SmoothScrollMaxDeltaTimeSeconds = 0.1;
     private static int SmoothScrollIntervalMs => CompositionTarget.FrameIntervalMs;
     private bool _isFollowingBottom;
-
-    private readonly record struct SyntaxPreviewLine(int DocumentLineNumber, string Prefix, string Text);
-
-    private sealed class MinimapTooltipPresenter(EditControl owner) : FrameworkElement
-    {
-        private SyntaxPreviewLine[] _previewLines = [];
-        private Size _desiredSize;
-        private string _fontFamily = "Cascadia Code";
-        private double _fontSize = 13;
-        private double _lineHeight = 16;
-        private Brush? _foreground;
-        private Brush? _background;
-        private Pen? _borderPen;
-
-        internal void UpdatePreview(
-            SyntaxPreviewLine[] previewLines,
-            Size desiredSize,
-            string fontFamily,
-            double fontSize,
-            double lineHeight,
-            Brush foreground,
-            Brush background,
-            Pen borderPen)
-        {
-            _previewLines = previewLines;
-            _desiredSize = desiredSize;
-            _fontFamily = fontFamily;
-            _fontSize = fontSize;
-            _lineHeight = lineHeight;
-            _foreground = foreground;
-            _background = background;
-            _borderPen = borderPen;
-            InvalidateMeasure();
-            InvalidateVisual();
-        }
-
-        protected override Size MeasureOverride(Size availableSize) => _desiredSize;
-
-        protected override Size ArrangeOverride(Size finalSize) => finalSize;
-
-        protected override void OnRender(DrawingContext dc)
-        {
-            if (_foreground == null || _background == null || _borderPen == null ||
-                _previewLines.Length == 0 || RenderSize.Width <= 0 || RenderSize.Height <= 0)
-            {
-                return;
-            }
-
-            var tooltipRect = new Rect(0, 0, RenderSize.Width, RenderSize.Height);
-            dc.DrawRoundedRectangle(_background, _borderPen, tooltipRect, 3, 3);
-            var textRect = new Rect(
-                MinimapTooltipPaddingX,
-                MinimapTooltipPaddingY,
-                Math.Max(0, tooltipRect.Width - MinimapTooltipPaddingX * 2),
-                Math.Max(0, tooltipRect.Height - MinimapTooltipPaddingY * 2));
-            owner.DrawSyntaxHighlightedPreview(
-                dc,
-                _previewLines,
-                textRect,
-                _fontFamily,
-                _fontSize,
-                _foreground,
-                _lineHeight);
-        }
-    }
 
     // Caret blink timer
     private DispatcherTimer? _caretTimer;
@@ -612,7 +546,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
                 OnSelectionChanged();
             if (oldCaret != _caret.Offset)
                 OnCaretPositionChanged();
-            InvalidateVisual();
+            InvalidateEditorView();
         }
     }
 
@@ -740,7 +674,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
             _behaviorOptions.PreserveLineEndingsOnCopy = enabled;
 
         if (feature is EditFeature.HighContrastMode or EditFeature.AccessibilityMode)
-            InvalidateVisual();
+            InvalidateEditorView();
     }
 
     public void SetUserKeyBindings(IEnumerable<EditorKeyBinding>? keyBindings)
@@ -811,6 +745,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         _scrollAnimationTargetVerticalOffset = 0;
         _scrollAnimationTargetHorizontalOffset = 0;
         _isFollowingBottom = AutoFollowBottom && IsAtBottomWithinTolerance();
+        InitializeEditorTemplateBehavior();
     }
 
     #endregion
@@ -819,12 +754,14 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
 
     protected override Size MeasureOverride(Size availableSize)
     {
+        base.MeasureOverride(availableSize);
         // Editor fills available space
         return availableSize;
     }
 
     protected override Size ArrangeOverride(Size finalSize)
     {
+        base.ArrangeOverride(finalSize);
         return finalSize;
     }
 
@@ -835,7 +772,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         _view.InvalidateVisibleLines();
         if (_isMinimapHovering)
             UpdateMinimapHoverTooltipPopup();
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     #endregion
@@ -853,6 +790,12 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
     #region Rendering
 
     protected override void OnRender(DrawingContext drawingContext)
+    {
+        base.OnRender(drawingContext);
+        if(TemplateRootInternal is null)RenderEditorContent(drawingContext);
+    }
+
+    internal void RenderEditorContent(DrawingContext drawingContext)
     {
         var dc = drawingContext;
         if (RenderSize.Width <= 0 || RenderSize.Height <= 0) return;
@@ -874,20 +817,6 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         dc.PushClip(new RectangleGeometry(new Rect(0, 0, RenderSize.Width, RenderSize.Height)));
         try
         {
-            // Draw background
-            if (Background != null)
-            {
-                dc.DrawRectangle(Background, null, new Rect(0, 0, RenderSize.Width, RenderSize.Height));
-            }
-
-            var bounds = new Rect(0, 0, RenderSize.Width, RenderSize.Height);
-            var borderThickness = BorderThickness.Left;
-            if (BorderBrush != null && borderThickness > 0)
-            {
-                var borderRect = ControlRenderGeometry.GetStrokeAlignedRect(bounds, borderThickness);
-                dc.DrawRectangle(null, _borderPen.Get(BorderBrush, borderThickness), borderRect);
-            }
-
             if (fontSize <= 0)
             {
                 CloseMinimapHoverTooltipPopup();
@@ -903,16 +832,6 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
             try
             {
                 bool applyGutterOverflowShield = ShouldApplyGutterOverflowShield(contentHeight);
-                if (_hasPointerPosition && !_isDragging && _scrollBarDragMode == ScrollBarDragMode.None)
-                {
-                    UpdateHoveredScopeGuide(_lastPointerPosition, contentWidth, contentHeight);
-                    UpdateHoveredFoldedHint(_lastPointerPosition, contentWidth, contentHeight);
-                }
-                else
-                {
-                    _hoveredScopeGuideSection = null;
-                    _hoveredFoldedHintSection = null;
-                }
 
                 _view.Render(dc, contentSize, _caret, _selection,
                     ShowLineNumbers, HighlightCurrentLine,
@@ -924,7 +843,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
                     ResolveGutterBackgroundBrush(),
                     fontFamily, fontSize, FontWeight, FontStyle,
                     renderLineNumbers: !applyGutterOverflowShield,
-                    suppressCaret: _isImeComposing || MacOSWritingToolsPresentation.IsPresenting(this),
+                    suppressCaret: !IsEnabled || _isImeComposing || MacOSWritingToolsPresentation.IsPresenting(this),
                     caretShape: Styling.CssCaretShapeProperties.Get(this), writingToolsOwner: this);
                 MacOSWritingToolsPresentation.DrawInactive(this, dc);
 
@@ -952,12 +871,8 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
                 DrawLspInlayHints(dc, fontFamily, fontSize);
                 DrawLspCodeLenses(dc, fontFamily, fontSize);
                 DrawFoldingMarkers(dc, contentWidth, contentHeight);
-                bool hasFoldedHintTooltip = DrawFoldedSectionHoverTooltip(dc, contentWidth, contentHeight, fontFamily, fontSize);
-                if (!hasFoldedHintTooltip)
-                    DrawScopeGuideHoverTooltip(dc, contentWidth, contentHeight, fontFamily, fontSize);
-                DrawLspCompletionPopup(dc, fontFamily, fontSize);
-                DrawLspHoverTooltip(dc, fontFamily, fontSize);
-                DrawLspSignatureHelp(dc, fontFamily, fontSize);
+
+
             }
             finally
             {
@@ -966,7 +881,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
             }
 
             DrawMinimap(dc);
-            DrawScrollBars(dc);
+            if(TemplateRootInternal is null)DrawScrollBars(dc);
         }
         finally
         {
@@ -1073,7 +988,11 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
             return;
 
         // LSP keyboard handling (completion navigation, shortcuts)
-        HandleLspKeyDown(e.Key, e.KeyboardModifiers);
+        if (HandleLspKeyDown(e.Key, e.KeyboardModifiers))
+        {
+            e.Handled = true;
+            return;
+        }
 
         switch (editingKey)
         {
@@ -1308,6 +1227,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
     {
         if (e.ChangedButton != MouseButton.Left)
             return;
+        if (IsTemplateScrollBarSource(e.OriginalSource) || IsTemplateEditorOverlaySource(e.OriginalSource)) return;
 
         int oldSelectionStart = _selection.StartOffset;
         int oldSelectionLength = _selection.Length;
@@ -1386,7 +1306,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
             OnSelectionChanged();
         if (oldCaret != _caret.Offset)
             OnCaretPositionChanged();
-        InvalidateVisual();
+        InvalidateEditorView();
         e.Handled = true;
     }
 
@@ -1422,7 +1342,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
             ReleaseMouseCapture();
             if (shouldNavigateOnRelease)
                 NavigateMinimapToPosition(e.GetPosition(this), allowAnimation: true);
-            InvalidateVisual();
+            InvalidateEditorView();
             e.Handled = true;
             return;
         }
@@ -1431,7 +1351,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         {
             _scrollBarDragMode = ScrollBarDragMode.None;
             ReleaseMouseCapture();
-            InvalidateVisual();
+            InvalidateEditorView();
             e.Handled = true;
             return;
         }
@@ -1448,6 +1368,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
 
     private void OnMouseMoveHandler(object sender, MouseEventArgs e)
     {
+        if (IsTemplateEditorOverlaySource(e.OriginalSource)) return;
         var position = e.GetPosition(this);
         _lastPointerPosition = position;
         _hasPointerPosition = true;
@@ -1487,7 +1408,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
             {
                 _hoveredScopeGuideSection = null;
                 _hoveredFoldedHintSection = null;
-                InvalidateVisual();
+                InvalidateEditorView();
                 return;
             }
 
@@ -1502,7 +1423,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
             }
 
             if (minimapHoverChanged || scopeHoverChanged || foldedHintHoverChanged || _hoveredScopeGuideSection != null || _hoveredFoldedHintSection != null)
-                InvalidateVisual();
+                InvalidateEditorView();
             return;
         }
 
@@ -1533,7 +1454,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
             OnSelectionChanged();
         if (oldCaret != _caret.Offset)
             OnCaretPositionChanged();
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     private void OnMouseLeaveHandler(object sender, MouseEventArgs e)
@@ -1545,11 +1466,15 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
 
         _hoveredScopeGuideSection = null;
         _hoveredFoldedHintSection = null;
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     private void OnMouseWheelHandler(object sender, MouseWheelEventArgs e)
     {
+        if (e.HasPreciseScrollingDeltas)
+            CancelScrollAnimation();
+        if (((e.Phase | e.MomentumPhase) & MouseWheelPhase.Cancelled) != 0)
+            return;
         EnsureViewLayoutMetrics();
         UpdateScrollBarLayout(RenderSize);
 
@@ -1651,7 +1576,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
             NavigateMinimapToPosition(position, allowAnimation: true);
         }
 
-        InvalidateVisual();
+        InvalidateEditorView();
         mouseArgs.Handled = true;
         return true;
     }
@@ -1691,7 +1616,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
                 ScrollVerticallyBy(position.Y < _verticalScrollThumbRect.Y ? -page : page, allowAnimation: true, userInitiated: true);
             }
 
-            InvalidateVisual();
+            InvalidateEditorView();
             mouseArgs.Handled = true;
             return true;
         }
@@ -1713,7 +1638,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
                 ScrollHorizontallyBy(position.X < _horizontalScrollThumbRect.X ? -page : page, allowAnimation: true, userInitiated: true);
             }
 
-            InvalidateVisual();
+            InvalidateEditorView();
             mouseArgs.Handled = true;
             return true;
         }
@@ -1925,7 +1850,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
             }
         }
 
-        InvalidateVisual();
+        InvalidateEditorView();
         mouseArgs.Handled = true;
     }
 
@@ -1938,7 +1863,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         double dragTop = position.Y - _minimapDragViewportAnchorY;
         double targetOffset = _minimapRenderer.GetVerticalOffsetFromViewportTop(dragTop, _minimapRect, _view);
         SetVerticalOffsetImmediate(targetOffset, userInitiated: true, cancelAnimation: true);
-        InvalidateVisual();
+        InvalidateEditorView();
         mouseArgs.Handled = true;
     }
 
@@ -1993,11 +1918,12 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
             _caret.StopBlinking();
         else
             _caret.StartBlinking();
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     private void OnLostFocusHandler(object sender, KeyboardFocusChangedEventArgs e)
     {
+        CloseTransientEditorOverlays();
         if (InputMethod.CurrentTarget == this)
             InputMethod.SetTarget(null);
 
@@ -2012,7 +1938,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         ClearChordState();
         StopCaretTimer();
         _caret.StopBlinking();
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     private void StartCaretTimer()
@@ -2021,7 +1947,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
 
         _caretTimer = new DispatcherTimer(DispatcherPriority.Background);
         _caretTimer.Interval = _caret.BlinkInterval;
-        _caretTimer.Tick += (_, _) => InvalidateVisual();
+        _caretTimer.Tick += (_, _) => InvalidateEditorView();
         _caretTimer.Start();
     }
 
@@ -2045,7 +1971,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
             StartCaretTimer();
         }
 
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     #endregion
@@ -2079,7 +2005,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
             OnSelectionChanged();
         if (oldCaret != _caret.Offset)
             OnCaretPositionChanged();
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     private void MoveCaretVertically(int lineDelta, bool extendSelection)
@@ -2122,7 +2048,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
             OnSelectionChanged();
         if (oldCaret != _caret.Offset)
             OnCaretPositionChanged();
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     private void MoveCaretToLineStart(bool extendSelection)
@@ -2362,7 +2288,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
             OnSelectionChanged();
         if (oldCaret != _caret.Offset)
             OnCaretPositionChanged();
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     private void HandleBackspace(bool ctrl, bool optionWord = false)
@@ -2393,7 +2319,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         if (oldCaret != _caret.Offset)
             OnCaretPositionChanged();
         OnSelectionChanged();
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     private void HandleDelete(bool ctrl, bool optionWord = false)
@@ -2419,7 +2345,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         _caret.ResetBlink();
         UpdateActiveBracketPair();
         OnSelectionChanged();
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     private void HandleEnter()
@@ -2473,7 +2399,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
                 _selection.ClearSelection(_caret.Offset);
                 _caret.DesiredColumn = -1;
                 _caret.ResetBlink();
-                InvalidateVisual();
+                InvalidateEditorView();
             }
         }
         else
@@ -2536,7 +2462,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         UpdateActiveBracketPair();
         OnSelectionChanged();
         OnCaretPositionChanged();
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     private int GetLineUnindentCount(string lineText)
@@ -2575,7 +2501,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
             OnSelectionChanged();
         if (oldCaret != _caret.Offset)
             OnCaretPositionChanged();
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     #endregion
@@ -2678,7 +2604,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         if (oldCaret != _caret.Offset)
             OnCaretPositionChanged();
         EnsureCaretVisible();
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     public void SelectAll()
@@ -2693,7 +2619,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
             OnSelectionChanged();
         if (oldCaret != _caret.Offset)
             OnCaretPositionChanged();
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     #endregion
@@ -2872,7 +2798,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
             OnSelectionChanged();
         if (oldCaret != _caret.Offset)
             OnCaretPositionChanged();
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     /// <summary>
@@ -2974,7 +2900,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         _caret.ResetBlink();
         EnsureCaretVisible();
         UpdateActiveBracketPair();
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     public void SelectCurrentLine()
@@ -2993,7 +2919,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         _selection.ClearSelection(_caret.Offset);
         if (oldSelectionStart != _selection.StartOffset || oldSelectionLength != _selection.Length)
             OnSelectionChanged();
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     public void DeleteLeft() => HandleBackspace(ctrl: false);
@@ -3080,7 +3006,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
     public void ScrollToCaret()
     {
         EnsureCaretVisible(allowAnimation: true);
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     /// <summary>
@@ -3102,7 +3028,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         UpdateFoldingState();
         OnSelectionChanged();
         OnCaretPositionChanged();
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     /// <summary>
@@ -3174,7 +3100,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         OnSelectionChanged();
         OnCaretPositionChanged();
         EnsureCaretVisible();
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     public void DeleteLineOrSelection()
@@ -3212,7 +3138,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         OnSelectionChanged();
         OnCaretPositionChanged();
         EnsureCaretVisible();
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     public bool MoveLineUp()
@@ -3252,7 +3178,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         EnsureCaretVisible();
         UpdateActiveBracketPair();
         OnCaretPositionChanged();
-        InvalidateVisual();
+        InvalidateEditorView();
         return true;
     }
 
@@ -3293,7 +3219,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         EnsureCaretVisible();
         UpdateActiveBracketPair();
         OnCaretPositionChanged();
-        InvalidateVisual();
+        InvalidateEditorView();
         return true;
     }
 
@@ -3356,7 +3282,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         _activeFindResult = _findReplace.CurrentResult;
         _hasSearchQuery = !string.IsNullOrEmpty(_findReplace.SearchText);
         SearchResultsChanged?.Invoke(this, EventArgs.Empty);
-        InvalidateVisual();
+        InvalidateEditorView();
         return _findReplace.Results;
     }
 
@@ -3374,7 +3300,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
             SearchResultsChanged?.Invoke(this, EventArgs.Empty);
         }
 
-        InvalidateVisual();
+        InvalidateEditorView();
         return result;
     }
 
@@ -3392,7 +3318,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
             SearchResultsChanged?.Invoke(this, EventArgs.Empty);
         }
 
-        InvalidateVisual();
+        InvalidateEditorView();
         return result;
     }
 
@@ -3405,7 +3331,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
             SearchResultsChanged?.Invoke(this, EventArgs.Empty);
             EnsureCaretVisible();
             UpdateActiveBracketPair();
-            InvalidateVisual();
+            InvalidateEditorView();
         }
 
         return replaced;
@@ -3420,7 +3346,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
             SearchResultsChanged?.Invoke(this, EventArgs.Empty);
             EnsureCaretVisible();
             UpdateActiveBracketPair();
-            InvalidateVisual();
+            InvalidateEditorView();
         }
 
         return replacedCount;
@@ -3556,7 +3482,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
                 _activeFindResult = _findReplace.CurrentResult;
                 _hasSearchQuery = !string.IsNullOrEmpty(_findReplace.SearchText);
                 SearchResultsChanged?.Invoke(this, EventArgs.Empty);
-                InvalidateVisual();
+                InvalidateEditorView();
                 return true;
             case EditorCommands.FindNext:
                 return FindNext().HasValue;
@@ -3918,7 +3844,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
             DeleteSelection();
 
         UpdateImeWindowIfComposing();
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     public void OnImeCompositionUpdate(string compositionString, int cursorPosition)
@@ -3926,7 +3852,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         _imeCompositionString = compositionString;
         _imeCompositionCursor = cursorPosition;
         UpdateImeWindowIfComposing();
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     public void OnImeCompositionEnd(string? resultString)
@@ -3935,7 +3861,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         _imeCompositionString = string.Empty;
         _imeCompositionCursor = 0;
         _imeCompositionStart = _caret.Offset;
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     private void OnImeOwnerLoaded(object? sender, RoutedEventArgs e)
@@ -4004,7 +3930,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
             editor.UpdateViewLayoutForRenderableSize();
             editor._view.InvalidateVisibleLines();
             editor.UpdateFollowingBottomStateAfterVerticalChange(userInitiated: false);
-            editor.InvalidateVisual();
+            editor.InvalidateEditorView();
         }
     }
 
@@ -4016,7 +3942,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
             editor._view.Highlighter = e.NewValue as ISyntaxHighlighter;
             editor.AttachReactiveHighlighter(e.NewValue as IReactiveSyntaxHighlighter);
             editor._view.InvalidateVisibleLines();
-            editor.InvalidateVisual();
+            editor.InvalidateEditorView();
         }
     }
 
@@ -4032,7 +3958,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         {
             if (e.Property == ShowMinimapProperty && !editor.ShowMinimap)
                 editor.ClearMinimapHover();
-            editor.InvalidateVisual();
+            editor.InvalidateEditorView();
         }
     }
 
@@ -4042,7 +3968,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
             return;
 
         editor._view.LeadingGutterInset = Math.Max(0, editor.LeadingGutterInset);
-        editor.InvalidateVisual();
+        editor.InvalidateEditorView();
     }
 
     private static void OnScrollInertiaSettingsChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -4080,7 +4006,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         {
             editor.ApplyLanguageDefaults((string)(e.NewValue ?? "plaintext"));
             editor.UpdateFoldingState();
-            editor.InvalidateVisual();
+            editor.InvalidateEditorView();
             editor.ActivateLspForLanguage((string)(e.NewValue ?? "plaintext"));
         }
     }
@@ -4139,13 +4065,13 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         TextChanged?.Invoke(this, e);
         if (_isMinimapHovering)
             UpdateMinimapHoverTooltipPopup();
-        InvalidateVisual();
+        InvalidateEditorView();
         RefreshLinuxImeContext();
     }
 
     private void OnUndoStateChanged(object? sender, EventArgs e)
     {
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     #endregion
@@ -4755,62 +4681,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         return index;
     }
 
-    private bool DrawFoldedSectionHoverTooltip(DrawingContext dc, double contentWidth, double contentHeight, string fontFamily, double fontSize)
-    {
-        if (!_hasPointerPosition || _hoveredFoldedHintSection == null || contentWidth <= 0 || contentHeight <= 0)
-            return false;
-
-        var previewLines = BuildFoldedSectionPreviewLines(_hoveredFoldedHintSection);
-        string previewText = BuildSyntaxPreviewText(previewLines);
-        if (string.IsNullOrEmpty(previewText))
-            return false;
-
-        double previewFontSize = Math.Max(11, fontSize - 1);
-        var previewForeground = ResolveThemeBrush("OnePopupText", s_scopeGuideTooltipTextBrush, "TextPrimary");
-        var tooltip = new FormattedText(previewText, fontFamily, previewFontSize)
-        {
-            Foreground = previewForeground,
-            MaxTextWidth = Math.Max(24, contentWidth - ScopeGuideTooltipPaddingX * 2 - 8),
-            MaxTextHeight = Math.Max(24, contentHeight - ScopeGuideTooltipPaddingY * 2 - 8),
-            Trimming = TextTrimming.None
-        };
-        TextMeasurement.MeasureText(tooltip);
-
-        double tooltipWidth = Math.Max(24, Math.Ceiling(tooltip.Width + ScopeGuideTooltipPaddingX * 2));
-        double tooltipHeight = Math.Max(20, Math.Ceiling(tooltip.Height + ScopeGuideTooltipPaddingY * 2));
-        double tooltipX = _lastPointerPosition.X + ScopeGuideTooltipOffsetX;
-        double tooltipY = _lastPointerPosition.Y + ScopeGuideTooltipOffsetY;
-
-        if (tooltipX + tooltipWidth > contentWidth - 2)
-            tooltipX = Math.Max(2, contentWidth - tooltipWidth - 2);
-
-        if (tooltipY + tooltipHeight > contentHeight - 2)
-            tooltipY = Math.Max(2, _lastPointerPosition.Y - tooltipHeight - ScopeGuideTooltipOffsetY);
-
-        if (tooltipY < 2)
-            tooltipY = Math.Max(2, Math.Min(contentHeight - tooltipHeight - 2, _lastPointerPosition.Y + ScopeGuideTooltipOffsetY));
-
-        var tooltipRect = new Rect(tooltipX, tooltipY, tooltipWidth, tooltipHeight);
-        var tooltipBackgroundBrush = ResolveThemeBrush("OnePopupBackground", s_scopeGuideTooltipBackgroundBrush, "TooltipBackground");
-        var tooltipBorderPen = ResolveThemePen("OnePopupBorder", s_scopeGuideTooltipBorderPen, "TooltipBorder");
-        dc.DrawRoundedRectangle(tooltipBackgroundBrush, tooltipBorderPen, tooltipRect, 3, 3);
-        var textRect = new Rect(
-            tooltipRect.X + ScopeGuideTooltipPaddingX,
-            tooltipRect.Y + ScopeGuideTooltipPaddingY,
-            Math.Max(0, tooltipRect.Width - ScopeGuideTooltipPaddingX * 2),
-            Math.Max(0, tooltipRect.Height - ScopeGuideTooltipPaddingY * 2));
-        DrawSyntaxHighlightedPreview(
-            dc,
-            previewLines,
-            textRect,
-            fontFamily,
-            previewFontSize,
-            previewForeground,
-            GetSyntaxPreviewLineHeight(tooltip, previewLines.Count));
-        return true;
-    }
-
-    private List<SyntaxPreviewLine> BuildFoldedSectionPreviewLines(FoldingSection section)
+    private List<EditorPreviewLine> BuildFoldedSectionPreviewLines(FoldingSection section)
     {
         int lineCount = _document.LineCount;
         if (lineCount <= 0)
@@ -4820,55 +4691,17 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         int lastPreviewLine = Math.Clamp(section.EndLine, firstPreviewLine, lineCount);
         int maxLineCount = Math.Max(1, FoldedHintPreviewMaxLines);
 
-        var lines = new List<SyntaxPreviewLine>(Math.Min(maxLineCount, lastPreviewLine - firstPreviewLine + 1));
+        var lines = new List<EditorPreviewLine>(Math.Min(maxLineCount, lastPreviewLine - firstPreviewLine + 1));
         for (int lineNumber = firstPreviewLine; lineNumber <= lastPreviewLine && lines.Count < maxLineCount; lineNumber++)
-            lines.Add(new SyntaxPreviewLine(lineNumber, string.Empty, _document.GetLineText(lineNumber)));
+            lines.Add(new EditorPreviewLine(lineNumber, string.Empty, _document.GetLineText(lineNumber)));
 
         if (lines.Count == 0)
         {
             int fallbackLine = Math.Clamp(section.StartLine, 1, lineCount);
-            lines.Add(new SyntaxPreviewLine(fallbackLine, string.Empty, _document.GetLineText(fallbackLine)));
+            lines.Add(new EditorPreviewLine(fallbackLine, string.Empty, _document.GetLineText(fallbackLine)));
         }
 
         return lines;
-    }
-
-    private void DrawScopeGuideHoverTooltip(DrawingContext dc, double contentWidth, double contentHeight, string fontFamily, double fontSize)
-    {
-        if (!_hasPointerPosition || _hoveredScopeGuideSection == null || contentWidth <= 0 || contentHeight <= 0)
-            return;
-
-        string tooltipText = GetScopeGuideTooltipText(_hoveredScopeGuideSection);
-        if (string.IsNullOrWhiteSpace(tooltipText))
-            return;
-
-        var tooltip = new FormattedText(tooltipText, fontFamily, Math.Max(11, fontSize - 1))
-        {
-            Foreground = ResolveThemeBrush("OnePopupText", s_scopeGuideTooltipTextBrush, "TextPrimary")
-        };
-        TextMeasurement.MeasureText(tooltip);
-
-        double tooltipWidth = Math.Max(24, Math.Ceiling(tooltip.Width + ScopeGuideTooltipPaddingX * 2));
-        double tooltipHeight = Math.Max(Math.Ceiling(_view.LineHeight - 2), Math.Ceiling(tooltip.Height + ScopeGuideTooltipPaddingY * 2));
-        double tooltipX = _lastPointerPosition.X + ScopeGuideTooltipOffsetX;
-        double tooltipY = _lastPointerPosition.Y - tooltipHeight - ScopeGuideTooltipOffsetY;
-
-        if (tooltipX + tooltipWidth > contentWidth - 2)
-            tooltipX = Math.Max(2, contentWidth - tooltipWidth - 2);
-
-        if (tooltipY < 2)
-            tooltipY = Math.Min(Math.Max(2, contentHeight - tooltipHeight - 2), _lastPointerPosition.Y + ScopeGuideTooltipOffsetY);
-
-        if (tooltipY + tooltipHeight > contentHeight - 2)
-            tooltipY = Math.Max(2, contentHeight - tooltipHeight - 2);
-
-        var tooltipRect = new Rect(tooltipX, tooltipY, tooltipWidth, tooltipHeight);
-        var tooltipBackgroundBrush = ResolveThemeBrush("OnePopupBackground", s_scopeGuideTooltipBackgroundBrush, "TooltipBackground");
-        var tooltipBorderPen = ResolveThemePen("OnePopupBorder", s_scopeGuideTooltipBorderPen, "TooltipBorder");
-        dc.DrawRoundedRectangle(tooltipBackgroundBrush, tooltipBorderPen, tooltipRect, 3, 3);
-        double textX = tooltipRect.X + ScopeGuideTooltipPaddingX;
-        double textY = tooltipRect.Y + (tooltipRect.Height - tooltip.Height) * 0.5;
-        dc.DrawText(tooltip, new Point(textX, textY));
     }
 
     private string GetScopeGuideTooltipText(FoldingSection section)
@@ -5488,23 +5321,15 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
 
         double tooltipWidth = Math.Max(24, Math.Ceiling(tooltip.Width + MinimapTooltipPaddingX * 2));
         double tooltipHeight = Math.Max(20, Math.Ceiling(tooltip.Height + MinimapTooltipPaddingY * 2));
-        double textLineHeight = GetSyntaxPreviewLineHeight(tooltip, previewLines.Length);
-        var tooltipBackgroundBrush = ResolveThemeBrush("OnePopupBackground", s_minimapTooltipBackgroundBrush, "TooltipBackground");
-        var tooltipBorderPen = ResolveThemePen("OnePopupBorder", s_minimapTooltipBorderPen, "TooltipBorder");
-
+        double textLineHeight = GetEditorPreviewLineHeight(tooltip, previewLines.Length);
         EnsureMinimapHoverTooltipPopup();
-        _minimapTooltipPresenter!.UpdatePreview(
-            previewLines,
-            new Size(tooltipWidth, tooltipHeight),
-            fontFamily,
-            previewFontSize,
-            textLineHeight,
-            previewForeground,
-            tooltipBackgroundBrush,
-            tooltipBorderPen);
+        if(_minimapTooltipPopup is null||_minimapTooltipPresenter is null)return;
+        SetValue(MinimapPreviewLinesPropertyKey,previewLines);
+        SetValue(MinimapPreviewSizePropertyKey,new Size(tooltipWidth,tooltipHeight));
+        SetValue(MinimapPreviewFontSizePropertyKey,previewFontSize);
+        SetValue(MinimapPreviewLineHeightPropertyKey,textLineHeight);
+        SetValue(IsMinimapPreviewOpenPropertyKey,true);
 
-        if (!_minimapTooltipPopup!.IsOpen)
-            _minimapTooltipPopup.IsOpen = true;
 
         // IsOpen may have been set before the editor entered a Window (for example,
         // during a headless layout pass). Re-attempt hosting and then follow the live
@@ -5516,39 +5341,18 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
 
     private void EnsureMinimapHoverTooltipPopup()
     {
-        if (_minimapTooltipPopup != null)
-            return;
-
-        _minimapTooltipPresenter = new MinimapTooltipPresenter(this)
-        {
-            IsHitTestVisible = false,
-        };
-        _minimapTooltipPopup = new Popup
-        {
-            Child = _minimapTooltipPresenter,
-            PlacementTarget = this,
-            Placement = PlacementMode.MousePoint,
-            HorizontalOffset = MinimapTooltipOffsetX,
-            VerticalOffset = MinimapTooltipOffsetY,
-            StaysOpen = true,
-            AllowsTransparency = true,
-            PopupAnimation = PopupAnimation.None,
-            ShouldConstrainToRootBounds = false,
-            PreferExternalWindow = false,
-            IsHitTestVisible = false,
-        };
+        if(_minimapTooltipPopup is null&&TemplateRootInternal is null)ApplyTemplate();
     }
 
     private void CloseMinimapHoverTooltipPopup()
     {
-        if (_minimapTooltipPopup?.IsOpen == true)
-            _minimapTooltipPopup.IsOpen = false;
+        SetValue(IsMinimapPreviewOpenPropertyKey,false);
     }
 
     private string BuildMinimapTooltipText(int lineNumber, int maxPreviewCharsPerLine)
         => BuildSyntaxPreviewText(BuildMinimapTooltipLines(lineNumber, maxPreviewCharsPerLine));
 
-    private SyntaxPreviewLine[] BuildMinimapTooltipLines(int lineNumber, int maxPreviewCharsPerLine)
+    private EditorPreviewLine[] BuildMinimapTooltipLines(int lineNumber, int maxPreviewCharsPerLine)
     {
         if (_document.LineCount <= 0)
             return [];
@@ -5556,7 +5360,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         int centerLine = Math.Clamp(lineNumber, 1, _document.LineCount);
         int digits = Math.Max(1, _document.LineCount.ToString().Length);
         int maxChars = Math.Clamp(maxPreviewCharsPerLine, 8, MinimapTooltipMaxPreviewCharsPerLine);
-        var lines = new SyntaxPreviewLine[MinimapTooltipPreviewLineCount];
+        var lines = new EditorPreviewLine[MinimapTooltipPreviewLineCount];
         for (int i = 0; i < MinimapTooltipPreviewLineCount; i++)
         {
             int relative = i - MinimapTooltipPreviewCenterIndex;
@@ -5565,13 +5369,13 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
             string marker = relative == 0 ? ">" : " ";
             string lineLabel = inRange ? previewLine.ToString().PadLeft(digits) : new string(' ', digits);
             string lineText = inRange ? TruncateMinimapPreviewLine(_document.GetLineText(previewLine), maxChars) : string.Empty;
-            lines[i] = new SyntaxPreviewLine(inRange ? previewLine : 0, $"{marker}{lineLabel} ", lineText);
+            lines[i] = new EditorPreviewLine(inRange ? previewLine : 0, $"{marker}{lineLabel} ", lineText);
         }
 
         return lines;
     }
 
-    private static string BuildSyntaxPreviewText(IReadOnlyList<SyntaxPreviewLine> lines)
+    private static string BuildSyntaxPreviewText(IReadOnlyList<EditorPreviewLine> lines)
     {
         if (lines.Count == 0)
             return string.Empty;
@@ -5583,9 +5387,9 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         return string.Join('\n', textLines);
     }
 
-    private void DrawSyntaxHighlightedPreview(
+    internal void DrawSyntaxHighlightedPreview(
         DrawingContext dc,
-        IReadOnlyList<SyntaxPreviewLine> lines,
+        IReadOnlyList<EditorPreviewLine> lines,
         Rect textRect,
         string fontFamily,
         double fontSize,
@@ -5622,7 +5426,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         }
     }
 
-    private static double GetSyntaxPreviewLineHeight(FormattedText layout, int lineCount)
+    private static double GetEditorPreviewLineHeight(FormattedText layout, int lineCount)
     {
         if (layout.LineHeight > 0 && double.IsFinite(layout.LineHeight))
             return layout.LineHeight;
@@ -6010,7 +5814,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         ClampScrollOffsetsToViewport();
         UpdateFollowingBottomStateAfterVerticalChange(userInitiated);
         UpdateImeWindowIfComposing();
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     private void SetVerticalOffsetImmediate(double verticalOffset, bool userInitiated, bool cancelAnimation)
@@ -6163,7 +5967,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
 
         UpdateFollowingBottomStateAfterVerticalChange(userInitiated: false);
         UpdateImeWindowIfComposing();
-        InvalidateVisual();
+        InvalidateEditorView();
         StopScrollAnimation();
     }
 
@@ -6213,7 +6017,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
 
         UpdateFollowingBottomStateAfterVerticalChange(userInitiated: false);
         UpdateImeWindowIfComposing();
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     private double GetEffectiveScrollInertiaDurationMs()
@@ -6322,7 +6126,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         UpdateActiveBracketPair();
         OnSelectionChanged();
         OnCaretPositionChanged();
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     private void UncommentLines(string linePrefix)
@@ -6369,7 +6173,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         UpdateActiveBracketPair();
         OnSelectionChanged();
         OnCaretPositionChanged();
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     private void WrapSelectionWithBlockComment()
@@ -6402,7 +6206,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         UpdateActiveBracketPair();
         OnSelectionChanged();
         OnCaretPositionChanged();
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     private void UnwrapSelectionFromBlockComment()
@@ -6531,7 +6335,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         _reactiveSyntaxHighlighter.Detach();
         _reactiveSyntaxHighlighter.Attach(_document, GetDocumentFilePath);
         _view.InvalidateVisibleLines();
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     private string? GetDocumentFilePath()
@@ -6554,7 +6358,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         else
             _view.InvalidateFromLine(e.StartLine);
 
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     private Brush ResolveClassificationBrush(TokenClassification classification, Brush fallbackBrush)
@@ -6702,7 +6506,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
 
         _hasPendingFoldingRefresh = false;
         UpdateFoldingState(forceViewInvalidation: false);
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     private void UpdateFoldingState(bool forceViewInvalidation = true)
@@ -6760,7 +6564,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
             OnCaretPositionChanged();
 
         FoldingChanged?.Invoke(this, EventArgs.Empty);
-        InvalidateVisual();
+        InvalidateEditorView();
     }
 
     private bool CoerceCaretIntoVisibleLine()
@@ -6888,34 +6692,34 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         _lspDiagnosticRenderVersion++;
         Dispatcher.BeginInvoke(() =>
         {
-            InvalidateVisual();
+            InvalidateEditorView();
             LspDiagnosticsUpdated?.Invoke(diagnostics);
         });
     }
 
     private void OnLspCompletionUpdated(CompletionList? list)
     {
-        Dispatcher.BeginInvoke(() => InvalidateVisual());
+        Dispatcher.BeginInvoke(() => InvalidateEditorView());
     }
 
     private void OnLspHoverUpdated(Hover? hover)
     {
-        Dispatcher.BeginInvoke(() => InvalidateVisual());
+        Dispatcher.BeginInvoke(() => InvalidateEditorView());
     }
 
     private void OnLspSignatureHelpUpdated(SignatureHelp? help)
     {
-        Dispatcher.BeginInvoke(() => InvalidateVisual());
+        Dispatcher.BeginInvoke(() => InvalidateEditorView());
     }
 
     private void OnLspInlayHintsUpdated(InlayHint[] hints)
     {
-        Dispatcher.BeginInvoke(() => InvalidateVisual());
+        Dispatcher.BeginInvoke(() => InvalidateEditorView());
     }
 
     private void OnLspCodeLensesUpdated(CodeLens[] lenses)
     {
-        Dispatcher.BeginInvoke(() => InvalidateVisual());
+        Dispatcher.BeginInvoke(() => InvalidateEditorView());
     }
 
     [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("LspFoldingProvider drives JSON-RPC reflection — opt-in editor feature.")]
@@ -6928,7 +6732,7 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
             Dispatcher.BeginInvoke(() =>
             {
                 UpdateFoldingState();
-                InvalidateVisual();
+                InvalidateEditorView();
             });
         };
         _ = provider.RefreshAsync();
@@ -7278,86 +7082,6 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         }
     }
 
-    private void DrawLspCompletionPopup(DrawingContext dc, string fontFamily, double fontSize)
-    {
-        var integration = _lspIntegration;
-        if (integration == null || !integration.IsCompletionActive) return;
-        var list = integration.ActiveCompletionList;
-        if (list == null || list.Items.Length == 0) return;
-
-        double charWidth = _view.CharWidth;
-        double lineHeight = _view.LineHeight;
-        double gutterWidth = _view.GutterWidth;
-
-        // Position below the caret
-        var (caretLine, caretCol) = _caret.GetLineColumn(_document);
-        double caretRenderY = _view.GetLineTop(caretLine);
-        double popupX = gutterWidth + caretCol * charWidth - _view.HorizontalOffset;
-        double popupY = caretRenderY + lineHeight + 2;
-
-        int maxVisible = Math.Min(list.Items.Length, 12);
-        double itemHeight = lineHeight;
-        double popupWidth = 320;
-        double popupHeight = maxVisible * itemHeight + 4;
-
-        // Clamp popup position within viewport
-        if (popupY + popupHeight > _effectiveViewportHeight)
-            popupY = caretRenderY - popupHeight - 2;
-        if (popupX + popupWidth > _effectiveTextViewportWidth)
-            popupX = Math.Max(gutterWidth, _effectiveTextViewportWidth - popupWidth);
-
-        var popupRect = new Rect(popupX, popupY, popupWidth, popupHeight);
-        dc.DrawRoundedRectangle(s_completionPopupBackgroundBrush, s_completionPopupBorderPen, popupRect, 4, 4);
-
-        int selectedIndex = integration.ActiveCompletionIndex;
-
-        // Scrolling offset
-        int scrollOffset = 0;
-        if (selectedIndex >= maxVisible)
-            scrollOffset = selectedIndex - maxVisible + 1;
-
-        for (int i = 0; i < maxVisible && (scrollOffset + i) < list.Items.Length; i++)
-        {
-            int itemIndex = scrollOffset + i;
-            var item = list.Items[itemIndex];
-            double itemY = popupY + 2 + i * itemHeight;
-
-            if (itemIndex == selectedIndex)
-            {
-                dc.DrawRectangle(s_completionSelectedBrush, null,
-                    new Rect(popupX + 1, itemY, popupWidth - 2, itemHeight));
-            }
-
-            // Draw kind icon as text prefix
-            string kindPrefix = GetCompletionKindPrefix(item.Kind);
-            double textX = popupX + 6;
-
-            if (!string.IsNullOrEmpty(kindPrefix))
-            {
-                DrawLspText(dc, kindPrefix, new Point(textX, itemY + (itemHeight - fontSize) / 2),
-                    s_completionDetailBrush, fontFamily, fontSize * 0.8);
-                textX += 20;
-            }
-
-            // Draw label
-            string label = item.Label;
-            if (label.Length > 40)
-                label = label.Substring(0, 37) + "...";
-
-            DrawLspText(dc, label, new Point(textX, itemY + (itemHeight - fontSize) / 2),
-                s_completionTextBrush, fontFamily, fontSize);
-
-            // Draw detail on the right
-            if (item.Detail != null)
-            {
-                string detail = item.Detail.Length > 20 ? item.Detail.Substring(0, 17) + "..." : item.Detail;
-                double detailX = popupX + popupWidth - 8 - detail.Length * charWidth * 0.8;
-                DrawLspText(dc, detail, new Point(detailX, itemY + (itemHeight - fontSize * 0.8) / 2),
-                    s_completionDetailBrush, fontFamily, fontSize * 0.8);
-            }
-        }
-    }
-
     private static string GetCompletionKindPrefix(CompletionItemKind? kind) => kind switch
     {
         CompletionItemKind.Method or CompletionItemKind.Function => "f",
@@ -7377,134 +7101,6 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
         CompletionItemKind.TypeParameter => "T",
         _ => "",
     };
-
-    private void DrawLspHoverTooltip(DrawingContext dc, string fontFamily, double fontSize)
-    {
-        var integration = _lspIntegration;
-        if (integration?.ActiveHover == null) return;
-
-        var hover = integration.ActiveHover;
-        string text = hover.Contents.Value;
-        if (string.IsNullOrWhiteSpace(text)) return;
-
-        // Strip markdown code fences for display
-        text = StripMarkdownFences(text);
-
-        double charWidth = _view.CharWidth;
-        double lineHeight = _view.LineHeight;
-        double gutterWidth = _view.GutterWidth;
-        double hoverFontSize = fontSize * 0.9;
-
-        // Position near the hover range or mouse position
-        double posX, posY;
-        if (hover.Range != null)
-        {
-            int line = hover.Range.Start.Line + 1;
-            posX = gutterWidth + hover.Range.Start.Character * charWidth - _view.HorizontalOffset;
-            posY = _view.GetLineTop(line) - 4;
-        }
-        else if (_hasPointerPosition)
-        {
-            posX = _lastPointerPosition.X;
-            posY = _lastPointerPosition.Y - lineHeight - 4;
-        }
-        else return;
-
-        // Calculate tooltip size
-        var lines = text.Split('\n');
-        int maxLineLength = 0;
-        foreach (var l in lines)
-            maxLineLength = Math.Max(maxLineLength, l.TrimEnd().Length);
-
-        maxLineLength = Math.Min(maxLineLength, 100);
-        double tooltipWidth = Math.Max(100, maxLineLength * charWidth * 0.9 + 16);
-        double tooltipHeight = Math.Max(lineHeight, lines.Length * (hoverFontSize + 2) + 12);
-
-        // Clamp
-        if (posX + tooltipWidth > _effectiveTextViewportWidth)
-            posX = Math.Max(gutterWidth, _effectiveTextViewportWidth - tooltipWidth);
-        if (posY - tooltipHeight < 0)
-            posY = posY + lineHeight + 8 + tooltipHeight;
-
-        double tooltipY = posY - tooltipHeight;
-        var rect = new Rect(posX, tooltipY, tooltipWidth, tooltipHeight);
-        dc.DrawRoundedRectangle(s_hoverPopupBackgroundBrush, s_hoverPopupBorderPen, rect, 4, 4);
-
-        for (int i = 0; i < lines.Length && i < 30; i++)
-        {
-            string line = lines[i].TrimEnd();
-            if (line.Length > 100) line = line.Substring(0, 97) + "...";
-            DrawLspText(dc, line, new Point(posX + 8, tooltipY + 6 + i * (hoverFontSize + 2)),
-                s_hoverTextBrush, fontFamily, hoverFontSize);
-        }
-    }
-
-    private void DrawLspSignatureHelp(DrawingContext dc, string fontFamily, double fontSize)
-    {
-        var integration = _lspIntegration;
-        if (integration?.ActiveSignatureHelp == null) return;
-
-        var sigHelp = integration.ActiveSignatureHelp;
-        if (sigHelp.Signatures.Length == 0) return;
-
-        int activeIndex = sigHelp.ActiveSignature ?? 0;
-        if (activeIndex >= sigHelp.Signatures.Length)
-            activeIndex = 0;
-
-        var sig = sigHelp.Signatures[activeIndex];
-        string label = sig.Label;
-        if (string.IsNullOrEmpty(label)) return;
-
-        double charWidth = _view.CharWidth;
-        double lineHeight = _view.LineHeight;
-        double gutterWidth = _view.GutterWidth;
-
-        var (caretLine, caretCol) = _caret.GetLineColumn(_document);
-        double caretRenderY = _view.GetLineTop(caretLine);
-
-        double popupWidth = Math.Max(200, label.Length * charWidth + 16);
-        popupWidth = Math.Min(popupWidth, _effectiveTextViewportWidth - gutterWidth);
-        double popupHeight = lineHeight + 8;
-
-        double popupX = gutterWidth + caretCol * charWidth - _view.HorizontalOffset;
-        double popupY = caretRenderY - popupHeight - 2;
-
-        if (popupY < 0)
-            popupY = caretRenderY + lineHeight + 2;
-
-        if (popupX + popupWidth > _effectiveTextViewportWidth)
-            popupX = Math.Max(gutterWidth, _effectiveTextViewportWidth - popupWidth);
-
-        var rect = new Rect(popupX, popupY, popupWidth, popupHeight);
-        dc.DrawRoundedRectangle(s_signaturePopupBackgroundBrush, s_signaturePopupBorderPen, rect, 4, 4);
-
-        // Draw the full signature label
-        double textY = popupY + 4;
-        DrawLspText(dc, label, new Point(popupX + 8, textY), s_signatureTextBrush, fontFamily, fontSize);
-
-        // Highlight active parameter
-        int activeParam = sigHelp.ActiveParameter ?? sig.ActiveParameter ?? 0;
-        if (sig.Parameters != null && activeParam < sig.Parameters.Length)
-        {
-            var paramInfo = sig.Parameters[activeParam];
-            int paramStart = label.IndexOf(paramInfo.Label, StringComparison.Ordinal);
-            if (paramStart >= 0)
-            {
-                double highlightX = popupX + 8 + paramStart * charWidth;
-                double highlightWidth = paramInfo.Label.Length * charWidth;
-                dc.DrawRectangle(null, s_signatureActiveParamPen,
-                    new Rect(highlightX, textY - 1, highlightWidth, fontSize + 2));
-            }
-        }
-
-        // Show counter if multiple signatures
-        if (sigHelp.Signatures.Length > 1)
-        {
-            string counter = $"{activeIndex + 1}/{sigHelp.Signatures.Length}";
-            DrawLspText(dc, counter, new Point(popupX + popupWidth - counter.Length * charWidth * 0.8 - 8, textY),
-                s_completionDetailBrush, fontFamily, fontSize * 0.8);
-        }
-    }
 
     private void DrawLspText(DrawingContext dc, string text, Point position, Brush foreground,
         string fontFamily, double fontSize)
@@ -7530,9 +7126,9 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
 
     #region LSP Keyboard Handling
 
-    internal void HandleLspKeyDown(Key key, ModifierKeys modifiers)
+    internal bool HandleLspKeyDown(Key key, ModifierKeys modifiers)
     {
-        if (_lspIntegration == null) return;
+        if (_lspIntegration == null) return false;
 
         // Completion navigation
         if (_lspIntegration.IsCompletionActive)
@@ -7545,15 +7141,15 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
                         _lspIntegration.ActiveCompletionIndex = Math.Min(
                             _lspIntegration.ActiveCompletionIndex + 1,
                             _lspIntegration.ActiveCompletionList.Items.Length - 1);
-                        InvalidateVisual();
+                        InvalidateEditorView();
                     }
-                    return;
+                    return true;
 
                 case Key.Up:
                     _lspIntegration.ActiveCompletionIndex = Math.Max(
                         _lspIntegration.ActiveCompletionIndex - 1, 0);
-                    InvalidateVisual();
-                    return;
+                    InvalidateEditorView();
+                    return true;
 
                 case Key.Tab:
                 case Key.Enter:
@@ -7564,12 +7160,12 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
                         _lspIntegration.ApplyCompletion(
                             _lspIntegration.ActiveCompletionList.Items[_lspIntegration.ActiveCompletionIndex]);
                     }
-                    return;
+                    return true;
 
                 case Key.Escape:
                     _lspIntegration.DismissCompletion();
-                    InvalidateVisual();
-                    return;
+                    InvalidateEditorView();
+                    return true;
             }
         }
 
@@ -7580,11 +7176,11 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
             {
                 case Key.Space:
                     TriggerCompletion();
-                    return;
+                    return true;
 
                 case Key.OemPeriod: // Ctrl+. = code action (quick fix)
                     _ = HandleCodeActionShortcutAsync();
-                    return;
+                    return true;
             }
         }
 
@@ -7594,31 +7190,32 @@ public partial class EditControl : Control, IImeSupport, IEditorViewMetrics, Sty
             {
                 case Key.Space:
                     TriggerSignatureHelp();
-                    return;
+                    return true;
 
                 case Key.I: // Ctrl+Shift+I = format document
                     FormatDocument();
-                    return;
+                    return true;
             }
         }
 
         if (key == Key.F12 && modifiers == ModifierKeys.None)
         {
             GoToDefinition(_caret.Offset);
-            return;
+            return true;
         }
 
         if (key == Key.F12 && modifiers == ModifierKeys.Shift)
         {
             _ = FindReferencesAsync(_caret.Offset);
-            return;
+            return true;
         }
 
         if (key == Key.F2 && modifiers == ModifierKeys.None)
         {
             InitiateRename();
-            return;
+            return true;
         }
+        return false;
     }
 
     private async Task HandleCodeActionShortcutAsync()

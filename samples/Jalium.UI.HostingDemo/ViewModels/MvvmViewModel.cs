@@ -1,3 +1,5 @@
+using Jalium.UI.Input;
+
 namespace Jalium.UI.HostingDemo.ViewModels;
 
 /// <summary>
@@ -7,6 +9,10 @@ namespace Jalium.UI.HostingDemo.ViewModels;
 /// </summary>
 public sealed class MvvmViewModel : ViewModelBase
 {
+    public RelayCommand IncrementCommand { get; }
+    public RelayCommand ResetCommand { get; }
+    public MvvmViewModel() { IncrementCommand = new RelayCommand(Increment); ResetCommand = new RelayCommand(Reset); }
+
     private int _count;
     private string _lastAction = "就绪";
 

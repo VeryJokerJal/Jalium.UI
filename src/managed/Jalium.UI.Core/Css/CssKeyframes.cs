@@ -78,6 +78,8 @@ internal static class CssKeyframes
             var timings = new List<CssDeclaration>();
             foreach (var declaration in frame.Declarations)
             {
+                if (declaration.PropertyName.Equals("unicode-bidi", StringComparison.OrdinalIgnoreCase) ||
+                    declaration.PropertyName.Equals("direction", StringComparison.OrdinalIgnoreCase)) continue;
                 if (declaration.PropertyName == "animation-timing-function") timings.Add(declaration);
                 else properties.Add(declaration);
             }
@@ -149,6 +151,7 @@ internal static class CssKeyframes
                 var sink = new CssEngine.CssSetterCollector();
                 foreach (var declaration in frame.Declarations)
                 {
+                    if (CssGeneratedContent.Kind(element).IsMarker() && !CssListProperties.AppliesToMarker(declaration.Name)) continue;
                     // Unregistered custom properties supply var() tokens through the
                     // element's computed style; they do not produce a DP animation value.
                     if (declaration.Name.StartsWith("--", StringComparison.Ordinal)) continue;
@@ -158,7 +161,7 @@ internal static class CssKeyframes
                 slots.Flush(in context, sink);
                 slots.TransformReferenceBox = CssTransformReferenceBox.Resolve(element, sink, useCurrentStyle: true);
                 foreach (var declaration in frame.Declarations)
-                    if (declaration.Name is "transform" or "transform-origin")
+                    if (!CssGeneratedContent.Kind(element).IsMarker() && declaration.Name is "transform" or "transform-origin")
                         TryApplyKeyframeValue(declaration.Value, in context, sink);
                 var values = sink.Values.ToDictionary(pair => pair.Key, pair => pair.Value.Value);
                 evaluated[index] = new CssEvaluatedKeyframe(frame.Offset, values, sink.LayoutState,
@@ -194,12 +197,30 @@ internal static class CssKeyframes
         var tracks = new Dictionary<DependencyProperty, CssPropertyKeyframe[]>(byProperty.Count);
         foreach (var (property, track) in byProperty)
         {
-            var underlying = element.Target.GetEffectiveBaseValue(property);
+            var underlying = property == CssFontStretchValue.PercentageProperty
+                ? CssFontStretchValue.Computed(element, skipOwnAnimation: true)
+                : element.Target.GetEffectiveBaseValue(property);
             if (track[0].Offset > 0)
                 track.Insert(0, new CssPropertyKeyframe(0, underlying, null));
             if (track[^1].Offset < 1)
                 track.Add(new CssPropertyKeyframe(1, underlying, null));
             tracks[property] = track.ToArray();
+        }
+        tracks.Remove(CssSizingPresentation.AllowKeywordsProperty);
+        if (tracks.ContainsKey(CssFontStretchValue.PercentageProperty) &&
+            CssDependencyPropertyLookup.Find(element.GetType(), "FontStretch") is { } fontStretch)
+            tracks.Remove(fontStretch);
+        foreach (var property in CssSizingPresentation.Properties)
+        {
+            if (!tracks.TryGetValue(property, out var frames)) continue;
+            if (CssSizingPresentation.UsesTypedTrack(frames, CssSizingPresentation.AllowKeywords(element.Target)))
+            {
+                var native = CssSizingPresentation.Native(property);
+                if (native is not null) tracks.Remove(native);
+                if (native == Controls.FlexPanel.BasisProperty)
+                { tracks.Remove(Controls.FlexPanel.CssBasisProperty); tracks.Remove(Controls.FlexPanel.CssContentBasisProperty); }
+            }
+            else tracks.Remove(property);
         }
         return tracks;
     }
@@ -207,7 +228,7 @@ internal static class CssKeyframes
     internal static IReadOnlyDictionary<DependencyProperty, CssPropertySampler> BuildSamplers(
         CssNode element, CssKeyframesRule rule)
         => BuildPropertyTracks(element, rule).ToDictionary(pair => pair.Key,
-            pair => new CssPropertySampler(pair.Key, pair.Value));
+            pair => new CssPropertySampler(pair.Key, pair.Value, CssSizingPresentation.AllowKeywords(element.Target)));
 
     private static bool TryApplyKeyframeValue(CssCompiledValue value,
         in CssApplyContext context, ICssSetterSink sink) => value switch
@@ -241,7 +262,7 @@ internal sealed class CssPropertySampler
     private readonly CssPropertyKeyframe[] _frames;
     private readonly (AnimationTimeline Timeline, AnimationClock Clock)[] _segments;
 
-    internal CssPropertySampler(DependencyProperty property, CssPropertyKeyframe[] frames)
+    internal CssPropertySampler(DependencyProperty property, CssPropertyKeyframe[] frames, bool allowSizeKeywords = false)
     {
         if (frames.Length < 2 || frames[0].Offset != 0 || frames[^1].Offset != 1)
             throw new ArgumentException("A property track must span 0% through 100%.", nameof(frames));
@@ -254,7 +275,13 @@ internal sealed class CssPropertySampler
         {
             var from = frames[index].Value;
             var to = frames[index + 1].Value;
-            var timeline = property == CssDisplayProperties.SpecificationProperty &&
+            var timeline = CssSizingPresentation.Animation(property, from, to, allowSizeKeywords) as AnimationTimeline;
+            timeline ??= CssFontSizeAdjust.Animation(property, from, to);
+            timeline ??= CssInitialLetterProperties.Animation(property, from, to);
+            timeline ??= CssFontVariationSettings.Animation(property, from, to);
+            timeline ??= CssTextSpacing.Animation(property, from, to);
+            timeline ??= CssMaskAnimation.Create(property, from, to);
+            timeline ??= property == CssDisplayProperties.SpecificationProperty &&
                 from is CssDisplaySpecification before && to is CssDisplaySpecification after
                 ? new CssDisplayAnimation { From = before, To = after }
                 : property == UIElement.RenderTransformProperty &&

@@ -123,11 +123,16 @@ public class ThemeResourceContractTests
             var document = XDocument.Load(path, LoadOptions.SetLineInfo);
             foreach (var template in document.Descendants(presentation + "ControlTemplate"))
             {
+                var targetType = (string?)template.Attribute("TargetType") ?? "(unknown)";
                 var borders = template
                     .Descendants(presentation + "Border")
                     .Where(border => ReferenceEquals(
                         border.Ancestors(presentation + "ControlTemplate").FirstOrDefault(),
                         template))
+                    // ProgressBar's inner indicator is the filled content of the
+                    // track, not a second chrome border around the control.
+                    .Where(border => targetType != "ProgressBar" ||
+                        (string?)border.Attribute("Name") != "PART_Indicator")
                     .ToArray();
 
                 if (borders.Length <= 1)
@@ -135,14 +140,13 @@ public class ThemeResourceContractTests
                     continue;
                 }
 
-                var targetType = (string?)template.Attribute("TargetType") ?? "(unknown)";
                 violations.Add($"{Path.GetFileName(path)}:{targetType} has {borders.Length} Borders");
             }
         }
 
         Assert.True(
             violations.Count == 0,
-            "Each ControlTemplate may own at most one Border, with no nested Border chrome. " +
+            "Each ControlTemplate may own at most one chrome Border. " +
             string.Join("; ", violations));
     }
 

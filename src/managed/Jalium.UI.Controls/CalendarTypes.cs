@@ -104,12 +104,22 @@ internal sealed class CalendarDateRangeChangingEventArgs : EventArgs
 /// </summary>
 public sealed class CalendarBlackoutDatesCollection : ObservableCollection<CalendarDateRange>
 {
-    private readonly Calendar _owner;
+    private readonly Func<IEnumerable<DateTime>> _selectedDates;
+    private readonly Action _refresh;
     private readonly Thread _dispatcherThread;
 
     public CalendarBlackoutDatesCollection(Calendar owner)
     {
-        _owner = owner ?? throw new ArgumentNullException(nameof(owner));
+        ArgumentNullException.ThrowIfNull(owner);
+        _selectedDates = () => owner.SelectedDates;
+        _refresh = owner.RefreshCalendarView;
+        _dispatcherThread = Thread.CurrentThread;
+    }
+
+    internal CalendarBlackoutDatesCollection(Func<IEnumerable<DateTime>> selectedDates, Action refresh)
+    {
+        _selectedDates = selectedDates ?? throw new ArgumentNullException(nameof(selectedDates));
+        _refresh = refresh ?? throw new ArgumentNullException(nameof(refresh));
         _dispatcherThread = Thread.CurrentThread;
     }
 
@@ -184,7 +194,7 @@ public sealed class CalendarBlackoutDatesCollection : ObservableCollection<Calen
         }
 
         base.ClearItems();
-        _owner.RefreshCalendarView();
+        _refresh();
     }
 
     /// <inheritdoc />
@@ -204,7 +214,7 @@ public sealed class CalendarBlackoutDatesCollection : ObservableCollection<Calen
             throw;
         }
 
-        _owner.RefreshCalendarView();
+        _refresh();
     }
 
     /// <inheritdoc />
@@ -214,7 +224,7 @@ public sealed class CalendarBlackoutDatesCollection : ObservableCollection<Calen
         CalendarDateRange item = this[index];
         UnregisterItem(item);
         base.RemoveItem(index);
-        _owner.RefreshCalendarView();
+        _refresh();
     }
 
     /// <inheritdoc />
@@ -238,7 +248,7 @@ public sealed class CalendarBlackoutDatesCollection : ObservableCollection<Calen
             throw;
         }
 
-        _owner.RefreshCalendarView();
+        _refresh();
     }
 
     private void RegisterItem(CalendarDateRange item)
@@ -257,12 +267,12 @@ public sealed class CalendarBlackoutDatesCollection : ObservableCollection<Calen
         ValidateRange(e.Start, e.End);
 
     private void OnItemPropertyChanged(object? sender, PropertyChangedEventArgs e) =>
-        _owner.RefreshCalendarView();
+        _refresh();
 
     private void ValidateRange(DateTime start, DateTime end)
     {
         DateTime effectiveEnd = end < start ? start : end;
-        foreach (DateTime selectedDate in _owner.SelectedDates)
+        foreach (DateTime selectedDate in _selectedDates())
         {
             if (selectedDate.Date >= start.Date && selectedDate.Date <= effectiveEnd.Date)
             {

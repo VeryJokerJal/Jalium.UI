@@ -1,0 +1,19 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:local="clr-namespace:Jalium.UI.DesktopDemo"
+                    x:Class="Jalium.UI.DesktopDemo.Themes.PathPerfTheme">
+    <Style x:Key="PathPerf.Window" TargetType="Window"><Setter Property="Background" Value="#14141C" /></Style>
+    <Style TargetType="local:PathPerfSurface">
+        <Setter Property="ItemsPanel"><Setter.Value><ItemsPanelTemplate><UniformGrid Rows="6" Columns="10" Margin="12" /></ItemsPanelTemplate></Setter.Value></Setter>
+        <Setter Property="ItemTemplate"><Setter.Value><DataTemplate>
+            <Path Data="{Binding PathData}" Fill="{Binding Fill}" Stroke="#50648C" StrokeThickness="1.5" Stretch="Uniform" Margin="4" RenderTransformOrigin="0.5,0.5" RenderTransform="{Binding ScaleTransform, RelativeSource={RelativeSource AncestorType=local:PathPerfSurface}}" />
+        </DataTemplate></Setter.Value></Setter>
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="local:PathPerfSurface">
+            <DockPanel>
+                <VisualStateManager.VisualStateGroups><VisualStateGroup x:Name="PlaybackStates"><VisualState x:Name="Playing" /><VisualState x:Name="Paused" /></VisualStateGroup></VisualStateManager.VisualStateGroups>
+                <TextBlock DockPanel.Dock="Top" Text="{TemplateBinding StatusText}" FontSize="13" Foreground="#B4C8DC" Margin="12,8" TextWrapping="Wrap" Focusable="False" />
+                <Grid ClipToBounds="True"><ItemsPresenter /></Grid>
+            </DockPanel>
+        </ControlTemplate></Setter.Value></Setter>
+    </Style>
+</ResourceDictionary>

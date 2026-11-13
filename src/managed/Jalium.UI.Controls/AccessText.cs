@@ -1,5 +1,6 @@
 using System.Text;
 using Jalium.UI.Documents;
+using Jalium.UI.Data;
 using Jalium.UI.Markup;
 using Jalium.UI.Media;
 using Jalium.UI.Styling;
@@ -11,9 +12,31 @@ namespace Jalium.UI.Controls;
 /// The first character following an underscore is used as the access key.
 /// </summary>
 [Jalium.UI.Markup.ContentProperty(nameof(Text))]
-public class AccessText : FrameworkElement, IAddChild
+[TemplatePart(Name = "PART_TextDisplay", Type = typeof(TextBlock))]
+[TemplateVisualState(Name = "WithAccessKey", GroupName = "AccessKeyStates")]
+[TemplateVisualState(Name = "WithoutAccessKey", GroupName = "AccessKeyStates")]
+public class AccessText : Control, IAddChild
 {
-    private readonly TextBlock _textBlock;
+    private TextBlock? _textBlock;
+    private static readonly DependencyPropertyKey DisplayTextPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(DisplayText), typeof(string), typeof(AccessText), new PropertyMetadata(string.Empty));
+    public static readonly DependencyProperty DisplayTextProperty = DisplayTextPropertyKey.DependencyProperty;
+    public string DisplayText => (string)GetValue(DisplayTextProperty)!;
+    private static readonly DependencyPropertyKey AccessKeyIndexPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(AccessKeyIndex), typeof(int), typeof(AccessText), new PropertyMetadata(-1));
+    public static readonly DependencyProperty AccessKeyIndexProperty = AccessKeyIndexPropertyKey.DependencyProperty;
+    public int AccessKeyIndex => (int)GetValue(AccessKeyIndexProperty)!;
+    private static readonly DependencyPropertyKey ResolvedFontFamilyPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(ResolvedFontFamily), typeof(FontFamily), typeof(AccessText), new PropertyMetadata(SystemFonts.MessageFontFamily));
+    public static readonly DependencyProperty ResolvedFontFamilyProperty = ResolvedFontFamilyPropertyKey.DependencyProperty;
+    public FontFamily ResolvedFontFamily => (FontFamily)GetValue(ResolvedFontFamilyProperty)!;
+    private static readonly DependencyPropertyKey ResolvedTextAlignmentPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(ResolvedTextAlignment), typeof(TextAlignment), typeof(AccessText), new PropertyMetadata(TextAlignment.Left));
+    public static readonly DependencyProperty ResolvedTextAlignmentProperty = ResolvedTextAlignmentPropertyKey.DependencyProperty;
+    public TextAlignment ResolvedTextAlignment => (TextAlignment)GetValue(ResolvedTextAlignmentProperty)!;
+
+    private List<InheritedValueObserver>? _inheritedAncestors;
+    private bool _refreshingInheritedValues;
     private object? _lastTextShadow;
     private int _accessKeyDisplayIndex = -1;
 
@@ -31,7 +54,7 @@ public class AccessText : FrameworkElement, IAddChild
     /// Identifies the Background dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
-    public static readonly DependencyProperty BackgroundProperty =
+    public new static readonly DependencyProperty BackgroundProperty =
         TextBlock.BackgroundProperty.AddOwner(typeof(AccessText),
             new PropertyMetadata(null, OnForwardedPropertyChanged));
 
@@ -47,7 +70,7 @@ public class AccessText : FrameworkElement, IAddChild
     /// Identifies the FontFamily dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
-    public static readonly DependencyProperty FontFamilyProperty =
+    public new static readonly DependencyProperty FontFamilyProperty =
         DependencyProperty.Register(nameof(FontFamily), typeof(FontFamily), typeof(AccessText),
             new PropertyMetadata(null, OnForwardedPropertyChanged));
 
@@ -55,31 +78,31 @@ public class AccessText : FrameworkElement, IAddChild
     /// Identifies the FontSize dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
-    public static readonly DependencyProperty FontSizeProperty =
-        DependencyProperty.Register(nameof(FontSize), typeof(double), typeof(AccessText),
-            new PropertyMetadata(FrameworkElement.DefaultFontSize, OnForwardedPropertyChanged));
+    public new static readonly DependencyProperty FontSizeProperty =
+        Control.FontSizeProperty.AddOwner(typeof(AccessText),
+            new PropertyMetadata(FrameworkElement.DefaultFontSize, OnForwardedPropertyChanged, null, inherits: true));
 
     /// <summary>
     /// Identifies the FontWeight dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
-    public static readonly DependencyProperty FontWeightProperty =
-        DependencyProperty.Register(nameof(FontWeight), typeof(FontWeight), typeof(AccessText),
-            new PropertyMetadata(FontWeights.Normal, OnForwardedPropertyChanged));
+    public new static readonly DependencyProperty FontWeightProperty =
+        Control.FontWeightProperty.AddOwner(typeof(AccessText),
+            new PropertyMetadata(FontWeights.Normal, OnForwardedPropertyChanged, null, inherits: true));
 
     /// <summary>
     /// Identifies the FontStyle dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
-    public static readonly DependencyProperty FontStyleProperty =
-        DependencyProperty.Register(nameof(FontStyle), typeof(FontStyle), typeof(AccessText),
-            new PropertyMetadata(FontStyles.Normal, OnForwardedPropertyChanged));
+    public new static readonly DependencyProperty FontStyleProperty =
+        Control.FontStyleProperty.AddOwner(typeof(AccessText),
+            new PropertyMetadata(FontStyles.Normal, OnForwardedPropertyChanged, null, inherits: true));
 
     /// <summary>
     /// Identifies the FontStretch dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
-    public static readonly DependencyProperty FontStretchProperty =
+    public new static readonly DependencyProperty FontStretchProperty =
         TextBlock.FontStretchProperty.AddOwner(typeof(AccessText),
             new PropertyMetadata(FontStretches.Normal, OnForwardedPropertyChanged, null, inherits: true));
 
@@ -87,9 +110,9 @@ public class AccessText : FrameworkElement, IAddChild
     /// Identifies the Foreground dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
-    public static readonly DependencyProperty ForegroundProperty =
-        DependencyProperty.Register(nameof(Foreground), typeof(Brush), typeof(AccessText),
-            new PropertyMetadata(null, OnForwardedPropertyChanged));
+    public new static readonly DependencyProperty ForegroundProperty =
+        Control.ForegroundProperty.AddOwner(typeof(AccessText),
+            new PropertyMetadata(null, OnForwardedPropertyChanged, null, inherits: true));
 
     /// <summary>
     /// Identifies the TextWrapping dependency property.
@@ -154,12 +177,10 @@ public class AccessText : FrameworkElement, IAddChild
     /// </summary>
     public AccessText()
     {
-        _textBlock = new TextBlock
-        {
-            Focusable = false,
-        };
-        AddVisualChild(_textBlock);
-        SynchronizeTextBlock();
+        DefaultStyleKey = typeof(AccessText);
+        Loaded += (_, _) => ObserveInheritedAncestors();
+        Unloaded += (_, _) => StopObservingInheritedAncestors();
+        UpdateTemplateMetrics();
     }
 
     /// <summary>
@@ -176,7 +197,7 @@ public class AccessText : FrameworkElement, IAddChild
     /// Gets or sets the background brush.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
-    public Brush? Background
+    public new Brush? Background
     {
         get => (Brush?)GetValue(BackgroundProperty);
         set => SetValue(BackgroundProperty, value);
@@ -196,7 +217,7 @@ public class AccessText : FrameworkElement, IAddChild
     /// Gets or sets the font family.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
-    public FontFamily? FontFamily
+    public new FontFamily? FontFamily
     {
         get => (FontFamily?)GetValue(FontFamilyProperty);
         set => SetValue(FontFamilyProperty, value);
@@ -206,7 +227,7 @@ public class AccessText : FrameworkElement, IAddChild
     /// Gets or sets the font size.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
-    public double FontSize
+    public new double FontSize
     {
         get => (double)GetValue(FontSizeProperty)!;
         set => SetValue(FontSizeProperty, value);
@@ -216,7 +237,7 @@ public class AccessText : FrameworkElement, IAddChild
     /// Gets or sets the font weight.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
-    public FontWeight FontWeight
+    public new FontWeight FontWeight
     {
         get => (FontWeight)GetValue(FontWeightProperty)!;
         set => SetValue(FontWeightProperty, value);
@@ -226,7 +247,7 @@ public class AccessText : FrameworkElement, IAddChild
     /// Gets or sets the font style.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
-    public FontStyle FontStyle
+    public new FontStyle FontStyle
     {
         get => (FontStyle)GetValue(FontStyleProperty)!;
         set => SetValue(FontStyleProperty, value);
@@ -236,7 +257,7 @@ public class AccessText : FrameworkElement, IAddChild
     /// Gets or sets the font stretch.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
-    public FontStretch FontStretch
+    public new FontStretch FontStretch
     {
         get => GetValue(FontStretchProperty) is FontStretch value ? value : FontStretches.Normal;
         set => SetValue(FontStretchProperty, value);
@@ -246,7 +267,7 @@ public class AccessText : FrameworkElement, IAddChild
     /// Gets or sets the foreground brush.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
-    public Brush? Foreground
+    public new Brush? Foreground
     {
         get => (Brush?)GetValue(ForegroundProperty);
         set => SetValue(ForegroundProperty, value);
@@ -347,37 +368,91 @@ public class AccessText : FrameworkElement, IAddChild
     /// </summary>
     public char AccessKey { get; private set; }
 
-    /// <inheritdoc />
-    protected override int VisualChildrenCount => 1;
-
-    /// <inheritdoc />
-    protected override Visual? GetVisualChild(int index)
+    protected internal override void OnVisualParentChanged(DependencyObject? oldParent)
     {
-        if (index != 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(index));
-        }
-
-        return _textBlock;
+        base.OnVisualParentChanged(oldParent);
+        ObserveInheritedAncestors();
     }
 
-    /// <inheritdoc />
+    private void ObserveInheritedAncestors()
+    {
+        StopObservingInheritedAncestors();
+        for (Visual? parent = ParentVisual; parent is not null; parent = parent.VisualParent)
+            (_inheritedAncestors ??= []).Add(new InheritedValueObserver(this, parent));
+        RefreshInheritedTemplateValues();
+    }
+
+    private void StopObservingInheritedAncestors()
+    {
+        if (_inheritedAncestors is null) return;
+        foreach (var observer in _inheritedAncestors) observer.Detach();
+        _inheritedAncestors.Clear();
+    }
+
+    private sealed class InheritedValueObserver
+    {
+        private readonly WeakReference<AccessText> _target;
+        private readonly WeakReference<DependencyObject> _source;
+        internal InheritedValueObserver(AccessText target, DependencyObject source)
+        { _target = new(target); _source = new(source); source.PropertyChangedInternal += OnPropertyChanged; }
+        internal void Detach()
+        { if (_source.TryGetTarget(out var source)) source.PropertyChangedInternal -= OnPropertyChanged; }
+        private void OnPropertyChanged(DependencyProperty property, object? oldValue, object? newValue)
+        {
+            if (!_target.TryGetTarget(out var target)) { Detach(); return; }
+            if (property == Control.ForegroundProperty || property == Control.FontFamilyProperty ||
+                property == Control.FontSizeProperty || property == Control.FontWeightProperty ||
+                property == Control.FontStyleProperty || property == TextBlock.FontStretchProperty ||
+                property == FlowDirectionProperty)
+                target.RefreshInheritedTemplateValues();
+        }
+    }
+
+    private void RefreshInheritedTemplateValues()
+    {
+        if (_refreshingInheritedValues) return;
+        _refreshingInheritedValues = true;
+        try
+        {
+            UpdateTemplateMetrics();
+            if (_textBlock is null) return;
+            // Inherited properties resolve lazily. Re-evaluate their declared
+            // bindings when an ancestor changes without replacing those bindings.
+            foreach (var property in new[] { TextBlock.ForegroundProperty, TextBlock.FontFamilyProperty,
+                TextBlock.FontSizeProperty, TextBlock.FontWeightProperty, TextBlock.FontStyleProperty,
+                TextBlock.FontStretchProperty, TextBlock.TextAlignmentProperty })
+                BindingOperations.GetBindingExpressionBase(_textBlock, property)?.UpdateTarget();
+            _textBlock.InvalidateVisual();
+            InvalidateVisual();
+        }
+        finally { _refreshingInheritedValues = false; }
+    }
+
+    public override void OnApplyTemplate()
+    {
+        base.OnApplyTemplate();
+        _textBlock = GetTemplateChild("PART_TextDisplay") as TextBlock;
+        RefreshInheritedTemplateValues();
+    }
+
+    internal override void OnTemplateContentClearing()
+    {
+        _textBlock = null;
+        base.OnTemplateContentClearing();
+    }
+
     protected override Size MeasureOverride(Size availableSize)
     {
-        _textBlock.Measure(availableSize);
-        return _textBlock.DesiredSize;
-    }
-
-    /// <inheritdoc />
-    protected override Size ArrangeOverride(Size finalSize)
-    {
-        _textBlock.Arrange(new Rect(finalSize));
-        return finalSize;
+        // Ancestors can attach after this control's immediate presenter did.
+        ObserveInheritedAncestors();
+        UpdateTemplateMetrics();
+        return base.MeasureOverride(availableSize);
     }
 
     /// <inheritdoc />
     protected override void OnRender(DrawingContext drawingContext)
     {
+        if (_textBlock is null) { base.OnRender(drawingContext); return; }
         var textShadow = CssTextShadowProperties.Value(this);
         if (!ReferenceEquals(_lastTextShadow, textShadow))
         {
@@ -385,7 +460,7 @@ public class AccessText : FrameworkElement, IAddChild
             _textBlock.InvalidateVisual();
         }
         var alignment = CssFlowProperties.NativeTextAlignment(this, TextAlignmentProperty);
-        if (_textBlock.TextAlignment != alignment) _textBlock.TextAlignment = alignment;
+        SetValue(ResolvedTextAlignmentPropertyKey, alignment);
         base.OnRender(drawingContext);
 
         var foreground = Foreground ?? _textBlock.Foreground;
@@ -397,14 +472,20 @@ public class AccessText : FrameworkElement, IAddChild
 
         var keyLength = GraphemeClusters.NextBoundary(displayText, _accessKeyDisplayIndex) -
             _accessKeyDisplayIndex;
-        var segments = _textBlock.GetSourceRangeSegments(_accessKeyDisplayIndex, keyLength);
+        var segments = _textBlock.GetSourceRangeGeometry(_accessKeyDisplayIndex, keyLength);
         var pen = new Pen(foreground, 1);
         foreach (var segment in segments)
         {
-            var underlineY = segment.Baseline + Math.Max(1, FontSize * 0.08);
+            var dx = segment.End.X - segment.Start.X;
+            var dy = segment.End.Y - segment.Start.Y;
+            var length = Math.Sqrt(dx * dx + dy * dy);
+            var shift = Math.Max(1, FontSize * 0.08);
+            var normalX = length > 0 ? -dy / length * shift : 0;
+            var normalY = length > 0 ? dx / length * shift : shift;
+            var transform = _textBlock.TransformToVisual(this);
             drawingContext.DrawLine(pen,
-                new Point(segment.StartX, underlineY),
-                new Point(segment.EndX, underlineY));
+                transform.Transform(new Point(segment.Start.X + normalX, segment.Start.Y + normalY)),
+                transform.Transform(new Point(segment.End.X + normalX, segment.End.Y + normalY)));
         }
     }
 
@@ -437,7 +518,7 @@ public class AccessText : FrameworkElement, IAddChild
         if (d is AccessText at)
         {
             at.UpdateAccessKey();
-            at.SynchronizeTextBlock();
+            at.UpdateTemplateMetrics();
             at.InvalidateMeasure();
             at.InvalidateVisual();
         }
@@ -447,7 +528,7 @@ public class AccessText : FrameworkElement, IAddChild
     {
         if (d is AccessText accessText)
         {
-            accessText.SynchronizeTextBlock();
+            accessText.UpdateTemplateMetrics();
             accessText.InvalidateMeasure();
             accessText.InvalidateVisual();
         }
@@ -494,47 +575,14 @@ public class AccessText : FrameworkElement, IAddChild
         }
     }
 
-    private void SynchronizeTextBlock()
+    private void UpdateTemplateMetrics()
     {
-        _textBlock.Text = DisplayText;
-        _textBlock.FontFamily = FontFamily ?? new FontFamily(FrameworkElement.DefaultFontFamilyName);
-        _textBlock.FontSize = FontSize;
-        _textBlock.FontWeight = FontWeight;
-        _textBlock.FontStyle = FontStyle;
-        _textBlock.FontStretch = FontStretch;
-        if (Foreground is Brush foreground)
-        {
-            _textBlock.Foreground = foreground;
-        }
-        else
-        {
-            _textBlock.ClearValue(TextBlock.ForegroundProperty);
-        }
-        _textBlock.Background = Background;
-        _textBlock.TextWrapping = TextWrapping;
-        _textBlock.TextTrimming = TextTrimming;
-        _textBlock.BaselineOffset = BaselineOffset;
-        _textBlock.LineHeight = LineHeight;
-        _textBlock.LineStackingStrategy = LineStackingStrategy;
-        _textBlock.TextAlignment = CssFlowProperties.NativeTextAlignment(this, TextAlignmentProperty);
-
-        if (GetValue(TextDecorationsProperty) is TextDecorationCollection decorations)
-        {
-            _textBlock.TextDecorations = decorations;
-        }
-        else
-        {
-            _textBlock.ClearValue(TextBlock.TextDecorationsProperty);
-        }
-
-        if (GetValue(TextEffectsProperty) is TextEffectCollection effects)
-        {
-            _textBlock.TextEffects = effects;
-        }
-        else
-        {
-            _textBlock.ClearValue(TextBlock.TextEffectsProperty);
-        }
+        SetValue(DisplayTextPropertyKey, ComputeDisplayText());
+        SetValue(AccessKeyIndexPropertyKey, _accessKeyDisplayIndex);
+        SetValue(ResolvedFontFamilyPropertyKey, FontFamily ?? (FontFamily?)GetValue(Control.FontFamilyProperty) ?? SystemFonts.MessageFontFamily);
+        SetValue(ResolvedTextAlignmentPropertyKey, CssFlowProperties.NativeTextAlignment(this, TextAlignmentProperty));
+        if (TemplateRootInternal is not null)
+            VisualStateManager.GoToState(this, _accessKeyDisplayIndex >= 0 ? "WithAccessKey" : "WithoutAccessKey", false);
     }
 
     private void UpdateAccessKey()
@@ -565,9 +613,7 @@ public class AccessText : FrameworkElement, IAddChild
     /// <summary>
     /// Gets the display text with the underscore mnemonic removed.
     /// </summary>
-    public string DisplayText
-    {
-        get
+    private string ComputeDisplayText()
         {
             var text = Text;
             if (string.IsNullOrEmpty(text)) return string.Empty;
@@ -591,5 +637,4 @@ public class AccessText : FrameworkElement, IAddChild
             }
             return result.ToString();
         }
-    }
 }

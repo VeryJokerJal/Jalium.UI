@@ -8,6 +8,8 @@ namespace Jalium.UI.Tests;
 
 public class MenuContextParityTests
 {
+    public MenuContextParityTests() => LegacyMenuTemplateTestHelper.Register();
+
     [Fact]
     public void MenuItem_PublicSurface_ExposesWpfCommandStateTemplateAndVirtualHooks()
     {

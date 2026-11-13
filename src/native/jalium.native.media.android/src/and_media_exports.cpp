@@ -4,6 +4,7 @@
 #include "and_media_init.h"
 #include "and_image_decoder.h"
 #include "and_video_decoder.h"
+#include "and_gpu_video.h"
 #include "and_camera_source.h"
 
 #include <cstring>
@@ -163,20 +164,11 @@ JALIUM_MEDIA_API jalium_media_status_t jalium_video_decoder_acquire_gpu_surface_
     jalium_video_decoder_t*                decoder,
     jalium_video_decoder_gpu_descriptor_t* out_descriptor)
 {
-    // Stage 4 真填占位:Android MediaCodec 通过 AMediaCodec_setOutputSurface
-    // 输出到 ANativeWindow + AHardwareBuffer (API 28+),AcquireGpuDescriptor
-    // 应返 kind=AHARDWAREBUFFER + handle0=AHardwareBuffer*。配合 Vulkan
-    // backend 的 VK_ANDROID_external_memory_android_hardware_buffer 扩展
-    // import 成 VkImage,实现端到端 GPU 视频。
-    //
-    // 当前 stub 返 NotImplemented → managed AcquireGpuSurface 返 null →
-    // MediaElement fallback 到 stage 2 NativeVideoSurface BGRA staging
-    // (and_yuv_neon/sse2/scalar.cpp 路径仍提供 SIMD YUV→BGRA 转换)。
     if (!decoder || !out_descriptor) return JALIUM_MEDIA_E_INVALID_ARG;
     std::memset(out_descriptor, 0, sizeof(*out_descriptor));
     for (auto& plane : out_descriptor->planes) plane.fd = -1;
     out_descriptor->acquire_fence_fd = -1;
-    return JALIUM_MEDIA_E_NOT_IMPLEMENTED;
+    return jalium::media::android::VideoDecoderAcquireGpuDescriptor(decoder, out_descriptor);
 }
 
 JALIUM_MEDIA_API jalium_media_status_t
@@ -195,7 +187,8 @@ jalium_video_decoder_read_gpu_frame_descriptor(
     out_descriptor->acquire_fence_fd = -1;
     *out_pts_microseconds = 0;
     *out_is_keyframe = 0;
-    return JALIUM_MEDIA_E_NOT_IMPLEMENTED;
+    return jalium::media::android::VideoDecoderReadGpuFrame(
+        decoder, out_descriptor, out_pts_microseconds, out_is_keyframe);
 }
 
 JALIUM_MEDIA_API void
@@ -203,16 +196,13 @@ jalium_video_decoder_release_gpu_surface_descriptor(
     jalium_video_decoder_gpu_descriptor_t* descriptor)
 {
     if (!descriptor) return;
-    std::memset(descriptor, 0, sizeof(*descriptor));
-    for (auto& plane : descriptor->planes) plane.fd = -1;
-    descriptor->acquire_fence_fd = -1;
+    jalium::media::android::ReleaseGpuDescriptor(*descriptor);
 }
 
 JALIUM_MEDIA_API jalium_media_status_t
 jalium_video_decoder_disable_gpu_output(jalium_video_decoder_t* decoder)
 {
-    return decoder ? JALIUM_MEDIA_E_NOT_IMPLEMENTED
-                   : JALIUM_MEDIA_E_INVALID_ARG;
+    return jalium::media::android::VideoDecoderDisableGpuOutput(decoder);
 }
 
 // ----- Camera capture ----------------------------------------------------

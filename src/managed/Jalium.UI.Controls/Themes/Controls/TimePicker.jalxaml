@@ -1,0 +1,138 @@
+<ResourceDictionary xmlns="http://schemas.jalium.ui/2024"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:automation="clr-namespace:Jalium.UI.Automation;assembly=Jalium.UI.Core">
+    <Style x:Key="TimePickerOption" TargetType="ListBoxItem">
+        <Setter Property="Height" Value="36" /><Setter Property="Padding" Value="8,4" />
+        <Setter Property="Margin" Value="2" /><Setter Property="CornerRadius" Value="6" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
+        <Setter Property="BorderBrush" Value="Transparent" /><Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Template"><ControlTemplate TargetType="ListBoxItem">
+            <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                    BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="{TemplateBinding CornerRadius}"
+                    Padding="{TemplateBinding Padding}">
+                <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                  VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
+            </Border>
+        </ControlTemplate></Setter>
+        <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="{ThemeResource HighlightBackground}" /></Trigger>
+            <Trigger Property="IsSelected" Value="True">
+                <Setter Property="Background" Value="{ThemeResource AccentBrush}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextOnAccent}" />
+            </Trigger>
+            <Trigger Property="IsKeyboardFocused" Value="True"><Setter Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" /></Trigger>
+        </Style.Triggers>
+    </Style>
+    <Style x:Key="TimePickerList" TargetType="ListBox">
+        <Setter Property="Background" Value="Transparent" /><Setter Property="BorderThickness" Value="0" />
+        <Setter Property="FontSize" Value="16" /><Setter Property="Height" Value="220" />
+        <Setter Property="ItemContainerStyle" Value="{StaticResource TimePickerOption}" />
+        <Setter Property="Template"><ControlTemplate TargetType="ListBox">
+            <ScrollViewer VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled"
+                          CanContentScroll="True"><ItemsPresenter /></ScrollViewer>
+        </ControlTemplate></Setter>
+    </Style>
+    <Style TargetType="TimePicker">
+        <Setter Property="MinWidth" Value="150" /><Setter Property="MinHeight" Value="36" />
+        <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
+        <Setter Property="BorderThickness" Value="1" /><Setter Property="Padding" Value="10,6" />
+        <Setter Property="CornerRadius" Value="10" />
+        <Setter Property="Template"><ControlTemplate TargetType="TimePicker">
+            <Grid x:Name="PART_Root">
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup x:Name="CommonStates">
+                        <VisualState x:Name="Normal" />
+                        <VisualState x:Name="PointerOver"><VisualState.Setters>
+                            <Setter TargetName="PART_InputBorder" Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />
+                        </VisualState.Setters></VisualState>
+                        <VisualState x:Name="Disabled"><VisualState.Setters>
+                            <Setter TargetName="PART_Root" Property="Opacity" Value="0.55" />
+                            <Setter TargetName="PART_InputBorder" Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
+                            <Setter TargetName="PART_InputBorder" Property="BorderBrush" Value="{ThemeResource ControlBorderDisabled}" />
+                        </VisualState.Setters></VisualState>
+                    </VisualStateGroup>
+                    <VisualStateGroup x:Name="FocusStates">
+                        <VisualState x:Name="Unfocused" />
+                        <VisualState x:Name="Focused"><VisualState.Setters>
+                            <Setter TargetName="PART_InputBorder" Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
+                        </VisualState.Setters></VisualState>
+                    </VisualStateGroup>
+                    <VisualStateGroup x:Name="SelectionStates">
+                        <VisualState x:Name="Selected" />
+                        <VisualState x:Name="Placeholder"><VisualState.Setters>
+                            <Setter TargetName="PART_DisplayText" Property="Foreground" Value="{ThemeResource TextPlaceholder}" />
+                        </VisualState.Setters></VisualState>
+                    </VisualStateGroup>
+                    <VisualStateGroup x:Name="HeaderStates">
+                        <VisualState x:Name="HeaderVisible" />
+                        <VisualState x:Name="HeaderCollapsed"><VisualState.Setters>
+                            <Setter TargetName="PART_Header" Property="Visibility" Value="Collapsed" />
+                        </VisualState.Setters></VisualState>
+                    </VisualStateGroup>
+                    <VisualStateGroup x:Name="ClockStates">
+                        <VisualState x:Name="TwelveHourClock" />
+                        <VisualState x:Name="TwentyFourHourClock"><VisualState.Setters>
+                            <Setter TargetName="PART_PeriodPanel" Property="Visibility" Value="Collapsed" />
+                        </VisualState.Setters></VisualState>
+                    </VisualStateGroup>
+                    <VisualStateGroup x:Name="DropDownStates">
+                        <VisualState x:Name="Closed" /><VisualState x:Name="Open" />
+                    </VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                <ContentPresenter x:Name="PART_Header" Content="{TemplateBinding Header}" ContentTemplate="{TemplateBinding HeaderTemplate}"
+                                  Margin="0,0,0,4" />
+                <Border x:Name="PART_InputBorder" Grid.Row="1" Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
+                        CornerRadius="{TemplateBinding CornerRadius}" Padding="{TemplateBinding Padding}">
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="24" /></Grid.ColumnDefinitions>
+                        <TextBlock x:Name="PART_DisplayText" Text="{TemplateBinding DisplayText}" Foreground="{TemplateBinding Foreground}"
+                                   FontFamily="{TemplateBinding FontFamily}" FontSize="{TemplateBinding FontSize}"
+                                   FontWeight="{TemplateBinding FontWeight}" FontStyle="{TemplateBinding FontStyle}"
+                                   VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                        <Path Grid.Column="1" Width="16" Height="16" VerticalAlignment="Center" HorizontalAlignment="Center"
+                              Data="M 8,1 A 7,7 0 1 1 7.99,1 M 8,4 V 8 L 11,10" Stretch="Uniform"
+                              Stroke="{ThemeResource TextSecondary}" StrokeThickness="1.4" IsHitTestVisible="False" />
+                    </Grid>
+                </Border>
+                <Popup x:Name="PART_Popup" Placement="Bottom" StaysOpen="False" VerticalOffset="4">
+                    <Border Background="{ThemeResource SurfaceBackground}" BorderBrush="{ThemeResource ControlBorder}"
+                            BorderThickness="1" CornerRadius="10" Padding="6">
+                        <Grid>
+                            <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                            <StackPanel Orientation="Horizontal">
+                                <ListBox x:Name="PART_HourList" Style="{StaticResource TimePickerList}" Width="70"
+                                         ItemsSource="{TemplateBinding HourOptions}" ItemContainerStyle="{StaticResource TimePickerOption}"
+                                         SelectedIndex="{Binding PendingHourIndex, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                                         ScrollViewer.VerticalScrollBarVisibility="Hidden" automation:AutomationProperties.Name="Hours" />
+                                <TextBlock Text=":" VerticalAlignment="Center" Foreground="{ThemeResource TextSecondary}" />
+                                <ListBox x:Name="PART_MinuteList" Style="{StaticResource TimePickerList}" Width="70"
+                                         ItemsSource="{TemplateBinding MinuteOptions}" ItemContainerStyle="{StaticResource TimePickerOption}"
+                                         SelectedIndex="{Binding PendingMinuteIndex, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                                         ScrollViewer.VerticalScrollBarVisibility="Hidden" automation:AutomationProperties.Name="Minutes" />
+                                <Border x:Name="PART_PeriodPanel" BorderThickness="1,0,0,0" BorderBrush="{ThemeResource ControlBorder}" Margin="4,0,0,0" Padding="4,0,0,0">
+                                    <ListBox x:Name="PART_PeriodList" Style="{StaticResource TimePickerList}" Width="64"
+                                             ItemsSource="{TemplateBinding PeriodOptions}" ItemContainerStyle="{StaticResource TimePickerOption}"
+                                             SelectedIndex="{Binding PendingPeriodIndex, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                                             ScrollViewer.VerticalScrollBarVisibility="Hidden" automation:AutomationProperties.Name="AM or PM" />
+                                </Border>
+                            </StackPanel>
+                            <Grid Grid.Row="1" Margin="0,6,0,0">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                <Button x:Name="PART_CancelButton" Content="Cancel" Margin="0,0,3,0" MinHeight="36" />
+                                <Button x:Name="PART_AcceptButton" Grid.Column="1" Content="OK" Margin="3,0,0,0" MinHeight="36"
+                                        Background="{ThemeResource AccentBrush}" Foreground="{ThemeResource TextOnAccent}" />
+                            </Grid>
+                        </Grid>
+                    </Border>
+                </Popup>
+            </Grid>
+        </ControlTemplate></Setter>
+    </Style>
+</ResourceDictionary>

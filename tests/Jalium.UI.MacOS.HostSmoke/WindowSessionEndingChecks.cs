@@ -49,7 +49,7 @@ internal static class WindowSessionEndingChecks
         string name = $"{style}: mode={mode}, reason={reason:x8}";
         JaliumMacApplication.Initialize();
         var native = NSApplication.SharedApplication;
-        native.ActivationPolicy = NSApplicationActivationPolicy.Prohibited;
+        native.ActivationPolicy = NSApplicationActivationPolicy.Accessory;
         RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
         var application = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         var window = new Window { Title = "Owned session-ending check", TitleBarStyle = style, Width = 360, Height = 240 };

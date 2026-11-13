@@ -40,7 +40,7 @@ internal static partial class TextAccessibilityStyleChecks
     {
         if (!int.TryParse(argument.AsSpan("--text-accessibility-style-case=".Length), out int index)
             || (uint)index >= Names.Length * 6) return 2;
-        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Prohibited;
+        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Accessory;
         RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
         int kind = index % Names.Length, type = index / Names.Length % 3;
         Control editor = type switch { 0 => new TextBox { AcceptsReturn = true }, 1 => new RichTextBox(), _ => new EditControl() };

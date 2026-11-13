@@ -18,11 +18,16 @@ internal sealed partial class WindowInputDispatcher
 
     // ── Mouse state ──
     private UIElement? _lastMouseOverElement;
+    private Point _lastCursorPosition;
+    private bool _hasCursorPosition;
     // Keep the ancestor snapshot captured while the element was still attached.
     // Content replacement severs VisualParent before Window gets its callback, so
     // walking the old leaf at teardown time can no longer reach the Window-side
     // ancestors whose IsMouseOver state also has to be cleared.
     private readonly List<UIElement> _mouseOverChain = [];
+    // Disabled elements keep IsMouseOver false, but still need paired physical
+    // enter/leave notifications (for example ToolTipService.ShowOnDisabled).
+    private readonly HashSet<UIElement> _mouseEnteredElements = [];
     private long _mouseOverGeneration;
     private readonly List<UIElement> _mousePressedChain = [];
     private MouseButton? _suppressMouseUpButton;
@@ -117,6 +122,8 @@ internal sealed partial class WindowInputDispatcher
         Func<bool>? packetLifetime = OperatingSystem.IsMacOS() ? () => packet == _mouseInputGeneration : null;
         var physicalModifiers = modifiers;
         modifiers = MouseInputModifiers.ToLogical(modifiers);
+        _lastCursorPosition = position;
+        _hasCursorPosition = true;
         Mouse.UpdateState(position, UIElement.MouseDirectlyOverElement, buttons);
 
         // Allow subclass to intercept
@@ -227,6 +234,24 @@ internal sealed partial class WindowInputDispatcher
         }
         if (inputLifetime?.Invoke() == false) return;
 
+        ApplyCursor(position, capturedThumb ?? hitElement);
+    }
+
+    /// <summary>Refreshes chrome feedback when compositor constraints change without pointer motion.</summary>
+    internal void RefreshCursor()
+    {
+        if (!_hasCursorPosition) return;
+        if (Mouse.Captured == null && HasBlockingExternalPopup() &&
+            _host.OverlayLayer.FindPopupRootAt(_lastCursorPosition) == null)
+        {
+            ApplyPopupBlockedCursor();
+            return;
+        }
+        ApplyCursor(_lastCursorPosition, Mouse.Captured as Primitives.Thumb ?? _lastMouseOverElement);
+    }
+
+    private void ApplyCursor(Point position, UIElement? hitElement)
+    {
         // Update cursor based on hit element. A disabled element shows the
         // standard arrow — its Cursor (including any inherited cursor) must not
         // apply, mirroring how disabled controls drop hover/pressed visuals.
@@ -242,8 +267,9 @@ internal sealed partial class WindowInputDispatcher
             // Cursor="Hand" 的按钮移到没设光标的空白区，光标仍是手型，直到碰到下一个设了光标的元素）。
             // WPF 的契约是「无人指定即箭头」，框架里另外两条路径（Window.ResolveCursor 的注释、
             // Mouse.UpdateCursor 的 `cursor ?? Cursors.Arrow`）也都是这么兜的，唯独这里漏了。
-            var target2 = capturedThumb ?? hitElement;
-            var cursor = target2 is FrameworkElement fe && fe.IsEnabled
+            var target2 = hitElement;
+            var cursor = Mouse.Captured == null ? _host.GetWindowChromeCursor(position) : null;
+            cursor ??= target2 is FrameworkElement fe && fe.IsEnabled
                 ? FrameworkElement.ResolveEffectiveCursor(fe) ?? Jalium.UI.Input.Cursors.Arrow
                 : Jalium.UI.Input.Cursors.Arrow;
             Mouse.SetCursor(cursor);
@@ -629,6 +655,7 @@ internal sealed partial class WindowInputDispatcher
         var target = Mouse.GetMouseTarget(hitElement) ?? _host.Self;
 
         target = _wheelGestureRouting.ResolveTarget(target, _host.Self, phase, momentumPhase);
+        if (target == null) return;
         if (packetLifetime?.Invoke() == false) return;
         var commandInput = _host.CaptureNativeMouseCommandInput(target, packetLifetime);
 
@@ -676,9 +703,20 @@ internal sealed partial class WindowInputDispatcher
         }
     }
 
+    /// <summary>Cancels mouse input when the platform device disappears.</summary>
+    public void HandleMouseCancel()
+    {
+        _wheelGestureRouting.Cancel();
+        _suppressMouseUpButton = null;
+        Mouse.UpdateState(Mouse.Position, null, default);
+        HandleNativeCaptureChanged(nint.Zero, nint.Zero);
+        HandleMouseLeave();
+    }
+
     /// <summary>Handles mouse leaving the window.</summary>
     public void HandleMouseLeave()
     {
+        _hasCursorPosition = false;
         ResetClientMouseLeaveTracking();
         Mouse.OnMouseLeaveWindow();
 
@@ -868,7 +906,7 @@ internal sealed partial class WindowInputDispatcher
             return true;
         }
 
-        var target = OperatingSystem.IsMacOS()
+        var target = OperatingSystem.IsMacOS() || OperatingSystem.IsLinux()
             ? _host.GetKeyboardEventTarget()
             : Keyboard.FocusedElement as UIElement ?? _host.Self;
         if (!nativeMac && physicalModifiers.HasValue)
@@ -1524,12 +1562,12 @@ internal sealed partial class WindowInputDispatcher
                 return;
 
             UIElement element = nextChain[i];
-            if (element.IsMouseOver)
-                continue;
-
-            element.SetIsMouseOver(true);
+            if (!element.IsMouseOver)
+                element.SetIsMouseOver(true);
             if (generation != _mouseOverGeneration)
                 return;
+            if (!_mouseEnteredElements.Add(element))
+                continue;
 
             MouseEventArgs args = new(UIElement.MouseEnterEvent) { Source = element };
             element.RaiseEvent(args);
@@ -2017,11 +2055,11 @@ internal sealed partial class WindowInputDispatcher
         HashSet<UIElement> raised = [];
         foreach (UIElement element in oldChain)
         {
-            if (!raised.Add(element) || _mouseOverChain.Contains(element) || !element.IsMouseOver)
+            if (!raised.Add(element) || _mouseOverChain.Contains(element) || !_mouseEnteredElements.Contains(element))
                 continue;
 
             element.SetIsMouseOver(false);
-            if (_mouseOverChain.Contains(element))
+            if (_mouseOverChain.Contains(element) || !_mouseEnteredElements.Remove(element))
                 continue;
             MouseEventArgs args = new(UIElement.MouseLeaveEvent) { Source = element };
             element.RaiseEvent(args);
@@ -2813,7 +2851,7 @@ internal sealed partial class WindowInputDispatcher
     private void TrackGestureMove(PointerInputData data, int timestamp)
     {
         if (!_gestureTrackers.TryGetValue(data.PointerId, out var tracker)) return;
-        long dt = Math.Max(1, timestamp - tracker.LastSampleTimestampMs);
+        long dt = Math.Max(1, unchecked(timestamp - (int)tracker.LastSampleTimestampMs));
         Vector delta = data.Position - tracker.LastPosition;
         tracker.LastSpeedDipsPerMs = delta.Length / dt;
         tracker.LastPosition = data.Position;
@@ -2827,14 +2865,20 @@ internal sealed partial class WindowInputDispatcher
     private void TrackGestureUpAndEmit(UIElement target, StylusDevice stylusDevice, PointerInputData data, int timestamp, Func<bool>? inputLifetime = null)
     {
         if (!_gestureTrackers.TryGetValue(data.PointerId, out var tracker)) return;
+        // A release can contain the final coalesced motion. A stationary pause
+        // must age out the preceding speed instead of reusing an old flick.
+        if (data.Position != tracker.LastPosition)
+            TrackGestureMove(data, timestamp);
+        double releaseWeight = Math.Max(0, 1 - Math.Max(0,
+            unchecked(timestamp - (int)tracker.LastSampleTimestampMs)) / 100.0);
         _gestureTrackers.Remove(data.PointerId);
 
-        long duration = timestamp - tracker.DownTimestampMs;
+        long duration = unchecked(timestamp - (int)tracker.DownTimestampMs);
         bool isShortTap = duration <= ShortTapMaxDurationMs
                           && (tracker.LastPosition - tracker.DownPosition).Length <= DoubleTapDistanceThresholdDips;
 
         // Flick: lift velocity exceeds threshold, regardless of tap classification.
-        if (tracker.LastSpeedDipsPerMs > FlickVelocityThresholdDipsPerMs)
+        if (tracker.LastSpeedDipsPerMs * releaseWeight > FlickVelocityThresholdDipsPerMs)
         {
             RaiseStylusSystemGestureEvent(target, stylusDevice, timestamp, SystemGesture.Flick, inputLifetime);
             if (inputLifetime?.Invoke() == false) return;
@@ -3007,17 +3051,25 @@ internal sealed partial class WindowInputDispatcher
 
         if (isUp)
         {
+            if (activeSession.UpdatePointer(pointerData.PointerId, pointerData.Point.Position))
+            {
+                RaiseManipulationDeltaPipeline(activeSession, timestamp);
+                if (!_activeManipulationSessions.TryGetValue(pointerData.PointerId, out var current) ||
+                    !ReferenceEquals(current, activeSession))
+                    return;
+            }
             _activeManipulationSessions.Remove(pointerData.PointerId);
             activeSession.RemovePointer(pointerData.PointerId);
             if (activeSession.PointerCount == 0)
             {
                 // All contacts have lifted: hand off to inertia (or terminate).
+                activeSession.AgeReleaseVelocities(timestamp);
                 StartManipulationInertiaOrComplete(activeSession, timestamp);
             }
             else
             {
                 // Re-baseline so the next move doesn't see a jump from the removed pointer.
-                activeSession.Rebaseline(timestamp);
+                activeSession.RebaselineAfterPointerRemoved(timestamp);
             }
             return;
         }
@@ -3226,7 +3278,9 @@ internal sealed partial class WindowInputDispatcher
             session.LastExpansionVelocity,
             bubbleArgs.TranslationBehavior,
             bubbleArgs.RotationBehavior,
-            bubbleArgs.ExpansionBehavior))
+            bubbleArgs.ExpansionBehavior,
+            session.Mode,
+            session.ExpansionRadius))
         {
             // Velocity below stop threshold — go straight to Completed (non-inertial).
             TerminateManipulationSession(session, isInertial: false, timestamp);
@@ -3535,6 +3589,7 @@ internal sealed partial class WindowInputDispatcher
         private double _baseSpread;          // avg distance from centroid to pointers
         private double _baseAngle;           // angle of first pointer to centroid (deg)
         private int _baseTimestamp;
+        private int _velocityTimestamp;
 
         public PointerManipulationSession(
             UIElement target, Point origin, int timestamp,
@@ -3565,6 +3620,7 @@ internal sealed partial class WindowInputDispatcher
         public Vector LastLinearVelocity { get; private set; } = Vector.Zero;    // DIP / ms
         public double LastAngularVelocity { get; private set; }                  // deg / ms
         public Vector LastExpansionVelocity { get; private set; } = Vector.Zero; // DIP / ms
+        public double ExpansionRadius { get; private set; } = 1;
 
         public ManipulationInertiaProcessor? InertiaProcessor { get; set; }
 
@@ -3582,13 +3638,29 @@ internal sealed partial class WindowInputDispatcher
             // Caller may invoke Rebaseline if any pointers remain.
         }
 
-        public void UpdatePointer(uint id, Point position)
+        public bool UpdatePointer(uint id, Point position)
         {
-            if (_current.ContainsKey(id))
-                _current[id] = position;
+            if (!_current.TryGetValue(id, out var previous) || previous == position)
+                return false;
+            _current[id] = position;
+            return true;
+        }
+
+        public void AgeReleaseVelocities(int timestamp)
+        {
+            double weight = Math.Max(0, 1 - Math.Max(0, unchecked(timestamp - _velocityTimestamp)) / 100.0);
+            LastLinearVelocity = new Vector(LastLinearVelocity.X * weight, LastLinearVelocity.Y * weight);
+            LastAngularVelocity *= weight;
+            LastExpansionVelocity = new Vector(LastExpansionVelocity.X * weight, LastExpansionVelocity.Y * weight);
         }
 
         public void Rebaseline(int timestamp)
+            => Rebaseline(timestamp, preserveReleaseVelocity: false);
+
+        public void RebaselineAfterPointerRemoved(int timestamp)
+            => Rebaseline(timestamp, preserveReleaseVelocity: true);
+
+        private void Rebaseline(int timestamp, bool preserveReleaseVelocity)
         {
             if (_current.Count == 0)
             {
@@ -3599,11 +3671,19 @@ internal sealed partial class WindowInputDispatcher
             }
             _baseCentroid = ComputeCentroid(_current.Values);
             _baseSpread = ComputeSpread(_current.Values, _baseCentroid);
+            if (_current.Count >= 2) ExpansionRadius = Math.Max(1, _baseSpread);
             _baseAngle = ComputeAngle(_current.Values, _baseCentroid);
             _baseTimestamp = timestamp;
-            LastLinearVelocity = Vector.Zero;
-            LastAngularVelocity = 0;
-            LastExpansionVelocity = Vector.Zero;
+            // Removing a contact changes the geometry, not the last motion.
+            // Keep that sample until the remaining contact moves or releases;
+            // final release ages it once using its original timestamp.
+            if (!preserveReleaseVelocity)
+            {
+                LastLinearVelocity = Vector.Zero;
+                LastAngularVelocity = 0;
+                LastExpansionVelocity = Vector.Zero;
+                _velocityTimestamp = timestamp;
+            }
         }
 
         public ManipulationFrameDelta ComputeFrameDelta(int timestamp)
@@ -3613,6 +3693,7 @@ internal sealed partial class WindowInputDispatcher
 
             Point centroidNow = ComputeCentroid(_current.Values);
             double spreadNow = ComputeSpread(_current.Values, centroidNow);
+            if (_current.Count >= 2) ExpansionRadius = Math.Max(1, spreadNow);
             double angleNow = ComputeAngle(_current.Values, centroidNow);
 
             // Translation: centroid delta — gated by Mode.
@@ -3649,6 +3730,7 @@ internal sealed partial class WindowInputDispatcher
             LastLinearVelocity = new Vector(deltaT.X / dt, deltaT.Y / dt);
             LastAngularVelocity = deltaR / dt;
             LastExpansionVelocity = new Vector(deltaExpansion.X / dt, deltaExpansion.Y / dt);
+            _velocityTimestamp = timestamp;
 
             // Re-baseline for next frame.
             _baseCentroid = centroidNow;

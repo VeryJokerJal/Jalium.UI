@@ -37,7 +37,7 @@ public:
     float r_, g_, b_, a_;
 };
 
-class D3D12LinearGradientBrush : public Brush {
+class D3D12LinearGradientBrush : public Brush, public GradientColorInterpolationState {
 public:
     D3D12LinearGradientBrush(
         float startX, float startY, float endX, float endY,
@@ -45,13 +45,15 @@ public:
     ~D3D12LinearGradientBrush() override = default;
 
     JaliumBrushType GetType() const override { return JALIUM_BRUSH_LINEAR_GRADIENT; }
+    JaliumResult SetColorInterpolationMode(uint32_t mode) override;
+    std::vector<JaliumGradientStop> interpolationSource_;
 
     float startX_, startY_, endX_, endY_;
     std::vector<GradStop> stops_;
     uint32_t spreadMethod_ = 0;  // 0=Pad, 1=Repeat, 2=Reflect
 };
 
-class D3D12RadialGradientBrush : public Brush {
+class D3D12RadialGradientBrush : public Brush, public GradientColorInterpolationState, public RadialGradientGeometryState {
 public:
     D3D12RadialGradientBrush(
         float centerX, float centerY, float radiusX, float radiusY,
@@ -60,6 +62,8 @@ public:
     ~D3D12RadialGradientBrush() override = default;
 
     JaliumBrushType GetType() const override { return JALIUM_BRUSH_RADIAL_GRADIENT; }
+    JaliumResult SetColorInterpolationMode(uint32_t mode) override;
+    std::vector<JaliumGradientStop> interpolationSource_;
 
     float centerX_, centerY_, radiusX_, radiusY_, originX_, originY_;
     std::vector<GradStop> stops_;
@@ -196,7 +200,7 @@ public:
 };
 
 /// DirectWrite text format wrapper.
-class D3D12TextFormat : public TextFormat, public FontUnitMetricsProvider, public FontMathConstantsProvider {
+class D3D12TextFormat : public TextFormat, public FontUnitMetricsProvider, public FontMathConstantsProvider, public TextFontFeatureProvider, public TextFontFeatureQueryProvider {
 public:
     D3D12TextFormat(IDWriteFactory* factory,
                     const wchar_t* fontFamily,
@@ -204,6 +208,7 @@ public:
                     int32_t fontWeight,
                     int32_t fontStyle);
     ~D3D12TextFormat() override = default;
+    JaliumResult SetFontFeatures(const JaliumFontFeature* features, uint32_t count) override;
 
     void SetAlignment(int32_t alignment) override;
     void SetParagraphAlignment(int32_t alignment) override;
@@ -222,6 +227,7 @@ public:
     JaliumResult GetFontMetrics(JaliumTextMetrics* metrics) override;
     JaliumResult GetFontUnitMetrics(JaliumFontUnitMetrics* metrics) override;
     JaliumResult GetFontMathConstants(JaliumFontMathConstants* constants) override;
+    JaliumResult GetFontFeatureSupport(uint32_t tables, const uint32_t* tags, uint32_t count, uint8_t* supported) const override;
 
     JaliumResult HitTestPoint(
         const wchar_t* text, uint32_t textLength,
@@ -284,6 +290,8 @@ private:
 
     FontResourceReference registeredFont_;
     ComPtr<IDWriteTextFormat> format_;
+    ComPtr<IDWriteTypography> typography_;
+    std::vector<JaliumFontFeature> fontFeatures_;
     IDWriteFactory* factory_ = nullptr;
     float fontSize_ = 0.0f;
     uint32_t maxLines_ = 0;  // 0 = unlimited

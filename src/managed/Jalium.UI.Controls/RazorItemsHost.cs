@@ -3,111 +3,79 @@ using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
-
-/// <summary>Which scroll host a <see cref="RazorItemsHost"/> should use.</summary>
+/// <summary>Which scroll host a <see cref = "RazorItemsHost"/> should use.</summary>
 public enum RazorVirtualizeScrollHost
 {
-    /// <summary>Reuse an enclosing <see cref="ScrollViewer"/> when it adopted this host as its
+    /// <summary>Reuse an enclosing <see cref = "ScrollViewer"/> when it adopted this host as its
     /// scroll info; otherwise build an inner one. This is the default.</summary>
     Auto = 0,
-
-    /// <summary>Always behave as the scrolling content of an enclosing <see cref="ScrollViewer"/>.</summary>
+    /// <summary>Always behave as the scrolling content of an enclosing <see cref = "ScrollViewer"/>.</summary>
     Outer = 1,
-
-    /// <summary>Always build an inner <see cref="ScrollViewer"/>.</summary>
+    /// <summary>Always build an inner <see cref = "ScrollViewer"/>.</summary>
     Self = 2,
-
     /// <summary>Never scroll. The host is laid out at its full extent by whatever contains it.</summary>
     None = 3,
 }
 
-/// <summary>Which virtualizing panel a <see cref="RazorItemsHost"/> lays its items out with.</summary>
+/// <summary>Which virtualizing panel a <see cref = "RazorItemsHost"/> lays its items out with.</summary>
 public enum RazorVirtualizeLayout
 {
-    /// <summary>One item per line along <see cref="RazorItemsHost.Orientation"/>.</summary>
+    /// <summary>One item per line along <see cref = "RazorItemsHost.Orientation"/>.</summary>
     Stack = 0,
-
     /// <summary>Items wrap into rows or columns.</summary>
     Wrap = 1,
 }
 
 /// <summary>
-/// What a <see cref="RazorItemsHost"/> does when it is measured with an infinite constraint on
+/// What a <see cref = "RazorItemsHost"/> does when it is measured with an infinite constraint on
 /// its scrolling axis, which makes virtualization impossible.
 /// </summary>
 public enum RazorVirtualizeUnbounded
 {
     /// <summary>Fall back to non-virtualized layout so the items still render. Default.</summary>
     Degrade = 0,
-
-    /// <summary>Clamp the scrolling axis to <see cref="RazorItemsHost.FallbackViewportLength"/>.</summary>
+    /// <summary>Clamp the scrolling axis to <see cref = "RazorItemsHost.FallbackViewportLength"/>.</summary>
     FixedViewport = 1,
-
     /// <summary>Report the problem and render nothing.</summary>
     Strict = 2,
 }
 
 /// <summary>
-/// Runtime host for the <c>@virtualize</c> Razor directive: an <see cref="ItemsControl"/> that
+/// Runtime host for the <c>@virtualize</c> Razor directive: an <see cref = "ItemsControl"/> that
 /// arrives pre-wired for virtualization and picks its own scroll host.
 /// </summary>
 /// <remarks>
 /// <para>
 /// Virtualization here needs four things at once and silently degrades if any is missing: a
-/// <see cref="ScrollViewer"/> whose content is <em>directly</em> an <see cref="IScrollInfo"/>, an
-/// items panel that is a <see cref="VirtualizingPanel"/>, <c>IsVirtualizing</c> on the owner, and
-/// containers with a definite size along the scroll axis. A bare <see cref="ItemsControl"/>
-/// satisfies none of the first three, so this host supplies its own control template and items
-/// panel instead of depending on a theme.
+/// <see cref = "ScrollViewer"/> whose content is <em>directly</em> an <see cref = "IScrollInfo"/>, an
+/// items panel that is a <see cref = "VirtualizingPanel"/>, <c>IsVirtualizing</c> on the owner, and
+/// containers with a definite size along the scroll axis. A bare <see cref = "ItemsControl"/>
+/// satisfies none of the first three, so its default theme supplies the scroll templates and virtualizing items panels.
 /// </para>
 /// <para>
-/// The host implements <see cref="IScrollInfo"/> and forwards to the inner
-/// <see cref="ItemsPresenter"/>. That is what makes "reuse the outer scroll viewer" work with no
-/// extra plumbing when its <see cref="ScrollViewer.CanContentScroll"/> is enabled: an enclosing viewer assigns
-/// <see cref="IScrollInfo.ScrollOwner"/> when its content is set, which happens while the tree is
-/// being built and therefore before the first measure. By the time <see cref="MeasureOverride"/>
+/// The host implements <see cref = "IScrollInfo"/> and forwards to the inner
+/// <see cref = "ItemsPresenter"/>. That is what makes "reuse the outer scroll viewer" work with no
+/// extra plumbing when its <see cref = "ScrollViewer.CanContentScroll"/> is enabled: an enclosing viewer assigns
+/// <see cref = "IScrollInfo.ScrollOwner"/> when its content is set, which happens while the tree is
+/// being built and therefore before the first measure. By the time <see cref = "MeasureOverride"/>
 /// runs, a non-null owner already means an outer viewport is driving this host.
 /// </para>
 /// </remarks>
+[TemplatePart(Name = "PART_ItemsPresenter", Type = typeof(ItemsPresenter))]
+[TemplatePart(Name = "PART_ScrollViewer", Type = typeof(ScrollViewer))]
 public sealed class RazorItemsHost : ItemsControl, IScrollInfo
 {
-    // Templates are shared statics. FrameworkTemplate.LoadContent invokes the factory on every
-    // call, so one sealed instance still produces a fresh tree per host.
-    private static readonly ControlTemplate s_passthroughTemplate = BuildTemplate(static () => new ItemsPresenter());
+    private static readonly DependencyPropertyKey ResolvedScrollHostPropertyKey = DependencyProperty.RegisterReadOnly(nameof(ResolvedScrollHost), typeof(RazorVirtualizeScrollHost), typeof(RazorItemsHost), new PropertyMetadata(RazorVirtualizeScrollHost.Self));
+    /// <summary>Identifies the resolved scroll-host dependency property.</summary>
+    public static readonly DependencyProperty ResolvedScrollHostProperty = ResolvedScrollHostPropertyKey.DependencyProperty;
+    /// <summary>Gets the resolved scrolling mode used by the default template.</summary>
+    public RazorVirtualizeScrollHost ResolvedScrollHost => (RazorVirtualizeScrollHost)GetValue(ResolvedScrollHostProperty)!;
 
-    private static readonly ControlTemplate s_selfScrollVerticalTemplate = BuildTemplate(static () => new ScrollViewer
-    {
-        VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-        HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-        CanContentScroll = true,
-
-        // Must be the ScrollViewer's direct content: OnContentChanged does
-        // "ScrollInfo = ContentElement as IScrollInfo", so any wrapper here breaks the chain and
-        // the panel ends up measured unbounded.
-        Content = new ItemsPresenter(),
-    });
-
-    private static readonly ControlTemplate s_selfScrollHorizontalTemplate = BuildTemplate(static () => new ScrollViewer
-    {
-        HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-        VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
-        CanContentScroll = true,
-        Content = new ItemsPresenter(),
-    });
-
-    // ItemsPanelTemplate.CreatePanel uses Activator when PanelType is set, which cannot pass
-    // Orientation. Going through SetVisualTree keeps the panels configurable and reflection-free.
-    private static readonly ItemsPanelTemplate s_stackVertical =
-        BuildPanel(static () => new VirtualizingStackPanel { Orientation = Orientation.Vertical });
-
-    private static readonly ItemsPanelTemplate s_stackHorizontal =
-        BuildPanel(static () => new VirtualizingStackPanel { Orientation = Orientation.Horizontal });
-
-    private static readonly ItemsPanelTemplate s_wrapVertical =
-        BuildPanel(static () => new VirtualizingWrapPanel { Orientation = Orientation.Vertical });
-
-    private static readonly ItemsPanelTemplate s_wrapHorizontal =
-        BuildPanel(static () => new VirtualizingWrapPanel { Orientation = Orientation.Horizontal });
+    private static readonly DependencyPropertyKey ScrollOrientationPropertyKey = DependencyProperty.RegisterReadOnly(nameof(ScrollOrientation), typeof(Orientation), typeof(RazorItemsHost), new PropertyMetadata(Orientation.Vertical));
+    /// <summary>Identifies the resolved scroll-axis dependency property.</summary>
+    public static readonly DependencyProperty ScrollOrientationProperty = ScrollOrientationPropertyKey.DependencyProperty;
+    /// <summary>Gets the scroll axis. A wrapping panel scrolls across its flow direction.</summary>
+    public Orientation ScrollOrientation => (Orientation)GetValue(ScrollOrientationProperty)!;
 
     private ItemsPresenter? _presenter;
     private ScrollViewer? _innerScrollViewer;
@@ -119,213 +87,86 @@ public sealed class RazorItemsHost : ItemsControl, IScrollInfo
     private RazorIntRange? _range;
     private bool _unboundedReported;
     private bool _degraded;
-
     static RazorItemsHost()
     {
+        DefaultStyleKeyProperty.OverrideMetadata(typeof(RazorItemsHost), new PropertyMetadata(typeof(RazorItemsHost)));
         // A missing viewport is temporary. Coercion keeps the application's value, style,
         // and binding intact, so a later bounded layout can resume virtualization.
-        VirtualizingPanel.IsVirtualizingProperty.OverrideMetadata(typeof(RazorItemsHost),
-            new PropertyMetadata(true, null, static (d, value) =>
-                !((RazorItemsHost)d)._degraded && (bool)(value ?? true)));
+        VirtualizingPanel.IsVirtualizingProperty.OverrideMetadata(typeof(RazorItemsHost), new PropertyMetadata(true, null, static (d, value) => !((RazorItemsHost)d)._degraded && (bool)(value ?? true)));
     }
 
-    #region Dependency properties
-
-    /// <summary>Identifies the <see cref="Orientation"/> dependency property.</summary>
-    public static readonly DependencyProperty OrientationProperty =
-        DependencyProperty.Register(nameof(Orientation), typeof(Orientation), typeof(RazorItemsHost),
-            new PropertyMetadata(Orientation.Vertical, OnLayoutShapeChanged));
-
-    /// <summary>Identifies the <see cref="Layout"/> dependency property.</summary>
-    public static readonly DependencyProperty LayoutProperty =
-        DependencyProperty.Register(nameof(Layout), typeof(RazorVirtualizeLayout), typeof(RazorItemsHost),
-            new PropertyMetadata(RazorVirtualizeLayout.Stack, OnLayoutShapeChanged));
-
-    /// <summary>Identifies the <see cref="ScrollHost"/> dependency property.</summary>
-    public static readonly DependencyProperty ScrollHostProperty =
-        DependencyProperty.Register(nameof(ScrollHost), typeof(RazorVirtualizeScrollHost), typeof(RazorItemsHost),
-            new PropertyMetadata(RazorVirtualizeScrollHost.Auto, OnScrollHostChanged));
-
-    /// <summary>Identifies the <see cref="UnboundedBehavior"/> dependency property.</summary>
-    public static readonly DependencyProperty UnboundedBehaviorProperty =
-        DependencyProperty.Register(nameof(UnboundedBehavior), typeof(RazorVirtualizeUnbounded), typeof(RazorItemsHost),
-            new PropertyMetadata(RazorVirtualizeUnbounded.Degrade));
-
-    /// <summary>Identifies the <see cref="FallbackViewportLength"/> dependency property.</summary>
-    public static readonly DependencyProperty FallbackViewportLengthProperty =
-        DependencyProperty.Register(nameof(FallbackViewportLength), typeof(double), typeof(RazorItemsHost),
-            new PropertyMetadata(400d));
-
-    /// <summary>Identifies the <see cref="MaxEagerItemCount"/> dependency property.</summary>
-    public static readonly DependencyProperty MaxEagerItemCountProperty =
-        DependencyProperty.Register(nameof(MaxEagerItemCount), typeof(int), typeof(RazorItemsHost),
-            new PropertyMetadata(5000));
-
-    /// <summary>Identifies the <see cref="RangeStart"/> dependency property.</summary>
-    public static readonly DependencyProperty RangeStartProperty =
-        DependencyProperty.Register(nameof(RangeStart), typeof(int), typeof(RazorItemsHost),
-            new PropertyMetadata(0, OnRangeChanged));
-
-    /// <summary>Identifies the <see cref="RangeEnd"/> dependency property.</summary>
-    public static readonly DependencyProperty RangeEndProperty =
-        DependencyProperty.Register(nameof(RangeEnd), typeof(int), typeof(RazorItemsHost),
-            new PropertyMetadata(0, OnRangeChanged));
-
-    /// <summary>Identifies the <see cref="RangeEndInclusive"/> dependency property.</summary>
-    public static readonly DependencyProperty RangeEndInclusiveProperty =
-        DependencyProperty.Register(nameof(RangeEndInclusive), typeof(bool), typeof(RazorItemsHost),
-            new PropertyMetadata(false, OnRangeChanged));
-
-    /// <summary>Identifies the <see cref="IsRangeSource"/> dependency property.</summary>
-    public static readonly DependencyProperty IsRangeSourceProperty =
-        DependencyProperty.Register(nameof(IsRangeSource), typeof(bool), typeof(RazorItemsHost),
-            new PropertyMetadata(false, OnRangeChanged));
-
-    /// <summary>Identifies the <see cref="RangeStep"/> dependency property.</summary>
-    public static readonly DependencyProperty RangeStepProperty =
-        DependencyProperty.Register(nameof(RangeStep), typeof(int), typeof(RazorItemsHost),
-            new PropertyMetadata(1, OnRangeChanged));
-
+#region Dependency properties
+    /// <summary>Identifies the <see cref = "Orientation"/> dependency property.</summary>
+    public static readonly DependencyProperty OrientationProperty = DependencyProperty.Register(nameof(Orientation), typeof(Orientation), typeof(RazorItemsHost), new PropertyMetadata(Orientation.Vertical, OnLayoutShapeChanged));
+    /// <summary>Identifies the <see cref = "Layout"/> dependency property.</summary>
+    public static readonly DependencyProperty LayoutProperty = DependencyProperty.Register(nameof(Layout), typeof(RazorVirtualizeLayout), typeof(RazorItemsHost), new PropertyMetadata(RazorVirtualizeLayout.Stack, OnLayoutShapeChanged));
+    /// <summary>Identifies the <see cref = "ScrollHost"/> dependency property.</summary>
+    public static readonly DependencyProperty ScrollHostProperty = DependencyProperty.Register(nameof(ScrollHost), typeof(RazorVirtualizeScrollHost), typeof(RazorItemsHost), new PropertyMetadata(RazorVirtualizeScrollHost.Auto, OnScrollHostChanged));
+    /// <summary>Identifies the <see cref = "UnboundedBehavior"/> dependency property.</summary>
+    public static readonly DependencyProperty UnboundedBehaviorProperty = DependencyProperty.Register(nameof(UnboundedBehavior), typeof(RazorVirtualizeUnbounded), typeof(RazorItemsHost), new PropertyMetadata(RazorVirtualizeUnbounded.Degrade));
+    /// <summary>Identifies the <see cref = "FallbackViewportLength"/> dependency property.</summary>
+    public static readonly DependencyProperty FallbackViewportLengthProperty = DependencyProperty.Register(nameof(FallbackViewportLength), typeof(double), typeof(RazorItemsHost), new PropertyMetadata(400d));
+    /// <summary>Identifies the <see cref = "MaxEagerItemCount"/> dependency property.</summary>
+    public static readonly DependencyProperty MaxEagerItemCountProperty = DependencyProperty.Register(nameof(MaxEagerItemCount), typeof(int), typeof(RazorItemsHost), new PropertyMetadata(5000));
+    /// <summary>Identifies the <see cref = "RangeStart"/> dependency property.</summary>
+    public static readonly DependencyProperty RangeStartProperty = DependencyProperty.Register(nameof(RangeStart), typeof(int), typeof(RazorItemsHost), new PropertyMetadata(0, OnRangeChanged));
+    /// <summary>Identifies the <see cref = "RangeEnd"/> dependency property.</summary>
+    public static readonly DependencyProperty RangeEndProperty = DependencyProperty.Register(nameof(RangeEnd), typeof(int), typeof(RazorItemsHost), new PropertyMetadata(0, OnRangeChanged));
+    /// <summary>Identifies the <see cref = "RangeEndInclusive"/> dependency property.</summary>
+    public static readonly DependencyProperty RangeEndInclusiveProperty = DependencyProperty.Register(nameof(RangeEndInclusive), typeof(bool), typeof(RazorItemsHost), new PropertyMetadata(false, OnRangeChanged));
+    /// <summary>Identifies the <see cref = "IsRangeSource"/> dependency property.</summary>
+    public static readonly DependencyProperty IsRangeSourceProperty = DependencyProperty.Register(nameof(IsRangeSource), typeof(bool), typeof(RazorItemsHost), new PropertyMetadata(false, OnRangeChanged));
+    /// <summary>Identifies the <see cref = "RangeStep"/> dependency property.</summary>
+    public static readonly DependencyProperty RangeStepProperty = DependencyProperty.Register(nameof(RangeStep), typeof(int), typeof(RazorItemsHost), new PropertyMetadata(1, OnRangeChanged));
     /// <summary>Gets or sets the axis items are laid out along. Defaults to vertical.</summary>
-    public Orientation Orientation
-    {
-        get => (Orientation)GetValue(OrientationProperty)!;
-        set => SetValue(OrientationProperty, value);
-    }
-
+    public Orientation Orientation { get => (Orientation)GetValue(OrientationProperty)!; set => SetValue(OrientationProperty, value); }
     /// <summary>Gets or sets whether items stack or wrap.</summary>
-    public RazorVirtualizeLayout Layout
-    {
-        get => (RazorVirtualizeLayout)GetValue(LayoutProperty)!;
-        set => SetValue(LayoutProperty, value);
-    }
-
+    public RazorVirtualizeLayout Layout { get => (RazorVirtualizeLayout)GetValue(LayoutProperty)!; set => SetValue(LayoutProperty, value); }
     /// <summary>Gets or sets how this host obtains a viewport.</summary>
-    public RazorVirtualizeScrollHost ScrollHost
-    {
-        get => (RazorVirtualizeScrollHost)GetValue(ScrollHostProperty)!;
-        set => SetValue(ScrollHostProperty, value);
-    }
-
+    public RazorVirtualizeScrollHost ScrollHost { get => (RazorVirtualizeScrollHost)GetValue(ScrollHostProperty)!; set => SetValue(ScrollHostProperty, value); }
     /// <summary>Gets or sets what happens when the scrolling axis is measured unbounded.</summary>
-    public RazorVirtualizeUnbounded UnboundedBehavior
-    {
-        get => (RazorVirtualizeUnbounded)GetValue(UnboundedBehaviorProperty)!;
-        set => SetValue(UnboundedBehaviorProperty, value);
-    }
-
-    /// <summary>Gets or sets the viewport length assumed under <see cref="RazorVirtualizeUnbounded.FixedViewport"/>.</summary>
-    public double FallbackViewportLength
-    {
-        get => (double)GetValue(FallbackViewportLengthProperty)!;
-        set => SetValue(FallbackViewportLengthProperty, value);
-    }
-
+    public RazorVirtualizeUnbounded UnboundedBehavior { get => (RazorVirtualizeUnbounded)GetValue(UnboundedBehaviorProperty)!; set => SetValue(UnboundedBehaviorProperty, value); }
+    /// <summary>Gets or sets the viewport length assumed under <see cref = "RazorVirtualizeUnbounded.FixedViewport"/>.</summary>
+    public double FallbackViewportLength { get => (double)GetValue(FallbackViewportLengthProperty)!; set => SetValue(FallbackViewportLengthProperty, value); }
     /// <summary>
     /// Gets or sets the largest item count this host will realize all at once when it degrades to
     /// non-virtualized layout. Above this it reports an error and renders nothing rather than
     /// risking an out-of-memory stall.
     /// </summary>
-    public int MaxEagerItemCount
-    {
-        get => (int)GetValue(MaxEagerItemCountProperty)!;
-        set => SetValue(MaxEagerItemCountProperty, value);
-    }
-
+    public int MaxEagerItemCount { get => (int)GetValue(MaxEagerItemCountProperty)!; set => SetValue(MaxEagerItemCountProperty, value); }
     /// <summary>Gets or sets the first value of the numeric-form sequence.</summary>
-    public int RangeStart
-    {
-        get => (int)GetValue(RangeStartProperty)!;
-        set => SetValue(RangeStartProperty, value);
-    }
-
+    public int RangeStart { get => (int)GetValue(RangeStartProperty)!; set => SetValue(RangeStartProperty, value); }
     /// <summary>Gets or sets the bound the numeric-form sequence stops at.</summary>
-    public int RangeEnd
-    {
-        get => (int)GetValue(RangeEndProperty)!;
-        set => SetValue(RangeEndProperty, value);
-    }
-
+    public int RangeEnd { get => (int)GetValue(RangeEndProperty)!; set => SetValue(RangeEndProperty, value); }
     /// <summary>
-    /// Gets or sets whether <see cref="RangeEnd"/> is itself part of the sequence, distinguishing
+    /// Gets or sets whether <see cref = "RangeEnd"/> is itself part of the sequence, distinguishing
     /// a <c>&lt;=</c> loop condition from a <c>&lt;</c> one.
     /// </summary>
-    public bool RangeEndInclusive
-    {
-        get => (bool)GetValue(RangeEndInclusiveProperty)!;
-        set => SetValue(RangeEndInclusiveProperty, value);
-    }
-
+    public bool RangeEndInclusive { get => (bool)GetValue(RangeEndInclusiveProperty)!; set => SetValue(RangeEndInclusiveProperty, value); }
     /// <summary>
     /// Gets or sets whether this host draws its items from the numeric form rather than from
-    /// <see cref="ItemsControl.ItemsSource"/>.
+    /// <see cref = "ItemsControl.ItemsSource"/>.
     /// </summary>
-    public bool IsRangeSource
-    {
-        get => (bool)GetValue(IsRangeSourceProperty)!;
-        set => SetValue(IsRangeSourceProperty, value);
-    }
-
+    public bool IsRangeSource { get => (bool)GetValue(IsRangeSourceProperty)!; set => SetValue(IsRangeSourceProperty, value); }
     /// <summary>Gets the number of values the numeric form currently yields.</summary>
     public int RangeCount => _range?.Count ?? 0;
-
     /// <summary>Gets or sets the increment of the numeric-form sequence.</summary>
-    public int RangeStep
-    {
-        get => (int)GetValue(RangeStepProperty)!;
-        set => SetValue(RangeStepProperty, value);
-    }
-
-    #endregion
-
-    /// <summary>Initializes a new instance of the <see cref="RazorItemsHost"/> class.</summary>
-    public RazorItemsHost()
-    {
-        SyncItemsPanel();
-    }
-
-    /// <summary>
-    /// This host always supplies its own template, so it never wants the fallback items host.
-    /// </summary>
-    /// <remarks>
-    /// The template is only chosen on the first measure, because the scroll-host mode depends on
-    /// whether an enclosing viewer claimed this host. Until then <c>HasTemplate</c> is false, and
-    /// the fallback would spin up a shadow panel on the first <c>RefreshItems</c> — one that is
-    /// never measured, arranged or rendered once the real template arrives, but that still resets
-    /// a virtualizing panel and allocates a per-item height index. For a million-item range that
-    /// is four megabytes bought and thrown away before layout has even started.
-    /// </remarks>
+    public int RangeStep { get => (int)GetValue(RangeStepProperty)!; set => SetValue(RangeStepProperty, value); }
+#endregion
+    // Theme-owned presenters are the only items hosts; a shadow fallback panel would
+    // allocate a second height index before the first bounded virtualized layout.
     private protected override bool UsesFallbackItemsHost => false;
 
     private static void OnLayoutShapeChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         var host = (RazorItemsHost)d;
-        host.SyncItemsPanel();
+        host.SetValue(ScrollOrientationPropertyKey, host.Layout == RazorVirtualizeLayout.Wrap ? (host.Orientation == Orientation.Vertical ? Orientation.Horizontal : Orientation.Vertical) : host.Orientation);
+        host.UpdateVisualState();
         host.InvalidateMeasure();
     }
 
-    private static void OnScrollHostChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-        => ((RazorItemsHost)d).InvalidateMeasure();
-
-    private static void OnRangeChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-        => ((RazorItemsHost)d).SyncRange();
-
-    private void SyncItemsPanel()
-    {
-        var wanted = (Layout, Orientation) switch
-        {
-            (RazorVirtualizeLayout.Wrap, Orientation.Vertical) => s_wrapVertical,
-            (RazorVirtualizeLayout.Wrap, _) => s_wrapHorizontal,
-            (_, Orientation.Vertical) => s_stackVertical,
-            _ => s_stackHorizontal,
-        };
-
-        if (!ReferenceEquals(ItemsPanel, wanted))
-        {
-            ItemsPanel = wanted;
-        }
-    }
-
+    private static void OnScrollHostChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) => ((RazorItemsHost)d).InvalidateMeasure();
+    private static void OnRangeChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) => ((RazorItemsHost)d).SyncRange();
     /// <summary>
     /// Rebuilds the virtual sequence backing the numeric form. Publishing the three range values
     /// one at a time would let the panel observe inconsistent intermediate ranges.
@@ -339,14 +180,12 @@ public sealed class RazorItemsHost : ItemsControl, IScrollInfo
 
         if (ItemsSource is not null && !ReferenceEquals(ItemsSource, _range))
         {
-            throw new InvalidOperationException(
-                "@virtualize cannot use the numeric form and ItemsSource at the same time.");
+            throw new InvalidOperationException("@virtualize cannot use the numeric form and ItemsSource at the same time.");
         }
 
         var start = RangeStart;
         var step = RangeStep == 0 ? 1 : RangeStep;
         var count = CountFor(start, RangeEnd, step, RangeEndInclusive);
-
         if (_range is null)
         {
             _range = new RazorIntRange(start, count, step);
@@ -368,8 +207,8 @@ public sealed class RazorItemsHost : ItemsControl, IScrollInfo
     /// <remarks>
     /// Done here rather than folded into the generated markup because the ceiling division has to
     /// be right for a descending loop too, and that is far clearer as code than as an expression
-    /// assembled by string concatenation. Widened to <see cref="long"/> so a range spanning the
-    /// whole <see cref="int"/> domain cannot overflow while being counted.
+    /// assembled by string concatenation. Widened to <see cref = "long "/> so a range spanning the
+    /// whole <see cref = "int "/> domain cannot overflow while being counted.
     /// </remarks>
     private static int CountFor(long start, long end, long step, bool inclusive)
     {
@@ -383,15 +222,12 @@ public sealed class RazorItemsHost : ItemsControl, IScrollInfo
         return (int)Math.Min(count, int.MaxValue);
     }
 
-    /// <inheritdoc />
+    /// <inheritdoc/>
     public override void OnApplyTemplate()
     {
         base.OnApplyTemplate();
-
-        _innerScrollViewer = TemplateRootInternal as ScrollViewer;
-        _presenter = TemplateRootInternal as ItemsPresenter
-                     ?? _innerScrollViewer?.Content as ItemsPresenter;
-
+        _innerScrollViewer = GetTemplateChild("PART_ScrollViewer") as ScrollViewer;
+        _presenter = GetTemplateChild("PART_ItemsPresenter") as ItemsPresenter;
         // When an outer viewer drives us, the presenter and through it the panel must see that
         // owner: the panel calls ScrollOwner.InvalidateScrollInfo() to publish extent changes, and
         // that has to reach the real outer viewer.
@@ -401,9 +237,24 @@ public sealed class RazorItemsHost : ItemsControl, IScrollInfo
             _presenter.CanHorizontallyScroll = _canHorizontallyScroll;
             _presenter.CanVerticallyScroll = _canVerticallyScroll;
         }
+
+        UpdateVisualState();
     }
 
-    /// <inheritdoc />
+    protected override void OnIsEnabledChanged(bool oldValue, bool newValue)
+    {
+        base.OnIsEnabledChanged(oldValue, newValue);
+        UpdateVisualState();
+    }
+
+    private void UpdateVisualState()
+    {
+        VisualStateManager.GoToState(this, IsEnabled ? "Normal" : "Disabled", false);
+        VisualStateManager.GoToState(this, Layout == RazorVirtualizeLayout.Wrap ? "Wrap" : "Stack", false);
+        VisualStateManager.GoToState(this, ResolvedScrollHost.ToString(), false);
+    }
+
+    /// <inheritdoc/>
     internal override void OnTemplateContentClearing()
     {
         // Drop the cached parts before the base retires the old items panel, so a queued measure
@@ -413,7 +264,7 @@ public sealed class RazorItemsHost : ItemsControl, IScrollInfo
         base.OnTemplateContentClearing();
     }
 
-    /// <inheritdoc />
+    /// <inheritdoc/>
     protected override Size MeasureOverride(Size availableSize)
     {
         EnsureTemplateForMode();
@@ -426,12 +277,10 @@ public sealed class RazorItemsHost : ItemsControl, IScrollInfo
         RazorVirtualizeScrollHost.Outer => RazorVirtualizeScrollHost.Outer,
         RazorVirtualizeScrollHost.Self => RazorVirtualizeScrollHost.Self,
         RazorVirtualizeScrollHost.None => RazorVirtualizeScrollHost.None,
-
         // An enclosing ScrollViewer sets ScrollOwner while the tree is being built, so this is
         // already settled by the time the first measure runs.
         _ => _scrollOwner is not null ? RazorVirtualizeScrollHost.Outer : RazorVirtualizeScrollHost.Self,
     };
-
     private void EnsureTemplateForMode()
     {
         var mode = ResolveMode();
@@ -443,14 +292,10 @@ public sealed class RazorItemsHost : ItemsControl, IScrollInfo
 
         _appliedMode = mode;
         _appliedOrientation = orientation;
-
-        // Assigning Template runs ClearTemplateContent synchronously, which routes through
-        // ItemsControl.OnTemplateContentClearing to ItemsPresenter.InvalidatePanel and then
-        // ItemsControl.RetireItemsHostPanel. That is the framework's single retirement choke
-        // point, so a mode flip cannot leave a zombie panel behind.
-        Template = mode == RazorVirtualizeScrollHost.Self
-            ? (orientation == Orientation.Vertical ? s_selfScrollVerticalTemplate : s_selfScrollHorizontalTemplate)
-            : s_passthroughTemplate;
+        // The default style selects a template from this state. A caller's local
+        // Template or ItemsPanel retains normal dependency-property precedence.
+        SetValue(ResolvedScrollHostPropertyKey, mode);
+        UpdateVisualState();
     }
 
     /// <summary>
@@ -466,7 +311,7 @@ public sealed class RazorItemsHost : ItemsControl, IScrollInfo
     /// </remarks>
     private void DiagnoseUnboundedConstraint(Size availableSize)
     {
-        var axis = Orientation == Orientation.Vertical ? availableSize.Height : availableSize.Width;
+        var axis = ScrollOrientation == Orientation.Vertical ? availableSize.Height : availableSize.Width;
         if (!double.IsInfinity(axis))
         {
             if (_degraded)
@@ -475,16 +320,12 @@ public sealed class RazorItemsHost : ItemsControl, IScrollInfo
                 CoerceValue(VirtualizingPanel.IsVirtualizingProperty);
                 RefreshItems();
             }
+
             return;
         }
 
-        var axisName = Orientation == Orientation.Vertical ? "vertical" : "horizontal";
-        Report(
-            $"@virtualize: host was measured with an infinite {axisName} constraint, so it has no " +
-            "viewport and cannot virtualize. This usually means it sits inside a StackPanel, an " +
-            "Auto-sized grid row, or another item template. Give it an explicit Height/MaxHeight, " +
-            "or make it the direct content of a ScrollViewer with CanContentScroll enabled.");
-
+        var axisName = ScrollOrientation == Orientation.Vertical ? "vertical" : "horizontal";
+        Report($"@virtualize: host was measured with an infinite {axisName} constraint, so it has no " + "viewport and cannot virtualize. This usually means it sits inside a StackPanel, an " + "Auto-sized grid row, or another item template. Give it an explicit Height/MaxHeight, " + "or make it the direct content of a ScrollViewer with CanContentScroll enabled.");
         switch (UnboundedBehavior)
         {
             case RazorVirtualizeUnbounded.Degrade:
@@ -495,20 +336,13 @@ public sealed class RazorItemsHost : ItemsControl, IScrollInfo
                 }
                 else
                 {
-                    Report(
-                        $"@virtualize: refusing to realize {count} items eagerly (MaxEagerItemCount is " +
-                        $"{MaxEagerItemCount}). The list stays empty; set an explicit Height/MaxHeight.",
-                        TraceEventType.Error);
+                    Report($"@virtualize: refusing to realize {count} items eagerly (MaxEagerItemCount is " + $"{MaxEagerItemCount}). The list stays empty; set an explicit Height/MaxHeight.", TraceEventType.Error);
                 }
 
                 break;
-
             case RazorVirtualizeUnbounded.FixedViewport:
-                SetCurrentValue(
-                    Orientation == Orientation.Vertical ? MaxHeightProperty : MaxWidthProperty,
-                    FallbackViewportLength);
+                SetCurrentValue(ScrollOrientation == Orientation.Vertical ? MaxHeightProperty : MaxWidthProperty, FallbackViewportLength);
                 break;
-
             case RazorVirtualizeUnbounded.Strict:
                 break;
         }
@@ -527,7 +361,6 @@ public sealed class RazorItemsHost : ItemsControl, IScrollInfo
 
         _degraded = true;
         CoerceValue(VirtualizingPanel.IsVirtualizingProperty);
-
         // The attached-property callback only invalidates measure. Containers are rebuilt by
         // RefreshItems alone, so switching pipelines needs an explicit push.
         RefreshItems();
@@ -545,29 +378,12 @@ public sealed class RazorItemsHost : ItemsControl, IScrollInfo
         System.Diagnostics.PresentationTraceSources.MarkupSource.TraceEvent(level, 0, message);
     }
 
-    private static ControlTemplate BuildTemplate(Func<FrameworkElement> factory)
-    {
-        var template = new ControlTemplate(typeof(RazorItemsHost));
-        template.SetVisualTree(factory);
-        template.Seal();
-        return template;
-    }
-
-    private static ItemsPanelTemplate BuildPanel(Func<FrameworkElement> factory)
-    {
-        var template = new ItemsPanelTemplate();
-        template.SetVisualTree(factory);
-        template.Seal();
-        return template;
-    }
-
-    #region IScrollInfo
-
+#region IScrollInfo
     // Only forward while an outer ScrollViewer is driving us. In Self mode the inner viewer owns
     // the presenter and nothing should reach it through this surface.
     private IScrollInfo? Target => _appliedMode == RazorVirtualizeScrollHost.Self ? null : _presenter;
 
-    /// <inheritdoc />
+    /// <inheritdoc/>
     public bool CanHorizontallyScroll
     {
         get => Target?.CanHorizontallyScroll ?? _canHorizontallyScroll;
@@ -581,7 +397,7 @@ public sealed class RazorItemsHost : ItemsControl, IScrollInfo
         }
     }
 
-    /// <inheritdoc />
+    /// <inheritdoc/>
     public bool CanVerticallyScroll
     {
         get => Target?.CanVerticallyScroll ?? _canVerticallyScroll;
@@ -595,25 +411,20 @@ public sealed class RazorItemsHost : ItemsControl, IScrollInfo
         }
     }
 
-    /// <inheritdoc />
+    /// <inheritdoc/>
     public double ExtentWidth => Target?.ExtentWidth ?? 0d;
-
-    /// <inheritdoc />
+    /// <inheritdoc/>
     public double ExtentHeight => Target?.ExtentHeight ?? 0d;
-
-    /// <inheritdoc />
+    /// <inheritdoc/>
     public double ViewportWidth => Target?.ViewportWidth ?? RenderSize.Width;
-
-    /// <inheritdoc />
+    /// <inheritdoc/>
     public double ViewportHeight => Target?.ViewportHeight ?? RenderSize.Height;
-
-    /// <inheritdoc />
+    /// <inheritdoc/>
     public double HorizontalOffset => Target?.HorizontalOffset ?? 0d;
-
-    /// <inheritdoc />
+    /// <inheritdoc/>
     public double VerticalOffset => Target?.VerticalOffset ?? 0d;
 
-    /// <inheritdoc />
+    /// <inheritdoc/>
     public ScrollViewer? ScrollOwner
     {
         get => _scrollOwner;
@@ -637,51 +448,35 @@ public sealed class RazorItemsHost : ItemsControl, IScrollInfo
         }
     }
 
-    /// <inheritdoc />
+    /// <inheritdoc/>
     public void LineUp() => Target?.LineUp();
-
-    /// <inheritdoc />
+    /// <inheritdoc/>
     public void LineDown() => Target?.LineDown();
-
-    /// <inheritdoc />
+    /// <inheritdoc/>
     public void LineLeft() => Target?.LineLeft();
-
-    /// <inheritdoc />
+    /// <inheritdoc/>
     public void LineRight() => Target?.LineRight();
-
-    /// <inheritdoc />
+    /// <inheritdoc/>
     public void PageUp() => Target?.PageUp();
-
-    /// <inheritdoc />
+    /// <inheritdoc/>
     public void PageDown() => Target?.PageDown();
-
-    /// <inheritdoc />
+    /// <inheritdoc/>
     public void PageLeft() => Target?.PageLeft();
-
-    /// <inheritdoc />
+    /// <inheritdoc/>
     public void PageRight() => Target?.PageRight();
-
-    /// <inheritdoc />
+    /// <inheritdoc/>
     public void MouseWheelUp() => Target?.MouseWheelUp();
-
-    /// <inheritdoc />
+    /// <inheritdoc/>
     public void MouseWheelDown() => Target?.MouseWheelDown();
-
-    /// <inheritdoc />
+    /// <inheritdoc/>
     public void MouseWheelLeft() => Target?.MouseWheelLeft();
-
-    /// <inheritdoc />
+    /// <inheritdoc/>
     public void MouseWheelRight() => Target?.MouseWheelRight();
-
-    /// <inheritdoc />
+    /// <inheritdoc/>
     public void SetHorizontalOffset(double offset) => Target?.SetHorizontalOffset(offset);
-
-    /// <inheritdoc />
+    /// <inheritdoc/>
     public void SetVerticalOffset(double offset) => Target?.SetVerticalOffset(offset);
-
-    /// <inheritdoc />
-    public Rect MakeVisible(Visual visual, Rect rectangle)
-        => Target?.MakeVisible(visual, rectangle) ?? rectangle;
-
-    #endregion
+    /// <inheritdoc/>
+    public Rect MakeVisible(Visual visual, Rect rectangle) => Target?.MakeVisible(visual, rectangle) ?? rectangle;
+#endregion
 }

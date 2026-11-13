@@ -73,14 +73,8 @@ public class ColorPickerRenderReuseTests
         var canvasWidth = (int)Math.Ceiling(rect.Right);
         var canvasHeight = (int)Math.Ceiling(rect.Bottom);
 
-        var drawCheckerboard = typeof(ColorPicker).GetMethod(
-            "DrawCheckerboard", BindingFlags.Instance | BindingFlags.NonPublic);
-        Assert.NotNull(drawCheckerboard);
-
-        var picker = new ColorPicker();
-        var actualVisual = CreateVisual(
-            (dc, r) => drawCheckerboard!.Invoke(picker, new object[] { dc, r }),
-            rect);
+        var surface = new ColorPreviewSurface();
+        var actualVisual = CreateVisual((dc,r)=>surface.DrawCheckerboard(dc,r),rect);
         var referenceVisual = CreateVisual(DrawCheckerboardReference, rect);
 
         var actual = RenderToPixels(actualVisual, canvasWidth, canvasHeight, out var stride);
@@ -110,37 +104,29 @@ public class ColorPickerRenderReuseTests
     [Fact]
     public void RepeatedRender_ReusesBrushAndPenInstances()
     {
-        var picker = new ColorPicker { IsAlphaEnabled = true };
-        picker.Measure(new Size(240, 400));
-        picker.Arrange(new Rect(0, 0, 240, 400));
-
-        var render = typeof(ColorPicker).GetMethod(
-            "OnRender", BindingFlags.Instance | BindingFlags.NonPublic)!;
-        void RenderPicker() =>
-            RenderToPixels(
-                CreateVisual((dc, _) => render.Invoke(picker, new object[] { dc }), new Rect(0, 0, 240, 400)),
-                240, 400, out _);
-
-        RenderPicker();
-
-        var hueBrush = GetField<SolidColorBrush>(picker, "_spectrumHueBrush");
-        var previewBrush = GetField<SolidColorBrush>(picker, "_previewBrush");
-        var alphaBrush = GetField<LinearGradientBrush>(picker, "_alphaGradientBrush");
-        var borderPen = GetField<Pen>(picker, "_borderPen");
-
-        Assert.NotNull(alphaBrush);
-        Assert.NotNull(borderPen);
-
-        picker.Color = Color.FromArgb(0x80, 0x11, 0x22, 0x33);
-        RenderPicker();
-
-        Assert.Same(hueBrush, GetField<SolidColorBrush>(picker, "_spectrumHueBrush"));
-        Assert.Same(previewBrush, GetField<SolidColorBrush>(picker, "_previewBrush"));
-        Assert.Same(alphaBrush, GetField<LinearGradientBrush>(picker, "_alphaGradientBrush"));
-        Assert.Same(borderPen, GetField<Pen>(picker, "_borderPen"));
-
-        // 复用实例的同时，颜色必须真的跟上当前选色。
-        Assert.Equal(picker.Color, previewBrush!.Color);
+        var spectrum=new ColorSpectrumSurface { BorderBrush=Brushes.Gray };
+        var preview=new ColorPreviewSurface { Color=Color.Red };
+        var ramp=new ColorRamp { Mode=ColorRampMode.Alpha,Color=Color.Red,Maximum=255 };
+        void RenderPart(Control part)
+        {
+            part.Measure(new Size(200,200));part.Arrange(new Rect(0,0,200,200));
+            RenderToPixels(CreateVisual((dc,_)=>part.Render(dc),new Rect(0,0,200,200)),200,200,out _);
+        }
+        RenderPart(spectrum);RenderPart(preview);
+        var hueBrush=GetField<SolidColorBrush>(spectrum,"_hueBrush");
+        var previewBrush=GetField<SolidColorBrush>(preview,"_colorBrush");
+        var checker=GetField<BitmapImage>(preview,"_checker");
+        var borderPen=GetField<Pen>(spectrum,"_borderPen");
+        var alphaBrush=ramp.RampBrush;
+        Assert.NotNull(hueBrush);Assert.NotNull(previewBrush);Assert.NotNull(checker);Assert.NotNull(borderPen);
+        spectrum.Hue=240;preview.Color=Color.FromArgb(128,17,34,51);ramp.Color=preview.Color;
+        RenderPart(spectrum);RenderPart(preview);
+        Assert.Same(hueBrush,GetField<SolidColorBrush>(spectrum,"_hueBrush"));
+        Assert.Same(previewBrush,GetField<SolidColorBrush>(preview,"_colorBrush"));
+        Assert.Same(checker,GetField<BitmapImage>(preview,"_checker"));
+        Assert.Same(borderPen,GetField<Pen>(spectrum,"_borderPen"));
+        Assert.Same(alphaBrush,ramp.RampBrush);Assert.Equal(preview.Color,previewBrush!.Color);
+        Assert.Equal(Color.Blue,hueBrush!.Color);
     }
 
     private static T? GetField<T>(object instance, string name) where T : class

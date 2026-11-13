@@ -1,0 +1,134 @@
+{
+  "origin": "Generated exclusively from geometric contours by build-fixtures.py; no external fonts or packages.",
+  "files": [
+    {
+      "file": "Primary.ttf",
+      "sha256": "f737abcccf464b621ebb5d0a5679b0ddad4dbd5d9dfbd3b8383b522fb49d12f3",
+      "unitsPerEm": 1000,
+      "xHeight": 0.5,
+      "capHeight": 0.75,
+      "zeroAdvance": 0.6,
+      "waterAdvance": 1,
+      "waterHeight": 1.2,
+      "sourceScalars": [
+        32,
+        72,
+        77,
+        120,
+        48,
+        27700
+      ]
+    },
+    {
+      "file": "Secondary.ttf",
+      "sha256": "52c3918540565b3541ac43a5ec6caa3a4b8b009c0cb05be7a931f110e937de7c",
+      "unitsPerEm": 1000,
+      "xHeight": 0.25,
+      "capHeight": 0.375,
+      "zeroAdvance": 0.3,
+      "waterAdvance": 0.5,
+      "waterHeight": 0.6,
+      "sourceScalars": [
+        32,
+        65,
+        72,
+        77,
+        120,
+        48,
+        27700,
+        88
+      ]
+    },
+    {
+      "file": "Missing.ttf",
+      "sha256": "a864557dcf287fde60ca252e8ab9018843d847d92e94c60075b08b2f041a238b",
+      "unitsPerEm": 1000,
+      "xHeight": 0,
+      "capHeight": 0,
+      "zeroAdvance": 0,
+      "waterAdvance": 0,
+      "waterHeight": 0,
+      "sourceScalars": [
+        32,
+        65,
+        77
+      ]
+    },
+    {
+      "file": "VerticalVariable.ttf",
+      "sha256": "3a5117763cca66779effa671d5aab97cf563883ac709f381ebf4e3334cd1fbc7",
+      "unitsPerEm": 1000,
+      "xHeight": 0.5,
+      "capHeight": 0.75,
+      "zeroAdvance": 0.6,
+      "waterAdvance": 1,
+      "waterHeight": 1.2,
+      "sourceScalars": [
+        32,
+        65,
+        72,
+        77,
+        120,
+        48,
+        27700
+      ]
+    },
+    {
+      "file": "VerticalMapped.ttf",
+      "sha256": "e69c473658f17041251099304685ed5a0b624367c3666c7c9e2563cb3df029db",
+      "unitsPerEm": 1000,
+      "xHeight": 0.5,
+      "capHeight": 0.75,
+      "zeroAdvance": 0.6,
+      "waterAdvance": 1,
+      "waterHeight": 1.2,
+      "sourceScalars": [
+        32,
+        65,
+        72,
+        77,
+        120,
+        48,
+        27700
+      ]
+    },
+    {
+      "file": "VerticalAvar.ttf",
+      "sha256": "663d05a0eb986ba713d70368d7ea4d804399f043d74132a92bd8a4e38b7f55a9",
+      "unitsPerEm": 1000,
+      "xHeight": 0.5,
+      "capHeight": 0.75,
+      "zeroAdvance": 0.6,
+      "waterAdvance": 1,
+      "waterHeight": 1.2,
+      "sourceScalars": [
+        32,
+        65,
+        72,
+        77,
+        120,
+        48,
+        27700
+      ]
+    },
+    {
+      "file": "VerticalAvar2.ttf",
+      "sha256": "dbd77f53de0782d41842193e09d3f838bebce29b04bd7a99c6991b4402782265",
+      "unitsPerEm": 1000,
+      "xHeight": 0.5,
+      "capHeight": 0.75,
+      "zeroAdvance": 0.6,
+      "waterAdvance": 1,
+      "waterHeight": 1.2,
+      "sourceScalars": [
+        32,
+        65,
+        72,
+        77,
+        120,
+        48,
+        27700
+      ]
+    }
+  ]
+}

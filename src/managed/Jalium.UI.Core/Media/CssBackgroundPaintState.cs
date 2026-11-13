@@ -5,6 +5,7 @@ internal enum CssBackgroundBox
     Border,
     Padding,
     Content,
+    Text,
 }
 
 internal readonly record struct CssBackgroundPaintLayer(
@@ -22,6 +23,8 @@ internal sealed class CssBackgroundPaintState
     internal CssBackgroundRepeat[] Repeats { get; }
     internal CssBackgroundBox[] Origins { get; }
     internal CssBackgroundBox[] Clips { get; }
+    internal bool UsesTextClip => ColorClip == CssBackgroundBox.Text ||
+        Array.IndexOf(Clips, CssBackgroundBox.Text) >= 0;
 
     internal CssBackgroundPaintState(Brush? composite, Brush? color,
         CssBackgroundBox colorClip, CssBackgroundPaintLayer[] layers,

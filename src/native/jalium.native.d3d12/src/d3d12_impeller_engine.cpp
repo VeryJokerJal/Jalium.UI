@@ -3,6 +3,8 @@
 #include "jalium_api.h"                   // JALIUM_API export macro
 #include "jalium_path_stats.h"            // unified path telemetry (core dll)
 #include "jalium_flatten.h"               // MaxScaleFromTransform / ScaleBucketFromMaxScale
+#include "d3d12_simple_stroke.h"
+#include "jalium_radial_raster.h"
 #include <atomic>
 #include <cstring>
 #include <cmath>
@@ -74,6 +76,22 @@ bool ImpellerD3D12Engine::EncodeGradientFillPath(
 
     std::vector<float> stopData;
     FlattenGradientStops(brush, stopData);
+
+    if (brush.type==2 && (brush.radialFlags&1)) {
+        ImpellerDrawBatch batch;batch.pipelineType=0;
+        auto flush=[&](){if(!batch.vertices.empty()){PushBatch(std::move(batch));batch={};batch.pipelineType=0;}};
+        const PixelRect viewport{0,0,int(viewportW_),int(viewportH_),1};
+        const bool result=RasterizeRadialPaint(contours,brush,transform,fillRule,
+            [&](float x,float y,const GradientColor& c){
+                const uint32_t base=static_cast<uint32_t>(batch.vertices.size());
+                const float red=c.r*c.a,green=c.g*c.a,blue=c.b*c.a;
+                batch.vertices.insert(batch.vertices.end(),{{x,y,red,green,blue,c.a},{x+1,y,red,green,blue,c.a},
+                    {x+1,y+1,red,green,blue,c.a},{x,y+1,red,green,blue,c.a}});
+                batch.indices.insert(batch.indices.end(),{base,base+1,base+2,base,base+2,base+3});
+                if(batch.vertices.size()>=16384)flush();
+            },&viewport);
+        flush();encodedPathCount_++;return result;
+    }
 
     // ── Analytic route: exact coverage, gradient sampled per emitted corner.
     // Without this a gradient-filled icon reached NEITHER anti-aliasing
@@ -579,7 +597,7 @@ bool ImpellerD3D12Engine::EnsureStencilIndexBuffer(size_t requiredBytes) {
 void ImpellerD3D12Engine::BeginFrame(uint32_t viewportWidth, uint32_t viewportHeight) {
     viewportW_ = viewportWidth;
     viewportH_ = viewportHeight;
-    batches_.clear();
+    ClearBatches();
     encodedPathCount_ = 0;
     flatPoints_.clear();
     // Clip mirrors are sticky between Set/Clear calls. A frame abandoned in
@@ -609,6 +627,48 @@ void ImpellerD3D12Engine::SetRoundedClip(const float rect[4], const float radii[
 
 void ImpellerD3D12Engine::ClearRoundedClip() {
     hasRoundedClip_ = false;
+}
+
+// ============================================================================
+// Reusable geometry batches
+// ============================================================================
+
+void ImpellerD3D12Engine::ClearBatches()
+{
+    // Hybrid rendering can drain hundreds of tiny path batches per frame.
+    // Retain only their geometry storage; clips and other draw state must die
+    // with the batch. Bound both count and bytes after an unusually large path.
+    constexpr size_t kRetainedBatchCount = 16;
+    constexpr size_t kRetainedBatchBytes = 8 * 1024 * 1024;
+    for (auto& batch : batches_) {
+        const size_t bytes = batch.vertices.capacity() * sizeof(ImpellerVertex)
+                           + batch.indices.capacity() * sizeof(uint32_t)
+                           + batch.coverageMaskRuns.capacity() * sizeof(D3D12CoverageMaskRun);
+        if (bytes == 0 || bytes > kRetainedBatchBytes ||
+            recycledBatchBuffers_.size() >= kRetainedBatchCount ||
+            recycledBatchBytes_ > kRetainedBatchBytes - bytes) continue;
+        batch.vertices.clear();
+        batch.indices.clear();
+        batch.coverageMaskRuns.clear();
+        recycledBatchBuffers_.push_back({std::move(batch.vertices), std::move(batch.indices),
+            std::move(batch.coverageMaskRuns)});
+        recycledBatchBytes_ += bytes;
+    }
+    batches_.clear();
+}
+
+ImpellerDrawBatch& ImpellerD3D12Engine::EmplaceBatch()
+{
+    auto& batch = batches_.emplace_back();
+    if (!recycledBatchBuffers_.empty()) {
+        auto& buffers = recycledBatchBuffers_.back();
+        recycledBatchBytes_ -= buffers.CapacityBytes();
+        batch.vertices = std::move(buffers.vertices);
+        batch.indices = std::move(buffers.indices);
+        batch.coverageMaskRuns = std::move(buffers.coverageMaskRuns);
+        recycledBatchBuffers_.pop_back();
+    }
+    return batch;
 }
 
 // ============================================================================
@@ -1348,7 +1408,7 @@ bool ImpellerD3D12Engine::EncodeFillPathScanline(
             }
         }
         if (target == nullptr) {
-            batches_.emplace_back();
+            EmplaceBatch();
             target = &batches_.back();
             target->pipelineType = 0;
             target->hasScissor = hasScissor_;
@@ -1819,14 +1879,29 @@ std::shared_ptr<const ImpellerD3D12Engine::CachedStrokeAnalyticRects>
 ImpellerD3D12Engine::StrokeAnalyticCacheFind(uint64_t key)
 {
     auto it = strokeAnalyticCacheMap_.find(key);
-    if (it == strokeAnalyticCacheMap_.end()) return nullptr;
+    if (it == strokeAnalyticCacheMap_.end()) return protectedStrokeAnalyticCache_.Find(key);
     strokeAnalyticCacheList_.splice(strokeAnalyticCacheList_.begin(), strokeAnalyticCacheList_, it->second);
     return it->second->entry;
 }
 
-void ImpellerD3D12Engine::StrokeAnalyticCacheInsert(
-    uint64_t key, std::shared_ptr<const CachedStrokeAnalyticRects> entry)
+std::shared_ptr<ImpellerD3D12Engine::CachedStrokeAnalyticRects>
+ImpellerD3D12Engine::AcquireStrokeAnalyticCacheEntry()
 {
+    auto entry = std::move(recycledStrokeAnalyticEntry_);
+    if (!entry) return protectedStrokeAnalyticCache_.Acquire();
+    entry->Reset();
+    return entry;
+}
+
+void ImpellerD3D12Engine::StrokeAnalyticCacheInsert(
+    uint64_t key, std::shared_ptr<CachedStrokeAnalyticRects> entry)
+{
+    // Keep the primary hit path and nodes unchanged. Only expensive masks
+    // receive secondary protection against short-lived animated-key churn.
+    if (entry->rects.size() >= kProtectedStrokeAnalyticMinRects) {
+        const size_t evictions = protectedStrokeAnalyticCache_.Insert(key, entry);
+        if (evictions) path_stats::AddCacheEviction(evictions);
+    }
     auto existing = strokeAnalyticCacheMap_.find(key);
     if (existing != strokeAnalyticCacheMap_.end()) {
         existing->second->entry = std::move(entry);
@@ -1835,9 +1910,20 @@ void ImpellerD3D12Engine::StrokeAnalyticCacheInsert(
     }
     if (strokeAnalyticCacheList_.size() >= kStrokeAnalyticCacheCapacity) {
         auto& lru = strokeAnalyticCacheList_.back();
-        strokeAnalyticCacheMap_.erase(lru.key);
-        strokeAnalyticCacheList_.pop_back();
+        auto cacheNode = strokeAnalyticCacheMap_.extract(lru.key);
+        if (!recycledStrokeAnalyticEntry_ && lru.entry.use_count() == 1) {
+            recycledStrokeAnalyticEntry_ = std::move(lru.entry);
+        }
+        // Splice preserves the iterator stored in the extracted map node.
+        // Reuse both container nodes once the bounded cache is full.
+        lru.key = key;
+        lru.entry = std::move(entry);
+        strokeAnalyticCacheList_.splice(strokeAnalyticCacheList_.begin(),
+                                       strokeAnalyticCacheList_, cacheNode.mapped());
+        cacheNode.key() = key;
+        strokeAnalyticCacheMap_.insert(std::move(cacheNode));
         path_stats::AddCacheEviction(1);
+        return;
     }
     strokeAnalyticCacheList_.push_front({key, std::move(entry)});
     strokeAnalyticCacheMap_[key] = strokeAnalyticCacheList_.begin();
@@ -1921,6 +2007,12 @@ bool ImpellerD3D12Engine::EncodeStrokePath(
     const EngineTransform& transformIn,
     int32_t edgeMode)
 {
+    if (brush.type==2 && (brush.radialFlags&1)) {
+        const float scale=std::max(MaxScaleFromMatrix(transformIn.m11,transformIn.m12,transformIn.m21,transformIn.m22),.01f);
+        auto source=FlattenPathToContours(startX,startY,commands,commandLength,flattenTolerance_/scale);
+        auto outlines=RadialStrokeContours(source,strokeWidth,closed,lineJoin,miterLimit,lineCap,dashPattern,dashCount,dashOffset,scale);
+        return EncodeGradientFillPath(outlines,brush,transformIn,FillRule::NonZero);
+    }
     int em = edgeMode;
     if (em < 0) em = 1;                       // default = binary mesh + feather
     const bool analytic = (em == 2);          // explicit Antialiased (static)
@@ -2045,7 +2137,7 @@ bool ImpellerD3D12Engine::EncodeStrokePath(
             }
         }
         if (target == nullptr) {
-            batches_.emplace_back();
+            EmplaceBatch();
             target = &batches_.back();
             target->pipelineType = 0;
             target->hasScissor = hasScissor_;
@@ -2303,7 +2395,7 @@ bool ImpellerD3D12Engine::EncodeStrokePathPixelCached(
             }
         }
         if (target == nullptr) {
-            batches_.emplace_back();
+            EmplaceBatch();
             target = &batches_.back();
             target->pipelineType = 0;
             target->hasScissor = hasScissor_;
@@ -2388,9 +2480,12 @@ bool ImpellerD3D12Engine::EncodeStrokePathPixelCached(
     // current batch (in-place coalescing into the last solid-fill batch when
     // state matches; new batch otherwise). Per-rect alpha is multiplied into
     // the brush color, producing the analytic coverage edge.
-    auto emitStrokeRectsAsBatch = [this, &brush](const std::vector<PixelRect>& rects, int sx, int sy) {
+    auto emitStrokeRectsAsBatch = [this, &brush](const std::shared_ptr<const CachedStrokeAnalyticRects>& cached, int sx, int sy) {
+        const auto& rects = cached->rects;
         size_t rectCount = rects.size();
         if (rectCount == 0) return;
+        const bool emitCoverage = coverageRectBatches_;
+        const uint32_t pipelineType = emitCoverage ? 2u : 0u;
 
         float br = brush.r * brush.a;
         float bg = brush.g * brush.a;
@@ -2401,7 +2496,7 @@ bool ImpellerD3D12Engine::EncodeStrokePathPixelCached(
         ImpellerDrawBatch* target = nullptr;
         if (!batches_.empty()) {
             auto& last = batches_.back();
-            if (last.pipelineType == 0 && last.stencilContours.empty() &&
+            if (last.pipelineType == pipelineType && last.stencilContours.empty() &&
                 last.hasScissor == hasScissor_ &&
                 (!hasScissor_ ||
                  (last.scissorL == scissorLeft_ && last.scissorT == scissorTop_ &&
@@ -2417,9 +2512,9 @@ bool ImpellerD3D12Engine::EncodeStrokePathPixelCached(
             }
         }
         if (target == nullptr) {
-            batches_.emplace_back();
+            EmplaceBatch();
             target = &batches_.back();
-            target->pipelineType = 0;
+            target->pipelineType = pipelineType;
             target->hasScissor = hasScissor_;
             if (hasScissor_) {
                 target->scissorL = scissorLeft_;
@@ -2435,6 +2530,24 @@ bool ImpellerD3D12Engine::EncodeStrokePathPixelCached(
                 target->roundedClipCornerRadii[0] = roundedClipCornerRadii_[0]; target->roundedClipCornerRadii[1] = roundedClipCornerRadii_[1];
                 target->roundedClipCornerRadii[2] = roundedClipCornerRadii_[2]; target->roundedClipCornerRadii[3] = roundedClipCornerRadii_[3];
             }
+        }
+
+        if (emitCoverage) {
+            target->coverageMaskRuns.push_back({cached, fsx, fsy, br, bg, bb, ba});
+            float minX, minY, maxX, maxY;
+            cached->TranslatedBounds(sx, sy, minX, minY, maxX, maxY);
+            if (target->hasCoverage) {
+                if (minX < target->coverageL) target->coverageL = minX;
+                if (minY < target->coverageT) target->coverageT = minY;
+                if (maxX > target->coverageR) target->coverageR = maxX;
+                if (maxY > target->coverageB) target->coverageB = maxY;
+            } else {
+                target->hasCoverage = true;
+                target->coverageL = minX; target->coverageT = minY;
+                target->coverageR = maxX; target->coverageB = maxY;
+            }
+            encodedPathCount_++;
+            return;
         }
 
         size_t oldV = target->vertices.size();
@@ -2469,7 +2582,6 @@ bool ImpellerD3D12Engine::EncodeStrokePathPixelCached(
             vp[v + 1] = { x1, y0, ra, ga, bbA, aa };
             vp[v + 2] = { x1, y1, ra, ga, bbA, aa };
             vp[v + 3] = { x0, y1, ra, ga, bbA, aa };
-
             uint32_t bIdx = baseVertex + (uint32_t)v;
             size_t k = i * 6;
             ip[k + 0] = bIdx;
@@ -2513,7 +2625,7 @@ bool ImpellerD3D12Engine::EncodeStrokePathPixelCached(
         if (auto cached = StrokeAnalyticCacheFind(cacheKey)) {
             path_stats::AddStrokeHit(cached->rects.size());
             if (cached->rects.empty()) return false;
-            emitStrokeRectsAsBatch(cached->rects, intDx, intDy);
+            emitStrokeRectsAsBatch(cached, intDx, intDy);
             return true;
         }
     } else {
@@ -2526,6 +2638,25 @@ bool ImpellerD3D12Engine::EncodeStrokePathPixelCached(
     }
     path_stats::AddStrokeMiss();
 
+    auto cacheAndEmitAnalyticStroke = [&]() {
+        auto& strokeContours = strokeContourBuffer_;
+        if (strokeContours.Count() == 0) {
+            StrokeAnalyticCacheInsert(cacheKey, AcquireStrokeAnalyticCacheEntry());
+            return false;
+        }
+        auto cached = AcquireStrokeAnalyticCacheEntry();
+        cached->rects.reserve(256);
+        RasterizePathToRects(strokeContours.Data(), strokeContours.Count(), FillRule::NonZero, cached->rects);
+        strokeContours.Reset();
+        if (cached->rects.empty()) {
+            StrokeAnalyticCacheInsert(cacheKey, std::move(cached));
+            return false;
+        }
+        if (coverageRectBatches_) cached->UpdateBounds();
+        emitStrokeRectsAsBatch(cached, intDx, intDy);
+        StrokeAnalyticCacheInsert(cacheKey, std::move(cached));
+        return true;
+    };
 
     // ------------------------------------------------------------------
     // Pixel-space flattening — mirrors the fix EncodeFillPath already
@@ -2552,6 +2683,27 @@ bool ImpellerD3D12Engine::EncodeStrokePathPixelCached(
     // stroke width and dash segment lengths must be scaled too or the
     // stroked outline will have the right shape but wrong thickness.
     float pxStrokeWidth = strokeWidth * maxScale;
+    if (useAnalytic && !closed && lineCap == 0 && !dashPattern && dashCount == 0) {
+        strokeContourBuffer_.Reset();
+        if (TryBuildSimpleStrokeContour(startX, startY, commands, commandLength,
+                                        pxStrokeWidth, transform, strokeContourBuffer_)) {
+            return cacheAndEmitAnalyticStroke();
+        }
+    }
+    // An open undashed polyline already has its final subdivision. Transform
+    // straight into retained points instead of allocating transformed commands
+    // and a contour list, then use the same widening and analytic rasterizer.
+    if (useAnalytic && !closed && dashCount == 0 && std::isfinite(pxStrokeWidth) &&
+        TryFlattenStrokePolyline(startX, startY, commands, commandLength, transform, flatPoints_)) {
+        strokeContourBuffer_.Reset();
+        std::vector<ImpellerVertex> vertices;
+        std::vector<uint32_t> indices;
+        ExpandStrokePath(vertices, indices, flatPoints_.data(), uint32_t(flatPoints_.size() / 2),
+            pxStrokeWidth, static_cast<ImpellerJoin>(lineJoin), miterLimit,
+            static_cast<ImpellerCap>(lineCap), false, brush.r, brush.g, brush.b, brush.a,
+            nullptr, 1.0f, &strokeContourBuffer_);
+        return cacheAndEmitAnalyticStroke();
+    }
     float pxDashOffset  = dashOffset  * maxScale;
     std::vector<float> pxDashPattern;
     if (dashPattern && dashCount > 0) {
@@ -2668,12 +2820,11 @@ bool ImpellerD3D12Engine::EncodeStrokePathPixelCached(
     // Dash patterns accumulate sub-stroke output into the same buffer
     // regardless of mode.
     // -------------------------------------------------------------
-    std::vector<Contour> strokeContours;
+    auto& strokeContours = strokeContourBuffer_;
+    strokeContours.Reset();
     std::vector<ImpellerVertex> meshVerts;
     std::vector<uint32_t>       meshIndices;
-    if (useAnalytic) {
-        strokeContours.reserve(contours.size() * 8);
-    } else {
+    if (!useAnalytic) {
         meshVerts.reserve(contours.size() * 64);
         meshIndices.reserve(contours.size() * 96);
     }
@@ -2684,7 +2835,8 @@ bool ImpellerD3D12Engine::EncodeStrokePathPixelCached(
             pts, pointCount,
             pxStrokeWidth, join, miterLimit, cap, subClosed,
             brush.r, brush.g, brush.b, brush.a,
-            /* collectContours */ useAnalytic ? &strokeContours : nullptr);
+            /* collectContours */ nullptr, /* featherScaleInSrc */ 1.0f,
+            useAnalytic ? &strokeContours : nullptr);
     };
     auto expandSubStroke = [&](uint32_t pointCount, bool subClosed) {
         expandSubStrokeFrom(flatPoints_.data(), pointCount, subClosed);
@@ -2762,23 +2914,7 @@ bool ImpellerD3D12Engine::EncodeStrokePathPixelCached(
     // both stroke expansion and rasterization.
     // ──────────────────────────────────────────────────────────────
     if (useAnalytic) {
-        if (strokeContours.empty()) {
-            StrokeAnalyticCacheInsert(cacheKey, std::make_shared<CachedStrokeAnalyticRects>());
-            return false;
-        }
-        auto cached = std::make_shared<CachedStrokeAnalyticRects>();
-        cached->rects.reserve(256);
-        // Stroke widening always produces NonZero-fill polygons (cap/join
-        // tessellations are convex and don't cross themselves with
-        // alternating winding), so we hard-code FillRule::NonZero here.
-        RasterizePathToRects(strokeContours, FillRule::NonZero, cached->rects);
-        if (cached->rects.empty()) {
-            StrokeAnalyticCacheInsert(cacheKey, std::move(cached));
-            return false;
-        }
-        emitStrokeRectsAsBatch(cached->rects, intDx, intDy);
-        StrokeAnalyticCacheInsert(cacheKey, std::move(cached));
-        return true;
+        return cacheAndEmitAnalyticStroke();
     }
 
     // ──────────────────────────────────────────────────────────────
@@ -3687,7 +3823,7 @@ bool ImpellerD3D12Engine::ExecuteOnCommandList(
         ibDrawOffset += batch.indices.size() * sizeof(uint32_t);
     }
 
-    batches_.clear();
+    ClearBatches();
     return true;
 }
 

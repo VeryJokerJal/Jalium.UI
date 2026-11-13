@@ -299,7 +299,7 @@ internal sealed class CssPropertySyntax
         return expression with { Arguments = arguments.ToArray() };
     }
 
-    private static bool Linear(CssMathExpression expression, out double pixels, out double percent)
+    internal static bool Linear(CssMathExpression expression, out double pixels, out double percent)
     {
         pixels = percent = 0;
         if (expression.Operation == "value")

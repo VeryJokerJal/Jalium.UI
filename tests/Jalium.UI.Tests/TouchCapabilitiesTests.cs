@@ -4,6 +4,18 @@ namespace Jalium.UI.Tests;
 
 public class TouchCapabilitiesTests
 {
+    [Theory]
+    [InlineData(0x00, false)]
+    [InlineData(0x80, false)] // Ready, but no touch device.
+    [InlineData(0x84, false)] // Ready pen device only.
+    [InlineData(0x01, false)] // Touch device not ready.
+    [InlineData(0x81, true)]  // Ready integrated touchscreen.
+    [InlineData(0x82, true)]  // Ready external touchscreen.
+    public void WindowsDigitizerRequiresReadyTouchFlags(int metric, bool expected)
+    {
+        Assert.Equal(expected, Touch.IsReadyTouchDigitizer(metric));
+    }
+
     [Fact]
     public void GetTouchCapabilities_ReturnsSameInstanceWhenCached()
     {

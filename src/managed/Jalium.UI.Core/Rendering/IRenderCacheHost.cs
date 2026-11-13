@@ -50,6 +50,8 @@ internal interface IRenderCacheHost
     /// Closes the recording and returns an immutable handle representing the
     /// captured draw commands. The recorder object becomes invalid — typical
     /// implementations pool it for reuse.
+    /// A handle implementing <see cref="IRetainedDrawingLifetime"/> transfers
+    /// one owned reference to the caller; caches/frames release it when retired.
     /// </summary>
     /// <param name="recorder">The recorder previously returned by
     /// <see cref="CreateRecorder"/>.</param>

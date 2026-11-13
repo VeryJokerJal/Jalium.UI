@@ -56,7 +56,7 @@ public sealed class NativeVideoDecoder : INativeVideoDecoder, INativeGpuVideoDec
             NativeMediaException.ThrowIfFailed(status, "jalium_video_decoder_get_info");
             _handle = handle;
             _info = info;
-            _mayHaveGpuOutput = OperatingSystem.IsLinux();
+            _mayHaveGpuOutput = OperatingSystem.IsLinux() || OperatingSystem.IsWindows() || OperatingSystem.IsAndroid();
         }
         catch
         {
@@ -139,12 +139,18 @@ public sealed class NativeVideoDecoder : INativeVideoDecoder, INativeGpuVideoDec
         var status = NativeMediaInterop.jalium_video_decoder_acquire_gpu_surface_descriptor(
             _handle, out var desc);
         if (status != NativeMediaStatus.Ok) return null;
-        if (desc.Width == 0 || desc.Height == 0 || desc.Handle0 == 0) return null;
+        try
+        {
+            if (desc.Width == 0 || desc.Height == 0 || desc.Handle0 == 0) return null;
 
-        // Preserve the synchronization/ownership contract carried by the full
-        // descriptor. Dropping its flags turned a reusable, unready D3D11
-        // allocation into an apparently valid image for the D3D12 renderer.
-        return NativeVideoSurface.TryWrapExternal(renderContextHandle, in desc);
+            // Preserve the synchronization and ownership carried by the full
+            // descriptor, including the producer's completed-write guarantee.
+            return NativeVideoSurface.TryWrapExternal(renderContextHandle, in desc);
+        }
+        finally
+        {
+            NativeMediaInterop.jalium_video_decoder_release_gpu_surface_descriptor(ref desc);
+        }
     }
 
     /// <inheritdoc />
@@ -161,8 +167,7 @@ public sealed class NativeVideoDecoder : INativeVideoDecoder, INativeGpuVideoDec
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (_handle == nint.Zero)
             throw new InvalidOperationException("Open must be called before TryReadGpuFrame.");
-        if (!_mayHaveGpuOutput || !OperatingSystem.IsLinux() ||
-            renderContextHandle == nint.Zero)
+        if (!_mayHaveGpuOutput || renderContextHandle == nint.Zero)
             return GpuVideoFrameReadResult.NotSupported;
 
         var status = NativeMediaInterop.jalium_video_decoder_read_gpu_frame_descriptor(
@@ -177,7 +182,8 @@ public sealed class NativeVideoDecoder : INativeVideoDecoder, INativeGpuVideoDec
         if (status != NativeMediaStatus.Ok)
         {
             _mayHaveGpuOutput = false;
-            _ = NativeMediaInterop.jalium_video_decoder_disable_gpu_output(_handle);
+            var fallbackStatus = NativeMediaInterop.jalium_video_decoder_disable_gpu_output(_handle);
+            NativeMediaException.ThrowIfFailed(fallbackStatus, "jalium_video_decoder_disable_gpu_output");
             return GpuVideoFrameReadResult.FellBackToCpu;
         }
 
@@ -189,9 +195,9 @@ public sealed class NativeVideoDecoder : INativeVideoDecoder, INativeGpuVideoDec
         }
         finally
         {
-            // The renderer duplicates borrowed dma-buf/sync fds during import;
-            // close the decoder-owned descriptor copies on both success and
-            // rejection so a long video cannot leak one fd per plane/frame.
+            // Import retains the producer allocation/image through its render
+            // fence. Release the descriptor's own handle/fd/frame reference on
+            // both success and rejection.
             NativeMediaInterop.jalium_video_decoder_release_gpu_surface_descriptor(
                 ref descriptor);
         }

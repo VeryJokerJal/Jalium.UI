@@ -7,6 +7,15 @@ namespace Jalium.UI.Input;
 /// </summary>
 public sealed class CommandManager
 {
+    private static readonly object s_routedRequeryLock = new();
+    private static readonly List<WeakReference<RoutedCommand>> s_routedCommands = [];
+
+    internal static void RegisterRoutedCommand(RoutedCommand command)
+    {
+        lock (s_routedRequeryLock)
+            s_routedCommands.Add(new WeakReference<RoutedCommand>(command));
+    }
+
     private CommandManager()
     {
     }
@@ -46,6 +55,19 @@ public sealed class CommandManager
     /// </summary>
     public static void InvalidateRequerySuggested()
     {
+        List<RoutedCommand> commands = [];
+        lock (s_routedRequeryLock)
+        {
+            for (int i = s_routedCommands.Count - 1; i >= 0; i--)
+            {
+                if (s_routedCommands[i].TryGetTarget(out var command))
+                    commands.Add(command);
+                else
+                    s_routedCommands.RemoveAt(i);
+            }
+        }
+        foreach (var command in commands)
+            command.RaiseCanExecuteChanged();
         RequerySuggested?.Invoke(null, EventArgs.Empty);
     }
 

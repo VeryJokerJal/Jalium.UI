@@ -153,12 +153,12 @@ public sealed class TemplatePartCacheStaleRegressionTests
         var template = TemplateWithRoot(typeof(AutoCompleteBox), () =>
         {
             var grid = new Grid();
-            grid.Children.Add(new StackPanel { Name = "PART_DropDownItemsHost" });
+            grid.Children.Add(new ListBox { Name = "PART_SuggestionsList" });
             grid.Children.Add(new Popup { Name = "PART_Popup" });
             return grid;
         });
 
-        AssertCachedPartReleasedOnTemplateClear(box, template, "_dropDownItemsPanel");
+        AssertCachedPartReleasedOnTemplateClear(box, template, "_suggestionsList");
     }
 
     // ---------------------------------------------------------------------------------------
@@ -337,32 +337,42 @@ public sealed class TemplatePartCacheStaleRegressionTests
             Width = 180,
             Template = PopupTemplate(popup => firstPopup = popup),
         };
-        var window = new Window
+        // macOS popups require a displayed owner. This logical test root avoids
+        // opening AppKit windows on the test worker while retaining that contract.
+        var window = new DisplayedTestWindow
         {
             Width = 800,
             Height = 600,
             Content = comboBox,
         };
 
-        RunLayout(window);
-        comboBox.IsDropDownOpen = true;
-        RunLayout(window);
+        try
+        {
+            RunLayout(window);
+            comboBox.IsDropDownOpen = true;
+            RunLayout(window);
 
-        Assert.NotNull(firstPopup);
-        Assert.True(firstPopup!.IsOpen);
-        Assert.NotNull(GetPrivateField(firstPopup, "_popupRoot"));
-        Assert.Single(window.OverlayLayer.Children.OfType<PopupRoot>());
+            Assert.NotNull(firstPopup);
+            Assert.True(firstPopup!.IsOpen);
+            Assert.NotNull(GetPrivateField(firstPopup, "_popupRoot"));
+            Assert.Single(window.OverlayLayer.Children.OfType<PopupRoot>());
 
-        comboBox.Template = PopupTemplate(popup => replacementPopup = popup);
-        RunLayout(window);
+            comboBox.Template = PopupTemplate(popup => replacementPopup = popup);
+            RunLayout(window);
 
-        Assert.True(comboBox.IsDropDownOpen);
-        Assert.NotNull(replacementPopup);
-        Assert.True(replacementPopup!.IsOpen);
-        Assert.NotNull(GetPrivateField(replacementPopup, "_popupRoot"));
-        Assert.Single(window.OverlayLayer.Children.OfType<PopupRoot>());
-        Assert.False(firstPopup.IsOpen);
-        Assert.Null(GetPrivateField(firstPopup, "_popupRoot"));
+            Assert.True(comboBox.IsDropDownOpen);
+            Assert.NotNull(replacementPopup);
+            Assert.True(replacementPopup!.IsOpen);
+            Assert.NotNull(GetPrivateField(replacementPopup, "_popupRoot"));
+            Assert.Single(window.OverlayLayer.Children.OfType<PopupRoot>());
+            Assert.False(firstPopup.IsOpen);
+            Assert.Null(GetPrivateField(firstPopup, "_popupRoot"));
+        }
+        finally
+        {
+            comboBox.IsDropDownOpen = false;
+            window.Close();
+        }
     }
 
     [Fact]
@@ -422,34 +432,37 @@ public sealed class TemplatePartCacheStaleRegressionTests
     }
 
     [Fact]
-    public void PropertyGrid_ClearingTemplate_ReleasesPropertiesPanelCache()
+    public void PropertyGrid_ClearingTemplate_ReleasesPropertiesListCache()
     {
         var grid = new PropertyGrid();
         var template = TemplateWithRoot(typeof(PropertyGrid),
-            () => new StackPanel { Name = "PART_PropertiesPanel" });
+            () => new ItemsControl { Name = "PART_PropertiesList" });
 
-        AssertCachedPartReleasedOnTemplateClear(grid, template, "_propertiesPanel");
+        AssertCachedPartReleasedOnTemplateClear(grid, template, "_propertiesList");
     }
 
     [Fact]
-    public void PropertyGrid_AfterTemplateClear_RebuildsFallbackInsteadOfRenderingBlank()
+    public void PropertyGrid_AfterTemplateClear_KeepsModelsForTheNextTemplate()
     {
         var grid = new PropertyGrid();
         var template = TemplateWithRoot(typeof(PropertyGrid),
-            () => new StackPanel { Name = "PART_PropertiesPanel" });
+            () => new ItemsControl { Name = "PART_PropertiesList" });
 
         grid.Template = template;
         RunLayout(grid);
-        Assert.NotNull(GetPrivateField(grid, "_propertiesPanel"));
+        Assert.NotNull(GetPrivateField(grid, "_propertiesList"));
 
         grid.Template = null;
-        // A property refresh now runs EnsurePropertiesPanel. With the stale _propertiesPanel
-        // released it rebuilds the programmatic fallback tree; without the fix it short-circuits
-        // on the stale reference and the control stays blank (_fallbackRoot never built).
         grid.SelectedObject = new { Name = "value", Count = 3 };
         RunLayout(grid);
-
-        Assert.NotNull(GetPrivateField(grid, "_fallbackRoot"));
+        Assert.Null(GetPrivateField(grid, "_propertiesList"));
+        Assert.Equal(2, grid.PropertyCount);
+        // The control never creates a second, programmatic layout. Its models
+        // remain available to any replacement template, including minimal ones.
+        grid.Template = TemplateWithRoot(typeof(PropertyGrid), () =>
+            new ItemsControl { Name = "PART_PropertiesList", ItemsSource = grid.VisibleProperties });
+        RunLayout(grid);
+        Assert.Equal(2, Assert.IsType<ItemsControl>(GetPrivateField(grid, "_propertiesList")).Items.Count);
     }
 
     [Fact]
@@ -460,7 +473,7 @@ public sealed class TemplatePartCacheStaleRegressionTests
         {
             var grid = new Grid();
             grid.Children.Add(new Border { Name = "PART_TriggerBorder" });
-            grid.Children.Add(new StackPanel { Name = "PART_TagsPanel" });
+            grid.Children.Add(new ItemsControl { Name = "PART_TagsPanel" });
             grid.Children.Add(new Popup { Name = "PART_Popup" });
             return grid;
         });

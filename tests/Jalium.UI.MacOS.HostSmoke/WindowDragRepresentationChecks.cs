@@ -46,7 +46,7 @@ internal static class WindowDragRepresentationChecks
         int.TryParse(Environment.GetEnvironmentVariable("JALIUM_MACOS_DRAG_OBSERVE_SECONDS"), out int seconds);
         JaliumMacApplication.Initialize();
         NSApplication.SharedApplication.ActivationPolicy = seconds > 0
-            ? NSApplicationActivationPolicy.Regular : NSApplicationActivationPolicy.Prohibited;
+            ? NSApplicationActivationPolicy.Regular : NSApplicationActivationPolicy.Accessory;
         NSApplication.SharedApplication.FinishLaunching();
         RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
         var application = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };

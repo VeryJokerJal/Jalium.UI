@@ -91,6 +91,9 @@ public class DataGridItemAutomationPeer : ItemAutomationPeer,
 
     private DataGrid DataGridOwner => (DataGrid)_parent.Owner;
 
+    protected override UIElement? ItemContainer => IsRetired ? null : DataGridOwner.FindRealizedRowAt(_parent.GetDisplayIndex(this));
+    protected override List<AutomationPeer> GetChildrenCore() => IsRetired ? [] : _parent.GetCellPeers(this);
+
     public override object? GetPattern(PatternInterface patternInterface) =>
         patternInterface == PatternInterface.SelectionItem ? this : base.GetPattern(patternInterface);
 

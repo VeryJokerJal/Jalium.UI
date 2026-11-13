@@ -8,6 +8,117 @@ internal static partial class CssCoreProperties
     {
         CssPropertyRegistry.Register(new CssPropertyDescriptor
         {
+            Name = "font-size-adjust", Kind = CssPropertyKind.Longhand,
+            StorageProperty = CssFontSizeAdjust.ValueProperty,
+            TransitionTargetDpName = CssFontSizeAdjust.ValueProperty.Name,
+            Parse = static (ref CssTokenReader reader, CssCompileContext _) => CssFontSizeAdjust.Parse(ref reader),
+        });
+        CssPropertyRegistry.Register(new CssPropertyDescriptor
+        {
+            Name = "font-optical-sizing", Kind = CssPropertyKind.Longhand,
+            StorageProperty = CssFontOpticalSizing.AutoProperty,
+            TransitionTargetDpName = CssFontOpticalSizing.AutoProperty.Name,
+            Parse = static (ref CssTokenReader reader, CssCompileContext _) => CssFontOpticalSizing.Parse(ref reader),
+        });
+        CssPropertyRegistry.Register(new CssPropertyDescriptor
+        {
+            Name = "font-variation-settings", Kind = CssPropertyKind.Longhand,
+            StorageProperty = CssFontVariationSettings.SettingsProperty,
+            TransitionTargetDpName = CssFontVariationSettings.SettingsProperty.Name,
+            Parse = static (ref CssTokenReader reader, CssCompileContext _) => CssFontVariationSettings.Parse(ref reader),
+        });
+        CssPropertyRegistry.Register(new CssPropertyDescriptor
+        {
+            Name = "font-variant-emoji", Kind = CssPropertyKind.Longhand,
+            StorageProperty = CssFontEmoji.VariantProperty,
+            TransitionTargetDpName = CssFontEmoji.VariantProperty.Name,
+            Parse = static (ref CssTokenReader reader, CssCompileContext _) => CssFontEmoji.Parse(ref reader),
+        });
+        CssPropertyRegistry.Register(new CssPropertyDescriptor
+        {
+            Name = "font-variant-position", Kind = CssPropertyKind.Longhand,
+            StorageProperty = CssFontPosition.VariantProperty,
+            TransitionTargetDpName = CssFontPosition.VariantProperty.Name,
+            Parse = static (ref CssTokenReader reader, CssCompileContext _) => CssFontPosition.Parse(ref reader),
+        });
+        CssPropertyRegistry.Register(new CssPropertyDescriptor
+        {
+            Name = "font-synthesis-position", Kind = CssPropertyKind.Longhand,
+            StorageProperty = CssFontPosition.SynthesisProperty,
+            TransitionTargetDpName = CssFontPosition.SynthesisProperty.Name,
+            Parse = static (ref CssTokenReader reader, CssCompileContext _) =>
+                reader.TryReadIdent(out var word) && reader.AtEnd
+                    ? Eq(word, "auto") ? new CssImmediateValue(CssFontPosition.SynthesisProperty, true)
+                    : Eq(word, "none") ? new CssImmediateValue(CssFontPosition.SynthesisProperty, false) : null : null,
+        });
+        CssPropertyRegistry.Register(new CssPropertyDescriptor
+        {
+            Name = "font-synthesis-small-caps", Kind = CssPropertyKind.Longhand,
+            StorageProperty = CssFontCaps.SynthesisProperty,
+            TransitionTargetDpName = CssFontCaps.SynthesisProperty.Name,
+            Parse = static (ref CssTokenReader reader, CssCompileContext _) =>
+                reader.TryReadIdent(out var word) && reader.AtEnd
+                    ? Eq(word, "auto") ? new CssImmediateValue(CssFontCaps.SynthesisProperty, true)
+                    : Eq(word, "none") ? new CssImmediateValue(CssFontCaps.SynthesisProperty, false) : null : null,
+        });
+        CssPropertyRegistry.Register(new CssPropertyDescriptor
+        {
+            Name = "font-variant-caps", Kind = CssPropertyKind.Longhand,
+            StorageProperty = CssFontCaps.VariantProperty,
+            TransitionTargetDpName = CssFontCaps.VariantProperty.Name,
+            Parse = static (ref CssTokenReader reader, CssCompileContext _) => CssFontCaps.Parse(ref reader),
+        });
+        CssPropertyRegistry.Register(new CssPropertyDescriptor
+        {
+            Name = "font-kerning", Kind = CssPropertyKind.Longhand,
+            StorageProperty = CssFontLigatures.KerningProperty,
+            TransitionTargetDpName = CssFontLigatures.KerningProperty.Name,
+            Parse = static (ref CssTokenReader reader, CssCompileContext _) => CssFontLigatures.ParseKerning(ref reader),
+        });
+        CssPropertyRegistry.Register(new CssPropertyDescriptor
+        {
+            Name = "font-variant-ligatures", Kind = CssPropertyKind.Longhand,
+            StorageProperty = CssFontLigatures.VariantProperty,
+            TransitionTargetDpName = CssFontLigatures.VariantProperty.Name,
+            Parse = static (ref CssTokenReader reader, CssCompileContext _) => CssFontLigatures.ParseVariant(ref reader),
+        });
+        CssPropertyRegistry.Register(new CssPropertyDescriptor
+        {
+            Name = "font-feature-settings", Kind = CssPropertyKind.Longhand,
+            StorageProperty = CssFontFeatureSettings.SettingsProperty,
+            TransitionTargetDpName = CssFontFeatureSettings.SettingsProperty.Name,
+            Parse = static (ref CssTokenReader reader, CssCompileContext _) => CssFontFeatureSettings.Parse(ref reader),
+        });
+        CssPropertyRegistry.Register(new CssPropertyDescriptor
+        {
+            Name = "font-variant-numeric", Kind = CssPropertyKind.Longhand,
+            StorageProperty = CssFontNumeric.VariantProperty,
+            TransitionTargetDpName = CssFontNumeric.VariantProperty.Name,
+            Parse = static (ref CssTokenReader reader, CssCompileContext _) => CssFontNumeric.Parse(ref reader),
+        });
+        CssPropertyRegistry.Register(new CssPropertyDescriptor
+        {
+            Name = "font-variant-east-asian", Kind = CssPropertyKind.Longhand,
+            StorageProperty = CssFontEastAsian.VariantProperty,
+            TransitionTargetDpName = CssFontEastAsian.VariantProperty.Name,
+            Parse = static (ref CssTokenReader reader, CssCompileContext _) => CssFontEastAsian.Parse(ref reader),
+        });
+        CssPropertyRegistry.Register(new CssPropertyDescriptor
+        {
+            Name = "font-variant-alternates", Kind = CssPropertyKind.Longhand,
+            StorageProperty = CssFontAlternates.VariantProperty,
+            TransitionTargetDpName = CssFontAlternates.VariantProperty.Name,
+            Parse = static (ref CssTokenReader reader, CssCompileContext _) => CssFontAlternates.Parse(ref reader),
+        });
+        CssPropertyRegistry.Register(new CssPropertyDescriptor
+        {
+            Name = "unicode-bidi", Kind = CssPropertyKind.Longhand,
+            StorageProperty = CssUnicodeBidiProperties.ValueProperty,
+            Parse = static (ref CssTokenReader reader, CssCompileContext _) => CssUnicodeBidiProperties.Parse(ref reader),
+        });
+
+        CssPropertyRegistry.Register(new CssPropertyDescriptor
+        {
             Name = "direction",
             Kind = CssPropertyKind.Longhand,
             StorageProperty = FrameworkElement.FlowDirectionProperty,
@@ -31,7 +142,7 @@ internal static partial class CssCoreProperties
                 ? new CssFontFamilyValue(family) : null;
         });
 
-        RegisterLonghand("font-size", (ref CssTokenReader reader, CssCompileContext ctx_) => ParseFontSize(ref reader));
+        RegisterLonghand("font-size", (ref CssTokenReader reader, CssCompileContext ctx_) => ParseFontSize(ref reader, ctx_.InitialFontSize));
 
         CssPropertyRegistry.Register(new CssPropertyDescriptor
         {
@@ -59,12 +170,16 @@ internal static partial class CssCoreProperties
             return new CssFontStyleValue(style);
         });
 
-        RegisterLonghand("font-stretch", (ref CssTokenReader reader, CssCompileContext ctx_) =>
+        CssPropertyRegistry.Register(new CssPropertyDescriptor
         {
-            return CssFontStretchValue.TryRead(ref reader, out var percentage)
-                ? new CssFontStretchValue(percentage) : null;
+            Name = "font-stretch", Kind = CssPropertyKind.Longhand,
+            TransitionTargetDpName = CssFontStretchValue.PercentageProperty.Name,
+            Parse = static (ref CssTokenReader reader, CssCompileContext _) =>
+                CssFontStretchValue.TryRead(ref reader, out var percentage)
+                    ? new CssFontStretchValue(percentage) : null,
         });
 
+        RegisterShorthand("font-variant", CssFontVariant.Expand);
         RegisterShorthand("font", ExpandFontShorthand);
 
         RegisterLonghand("line-height", (ref CssTokenReader reader, CssCompileContext ctx_) => ParseLineHeight(ref reader));
@@ -285,7 +400,7 @@ internal static partial class CssCoreProperties
                 if (probe.TryReadIdent(out var ident) && probe.AtEnd)
                     return ident.Equals("normal", StringComparison.OrdinalIgnoreCase)
                         ? new CssImmediateValue(CssFlowProperties.LetterSpacingProperty, 0.0) : null;
-                if (!reader.TryReadLength(out var length) || !reader.AtEnd || length.UsesPercent ||
+                if (!reader.TryReadLength(out var length) || !reader.AtEnd ||
                     length.Expression is null && length.Unit == CssUnit.None && length.Value != 0)
                     return null;
                 return new CssLetterSpacingValue(length);
@@ -910,6 +1025,14 @@ internal static partial class CssCoreProperties
     {
         public override bool TryApply(in CssApplyContext context, ICssSetterSink sink)
         {
+            if (length.UsesPercent)
+            {
+                var computed = length.Expression is { } expression
+                    ? CssLayoutLength.Math(expression, context.Lengths)
+                    : CssLayoutLength.Percent(length.Value / 100);
+                sink.Set(CssFlowProperties.LetterSpacingProperty, computed);
+                return true;
+            }
             if (!length.TryResolve(context.Lengths, CssPercentBasis.NotSupported, out var pixels) ||
                 !double.IsFinite(pixels)) return false;
             sink.Set(CssFlowProperties.LetterSpacingProperty, pixels);
@@ -955,21 +1078,21 @@ internal static partial class CssCoreProperties
         return true;
     }
 
-    private static CssCompiledValue? ParseFontSize(ref CssTokenReader reader)
+    private static CssCompiledValue? ParseFontSize(ref CssTokenReader reader, double initialFontSize = CssLengthContext.DefaultFontSize)
     {
         var probe = reader;
         if (probe.TryReadIdent(out var ident) && probe.AtEnd)
         {
             double? absolute = ident.ToString().ToLowerInvariant() switch
             {
-                "xx-small" => CssLengthContext.DefaultFontSize * 3 / 5,
-                "x-small" => CssLengthContext.DefaultFontSize * 3 / 4,
-                "small" => CssLengthContext.DefaultFontSize * 8 / 9,
-                "medium" => CssLengthContext.DefaultFontSize,
-                "large" => CssLengthContext.DefaultFontSize * 6 / 5,
-                "x-large" => CssLengthContext.DefaultFontSize * 3 / 2,
-                "xx-large" => CssLengthContext.DefaultFontSize * 2,
-                "xxx-large" => CssLengthContext.DefaultFontSize * 3,
+                "xx-small" => initialFontSize * 3 / 5,
+                "x-small" => initialFontSize * 3 / 4,
+                "small" => initialFontSize * 8 / 9,
+                "medium" => initialFontSize,
+                "large" => initialFontSize * 6 / 5,
+                "x-large" => initialFontSize * 3 / 2,
+                "xx-large" => initialFontSize * 2,
+                "xxx-large" => initialFontSize * 3,
                 _ => null,
             };
             if (absolute is not null)
@@ -1157,14 +1280,28 @@ internal static partial class CssCoreProperties
     private static bool ExpandFontShorthand(
         ref CssTokenReader reader, CssCompileContext context, List<CssCompiledDeclaration> output)
     {
+        var system = reader;
+        if (system.TryReadIdent(out var role) && system.AtEnd && CssSystemFontValue.IsRole(role))
+        {
+            reader = system;
+            string keyword = role.ToString().ToLowerInvariant();
+            foreach (string component in new[] { "font-family", "font-size", "font-weight", "font-style" })
+                output.Add(new(component, new CssSystemFontValue(keyword, component), false));
+            output.Add(new("font-stretch", new CssFontStretchValue(100), false));
+            output.Add(new("line-height", new CssComputedLineHeightValue(default), false));
+            ResetFontFeatures(output);
+            return true;
+        }
         var style = CssComputedFontStyle.Normal;
         CssCompiledValue weight = AbsoluteFontWeight("font", 400);
         var stretchPercentage = 100.0;
         var hasStyle = false;
         var hasWeight = false;
         var hasStretch = false;
+        var hasCaps = false;
+        var normalCount = 0;
 
-        // Prefix components in any order: style / weight / stretch / normal.
+        // CSS2 caps in the font shorthand is limited to normal / small-caps.
         while (true)
         {
             var probe = reader;
@@ -1172,6 +1309,7 @@ internal static partial class CssCoreProperties
             {
                 if (Eq(ident, "normal"))
                 {
+                    if (++normalCount > 4) return false;
                     reader = probe;
                     continue;
                 }
@@ -1182,6 +1320,14 @@ internal static partial class CssCoreProperties
                     probe = reader;
                     if (!CssFontStyleValue.TryRead(ref probe, out style)) return false;
                     hasStyle = true;
+                    reader = probe;
+                    continue;
+                }
+
+                if (Eq(ident, "small-caps"))
+                {
+                    if (hasCaps) return false;
+                    hasCaps = true;
                     reader = probe;
                     continue;
                 }
@@ -1231,7 +1377,10 @@ internal static partial class CssCoreProperties
             break;
         }
 
-        var sizeValue = ParseFontSizeComponent(ref reader);
+        if (normalCount + (hasStyle ? 1 : 0) + (hasWeight ? 1 : 0) + (hasStretch ? 1 : 0) + (hasCaps ? 1 : 0) > 4)
+            return false;
+
+        var sizeValue = ParseFontSizeComponent(ref reader, context.InitialFontSize);
         if (sizeValue is null)
         {
             return false;
@@ -1240,12 +1389,7 @@ internal static partial class CssCoreProperties
         CssCompiledValue lineHeightValue = new CssComputedLineHeightValue(default);
         if (reader.TryReadSlash())
         {
-            if (!reader.TryReadNumber(out var lhValue, out var lhUnit))
-            {
-                return false;
-            }
-
-            var parsed = MakeLineHeightValue(lhValue, lhUnit);
+            var parsed = ParseFontLineHeightComponent(ref reader);
             if (parsed is null)
             {
                 return false;
@@ -1254,7 +1398,7 @@ internal static partial class CssCoreProperties
             lineHeightValue = parsed;
         }
 
-        if (!CssFontFamilyValue.TryRead(ref reader, out var family)) return false;
+        if (!CssFontFamilyValue.TryRead(ref reader, out var family, allowSystemNames: true)) return false;
 
         ReportObliqueAngleFallback(style);
         output.Add(new CssCompiledDeclaration("font-style", new CssFontStyleValue(style), false));
@@ -1264,11 +1408,60 @@ internal static partial class CssCoreProperties
         output.Add(new CssCompiledDeclaration("font-size", sizeValue, false));
         output.Add(new CssCompiledDeclaration("line-height", lineHeightValue, false));
         output.Add(new CssCompiledDeclaration("font-family", new CssFontFamilyValue(family), false));
+        ResetFontFeatures(output, hasCaps ? CssCapsVariant.SmallCaps : CssCapsVariant.Normal);
         return true;
     }
 
+    private static void ResetFontFeatures(List<CssCompiledDeclaration> output, CssCapsVariant caps = CssCapsVariant.Normal)
+    {
+        output.Add(new CssCompiledDeclaration("font-size-adjust", new CssImmediateValue(CssFontSizeAdjust.ValueProperty, CssFontSizeAdjust.None), false));
+        output.Add(new CssCompiledDeclaration("font-optical-sizing", new CssImmediateValue(CssFontOpticalSizing.AutoProperty, true), false));
+        output.Add(new CssCompiledDeclaration("font-variation-settings",
+            new CssImmediateValue(CssFontVariationSettings.SettingsProperty, CssFontVariationSettings.Normal), false));
+        output.Add(new("font-variant-emoji", new CssImmediateValue(
+            CssFontEmoji.VariantProperty, CssEmojiVariant.Normal), false));
+        output.Add(new("font-variant-position", new CssImmediateValue(
+            CssFontPosition.VariantProperty, CssPositionVariant.Normal), false));
+        output.Add(new("font-variant-caps", new CssImmediateValue(
+            CssFontCaps.VariantProperty, caps), false));
+        output.Add(new CssCompiledDeclaration("font-variant-numeric",
+            new CssImmediateValue(CssFontNumeric.VariantProperty, CssNumericVariant.Normal), false));
+        output.Add(new CssCompiledDeclaration("font-variant-east-asian",
+            new CssImmediateValue(CssFontEastAsian.VariantProperty, CssEastAsianVariant.Normal), false));
+        output.Add(new CssCompiledDeclaration("font-variant-alternates",
+            new CssImmediateValue(CssFontAlternates.VariantProperty, CssFontAlternates.Normal), false));
+        output.Add(new CssCompiledDeclaration("font-feature-settings",
+            new CssImmediateValue(CssFontFeatureSettings.SettingsProperty, CssFontFeatureSettings.Normal), false));
+        output.Add(new CssCompiledDeclaration("font-kerning",
+            new CssImmediateValue(CssFontLigatures.KerningProperty, CssFontKerning.Auto), false));
+        output.Add(new CssCompiledDeclaration("font-variant-ligatures",
+            new CssImmediateValue(CssFontLigatures.VariantProperty, CssLigatureVariant.Normal), false));
+    }
+
+    private static CssCompiledValue? ParseFontLineHeightComponent(ref CssTokenReader reader)
+    {
+        var probe = reader;
+        if (probe.TryReadIdent(out var word) && Eq(word, "normal"))
+        {
+            reader = probe;
+            return new CssComputedLineHeightValue(default);
+        }
+        probe = reader;
+        if (probe.TryReadLength(out var length) && length.Unit != CssUnit.None)
+        {
+            if (length.Expression is null && length.Value < 0) return null;
+            reader = probe;
+            return new CssLengthLineHeightValue(length);
+        }
+        probe = reader;
+        if (!probe.TryReadNumber(out var number, out var unit)) return null;
+        var result = MakeLineHeightValue(probe.NumberWasCalculated ? Math.Max(0, number) : number, unit);
+        if (result is not null) reader = probe;
+        return result;
+    }
+
     /// <summary>Parses only the size component of the font shorthand (stops before the family list).</summary>
-    private static CssCompiledValue? ParseFontSizeComponent(ref CssTokenReader reader)
+    private static CssCompiledValue? ParseFontSizeComponent(ref CssTokenReader reader, double initialFontSize)
     {
         var probe = reader;
         if (probe.TryReadIdent(out _))
@@ -1282,7 +1475,7 @@ internal static partial class CssCoreProperties
             }
 
             var identReader = new CssTokenReader(ident);
-            var parsed = ParseFontSize(ref identReader);
+            var parsed = ParseFontSize(ref identReader, initialFontSize);
             if (parsed is not null)
             {
                 reader = single;

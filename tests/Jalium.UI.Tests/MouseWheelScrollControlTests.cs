@@ -171,6 +171,7 @@ public class MouseWheelScrollControlTests
     public void HexEditor_AccumulatesSubRowMovement_AndUsesScrollbarEnd()
     {
         var editor = new HexEditor { Data = new byte[4096] };
+        editor.Resources.MergedDictionaries.Add(MenuFlyoutTemplateTestHelper.Themes.Value);
         Arrange(editor);
         double height = Field<double>(editor, "_rowHeight");
         for (int index = 0; index < 4; index++)
@@ -181,7 +182,7 @@ public class MouseWheelScrollControlTests
         Assert.False(horizontal.Handled);
         Assert.Equal((long)editor.BytesPerRow, Field<long>(editor, "_scrollOffset"));
         editor.RaiseEvent(Wheel(0, -1e6));
-        var bar = Field<ScrollBar>(editor, "_verticalScrollBar");
+        var bar = Assert.IsType<ScrollBar>(editor.FindName("PART_VerticalScrollBar"));
         Assert.Equal((long)bar.Maximum * editor.BytesPerRow, Field<long>(editor, "_scrollOffset"));
         var atEnd = Wheel(0, -25);
         editor.RaiseEvent(atEnd);
@@ -206,9 +207,14 @@ public class MouseWheelScrollControlTests
     [Fact]
     public void Menu_PreciseWheel_IsConsumedOnceAcrossPreviewAndBubble()
     {
-        var menu = new MenuPopupScrollHost();
+        Jalium.UI.Markup.ThemeLoader.Initialize(); using var stream = new MemoryStream();
+        var themes = Jalium.UI.Controls.Themes.ThemeManager.XamlLoader!(stream, "Themes/Generic.jalxaml", typeof(Control).Assembly)!;
+        var scoped = new ResourceDictionary(); foreach (var type in new[] { typeof(MenuPopupScrollHost), typeof(RepeatButton), typeof(MenuFlyoutItem) }) if (themes.TryGetValue(type, out var style)) scoped[type] = style;
+        Jalium.UI.Controls.Themes.ThemeManager.RegisterControlThemes(scoped);
+        var menu = new MenuPopupScrollHost { Style = (Style)themes[typeof(MenuPopupScrollHost)]! };
+        menu.Resources["ScrollBarLineButtonStyle"] = themes["ScrollBarLineButtonStyle"];
         for (int index = 0; index < 16; index++)
-            menu.ItemsPanel.Children.Add(new MenuFlyoutItem { Text = $"Item {index}" });
+            menu.Items.Add(new MenuFlyoutItem { Text = $"Item {index}" });
         Arrange(menu, 220, 120);
         var viewer = Field<ScrollViewer>(menu, "_scrollViewer");
         var button = Field<RepeatButton>(menu, "_scrollDownButton");

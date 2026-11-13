@@ -5,6 +5,8 @@ namespace Jalium.UI.Tests;
 
 public sealed class ToolBarParityTests
 {
+    public ToolBarParityTests() => ToolBarTemplateTestHelper.Register();
+
     [Fact]
     public void ToolBarExposesStableStyleKeysAndReadOnlyOverflowState()
     {
@@ -47,8 +49,8 @@ public sealed class ToolBarParityTests
         Assert.True(ToolBar.GetIsOverflowItem(asNeeded));
         Assert.True(ToolBar.GetIsOverflowItem(always));
 
-        var mainPanel = Assert.IsType<ToolBarPanel>(toolBar.GetVisualChild(0));
-        var overflowPanel = Assert.IsType<ToolBarOverflowPanel>(toolBar.GetVisualChild(1));
+        var mainPanel = Assert.IsType<ToolBarPanel>(toolBar.ItemsHostInternal);
+        var overflowPanel = Assert.IsType<ToolBarOverflowPanel>(toolBar.FindName("PART_OverflowPanel"));
         Assert.Single(mainPanel.Children);
         Assert.Same(never, mainPanel.Children[0]);
         Assert.Equal(
@@ -61,7 +63,8 @@ public sealed class ToolBarParityTests
         toolBar.Arrange(new Rect(0, 0, 100, 30));
         Assert.Equal(Visibility.Visible, overflowPanel.Visibility);
         Assert.Equal(70, never.RenderSize.Width);
-        Assert.True(asNeeded.RenderSize.Width > 0);
+        // Detached popups have no native host; native QA owns rendered-popup assertions.
+        Assert.True(toolBar.IsOverflowPresented);
 
         ToolBar.SetOverflowMode(asNeeded, OverflowMode.Never);
         toolBar.Measure(new Size(100, 30));

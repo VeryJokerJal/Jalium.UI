@@ -1,0 +1,103 @@
+{
+  "origin": "Generated offline from Jalium MIT geometric contours; CFF Type2 rectangles authored by this script.",
+  "files": [
+    {
+      "file": "OriginZero.ttf",
+      "name": "OriginZero",
+      "sha256": "2968de91fd6fcfb66364b28aaf73940e408e67d7cc34854d1e51e16a785fc991",
+      "source": "FontSizeAdjust/VerticalVariable.ttf",
+      "sourceSha256": "3a5117763cca66779effa671d5aab97cf563883ac709f381ebf4e3334cd1fbc7"
+    },
+    {
+      "file": "OriginPositive.ttf",
+      "name": "OriginPositive",
+      "sha256": "737c030357d4e9b3d3330f7090edd45eebe278c5310cc2af8f82a090aa6f384f",
+      "source": "FontSizeAdjust/VerticalVariable.ttf",
+      "sourceSha256": "3a5117763cca66779effa671d5aab97cf563883ac709f381ebf4e3334cd1fbc7"
+    },
+    {
+      "file": "OriginNegative.ttf",
+      "name": "OriginNegative",
+      "sha256": "1efc871d8740b09d92563e37207e8cc23fba7e19115c10a02803bc1e47fc6e75",
+      "source": "FontSizeAdjust/VerticalVariable.ttf",
+      "sourceSha256": "3a5117763cca66779effa671d5aab97cf563883ac709f381ebf4e3334cd1fbc7"
+    },
+    {
+      "file": "OriginShort.ttf",
+      "name": "OriginShort",
+      "sha256": "9cee68b3b333a1d56d3d1db95c2387e5454976c829bbf28e924dbefa79f4a14a",
+      "source": "FontSizeAdjust/VerticalVariable.ttf",
+      "sourceSha256": "3a5117763cca66779effa671d5aab97cf563883ac709f381ebf4e3334cd1fbc7"
+    },
+    {
+      "file": "OriginShifted.ttf",
+      "name": "OriginShifted",
+      "sha256": "ac12e6c754111c5873f1c31c2bb94df5d1f8a0d01f8860b31fb30e042e6e0886",
+      "source": "FontSizeAdjust/VerticalVariable.ttf",
+      "sourceSha256": "3a5117763cca66779effa671d5aab97cf563883ac709f381ebf4e3334cd1fbc7"
+    },
+    {
+      "file": "OriginGvar.ttf",
+      "name": "OriginGvar",
+      "sha256": "b9669bd5a92e46486cd45a06e1c053268c370a9ff2d313a1b134fa07885b2d2a",
+      "source": "FontGvarMetrics/PhantomEmbedded.ttf",
+      "sourceSha256": "d97e28ec1f6882148ab35d9176785288a294ae1967a8d15de275503ad31a97fe"
+    },
+    {
+      "file": "OriginVvarTsb.ttf",
+      "name": "OriginVvarTsb",
+      "sha256": "42214f2afd1ad5f31e1ac771975d5a58092512b882446c9f75a6506f73cbc8cc",
+      "source": "FontSizeAdjust/VerticalVariable.ttf",
+      "sourceSha256": "3a5117763cca66779effa671d5aab97cf563883ac709f381ebf4e3334cd1fbc7"
+    },
+    {
+      "file": "OriginVvarPoison.ttf",
+      "name": "OriginVvarPoison",
+      "sha256": "9ec0c146262ad2f061e7fa519dff195bbaa900b2597546d933c78dad202ad46f",
+      "source": "FontSizeAdjust/VerticalVariable.ttf",
+      "sourceSha256": "3a5117763cca66779effa671d5aab97cf563883ac709f381ebf4e3334cd1fbc7"
+    },
+    {
+      "file": "OriginBaseWide.ttf",
+      "name": "OriginBaseWide",
+      "sha256": "52bdef3b399d8473199f3c6fd10b1aaaae8d9ea21d122b6b0ee080ddfde61e72",
+      "source": "FontSizeAdjust/VerticalVariable.ttf",
+      "sourceSha256": "3a5117763cca66779effa671d5aab97cf563883ac709f381ebf4e3334cd1fbc7"
+    },
+    {
+      "file": "OriginBaseNarrow.ttf",
+      "name": "OriginBaseNarrow",
+      "sha256": "57cc35581adde260b651001768f45374f3a805e735e8c384a138247ffee3cbb6",
+      "source": "FontSizeAdjust/VerticalVariable.ttf",
+      "sourceSha256": "3a5117763cca66779effa671d5aab97cf563883ac709f381ebf4e3334cd1fbc7"
+    },
+    {
+      "file": "OriginBaseVariable.ttf",
+      "name": "OriginBaseVariable",
+      "sha256": "1860d70452564b8942a4090309f498aa07123e83e5e699ff05545af971f21aa0",
+      "source": "FontSizeAdjust/VerticalVariable.ttf",
+      "sourceSha256": "3a5117763cca66779effa671d5aab97cf563883ac709f381ebf4e3334cd1fbc7"
+    },
+    {
+      "file": "OriginMissing.ttf",
+      "name": "OriginMissing",
+      "sha256": "4dbd59dcd85bcd106f25e304e75eedf448bec6ee6f3bb41b635b823263eb04b4",
+      "source": "FontSizeAdjust/VerticalVariable.ttf",
+      "sourceSha256": "3a5117763cca66779effa671d5aab97cf563883ac709f381ebf4e3334cd1fbc7"
+    },
+    {
+      "file": "OriginCffVorg.otf",
+      "name": "OriginCffVorg",
+      "sha256": "481e727d383fbd12e71327165246bbbaf185a4b98ba260f52674d5be7be7a0d4",
+      "source": "FontSizeAdjust/VerticalVariable.ttf",
+      "sourceSha256": "3a5117763cca66779effa671d5aab97cf563883ac709f381ebf4e3334cd1fbc7"
+    },
+    {
+      "file": "OriginCffNoVorg.otf",
+      "name": "OriginCffNoVorg",
+      "sha256": "98db7d57b6f46285dfb8eabf6682188124abc6ef27a7555ce4f23a6179069e29",
+      "source": "FontSizeAdjust/VerticalVariable.ttf",
+      "sourceSha256": "3a5117763cca66779effa671d5aab97cf563883ac709f381ebf4e3334cd1fbc7"
+    }
+  ]
+}

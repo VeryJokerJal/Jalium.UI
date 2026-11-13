@@ -19,7 +19,7 @@ public partial class TextBlock
     private sealed record PaintWrapUnit(int PaintStart, int PaintEnd,
         int SourceStart, int SourceEnd, Run? Run,
         TextMeasurementCacheEntry Measurement, bool Invisible, bool BreakableSpace,
-        double WordSpacing);
+        bool PreservedTab, double WordSpacing);
 
     private readonly record struct PaintWrapJustification(
         int[] Boundaries, double ExtraPerGap, double FilledWidth);
@@ -44,8 +44,10 @@ public partial class TextBlock
     {
         justified = default;
         var groupPadding = GetGroupAlignmentPadding(contentWidth);
+        var tabOrigin = ResolveTextIndent(line.IndentApplies, contentWidth) +
+            CssFlowProperties.GroupStartPadding(this, groupPadding) + GetLineLeftPadding(line);
         contentWidth -= ResolveTextIndent(line.IndentApplies, contentWidth) +
-            groupPadding + line.StartPadding + line.EndPadding;
+            groupPadding + line.StartPadding + line.EndPadding + CssClampAdvance(line);
         if (CssFlowProperties.NativeLineTextAlignment(this, TextAlignmentProperty,
                 isLast: !line.CanJustify) != TextAlignment.Justify ||
             (!line.CanJustify && !CssFlowProperties.JustifiesLastLine(this, TextAlignmentProperty)) ||
@@ -65,34 +67,39 @@ public partial class TextBlock
             visibleEnd--;
         var visibleSourceEnd = visibleEnd > paintWrap.First
             ? units[visibleEnd - 1].SourceEnd : units[paintWrap.First].SourceStart;
+        var lastTabUnit = -1;
+        for (var index = paintWrap.First; index < visibleEnd; index++)
+            if (units[index].PreservedTab) lastTabUnit = index;
+        var justifyStart = lastTabUnit >= 0 ? lastTabUnit + 1 : paintWrap.First;
         var boundaries = new List<int>();
         if (method is CssTextJustification.Auto or CssTextJustification.InterWord)
         {
-            for (var index = paintWrap.First; index < visibleEnd;)
+            for (var index = justifyStart; index < visibleEnd;)
             {
-                if (!units[index].BreakableSpace)
+                if (!units[index].BreakableSpace || units[index].PreservedTab)
                 {
                     index++;
                     continue;
                 }
                 var start = index;
-                while (index < visibleEnd && units[index].BreakableSpace) index++;
-                if (start > paintWrap.First && index < visibleEnd)
+                while (index < visibleEnd && units[index].BreakableSpace && !units[index].PreservedTab) index++;
+                if (start > justifyStart && index < visibleEnd)
                     boundaries.Add(index);
             }
         }
         if (method is CssTextJustification.Auto or CssTextJustification.InterCharacter)
         {
-            for (var boundary = paintWrap.First + 1; boundary < visibleEnd; boundary++)
+            for (var boundary = justifyStart + 1; boundary < visibleEnd; boundary++)
             {
-                if (!Rune.TryGetRuneAt(_paintText, units[boundary - 1].PaintStart,
+                if (units[boundary - 1].PreservedTab || units[boundary].PreservedTab ||
+                    !Rune.TryGetRuneAt(_paintText, units[boundary - 1].PaintStart,
                         out var before) ||
                     !Rune.TryGetRuneAt(_paintText, units[boundary].PaintStart,
                         out var after) ||
                     IsProhibitedLineEnd(before) || IsProhibitedLineStart(after))
                     continue;
                 if (method == CssTextJustification.Auto
-                    ? IsCjkLineBreakRune(before) && IsCjkLineBreakRune(after)
+                    ? !Rune.IsWhiteSpace(before) && !Rune.IsWhiteSpace(after) && (IsCjkLineBreakRune(before) || IsCjkLineBreakRune(after))
                     : !IsCursiveJoiningPair(before, after))
                     boundaries.Add(boundary);
             }
@@ -100,8 +107,12 @@ public partial class TextBlock
 
         boundaries.Sort();
         var naturalWidth = 0.0;
-        if (_hasLetterSpacing || _hasWordSpacing)
-            naturalWidth = MeasurePaintWrapRange(units, paintWrap.First, visibleEnd);
+        if (_hasLetterSpacing || _usesAutospaceShaping)
+            naturalWidth = MeasurePaintWrapRange(units, paintWrap.First, visibleEnd,
+                includeTrailingWhitespace: true,
+                lineSourceStart: units[paintWrap.First].SourceStart,
+                lineSourceEnd: visibleSourceEnd,
+                tabOrigin: tabOrigin);
         else
         {
             var first = paintWrap.First;
@@ -110,13 +121,15 @@ public partial class TextBlock
                 naturalWidth += MeasurePaintWrapRange(units, first, boundary,
                     includeTrailingWhitespace: true,
                     lineSourceStart: units[paintWrap.First].SourceStart,
-                    lineSourceEnd: visibleSourceEnd);
+                    lineSourceEnd: visibleSourceEnd,
+                    tabOrigin: tabOrigin);
                 first = boundary;
             }
             naturalWidth += MeasurePaintWrapRange(units, first, visibleEnd,
                 includeTrailingWhitespace: true,
                 lineSourceStart: units[paintWrap.First].SourceStart,
-                lineSourceEnd: visibleSourceEnd);
+                lineSourceEnd: visibleSourceEnd,
+                tabOrigin: tabOrigin);
         }
         var extra = contentWidth - naturalWidth;
         extra += line.HangingStart + line.HangingEnd;
@@ -133,7 +146,7 @@ public partial class TextBlock
         bool hasLineBreakAfter, double constraintWidth, double indentPercentBasis, bool firstLogicalLine,
         CssTextIndent indent, bool intrinsic)
     {
-        if (_paintOffsets is null || ContainsPreservedTab(lineStart, lineLength) ||
+        if (_combinedTextUnits.Length > 0 || _paintOffsets is null ||
             _visualText.AsSpan(lineStart, lineLength).Contains('\u00AD')) return false;
 
         var lineEnd = lineStart + lineLength;
@@ -186,13 +199,15 @@ public partial class TextBlock
             var run = rangeIndex < ranges.Count && ranges[rangeIndex].Start <= sourceStart
                 ? ranges[rangeIndex].Run : null;
             var text = _paintText.Substring(paintStart, paintEnd - paintStart);
-            var measurement = _hasLetterSpacing || _hasWordSpacing
+            var preservedTab = _hasPreservedTabs && text == "\t";
+            var measurement = !preservedTab && (_hasLetterSpacing || _hasWordSpacing || _usesAutospaceShaping)
                 ? (run is null ? MeasureText(text) : MeasureRunText(run, text))
                 : default;
             units[paintIndex - firstPaint] = new PaintWrapUnit(
                 paintStart, paintEnd, sourceStart, sourceEnd, run, measurement,
                 IsInvisiblePaintUnit(text) || _autospaceReplacementWidths.ContainsKey(sourceStart),
                 text.Length == 1 && IsBreakableWhitespace(text[0]),
+                preservedTab,
                 WordSpacingInRange(sourceStart, sourceEnd));
         }
 
@@ -203,9 +218,12 @@ public partial class TextBlock
         {
             var indentApplies = indent.Applies(firstLogicalLine && first == 0,
                 !firstLogicalLine && first == 0);
-            var availableWidth = constraintWidth - ResolveTextIndent(indentApplies, indentPercentBasis);
+            var resolvedIndent = ResolveTextIndent(indentApplies, indentPercentBasis);
+            var availableWidth = constraintWidth - resolvedIndent;
+            var startPadding = GetLineStartPadding(units[first].SourceStart, lineEnd);
+            var tabOrigin = resolvedIndent + startPadding;
             int end;
-            if (double.IsInfinity(constraintWidth))
+            if (double.IsInfinity(constraintWidth) || EffectiveTextWrapping() == TextWrapping.NoWrap)
                 end = units.Length;
             else if (!canBreakInsidePaint)
             {
@@ -213,7 +231,7 @@ public partial class TextBlock
                 // itself follows the established source-space break policy.
                 var wrapSourceStart = units[first].SourceStart;
                 var sourceLength = FindWrapLength(wrapSourceStart,
-                    lineEnd - wrapSourceStart, availableWidth, intrinsic);
+                    lineEnd - wrapSourceStart, availableWidth, intrinsic, tabOrigin);
                 var wrapSourceEnd = wrapSourceStart + Math.Max(1, sourceLength);
                 end = first + 1;
                 while (end < units.Length && units[end].SourceStart < wrapSourceEnd)
@@ -223,7 +241,6 @@ public partial class TextBlock
             {
                 var best = first;
                 var candidateSourceStart = units[first].SourceStart;
-                var startPadding = GetLineStartPadding(candidateSourceStart, lineEnd);
                 var variableEndPadding = HasLinePaddingChange(candidateSourceStart, lineEnd);
                 for (var groupStart = first + 1; groupStart <= units.Length;)
                 {
@@ -244,7 +261,7 @@ public partial class TextBlock
                     while (low <= high)
                     {
                         var middle = low + (high - low) / 2;
-                        var measured = MeasurePaintWrapRange(units, first, middle);
+                        var measured = MeasurePaintWrapRange(units, first, middle, tabOrigin: tabOrigin);
                         if (HangingFitWidth(units[first].SourceStart,
                                 units[middle - 1].SourceEnd, measured) +
                             startPadding + endPadding <= availableWidth)
@@ -263,7 +280,9 @@ public partial class TextBlock
             var sourceEnd = units[end - 1].SourceEnd;
             var paintWrap = new PaintWrapLine(units, first, end);
             _layoutLines.Add(CreateTextLayoutLine(sourceStart, sourceEnd - sourceStart,
-                MeasurePaintWrapRange(units, first, end),
+                MeasurePaintWrapRange(units, first, end,
+                    includeTrailingWhitespace: EffectiveTextWrapping() == TextWrapping.NoWrap && (HasAuthoredWhiteSpace() || _countTrailingWhitespace),
+                    tabOrigin: tabOrigin),
                 last && hasLineBreakAfter,
                 canJustify: !last,
                 indentApplies: first == 0 ? firstIndentApplies : indentApplies,
@@ -316,7 +335,8 @@ public partial class TextBlock
 
     private double MeasurePaintWrapRange(PaintWrapUnit[] units, int first, int end,
         bool includeTrailingWhitespace = false,
-        int? lineSourceStart = null, int? lineSourceEnd = null)
+        int? lineSourceStart = null, int? lineSourceEnd = null,
+        double tabOrigin = 0)
     {
         if (!includeTrailingWhitespace && !_countTrailingWhitespace)
             while (end > first && units[end - 1].BreakableSpace) end--;
@@ -324,13 +344,48 @@ public partial class TextBlock
         var sourceStart = lineSourceStart ?? units[first].SourceStart;
         var sourceEnd = lineSourceEnd ?? units[end - 1].SourceEnd;
 
-        if (!_hasLetterSpacing && !_hasWordSpacing)
+        for (var i = first; i < end; i++)
+        {
+            if (!units[i].PreservedTab) continue;
+            var position = tabOrigin;
+            var cursor = first;
+            for (var unitIndex = first; unitIndex < end; unitIndex++)
+            {
+                if (!units[unitIndex].PreservedTab) continue;
+                var tabSource = units[unitIndex].SourceStart;
+                position += MeasurePaintWrapRangeWithoutTabs(units, cursor, unitIndex, sourceStart, sourceEnd);
+                position += LetterSpacingAtBoundary(tabSource, sourceStart, sourceEnd);
+                position += GetPreservedTabAdvance(position, tabSource);
+                cursor = unitIndex + 1;
+                position += LetterSpacingAtBoundary(tabSource + 1, sourceStart, sourceEnd);
+            }
+            position += MeasurePaintWrapRangeWithoutTabs(units, cursor, end, sourceStart, sourceEnd);
+            return Math.Max(0, position - tabOrigin);
+        }
+
+        return MeasurePaintWrapRangeWithoutTabs(units, first, end, sourceStart, sourceEnd);
+    }
+
+    private double MeasurePaintWrapRangeWithoutTabs(PaintWrapUnit[] units, int first, int end,
+        int sourceStart, int sourceEnd)
+    {
+        if (end <= first) return 0;
+        if (!_hasLetterSpacing && !_usesAutospaceShaping)
         {
             var width = 0.0;
             for (var index = first; index < end;)
             {
+                if (units[index].WordSpacing != 0)
+                {
+                    width += units[index].Measurement.WidthIncludingTrailingWhitespace + units[index].WordSpacing;
+                    index++;
+                    continue;
+                }
                 var chunkEnd = index + 1;
-                while (chunkEnd < end && ReferenceEquals(units[chunkEnd].Run, units[index].Run))
+                while (chunkEnd < end &&
+                       units[chunkEnd].WordSpacing == 0 &&
+                       !units[chunkEnd].PreservedTab &&
+                       ReferenceEquals(units[chunkEnd].Run, units[index].Run))
                     chunkEnd++;
                 var text = _paintText.Substring(units[index].PaintStart,
                     units[chunkEnd - 1].PaintEnd - units[index].PaintStart);
@@ -339,7 +394,7 @@ public partial class TextBlock
                 width += measured.WidthIncludingTrailingWhitespace;
                 index = chunkEnd;
             }
-            return width;
+            return Math.Max(0, width);
         }
 
         var result = 0.0;
@@ -379,29 +434,46 @@ public partial class TextBlock
         var paintWrap = line.PaintWrap!;
         var units = paintWrap.Units;
         var x = originX;
+        var tabStopsOriginX = InlineFragment(line) is { } fragment
+            ? fragment.TextX - fragment.TabOrigin : GetTextInsets().Left;
         var hasJustification = TryGetPaintWrapJustification(line,
-            GetContentWidth(RenderSize.Width), out var justified);
+            GetContentWidth(TextContentSize.Width), out var justified);
         var gaps = hasJustification ? justified.Boundaries : Array.Empty<int>();
-        if (!_hasLetterSpacing && !_hasWordSpacing)
+        if (!_hasLetterSpacing && !_usesAutospaceShaping)
         {
             var first = paintWrap.First;
             foreach (var gap in gaps)
             {
-                DrawPaintWrapChunks(context, line, units, first, gap, ref x, lineY);
+                DrawPaintWrapChunks(context, line, units, first, gap, tabStopsOriginX, ref x, lineY);
                 x += justified.ExtraPerGap;
                 first = gap;
             }
-            DrawPaintWrapChunks(context, line, units, first, paintWrap.End, ref x, lineY);
+            DrawPaintWrapChunks(context, line, units, first, paintWrap.End, tabStopsOriginX, ref x, lineY);
             return;
         }
 
         PaintWrapUnit? previousVisible = null;
         var gapIndex = 0;
+        var lineEnd = line.StartIndex + line.Length;
         for (var index = paintWrap.First; index < paintWrap.End; index++)
         {
             var unit = units[index];
+            if (unit.PreservedTab)
+            {
+                if (previousVisible is not null)
+                    x += LetterSpacingAtBoundary(unit.SourceStart, line.StartIndex, lineEnd);
+                x += GetPreservedTabAdvance(x - tabStopsOriginX, unit.SourceStart);
+                x += LetterSpacingAtBoundary(unit.SourceEnd, line.StartIndex, lineEnd);
+                previousVisible = null;
+                if (gapIndex < gaps.Length && gaps[gapIndex] == index + 1)
+                {
+                    x += justified.ExtraPerGap;
+                    gapIndex++;
+                }
+                continue;
+            }
             if (IsEdgeAutospaceReplacement(unit.SourceStart,
-                    line.StartIndex, line.StartIndex + line.Length))
+                    line.StartIndex, lineEnd))
                 continue;
             if (!unit.Invisible)
             {
@@ -410,7 +482,8 @@ public partial class TextBlock
                 previousVisible = unit;
             }
             x += unit.WordSpacing / 2;
-            DrawMeasuredFragment(context, unit.Run, unit.Measurement, ref x, lineY, line);
+            DrawMeasuredFragment(context, unit.Run, unit.Measurement, ref x, lineY, line,
+                unit.SourceStart, unit.SourceEnd - unit.SourceStart, unit.PaintStart);
             x += unit.WordSpacing / 2;
             if (gapIndex < gaps.Length && gaps[gapIndex] == index + 1)
             {
@@ -421,26 +494,50 @@ public partial class TextBlock
     }
 
     private void DrawPaintWrapChunks(DrawingContext context, in TextLayoutLine line,
-        PaintWrapUnit[] units, int first, int end, ref double x, double lineY)
+        PaintWrapUnit[] units, int first, int end, double tabStopsOriginX, ref double x, double lineY)
     {
         for (var index = first; index < end;)
         {
+            var unit = units[index];
+            if (unit.PreservedTab)
+            {
+                x += GetPreservedTabAdvance(x - tabStopsOriginX, unit.SourceStart);
+                index++;
+                continue;
+            }
+            if (unit.WordSpacing != 0)
+            {
+                x += unit.WordSpacing / 2;
+                DrawMeasuredFragment(context, unit.Run, unit.Measurement, ref x, lineY, line,
+                    unit.SourceStart, unit.SourceEnd - unit.SourceStart, unit.PaintStart);
+                x += unit.WordSpacing / 2;
+                index++;
+                continue;
+            }
             var chunkEnd = index + 1;
-            while (chunkEnd < end && ReferenceEquals(units[chunkEnd].Run, units[index].Run))
+            while (chunkEnd < end &&
+                   units[chunkEnd].WordSpacing == 0 &&
+                   !units[chunkEnd].PreservedTab &&
+                   ReferenceEquals(units[chunkEnd].Run, unit.Run))
                 chunkEnd++;
-            var text = _paintText.Substring(units[index].PaintStart,
-                units[chunkEnd - 1].PaintEnd - units[index].PaintStart);
-            var measured = units[index].Run is { } run
+            var text = _paintText.Substring(unit.PaintStart,
+                units[chunkEnd - 1].PaintEnd - unit.PaintStart);
+            var measured = unit.Run is { } run
                 ? MeasureRunText(run, text) : MeasureText(text);
-            DrawMeasuredFragment(context, units[index].Run, measured, ref x, lineY, line);
+            DrawMeasuredFragment(context, unit.Run, measured, ref x, lineY, line,
+                unit.SourceStart, units[chunkEnd - 1].SourceEnd - unit.SourceStart, unit.PaintStart);
             index = chunkEnd;
         }
     }
 
     private double GetPaintWrapBoundaryX(in TextLayoutLine line, int sourceIndex)
     {
+        var contentWidth = GetContentWidth(TextContentSize.Width);
+        var groupPadding = GetGroupAlignmentPadding(contentWidth);
+        var tabOrigin = ResolveTextIndent(line.IndentApplies, contentWidth) +
+            CssFlowProperties.GroupStartPadding(this, groupPadding) + GetLineLeftPadding(line);
         var hasJustification = TryGetPaintWrapJustification(line,
-            GetContentWidth(RenderSize.Width), out var justified);
+            contentWidth, out var justified);
         var fullWidth = (hasJustification ? justified.FilledWidth : line.Width) +
             line.HangingStart + line.HangingEnd;
         if (sourceIndex >= line.StartIndex + line.Length) return fullWidth;
@@ -451,7 +548,7 @@ public partial class TextBlock
         while (end < paintWrap.End && paintWrap.Units[end].PaintEnd <= paintBoundary)
             end++;
         var width = 0.0;
-        if (hasJustification && !_hasLetterSpacing && !_hasWordSpacing)
+        if (hasJustification && !_hasLetterSpacing && !_usesAutospaceShaping)
         {
             var first = paintWrap.First;
             foreach (var gap in justified.Boundaries)
@@ -460,21 +557,24 @@ public partial class TextBlock
                 width += MeasurePaintWrapRange(paintWrap.Units, first, gap,
                     includeTrailingWhitespace: true,
                     lineSourceStart: line.StartIndex,
-                    lineSourceEnd: line.StartIndex + line.Length) +
+                    lineSourceEnd: line.StartIndex + line.Length,
+                    tabOrigin: tabOrigin) +
                     justified.ExtraPerGap;
                 first = gap;
             }
             width += MeasurePaintWrapRange(paintWrap.Units, first, end,
                 includeTrailingWhitespace: true,
                 lineSourceStart: line.StartIndex,
-                lineSourceEnd: line.StartIndex + line.Length);
+                lineSourceEnd: line.StartIndex + line.Length,
+                tabOrigin: tabOrigin);
         }
         else
         {
             width = MeasurePaintWrapRange(paintWrap.Units, paintWrap.First, end,
                 includeTrailingWhitespace: true,
                 lineSourceStart: line.StartIndex,
-                lineSourceEnd: line.StartIndex + line.Length);
+                lineSourceEnd: line.StartIndex + line.Length,
+                tabOrigin: tabOrigin);
             if (hasJustification)
                 foreach (var gap in justified.Boundaries)
                     if (gap <= end) width += justified.ExtraPerGap;

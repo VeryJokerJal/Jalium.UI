@@ -8,6 +8,11 @@ namespace Jalium.UI.Tests;
 [Collection("Application")]
 public class DockRenderingTests
 {
+    public DockRenderingTests()
+    {
+        Jalium.UI.Controls.Themes.ThemeManager.RegisterControlThemes(MenuFlyoutTemplateTestHelper.Themes.Value);
+    }
+
     [Fact]
     public void DockItem_SelectedTab_ShouldUseRoundedTopCornersByDefault()
     {
@@ -19,6 +24,9 @@ public class DockRenderingTests
             Height = 28
         };
 
+        item.Resources.MergedDictionaries.Add(MenuFlyoutTemplateTestHelper.Themes.Value);
+        item.Style = (Style)MenuFlyoutTemplateTestHelper.Themes.Value[typeof(DockItem)]!;
+        item.SelectedBackground = Brushes.Blue;
         item.Measure(new Size(96, 28));
         item.Arrange(new Rect(0, 0, 96, 28));
 
@@ -27,7 +35,7 @@ public class DockRenderingTests
 
         var fillGeometryCall = Assert.Single(drawingContext.GeometryCalls,
             call => call.Brush != null && call.Pen == null);
-        var fillGeometry = Assert.IsType<PathGeometry>(fillGeometryCall.Geometry);
+        var fillGeometry = fillGeometryCall.Geometry.GetFlattenedPathGeometry();
         var figure = Assert.Single(fillGeometry.Figures);
 
         Assert.InRange(figure.StartPoint.X, 7.9, 8.1);
@@ -45,6 +53,9 @@ public class DockRenderingTests
         panel.Items.Add(first);
         panel.Items.Add(second);
         panel.SelectedIndex = 0;
+        first.Resources.MergedDictionaries.Add(MenuFlyoutTemplateTestHelper.Themes.Value);
+        first.Style = (Style)MenuFlyoutTemplateTestHelper.Themes.Value[typeof(DockItem)]!;
+        first.SelectedBackground = Brushes.Blue;
 
         host.Children.Add(panel);
         host.UpdateLayoutPass(new Size(260, 180));
@@ -54,7 +65,7 @@ public class DockRenderingTests
 
         var fillGeometryCall = Assert.Single(drawingContext.GeometryCalls,
             call => call.Brush != null && call.Pen == null);
-        var fillGeometry = Assert.IsType<PathGeometry>(fillGeometryCall.Geometry);
+        var fillGeometry = fillGeometryCall.Geometry.GetFlattenedPathGeometry();
         var figure = Assert.Single(fillGeometry.Figures);
 
         Assert.InRange(figure.StartPoint.X, 7.9, 8.1);

@@ -1,3 +1,6 @@
+using Jalium.UI.Media;
+using Jalium.UI.Styling;
+
 namespace Jalium.UI.Automation;
 
 // Formatting is optional and separate from character offsets and visual rows.
@@ -66,7 +69,7 @@ internal static class AutomationTextStyles
 
     internal static object? Value(AutomationTextStyle style, int attribute) => attribute switch
     {
-        40005 => style.FontFamily,
+        40005 => FamilyName(style.FontFamily),
         40006 => style.FontSize,
         40007 => style.FontWeight,
         40008 => ColorRef(style.Foreground),
@@ -80,6 +83,18 @@ internal static class AutomationTextStyles
         40030 => DecorationStyle(style.Underline),
         _ => null
     };
+
+    // Rendering retains private axis/feature identities. The public font-name
+    // attribute must stay a name even when no native render context is active.
+    internal static string FamilyName(string source)
+    {
+        source = CssFontFaces.Unblock(source);
+        if (FontFeatureRenderingSource.TryUnwrap(source, out _, out var family)) source = family;
+        if (FontWidthRenderingSource.TryUnwrap(source, out _, out family)) source = family;
+        if (!CssFontRenderingPlan.TryDecode(source, out var plan)) return source;
+        return (plan.MetricsFace >= 0 ? plan.Faces[plan.MetricsFace].Family :
+            plan.Faces.FirstOrDefault(face => !face.Waiting)?.Family) ?? FrameworkElement.DefaultFontFamilyName;
+    }
 
     private static int? ColorRef(uint? color) => color is { } c
         ? (int)((c & 0xff) << 16 | (c & 0xff00) | (c >> 16 & 0xff)) : null;

@@ -1,0 +1,23 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:local="clr-namespace:Jalium.UI.DesktopDemo" x:Class="Jalium.UI.DesktopDemo.Themes.NotificationDemoTheme">
+    <Style x:Key="NotificationDemo.Window" TargetType="Window"><Setter Property="Background" Value="#1E1E2E" /></Style>
+    <Style x:Key="NotificationDemo.Action" TargetType="Button"><Setter Property="Background" Value="#585B70" /><Setter Property="BorderBrush" Value="#6C7086" /><Setter Property="BorderThickness" Value="1" /><Setter Property="CornerRadius" Value="6" /><Setter Property="MinHeight" Value="40" /><Setter Property="Padding" Value="16,8" /><Setter Property="Margin" Value="0,4" /><Setter Property="Foreground" Value="White" /><Setter Property="FontSize" Value="14" /></Style>
+    <Style TargetType="local:NotificationDemoSurface"><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="local:NotificationDemoSurface"><Grid>
+        <VisualStateManager.VisualStateGroups>
+            <VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Normal" /><VisualState x:Name="Disabled"><VisualState.Setters><Setter Property="Opacity" Value="0.5" /></VisualState.Setters></VisualState></VisualStateGroup>
+            <VisualStateGroup x:Name="NotificationStates"><VisualState x:Name="Ready" /><VisualState x:Name="Sent"><VisualState.Setters><Setter TargetName="PART_Status" Property="Foreground" Value="#A6E3A1" /></VisualState.Setters></VisualState><VisualState x:Name="Error"><VisualState.Setters><Setter TargetName="PART_Status" Property="Foreground" Value="#F38BA8" /></VisualState.Setters></VisualState></VisualStateGroup>
+        </VisualStateManager.VisualStateGroups>
+        <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto"><StackPanel Margin="24" MaxWidth="480" HorizontalAlignment="Stretch"><TextBlock Text="{TemplateBinding Title}" FontSize="28" Foreground="White" HorizontalAlignment="Center" Margin="0,0,0,24" TextWrapping="Wrap" /><TextBlock x:Name="PART_Status" Text="{TemplateBinding StatusText}" FontSize="14" Foreground="#A0A0B4" Margin="0,0,0,20" TextWrapping="Wrap" />
+            <Button x:Name="PART_Simple" Content="发送简单通知" Style="{StaticResource NotificationDemo.Action}" Command="{TemplateBinding ActionCommand}" CommandParameter="{x:Static local:NotificationDemoAction.Simple}" />
+            <Button x:Name="PART_Actions" Content="发送带操作按钮的通知" Style="{StaticResource NotificationDemo.Action}" Command="{TemplateBinding ActionCommand}" CommandParameter="{x:Static local:NotificationDemoAction.Actions}" />
+            <Button x:Name="PART_HighPriority" Content="发送高优先级通知" Style="{StaticResource NotificationDemo.Action}" Command="{TemplateBinding ActionCommand}" CommandParameter="{x:Static local:NotificationDemoAction.HighPriority}" />
+            <Button x:Name="PART_Silent" Content="发送静默通知（无声音）" Style="{StaticResource NotificationDemo.Action}" Command="{TemplateBinding ActionCommand}" CommandParameter="{x:Static local:NotificationDemoAction.Silent}" />
+            <Button x:Name="PART_Image" Content="发送带图片的通知" Style="{StaticResource NotificationDemo.Action}" Command="{TemplateBinding ActionCommand}" CommandParameter="{x:Static local:NotificationDemoAction.Image}" />
+            <Button x:Name="PART_Clear" Content="清除所有通知" Style="{StaticResource NotificationDemo.Action}" Command="{TemplateBinding ActionCommand}" CommandParameter="{x:Static local:NotificationDemoAction.Clear}" />
+            <TextBlock Text="In-App Toast 测试" FontSize="20" Foreground="White" Margin="0,24,0,12" />
+            <Button x:Name="PART_InAppToast" Content="显示 In-App Toast" Style="{StaticResource NotificationDemo.Action}" Command="{TemplateBinding ActionCommand}" CommandParameter="{x:Static local:NotificationDemoAction.InAppToast}" />
+            <TextBlock Text="性能测试" FontSize="20" Foreground="White" Margin="0,24,0,12" />
+            <Button x:Name="PART_PathWindow" Content="打开 Path 性能测试窗口" Style="{StaticResource NotificationDemo.Action}" Command="{TemplateBinding ActionCommand}" CommandParameter="{x:Static local:NotificationDemoAction.PathWindow}" />
+            <Button x:Name="PART_ScrollWindow" Content="打开滚动压力测试 (复现按次累积)" Style="{StaticResource NotificationDemo.Action}" Command="{TemplateBinding ActionCommand}" CommandParameter="{x:Static local:NotificationDemoAction.ScrollWindow}" />
+        </StackPanel></ScrollViewer><ContentPresenter Content="{TemplateBinding ToastHost}" />
+    </Grid></ControlTemplate></Setter.Value></Setter></Style>
+</ResourceDictionary>

@@ -44,7 +44,8 @@ public abstract partial class Selector : ItemsControl
                 -1,
                 FrameworkPropertyMetadataOptions.BindsTwoWayByDefault |
                 FrameworkPropertyMetadataOptions.Journal,
-                OnSelectedIndexChanged));
+                OnSelectedIndexChanged,
+                CoerceSelectedIndex));
 
     /// <summary>
     /// Identifies the SelectedItem dependency property.
@@ -293,10 +294,17 @@ public abstract partial class Selector : ItemsControl
     /// <summary>
     /// Initializes a new instance of the <see cref="Selector"/> class.
     /// </summary>
-    static Selector() => SelectedItemProperty.UsesReferenceIdentity = true;
+    static Selector()
+    {
+        FocusableProperty.OverrideMetadata(typeof(Selector), new PropertyMetadata(true));
+        SelectedItemProperty.UsesReferenceIdentity = true;
+    }
 
     // A selector with occurrence-aware multi-selection owns its complete scalar
     // transaction; other selectors keep the existing default implementation.
+    // A control with its own presentation view owns its scalar transaction too.
+    internal virtual bool OwnsSelectionTransaction => false;
+
     internal virtual bool TryApplySelectionProperty(DependencyProperty property, object? value)
     {
         var row = property == SelectedIndexProperty
@@ -307,7 +315,6 @@ public abstract partial class Selector : ItemsControl
 
     protected Selector()
     {
-        Focusable = true;
         SetValue(SelectedItemsPropertyKey, new List<object>());
     }
 
@@ -386,7 +393,7 @@ public abstract partial class Selector : ItemsControl
         Justification = "This is the multi-selection counterpart of the existing selection property callbacks. SelectedValuePath reflection remains an opt-in consumer responsibility through PropertyAccessorRegistry.")]
     internal void UpdateSelectionPropertiesFromBatch(int selectedIndex, object? selectedItem, Func<bool>? isCurrent = null, bool preserveSelectedValue = false)
     {
-        if (this is not ListBox && !_isReconcilingOccurrence)
+        if (!OwnsSelectionTransaction && this is not ListBox && !_isReconcilingOccurrence)
             _selectionOccurrence = Items.GetOccurrenceAt(selectedIndex);
         _isUpdatingSelection = true;
         try
@@ -402,7 +409,7 @@ public abstract partial class Selector : ItemsControl
         finally
         {
             _isUpdatingSelection = false;
-            if (this is not ListBox && _pendingOccurrenceReconciliation && !_isReconcilingOccurrence)
+            if (!OwnsSelectionTransaction && this is not ListBox && _pendingOccurrenceReconciliation && !_isReconcilingOccurrence)
             {
                 _pendingOccurrenceReconciliation = false;
                 CommitSingleOccurrence(_selectionOccurrence);
@@ -444,6 +451,19 @@ public abstract partial class Selector : ItemsControl
     #endregion
 
     #region Property Changed Callbacks
+
+    private static object? CoerceSelectedIndex(DependencyObject d, object? value)
+    {
+        var selector = (Selector)d;
+        // Keep an initial index in its original value source until that row
+        // exists. In particular, XAML attributes are set before item children.
+        // Established selections still use their occurrence transaction, which
+        // must be able to publish a removed row's old index while clearing it.
+        if (selector.OwnsSelectionTransaction || selector is ListBox ||
+            selector._isReconcilingOccurrence || selector._selectionOccurrence != null)
+            return value;
+        return value is int index && index >= selector.Items.Count ? -1 : value;
+    }
 
     private static void OnSelectedIndexChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
@@ -501,6 +521,11 @@ public abstract partial class Selector : ItemsControl
         if (selector._isUpdatingSelection)
         {
             selector.RecordSingleSelectionRequest(SelectedValueProperty, e.NewValue);
+            return;
+        }
+        if (selector.OwnsSelectionTransaction)
+        {
+            _ = selector.TryApplySelectionProperty(SelectedValueProperty, e.NewValue);
             return;
         }
         object? oldItem = selector.SelectedItem;
@@ -577,6 +602,10 @@ public abstract partial class Selector : ItemsControl
 
         return (-1, null);
     }
+
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "Uses the same opt-in SelectedValuePath/PropertyAccessorRegistry contract as the selector callbacks.")]
+    internal object? ReadSelectedValueForItem(object? item) => GetSelectedValueForItem(item);
 
     [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Resolves SelectedValuePath via reflection when set; bound item types must be preserved by the application.")]
     private object? GetSelectedValueForItem(object? item)

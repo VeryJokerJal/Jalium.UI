@@ -323,6 +323,22 @@ JALIUM_API JaliumContext* jalium_context_create(JaliumBackend backend) {
     }
 }
 
+JALIUM_API JaliumContext* jalium_context_create_rasterizer(void)
+{
+    try {
+        auto& registry = jalium::GetBackendRegistry();
+        if (!registry.IsAvailable(JALIUM_BACKEND_SOFTWARE))
+            (void)TryLoadBackendLibraryOnce(JALIUM_BACKEND_SOFTWARE);
+        auto factory = registry.GetFactory(JALIUM_BACKEND_SOFTWARE);
+        if (!factory) return nullptr;
+        auto backend = std::unique_ptr<jalium::IRenderBackend>(
+            reinterpret_cast<jalium::IRenderBackend*>(factory()));
+        if (!backend || backend->GetType() != JALIUM_BACKEND_SOFTWARE) return nullptr;
+        return reinterpret_cast<JaliumContext*>(
+            new jalium::Context(JALIUM_BACKEND_SOFTWARE, std::move(backend)));
+    } catch (...) { return nullptr; }
+}
+
 JALIUM_API JaliumResult jalium_context_set_gpu_preference(
     JaliumContext* ctx,
     JaliumGpuPreference gpuPreference)
@@ -438,6 +454,20 @@ JALIUM_API intptr_t jalium_render_target_get_frame_latency_waitable(
 {
     if (!rt) return 0;
     return reinterpret_cast<jalium::RenderTarget*>(rt)->GetFrameLatencyWaitable();
+}
+
+JALIUM_API int jalium_render_target_resize_preserves_pending_presents(
+    JaliumRenderTarget* rt,
+    int width,
+    int height)
+{
+    if (!rt || width <= 0 || height <= 0) return 0;
+    return reinterpret_cast<jalium::RenderTarget*>(rt)
+        ->ResizePreservesPendingPresents(
+            static_cast<uint32_t>(width),
+            static_cast<uint32_t>(height))
+        ? 1
+        : 0;
 }
 
 JALIUM_API JaliumResult jalium_render_target_reclaim_idle_resources(

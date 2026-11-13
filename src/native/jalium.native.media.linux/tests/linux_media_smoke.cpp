@@ -29,7 +29,7 @@ static_assert(offsetof(jalium_video_decoder_gpu_descriptor_t,
 
 namespace {
 
-bool g_observed_renderable_rgb_dmabuf = false;
+bool g_observed_renderable_dmabuf = false;
 
 constexpr uint32_t DrmFourcc(char a, char b, char c, char d)
 {
@@ -184,8 +184,14 @@ int TestVideoSource(const char* source, const char* label, bool expect_h264)
     status = jalium_video_decoder_read_gpu_frame_descriptor(
         decoder, &gpu, &gpu_pts, &gpu_keyframe);
     if (status == JALIUM_MEDIA_OK) {
-        if (gpu.kind != JALIUM_VS_KIND_LINUX_DMABUF || gpu.plane_count != 1 ||
-            !IsRenderableRgbFourcc(gpu.drm_fourcc) ||
+        const bool ycbcr =
+            (gpu.format_hint == JALIUM_VS_FORMAT_NV12 && gpu.drm_fourcc == 0x3231564eu) ||
+            (gpu.format_hint == JALIUM_VS_FORMAT_P010 && gpu.drm_fourcc == 0x30313050u);
+        const bool supported = (IsRenderableRgbFourcc(gpu.drm_fourcc) && gpu.plane_count >= 1) ||
+            (ycbcr && gpu.plane_count >= 2 && gpu.color_space >= JALIUM_VS_COLOR_BT601 &&
+             gpu.color_space <= JALIUM_VS_COLOR_BT2020);
+        if (gpu.kind != JALIUM_VS_KIND_LINUX_DMABUF || !supported ||
+            gpu.plane_count > JALIUM_VIDEO_SURFACE_MAX_PLANES ||
             gpu.lifetime_context == 0 ||
             gpu.lifetime_retain_callback == 0 ||
             gpu.lifetime_release_callback == 0) {
@@ -200,12 +206,12 @@ int TestVideoSource(const char* source, const char* label, bool expect_h264)
                 return Fail("GPU descriptor plane", JALIUM_MEDIA_E_DECODE_FAILED);
             }
         }
-        g_observed_renderable_rgb_dmabuf = true;
+        g_observed_renderable_dmabuf = true;
         if ((jalium_linux_media_capabilities() &
              JALIUM_LINUX_MEDIA_DMABUF_EXPORT) == 0) {
             jalium_video_decoder_release_gpu_surface_descriptor(&gpu);
             jalium_video_decoder_close(decoder);
-            return Fail("DMABUF capability after real RGB export",
+            return Fail("DMABUF capability after real descriptor export",
                         JALIUM_MEDIA_E_DECODE_FAILED);
         }
         jalium_video_decoder_release_gpu_surface_descriptor(&gpu);
@@ -632,10 +638,10 @@ int main(int argc, char** argv)
         if (result != 0) return result;
     }
 
-    const bool advertised_rgb_dmabuf =
+    const bool advertised_dmabuf =
         (jalium_linux_media_capabilities() &
          JALIUM_LINUX_MEDIA_DMABUF_EXPORT) != 0;
-    if (advertised_rgb_dmabuf != g_observed_renderable_rgb_dmabuf) {
+    if (advertised_dmabuf != g_observed_renderable_dmabuf) {
         return Fail("DMABUF capability requires an observed renderable export",
                     JALIUM_MEDIA_E_DECODE_FAILED);
     }

@@ -29,15 +29,8 @@ internal static class CssImageObjectProperties
 
     internal static Size ConcreteSize(Size natural, Size box, CssObjectFit fit)
     {
-        if (natural.Width <= 0 || natural.Height <= 0 || box.Width <= 0 || box.Height <= 0)
-            return default;
-        if (fit == CssObjectFit.Fill) return box;
-        if (fit == CssObjectFit.None) return natural;
-        var scaleX = box.Width / natural.Width;
-        var scaleY = box.Height / natural.Height;
-        var scale = fit == CssObjectFit.Cover ? Math.Max(scaleX, scaleY) : Math.Min(scaleX, scaleY);
-        if (fit == CssObjectFit.ScaleDown) scale = Math.Min(1, scale);
-        return new Size(natural.Width * scale, natural.Height * scale);
+        return box.Width <= 0 || box.Height <= 0 ? default
+            : CssImageIntrinsicSize.FromSize(natural).ObjectSize(box, fit);
     }
 
     internal static Rect PositionedRect(DependencyObject element, Rect content, Size concrete)
@@ -55,9 +48,10 @@ internal static class CssImageObjectProperties
 
     private static void OnChanged(DependencyObject target, DependencyPropertyChangedEventArgs change)
     {
-        if (target is not Image && target is not MediaElement) return;
+        if (target is not Image && target is not MediaElement && !CssReplacedContent.IsActive(target) && target is not CssGeneratedText { IsImageReplacement: true }) return;
         var element = (FrameworkElement)target;
         if (change.Property == FitProperty) element.InvalidateMeasure();
+        else if (CssReplacedContent.IsActive(element) || element is CssGeneratedText { IsImageReplacement: true }) element.InvalidateArrange();
         element.InvalidateVisual();
     }
 }

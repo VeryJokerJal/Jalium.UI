@@ -1,3 +1,4 @@
+using Jalium.UI.Input;
 using Microsoft.Extensions.Logging;
 
 namespace Jalium.UI.HostingDemo.ViewModels;
@@ -14,7 +15,19 @@ public sealed class LoggingViewModel : ViewModelBase
     public LoggingViewModel(ILogger<LoggingViewModel> logger)
     {
         _logger = logger;
+        LogTraceCommand = new RelayCommand(LogTrace);
+        LogDebugCommand = new RelayCommand(LogDebug);
+        LogInformationCommand = new RelayCommand(LogInformation);
+        LogWarningCommand = new RelayCommand(LogWarning);
+        LogErrorCommand = new RelayCommand(LogError);
+
     }
+
+    public RelayCommand LogTraceCommand { get; }
+    public RelayCommand LogDebugCommand { get; }
+    public RelayCommand LogInformationCommand { get; }
+    public RelayCommand LogWarningCommand { get; }
+    public RelayCommand LogErrorCommand { get; }
 
     public string LastEntry
     {

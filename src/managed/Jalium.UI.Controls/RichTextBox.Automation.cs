@@ -8,11 +8,16 @@ public partial class RichTextBox
 {
     internal IReadOnlyList<AutomationTextStyleSpan> GetAutomationTextStyles()
     {
+        PrepareCssEditingLayout();
         var spans = new List<AutomationTextStyleSpan>(); int offset = 0;
         var basic = Style(null, null);
         Blocks(_document.Blocks);
         if (spans.Count == 0) spans.Add(new(0, 0, basic));
-        return spans;
+        return _cssDocumentView is { } view ? spans.Select(span =>
+        {
+            var start = view.EditorExposedOffset(span.Start);
+            return span with { Start = start, Length = view.EditorExposedOffset(span.Start + span.Length) - start };
+        }).Where(span => span.Length > 0).ToArray() : spans;
 
         AutomationTextStyle Style(Run? run, Paragraph? paragraph, FrameworkContentElement? languageSource = null)
         {
@@ -61,12 +66,49 @@ public partial class RichTextBox
 
     internal Rect AutomationTextViewport => GetContentBounds();
 
+    internal string AutomationDocumentText
+    {
+        get { PrepareCssEditingLayout(); return _cssDocumentView?.EditorExposedText ?? _document.GetText(); }
+    }
+
+    internal int AutomationDocumentOffset(int source)
+    {
+        PrepareCssEditingLayout();
+        return _cssDocumentView?.EditorExposedOffset(source) ?? source;
+    }
+
+    internal void SelectAutomationDocumentText(int start, int length)
+    {
+        PrepareCssEditingLayout();
+        var from = _cssDocumentView?.EditorSourceOffset(start) ?? start;
+        var to = length == 0 ? from : _cssDocumentView?.EditorSourceOffset(start + length, forward: false) ?? start + length;
+        ((IImeSupport)this).TrySetImeSelection(from, Math.Max(0, to - from));
+    }
+
+    internal IReadOnlyList<Rect>? CssAutomationBounds(int start, int length)
+    {
+        PrepareCssEditingLayout();
+        return _cssDocumentView?.EditorExposedBounds(start, length).Select(CssToEditor).ToArray();
+    }
+
     internal IReadOnlyList<AutomationTextLine> GetAutomationTextLines()
     {
         Rect bounds = GetContentBounds();
         var layout = EnsureLayout(bounds.Width);
         var result = new List<AutomationTextLine>();
         if (layout == null) return result;
+        if (_cssDocumentView is { } view)
+        {
+            foreach (var line in CssEditorLines)
+            {
+                var start = view.EditorExposedOffset(line.Start);
+                result.Add(new(start, Math.Max(0, view.EditorExposedOffset(line.End) - start),
+                    CssToEditor(new(line.Left, line.Top, Math.Max(1, line.Width), line.Height))));
+            }
+            if (result.Count == 0 && view.EditorExposedText.Length == 0)
+                result.Add(new(0, 0, new(bounds.X, bounds.Y, 1, GetDefaultLineHeight())));
+            return result;
+        }
         double y = bounds.Top - _verticalOffset;
         var lines = new List<(LineLayoutInfo line, double y, double x)>();
         CollectAllLines(layout.Blocks, bounds.Left - _horizontalOffset, ref y, lines);
@@ -89,6 +131,18 @@ public partial class RichTextBox
         Rect bounds = GetContentBounds();
         var layout = EnsureLayout(bounds.Width);
         if (layout == null) return;
+        if (_cssDocumentView is { } view)
+        {
+            var caret = view.EditorCaret(view.EditorSourceOffset(offset), false);
+            if (caret is not { } raw) return;
+            var rect = CssToEditor(raw);
+            var cssVertical = _verticalOffset + (rect.Top < bounds.Top ? rect.Top - bounds.Top : Math.Max(0, rect.Bottom - bounds.Bottom));
+            var cssHorizontal = _horizontalOffset + (rect.Left < bounds.Left ? rect.Left - bounds.Left : Math.Max(0, rect.Right + 1 - bounds.Right));
+            VerticalOffsetCore = Math.Clamp(cssVertical, 0, Math.Max(0, layout.TotalHeight - bounds.Height));
+            HorizontalOffsetCore = Math.Clamp(cssHorizontal, 0, Math.Max(0, layout.TotalWidth - bounds.Width));
+            InvalidateArrange();
+            return;
+        }
         double y = bounds.Top - _verticalOffset;
         var lines = new List<(LineLayoutInfo line, double y, double x)>();
         CollectAllLines(layout.Blocks, bounds.Left - _horizontalOffset, ref y, lines);
@@ -109,6 +163,7 @@ public partial class RichTextBox
     {
         var position = GetTextPositionFromPoint(point);
         index = position == null ? -1 : ImeTextEncoding.SnapToGraphemeBoundary(_document.GetText(), position.DocumentOffset, false);
+        if (index >= 0 && _cssDocumentView is { } view) index = view.EditorExposedOffset(index);
         return index >= 0;
     }
 

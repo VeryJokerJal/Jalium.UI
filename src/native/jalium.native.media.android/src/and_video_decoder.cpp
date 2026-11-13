@@ -1,6 +1,7 @@
 #include "and_video_decoder.h"
 #include "and_media_init.h"
 #include "and_yuv_simd.h"
+#include "and_gpu_video.h"
 #include "jalium_media_internal.h"
 
 #include <media/NdkMediaCodec.h>
@@ -13,6 +14,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <chrono>
+#include <thread>
 #include <cstring>
 #include <string>
 
@@ -54,6 +57,16 @@ struct jalium_video_decoder {
     uint8_t*               frame_buffer       = nullptr;
     size_t                 frame_buffer_size  = 0;
     int64_t                last_pts_us        = 0;
+    int64_t                seek_target_us      = -1;
+    int32_t                last_keyframe       = 0;
+    int32_t                color_range         = 0;
+    int32_t                color_transfer      = 0;
+    std::string            mime;
+    bool                   codec_ready         = true;
+    bool                   gpu_attempted       = false;
+    bool                   gpu_output          = false;
+    std::shared_ptr<jalium::media::android::GpuImageReader> gpu_reader;
+    jalium::media::android::GpuImageFrame* gpu_frame = nullptr;
 };
 
 namespace jalium::media::android {
@@ -68,6 +81,21 @@ jalium_video_codec_t MapMimeToCodec(const char* mime)
     if (std::strcmp(mime, "video/x-vnd.on2.vp9") == 0) return JALIUM_CODEC_VP9;
     if (std::strcmp(mime, "video/av01") == 0)        return JALIUM_CODEC_AV1;
     return JALIUM_CODEC_NONE;
+}
+
+std::shared_ptr<GpuImageReader> TryCreateGpuReader(uint32_t width, uint32_t height)
+{
+    const auto& api = GpuImageApi::Get();
+    uint32_t stride = 0; size_t bytes = 0;
+    if (GetApiLevel() < 26 || !api.Available() ||
+        !jalium_media_compute_bgra_layout(width, height, &stride, &bytes)) return {};
+    try {
+        auto reader = std::make_shared<GpuImageReader>(); reader->api = &api;
+        if (api.create(width, height, AIMAGE_FORMAT_PRIVATE,
+                AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE, 8, &reader->reader) != AMEDIA_OK ||
+            api.window(reader->reader, &reader->window) != AMEDIA_OK || !reader->window) return {};
+        return reader;
+    } catch (const std::bad_alloc&) { return {}; }
 }
 
 // KEY_COLOR_STANDARD constants from android.media.MediaFormat.
@@ -106,6 +134,11 @@ void ReleaseDecoderState(jalium_video_decoder_t* d)
         AMediaCodec_delete(d->codec);
         d->codec = nullptr;
     }
+    if (d->gpu_frame) {
+        GpuImageFrame::Release(reinterpret_cast<uint64_t>(d->gpu_frame));
+        d->gpu_frame = nullptr;
+    }
+    d->gpu_reader.reset();
     if (d->extractor) {
         AMediaExtractor_delete(d->extractor);
         d->extractor = nullptr;
@@ -151,8 +184,10 @@ jalium_media_status_t ApplyOutputFormat(jalium_video_decoder_t* d, AMediaFormat*
     d->source_slice_height = static_cast<uint32_t>(slice_height > 0 ? slice_height : h);
     d->color_format = (color != 0) ? color : COLOR_FormatYUV420Flexible;
     d->color_standard = std_;
+    AMediaFormat_getInt32(fmt, "color-range", &d->color_range);
+    AMediaFormat_getInt32(fmt, "color-transfer", &d->color_transfer);
 
-    if (d->frame_buffer_size < needed) {
+    if (!d->gpu_output && d->frame_buffer_size < needed) {
         auto* replacement = static_cast<uint8_t*>(
             jalium_media_aligned_alloc(needed));
         if (!replacement) return JALIUM_MEDIA_E_OUT_OF_MEMORY;
@@ -409,19 +444,27 @@ jalium_media_status_t VideoDecoderOpenFile(
     // Hint the codec to deliver a flexible YUV layout we can read via AImage planes.
     AMediaFormat_setInt32(trackFormat, AMEDIAFORMAT_KEY_COLOR_FORMAT, COLOR_FormatYUV420Flexible);
 
-    if (AMediaCodec_configure(codec, trackFormat, /*surface*/ nullptr, /*crypto*/ nullptr, 0) != AMEDIA_OK) {
-        AMediaCodec_delete(codec);
-        AMediaFormat_delete(trackFormat);
-        AMediaExtractor_delete(ex);
-        close(fd);
-        return JALIUM_MEDIA_E_UNSUPPORTED_CODEC;
-    }
-    if (AMediaCodec_start(codec) != AMEDIA_OK) {
-        AMediaCodec_delete(codec);
-        AMediaFormat_delete(trackFormat);
-        AMediaExtractor_delete(ex);
-        close(fd);
-        return JALIUM_MEDIA_E_PLATFORM;
+    std::shared_ptr<GpuImageReader> initialReader;
+    media_status_t configured = AMediaCodec_configure(codec, trackFormat, nullptr, nullptr, 0);
+    if (configured == AMEDIA_OK) configured = AMediaCodec_start(codec);
+    if (configured != AMEDIA_OK) {
+        // Some hardware codecs only support Surface output. Do not require a
+        // working ByteBuffer configuration merely to open their GPU path.
+        AMediaCodec_delete(codec); codec = nullptr;
+        int32_t width = 0, height = 0;
+        AMediaFormat_getInt32(trackFormat, AMEDIAFORMAT_KEY_WIDTH, &width);
+        AMediaFormat_getInt32(trackFormat, AMEDIAFORMAT_KEY_HEIGHT, &height);
+        if (width > 0 && height > 0) initialReader = TryCreateGpuReader(width, height);
+        auto* surfaceFormat = initialReader ? AMediaExtractor_getTrackFormat(ex, videoTrack) : nullptr;
+        codec = surfaceFormat ? AMediaCodec_createDecoderByType(mime) : nullptr;
+        configured = codec ? AMediaCodec_configure(codec, surfaceFormat, initialReader->window, nullptr, 0) : AMEDIA_ERROR_UNKNOWN;
+        if (surfaceFormat) AMediaFormat_delete(surfaceFormat);
+        if (configured == AMEDIA_OK) configured = AMediaCodec_start(codec);
+        if (configured != AMEDIA_OK) {
+            if (codec) AMediaCodec_delete(codec);
+            AMediaFormat_delete(trackFormat); AMediaExtractor_delete(ex); close(fd);
+            return JALIUM_MEDIA_E_UNSUPPORTED_CODEC;
+        }
     }
 
     auto* d = new (std::nothrow) jalium_video_decoder();
@@ -439,6 +482,14 @@ jalium_media_status_t VideoDecoderOpenFile(
     d->fd           = fd;
     d->format       = requested_format;
     d->active_codec = MapMimeToCodec(mime);
+    try { d->mime = mime; }
+    catch (const std::bad_alloc&) {
+        ReleaseDecoderState(d); delete d; AMediaFormat_delete(trackFormat);
+        return JALIUM_MEDIA_E_OUT_OF_MEMORY;
+    }
+    d->gpu_reader = std::move(initialReader);
+    d->gpu_output = d->gpu_reader != nullptr;
+    d->gpu_attempted = d->gpu_output;
 
     // Initial dimensions / fps from the extractor track format.
     int32_t w = 0, h = 0, fps_n = 0;
@@ -480,105 +531,189 @@ jalium_media_status_t VideoDecoderGetInfo(
     return JALIUM_MEDIA_OK;
 }
 
-jalium_media_status_t VideoDecoderReadFrame(
-    jalium_video_decoder_t* d,
-    jalium_video_frame_t*   out_frame)
+namespace {
+jalium_media_status_t ReadCodecOutput(jalium_video_decoder_t* d,
+    size_t& index, AMediaCodecBufferInfo& info)
 {
-    if (!d || !d->codec || !d->extractor || !out_frame) return JALIUM_MEDIA_E_INVALID_ARG;
-
-    constexpr int64_t TIMEOUT_US = 10'000;  // 10 ms
-
-    // Pump input until we have an output sample (or EOS).
-    while (true) {
-        // Feed input.
+    if (!d->codec || !d->codec_ready) return JALIUM_MEDIA_E_PLATFORM;
+    if (d->output_eos) return JALIUM_MEDIA_E_END_OF_STREAM;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
         if (!d->input_eos) {
-            ssize_t inIdx = AMediaCodec_dequeueInputBuffer(d->codec, TIMEOUT_US);
+            ssize_t inIdx = AMediaCodec_dequeueInputBuffer(d->codec, 10000);
             if (inIdx >= 0) {
-                size_t inBufSize = 0;
-                uint8_t* inBuf = AMediaCodec_getInputBuffer(d->codec, static_cast<size_t>(inIdx), &inBufSize);
-                if (!inBuf) {
-                    return JALIUM_MEDIA_E_PLATFORM;
-                }
-                ssize_t sampleSize = AMediaExtractor_readSampleData(d->extractor, inBuf, inBufSize);
-                int64_t presTime  = AMediaExtractor_getSampleTime(d->extractor);
-                if (sampleSize < 0) {
-                    AMediaCodec_queueInputBuffer(d->codec, static_cast<size_t>(inIdx), 0, 0, 0,
-                                                 AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM);
-                    d->input_eos = true;
-                } else {
-                    AMediaCodec_queueInputBuffer(d->codec, static_cast<size_t>(inIdx), 0,
-                                                 static_cast<size_t>(sampleSize),
-                                                 static_cast<uint64_t>(presTime), 0);
-                    AMediaExtractor_advance(d->extractor);
-                }
+                size_t capacity = 0;
+                auto* input = AMediaCodec_getInputBuffer(d->codec, size_t(inIdx), &capacity);
+                if (!input) return JALIUM_MEDIA_E_PLATFORM;
+                ssize_t size = AMediaExtractor_readSampleData(d->extractor, input, capacity);
+                int64_t pts = AMediaExtractor_getSampleTime(d->extractor);
+                if (size > 0 && size_t(size) > capacity) return JALIUM_MEDIA_E_DECODE_FAILED;
+                auto result = AMediaCodec_queueInputBuffer(d->codec, size_t(inIdx), 0,
+                    size < 0 ? 0 : size_t(size), size < 0 ? 0 : pts,
+                    size < 0 ? AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM : 0);
+                if (result != AMEDIA_OK) return JALIUM_MEDIA_E_DECODE_FAILED;
+                if (size < 0) d->input_eos = true;
+                else AMediaExtractor_advance(d->extractor);
             }
         }
-
-        // Drain output.
-        AMediaCodecBufferInfo info{};
-        ssize_t outIdx = AMediaCodec_dequeueOutputBuffer(d->codec, &info, TIMEOUT_US);
+        ssize_t outIdx = AMediaCodec_dequeueOutputBuffer(d->codec, &info, 10000);
         if (outIdx >= 0) {
-            if (info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) {
-                AMediaCodec_releaseOutputBuffer(d->codec, static_cast<size_t>(outIdx), false);
-                d->output_eos = true;
-                return JALIUM_MEDIA_E_END_OF_STREAM;
+            d->output_eos = (info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) != 0;
+            if ((d->output_eos && info.size == 0) ||
+                (info.flags & AMEDIACODEC_BUFFER_FLAG_CODEC_CONFIG) ||
+                (d->seek_target_us >= 0 && info.presentationTimeUs < d->seek_target_us)) {
+                AMediaCodec_releaseOutputBuffer(d->codec, size_t(outIdx), false);
+                if (d->output_eos) return JALIUM_MEDIA_E_END_OF_STREAM;
+                continue;
             }
-
-            size_t output_capacity = 0;
-            uint8_t* output_buffer = AMediaCodec_getOutputBuffer(
-                d->codec, static_cast<size_t>(outIdx), &output_capacity);
-            jalium_media_status_t status = JALIUM_MEDIA_E_PLATFORM;
-            bool valid_range = output_buffer && info.offset >= 0 && info.size >= 0;
-            // Android documents AMediaCodec_getOutputBuffer's out_size as
-            // invalid through API 35. BufferInfo.offset/size is authoritative
-            // on those releases; only API 36+ may use out_size as an
-            // additional capacity check.
-            if (valid_range && GetApiLevel() >= 36) {
-                const size_t offset = static_cast<size_t>(info.offset);
-                const size_t length = static_cast<size_t>(info.size);
-                valid_range = offset <= output_capacity &&
-                              length <= output_capacity - offset;
-            }
-            if (valid_range) {
-                status = ConvertOutputBufferToBgra(
-                    d,
-                    output_buffer + static_cast<size_t>(info.offset),
-                    static_cast<size_t>(info.size));
-            }
-            AMediaCodec_releaseOutputBuffer(d->codec, static_cast<size_t>(outIdx), false);
-
-            if (status != JALIUM_MEDIA_OK) return status;
-
+            d->seek_target_us = -1;
+            index = size_t(outIdx);
             d->last_pts_us = info.presentationTimeUs;
-
-            out_frame->width        = d->width;
-            out_frame->height       = d->height;
-            out_frame->stride_bytes = d->stride_bytes;
-            out_frame->format       = d->format;
-            out_frame->pixels       = d->frame_buffer;
-            out_frame->pts_microseconds = d->last_pts_us;
-            out_frame->is_keyframe  = (info.flags & 1) ? 1 : 0;  // BUFFER_FLAG_KEY_FRAME
+            d->last_keyframe = (info.flags & 1) != 0;
             return JALIUM_MEDIA_OK;
-        } else if (outIdx == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED) {
-            AMediaFormat* newFmt = AMediaCodec_getOutputFormat(d->codec);
-            if (newFmt) {
-                ApplyOutputFormat(d, newFmt);
-                AMediaFormat_delete(newFmt);
-            }
-            continue;
-        } else if (outIdx == AMEDIACODEC_INFO_TRY_AGAIN_LATER) {
-            if (d->input_eos && d->output_eos) {
-                return JALIUM_MEDIA_E_END_OF_STREAM;
-            }
-            // Loop again to feed more input.
-            continue;
-        } else if (outIdx == AMEDIACODEC_INFO_OUTPUT_BUFFERS_CHANGED) {
-            // Deprecated; ignore.
-            continue;
-        } else {
+        }
+        if (outIdx == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED) {
+            auto* format = AMediaCodec_getOutputFormat(d->codec);
+            if (!format) return JALIUM_MEDIA_E_PLATFORM;
+            auto status = ApplyOutputFormat(d, format);
+            AMediaFormat_delete(format);
+            if (status != JALIUM_MEDIA_OK) return status;
+        } else if (outIdx != AMEDIACODEC_INFO_TRY_AGAIN_LATER &&
+                   outIdx != AMEDIACODEC_INFO_OUTPUT_BUFFERS_CHANGED) {
             return JALIUM_MEDIA_E_DECODE_FAILED;
         }
     }
+    return JALIUM_MEDIA_E_DECODE_FAILED;
+}
+
+jalium_media_status_t ReconfigureOutput(jalium_video_decoder_t* d,
+    std::shared_ptr<GpuImageReader> reader, int64_t target)
+{
+    d->codec_ready = false;
+    if (d->codec) {
+        AMediaCodec_stop(d->codec); AMediaCodec_delete(d->codec); d->codec = nullptr;
+    }
+    if (d->gpu_frame) {
+        GpuImageFrame::Release(reinterpret_cast<uint64_t>(d->gpu_frame)); d->gpu_frame = nullptr;
+    }
+    d->gpu_reader = std::move(reader);
+    d->gpu_output = d->gpu_reader != nullptr;
+    d->input_eos = d->output_eos = false;
+    d->seek_target_us = target;
+    if (AMediaExtractor_seekTo(d->extractor, target, AMEDIAEXTRACTOR_SEEK_PREVIOUS_SYNC) != AMEDIA_OK)
+        return JALIUM_MEDIA_E_PLATFORM;
+    auto* format = AMediaExtractor_getTrackFormat(d->extractor, d->track_index);
+    if (!format) return JALIUM_MEDIA_E_PLATFORM;
+    d->codec = AMediaCodec_createDecoderByType(d->mime.c_str());
+    if (!d->gpu_output) AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_COLOR_FORMAT, COLOR_FormatYUV420Flexible);
+    auto status = d->codec ? AMediaCodec_configure(d->codec, format,
+        d->gpu_output ? d->gpu_reader->window : nullptr, nullptr, 0) : AMEDIA_ERROR_UNKNOWN;
+    AMediaFormat_delete(format);
+    if (status != AMEDIA_OK || AMediaCodec_start(d->codec) != AMEDIA_OK)
+        return JALIUM_MEDIA_E_PLATFORM;
+    d->codec_ready = true;
+    return JALIUM_MEDIA_OK;
+}
+} // namespace
+
+jalium_media_status_t VideoDecoderReadFrame(jalium_video_decoder_t* d, jalium_video_frame_t* frame)
+{
+    if (!d || !d->codec || !frame) return JALIUM_MEDIA_E_INVALID_ARG;
+    *frame = {};
+    if (d->gpu_output) {
+        auto status = VideoDecoderDisableGpuOutput(d);
+        if (status != JALIUM_MEDIA_OK) return status;
+    }
+    size_t index = 0;
+    AMediaCodecBufferInfo info{};
+    auto status = ReadCodecOutput(d, index, info);
+    if (status != JALIUM_MEDIA_OK) return status;
+    size_t capacity = 0;
+    auto* output = AMediaCodec_getOutputBuffer(d->codec, index, &capacity);
+    bool readable = output && info.offset >= 0 && info.size >= 0;
+    if (readable && GetApiLevel() >= 36) {
+        readable = size_t(info.offset) <= capacity && size_t(info.size) <= capacity - size_t(info.offset);
+    }
+    status = readable ? ConvertOutputBufferToBgra(d, output + info.offset, size_t(info.size))
+                      : JALIUM_MEDIA_E_DECODE_FAILED;
+    AMediaCodec_releaseOutputBuffer(d->codec, index, false);
+    if (status != JALIUM_MEDIA_OK) return status;
+    frame->width = d->width; frame->height = d->height; frame->stride_bytes = d->stride_bytes;
+    frame->format = d->format; frame->pixels = d->frame_buffer;
+    frame->pts_microseconds = d->last_pts_us; frame->is_keyframe = d->last_keyframe;
+    return JALIUM_MEDIA_OK;
+}
+
+jalium_media_status_t VideoDecoderReadGpuFrame(jalium_video_decoder_t* d,
+    jalium_video_decoder_gpu_descriptor_t* descriptor, int64_t* pts, int32_t* keyframe)
+{
+    if (!d || !descriptor || !pts || !keyframe || !d->codec) return JALIUM_MEDIA_E_INVALID_ARG;
+    if (!d->gpu_attempted) {
+        d->gpu_attempted = true;
+        auto reader = TryCreateGpuReader(d->width, d->height);
+        if (!reader) return JALIUM_MEDIA_E_NOT_IMPLEMENTED;
+        const int64_t target = d->seek_target_us >= 0 ? d->seek_target_us : d->last_pts_us;
+        if (ReconfigureOutput(d, reader, target) != JALIUM_MEDIA_OK) {
+            auto status = ReconfigureOutput(d, {}, target);
+            return status == JALIUM_MEDIA_OK ? JALIUM_MEDIA_E_NOT_IMPLEMENTED : status;
+        }
+    }
+    if (!d->gpu_output) return JALIUM_MEDIA_E_NOT_IMPLEMENTED;
+    if (d->gpu_frame) {
+        GpuImageFrame::Release(reinterpret_cast<uint64_t>(d->gpu_frame)); d->gpu_frame = nullptr;
+    }
+    size_t index = 0;
+    AMediaCodecBufferInfo info{};
+    auto status = ReadCodecOutput(d, index, info);
+    if (status != JALIUM_MEDIA_OK) return status;
+    if (AMediaCodec_releaseOutputBuffer(d->codec, index, true) != AMEDIA_OK) return JALIUM_MEDIA_E_PLATFORM;
+    std::unique_ptr<GpuImageFrame> frame(new (std::nothrow) GpuImageFrame());
+    if (!frame) return JALIUM_MEDIA_E_OUT_OF_MEMORY;
+    frame->owner = d->gpu_reader;
+    const auto& api = *frame->owner->api;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+    media_status_t acquired;
+    do {
+        acquired = api.acquire(frame->owner->reader, &frame->image, &frame->acquireFence);
+        if (acquired != AMEDIA_IMGREADER_NO_BUFFER_AVAILABLE) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    } while (std::chrono::steady_clock::now() < deadline);
+    if (acquired != AMEDIA_OK || !frame->image || api.buffer(frame->image, &frame->buffer) != AMEDIA_OK || !frame->buffer)
+        return JALIUM_MEDIA_E_PLATFORM;
+    AHardwareBuffer_Desc description{}; api.describe(frame->buffer, &description);
+    AImageCropRect crop{};
+    if (AImage_getCropRect(frame->image, &crop) != AMEDIA_OK || crop.left || crop.top ||
+        crop.right != int32_t(description.width) || crop.bottom != int32_t(description.height))
+        return JALIUM_MEDIA_E_UNSUPPORTED_FORMAT;
+    frame->width = description.width; frame->height = description.height;
+    frame->formatHint = description.format == 0x36 ? 2 : 1; // YCbCr_P010 / external YUV
+    switch (d->color_standard) {
+    case 1: frame->colorSpace = 2; break; // BT.709
+    case 2: case 4: frame->colorSpace = 1; break; // BT.601
+    case 6: frame->colorSpace = 3; break; // BT.2020
+    default: break; // use gralloc's conversion suggestions
+    }
+    if (d->color_range == 1) frame->flags |= 1u; // full range
+    if (d->color_transfer == 6 || d->color_transfer == 7) frame->flags |= 8u; // PQ / HLG
+    status = frame->Export(*descriptor);
+    if (status != JALIUM_MEDIA_OK) return status;
+    d->gpu_frame = frame.release();
+    *pts = d->last_pts_us; *keyframe = d->last_keyframe;
+    return JALIUM_MEDIA_OK;
+}
+
+jalium_media_status_t VideoDecoderAcquireGpuDescriptor(jalium_video_decoder_t* d,
+    jalium_video_decoder_gpu_descriptor_t* descriptor)
+{
+    if (!d || !descriptor) return JALIUM_MEDIA_E_INVALID_ARG;
+    return d->gpu_frame ? d->gpu_frame->Export(*descriptor) : JALIUM_MEDIA_E_NOT_IMPLEMENTED;
+}
+
+jalium_media_status_t VideoDecoderDisableGpuOutput(jalium_video_decoder_t* d)
+{
+    if (!d) return JALIUM_MEDIA_E_INVALID_ARG;
+    d->gpu_attempted = true;
+    return d->gpu_output || !d->codec_ready ? ReconfigureOutput(d, {}, d->last_pts_us) : JALIUM_MEDIA_OK;
 }
 
 jalium_media_status_t VideoDecoderSeek(
@@ -586,10 +721,20 @@ jalium_media_status_t VideoDecoderSeek(
     int64_t                 pts_microseconds)
 {
     if (!d || !d->extractor || !d->codec) return JALIUM_MEDIA_E_INVALID_ARG;
+    if (pts_microseconds < 0) return JALIUM_MEDIA_E_INVALID_ARG;
+    if (d->gpu_output) {
+        // A delayed pre-seek buffer can still arrive after stopping the codec.
+        // Give the new decode a fresh BufferQueue; outstanding old frames keep
+        // their old reader alive independently through their render fences.
+        auto reader = TryCreateGpuReader(d->width, d->height);
+        if (!reader) return JALIUM_MEDIA_E_PLATFORM;
+        return ReconfigureOutput(d, std::move(reader), pts_microseconds);
+    }
+    d->seek_target_us = pts_microseconds;
     if (AMediaExtractor_seekTo(d->extractor, pts_microseconds, AMEDIAEXTRACTOR_SEEK_PREVIOUS_SYNC) != AMEDIA_OK) {
         return JALIUM_MEDIA_E_PLATFORM;
     }
-    AMediaCodec_flush(d->codec);
+    if (AMediaCodec_flush(d->codec) != AMEDIA_OK) return JALIUM_MEDIA_E_PLATFORM;
     d->input_eos = false;
     d->output_eos = false;
     return JALIUM_MEDIA_OK;

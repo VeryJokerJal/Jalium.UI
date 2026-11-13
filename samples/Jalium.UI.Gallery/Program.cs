@@ -1,5 +1,6 @@
 using Jalium.UI;
 using Jalium.UI.Controls;
+using Jalium.UI.Controls.Themes;
 using Jalium.UI.Diagnostics;
 using Jalium.UI.Hosting;
 using Jalium.UI.Interop;
@@ -27,6 +28,11 @@ internal static class Program
         });
         builder.ConfigureApplication(app =>
         {
+            // The catalog uses a fixed dark palette, including syntax-token resources.
+#pragma warning disable WPF0001
+            app.ThemeMode = ThemeMode.Dark;
+#pragma warning restore WPF0001
+            ThemeManager.ApplyTheme(ThemeVariant.Dark);
             // Application construction starts the shared GPU prewarm before this
             // callback. Preserve the gallery's D3D12/Vulkan + Impeller contract here,
             // after that work has overlapped theme initialization, rather than blocking

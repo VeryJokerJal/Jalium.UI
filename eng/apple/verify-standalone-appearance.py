@@ -27,7 +27,8 @@ def main():
     output = args.results_directory.resolve(); output.mkdir(parents=True, exist_ok=False)
     copied = list(app.rglob('libjalium.native.*.dylib'))
     names = {name + '.dylib' for name in ('core', 'text', 'platform', 'metal', 'software', 'media.core', 'media', 'browser')}
-    assert len(copied) == 16 and {p.name.removeprefix('libjalium.native.') for p in copied} == names
+    assert len(copied) == len(names) and {p.name.removeprefix('libjalium.native.') for p in copied} == names, \
+        ['Expected one copy of each native library', *[str(p.relative_to(app)) for p in copied]]
     hashes = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in copied}
     receipts = []
     for index in cases:

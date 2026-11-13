@@ -18,6 +18,8 @@
     <ResourceDictionary.MergedDictionaries>
         <ResourceDictionary Source="Colors.jalxaml" />
         <!-- Control Styles -->
+        <ResourceDictionary Source="Controls/Icons.jalxaml" />
+        <ResourceDictionary Source="Controls/AccessText.jalxaml" />
         <ResourceDictionary Source="Controls/Button.jalxaml" />
         <ResourceDictionary Source="Controls/TextControls.jalxaml" />
         <ResourceDictionary Source="Controls/ToggleControls.jalxaml" />
@@ -25,20 +27,34 @@
         <ResourceDictionary Source="Controls/SelectionControls.jalxaml" />
         <ResourceDictionary Source="Controls/TabControl.jalxaml" />
         <ResourceDictionary Source="Controls/Windows.jalxaml" />
+        <ResourceDictionary Source="Controls/SplashScreen.jalxaml" />
+        <ResourceDictionary Source="Controls/NavigationWindow.jalxaml" />
         <ResourceDictionary Source="Controls/Navigation.jalxaml" />
         <ResourceDictionary Source="Controls/Containers.jalxaml" />
+        <ResourceDictionary Source="Controls/RazorItemsHost.jalxaml" />
+        <ResourceDictionary Source="Controls/FlowDocumentScrollViewer.jalxaml" />
+        <ResourceDictionary Source="Controls/DocumentViewers.jalxaml" />
         <ResourceDictionary Source="Controls/TitleBar.jalxaml" />
         <ResourceDictionary Source="Controls/TreeView.jalxaml" />
+        <ResourceDictionary Source="Controls/DataGridIndicators.jalxaml" />
+        <ResourceDictionary Source="Controls/DataGridColumns.jalxaml" />
         <ResourceDictionary Source="Controls/DataGrid.jalxaml" />
         <ResourceDictionary Source="Controls/TreeDataGrid.jalxaml" />
         <ResourceDictionary Source="Controls/ScrollBar.jalxaml" />
         <ResourceDictionary Source="Controls/Calendar.jalxaml" />
+        <ResourceDictionary Source="Controls/ColorPicker.jalxaml" />
+        <ResourceDictionary Source="Controls/TimePicker.jalxaml" />
         <ResourceDictionary Source="Controls/Dialogs.jalxaml" />
+        <ResourceDictionary Source="Controls/MessageBox.jalxaml" />
+        <ResourceDictionary Source="Controls/FontDialog.jalxaml" />
         <ResourceDictionary Source="Controls/Primitives.jalxaml" />
         <ResourceDictionary Source="Controls/Media.jalxaml" />
         <ResourceDictionary Source="Controls/Markdown.jalxaml" />
         <ResourceDictionary Source="Controls/DockLayout.jalxaml" />
         <ResourceDictionary Source="Controls/MenusToolbars.jalxaml" />
+        <ResourceDictionary Source="Controls/Ribbon.jalxaml" />
+        <ResourceDictionary Source="Controls/SwipeControl.jalxaml" />
+        <ResourceDictionary Source="Controls/CommandBar.jalxaml" />
         <ResourceDictionary Source="Controls/Terminal.jalxaml" />
         <ResourceDictionary Source="Controls/DiffViewer.jalxaml" />
         <ResourceDictionary Source="Controls/HexEditor.jalxaml" />
@@ -46,6 +62,21 @@
         <ResourceDictionary Source="Controls/PropertyGrid.jalxaml" />
         <ResourceDictionary Source="Controls/Charts.jalxaml" />
         <ResourceDictionary Source="Controls/Maps.jalxaml" />
+        <ResourceDictionary Source="Controls/Diagnostics.jalxaml" />
+        <ResourceDictionary Source="Controls/DevToolsPrimitives.jalxaml" />
+        <ResourceDictionary Source="Controls/DevToolsWorkspace.jalxaml" />
+        <ResourceDictionary Source="Controls/DevToolsInspector.jalxaml" />
+        <ResourceDictionary Source="Controls/DevToolsInspectorDetails.jalxaml" />
+        <ResourceDictionary Source="Controls/DevToolsPropertyRows.jalxaml" />
+        <ResourceDictionary Source="Controls/DevToolsDetails.jalxaml" />
+        <ResourceDictionary Source="Controls/DevToolsLayoutProfiler.jalxaml" />
+        <ResourceDictionary Source="Controls/DevToolsBindings.jalxaml" />
+        <ResourceDictionary Source="Controls/DevToolsEvents.jalxaml" />
+        <ResourceDictionary Source="Controls/DevToolsResources.jalxaml" />
+        <ResourceDictionary Source="Controls/DevToolsAutomation.jalxaml" />
+        <ResourceDictionary Source="Controls/DevToolsRepl.jalxaml" />
+        <ResourceDictionary Source="Controls/DevToolsPerformance.jalxaml" />
+        <ResourceDictionary Source="Controls/DevToolsTools.jalxaml" />
     </ResourceDictionary.MergedDictionaries>
 
 </ResourceDictionary>

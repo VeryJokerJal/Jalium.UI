@@ -204,8 +204,7 @@ public class RichTextTableLayoutTests
         var editor = Editor(document); var position = document.GetPositionAtOffset(0, LogicalDirection.Forward)!;
         Assert.Same(cell, position.Parent); Assert.True(position.IsAtInsertionPosition);
         editor.CaretPosition = position;
-        var method = typeof(RichTextBox).GetMethod("TryReplaceImeText", BindingFlags.Instance | BindingFlags.NonPublic)!;
-        Assert.True((bool)method.Invoke(editor, new object[] { 0, 0, "新🙂" })!);
+        Assert.True(((IImeSupport)editor).TryReplaceImeText(0, 0, "新🙂"));
         Assert.Single(document.Blocks); Assert.Equal("新🙂", ((Run)Assert.IsType<Paragraph>(Assert.Single(cell.Blocks)).Inlines[0]).Text);
         Assert.Equal("空格旁", ((Run)((Paragraph)table.RowGroups[0].Rows[0].Cells[1].Blocks[0]).Inlines[0]).Text);
         Assert.True(editor.CanUndo); editor.Undo(); Assert.Empty(cell.Blocks); Assert.Same(table, Assert.Single(document.Blocks));

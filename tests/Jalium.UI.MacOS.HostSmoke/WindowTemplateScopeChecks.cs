@@ -88,7 +88,9 @@ internal static class WindowTemplateScopeChecks
             if (!string.IsNullOrEmpty(output))
                 File.WriteAllText(output, JsonSerializer.Serialize(new { passed, expected = 4, failures }));
             Console.WriteLine($"macOS template scope host checks: {passed}/4 passed");
-            app.Terminate(app);
+            app.Stop(app);
+            using var wake = NSEvent.OtherEvent(NSEventType.ApplicationDefined, default, 0, 0, 0, null, 0, 0, 0);
+            app.PostEvent(wake, false);
         });
         app.Run();
         return passed == 4 ? 0 : 1;

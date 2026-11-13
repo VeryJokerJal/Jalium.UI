@@ -51,7 +51,7 @@ public:
     float a_ = 1.0f;
 };
 
-class VulkanLinearGradientBrush : public Brush {
+class VulkanLinearGradientBrush : public Brush, public GradientColorInterpolationState {
 public:
     VulkanLinearGradientBrush(
         float startX, float startY, float endX, float endY,
@@ -59,6 +59,8 @@ public:
         uint32_t spreadMethod = 0);
 
     JaliumBrushType GetType() const override { return JALIUM_BRUSH_LINEAR_GRADIENT; }
+    JaliumResult SetColorInterpolationMode(uint32_t mode) override;
+    std::vector<JaliumGradientStop> interpolationSource_;
 
     float startX_ = 0.0f;
     float startY_ = 0.0f;
@@ -68,7 +70,7 @@ public:
     uint32_t spreadMethod_ = 0;  // 0=Pad, 1=Repeat, 2=Reflect (mirrors D3D12LinearGradientBrush)
 };
 
-class VulkanRadialGradientBrush : public Brush {
+class VulkanRadialGradientBrush : public Brush, public GradientColorInterpolationState, public RadialGradientGeometryState {
 public:
     VulkanRadialGradientBrush(
         float centerX, float centerY, float radiusX, float radiusY,
@@ -77,6 +79,8 @@ public:
         uint32_t spreadMethod = 0);
 
     JaliumBrushType GetType() const override { return JALIUM_BRUSH_RADIAL_GRADIENT; }
+    JaliumResult SetColorInterpolationMode(uint32_t mode) override;
+    std::vector<JaliumGradientStop> interpolationSource_;
 
     float centerX_ = 0.0f;
     float centerY_ = 0.0f;
@@ -147,10 +151,27 @@ public:
     std::vector<uint8_t> staging;
 };
 
-/// Linux single-plane RGB dma-buf imported as a sampled Vulkan image. NV12 /
-/// P010 descriptors are deliberately rejected until the render pipeline owns
-/// a matching immutable YCbCr sampler; the media decoder then reopens its CPU
-/// pipeline at the same PTS.
+// Shared immutable video sampler/layout, optionally with YCbCr conversion.
+// Pipeline caches hold this object so
+// sampler handles outlive every compatible descriptor and graphics pipeline.
+class VulkanVideoSamplingResources {
+public:
+    static std::shared_ptr<VulkanVideoSamplingResources> Create(
+        std::shared_ptr<VulkanDeviceGeneration> generation, VkFormat format,
+        uint32_t colorSpace, uint32_t flags, VkFormatFeatureFlags features,
+        uint32_t descriptorCount,
+        const VkSamplerYcbcrConversionCreateInfo* conversionOverride = nullptr,
+        uint64_t externalFormat = 0);
+    ~VulkanVideoSamplingResources();
+    VkSamplerYcbcrConversion conversion = VK_NULL_HANDLE;
+    VkSampler sampler = VK_NULL_HANDLE;
+    VkDescriptorSetLayout layout = VK_NULL_HANDLE;
+    uint32_t descriptorCount = 1;
+private:
+    std::shared_ptr<VulkanDeviceGeneration> generation_;
+};
+
+/// External decoder allocation, sampled directly without a pixel upload.
 class VulkanImportedVideoSurface : public VideoSurface {
 public:
     static VulkanImportedVideoSurface* Create(
@@ -161,7 +182,7 @@ public:
     uint32_t GetWidth() const override { return width_; }
     uint32_t GetHeight() const override { return height_; }
     JaliumVideoSurfaceKind GetKind() const override {
-        return JALIUM_VS_KIND_LINUX_DMABUF;
+        return kind_;
     }
     bool Lock(uint8_t**, uint32_t*) override { return false; }
     bool Unlock(const JaliumVideoSurfaceDirtyRect*) override { return false; }
@@ -177,28 +198,46 @@ public:
     VkDevice DeviceHandle() const;
     VkImage Image() const { return image_; }
     VkImageView ImageView() const { return view_; }
+    const std::shared_ptr<VulkanVideoSamplingResources>& Sampling() const { return sampling_; }
+    VkDescriptorSet DescriptorSet() const { return descriptorSet_; }
+    VkSemaphore AcquireSemaphore() const { return acquireWaitSubmitted_ ? VK_NULL_HANDLE : acquireSemaphore_; }
+    void MarkAcquireSubmitted() { acquireWaitSubmitted_ = true; hasSubmitted_ = true; }
+    void RecordAcquire(VkCommandBuffer commandBuffer) const;
+    void RecordRelease(VkCommandBuffer commandBuffer) const;
+    // Used only when direct replay is unavailable (CPU effect captures or a
+    // different live device). The immutable source is read back once per surface.
+    std::shared_ptr<std::vector<uint8_t>> ReadbackPixels();
     bool DeviceLost() const;
-    bool ConsumeInitialLayoutTransition() {
-        bool expected = true;
-        return needsInitialTransition_.compare_exchange_strong(
-            expected, false, std::memory_order_acq_rel);
-    }
 
 private:
     VulkanImportedVideoSurface() = default;
+    bool CreateSamplingView(VkFormat format, bool opaque);
+    void RetainProducer(const JaliumVideoSurfaceDescriptor& descriptor);
+    static VulkanImportedVideoSurface* CreateWin32(
+        std::shared_ptr<VulkanDeviceGeneration>, const JaliumVideoSurfaceDescriptor&);
+    static VulkanImportedVideoSurface* CreateAndroid(
+        std::shared_ptr<VulkanDeviceGeneration>, const JaliumVideoSurfaceDescriptor&);
+    JaliumVideoSurfaceKind kind_ = JALIUM_VS_KIND_LINUX_DMABUF;
+    uint32_t externalQueueFamily_ = VK_QUEUE_FAMILY_EXTERNAL;
     std::shared_ptr<VulkanDeviceGeneration> generation_;
     uint32_t width_ = 0;
     uint32_t height_ = 0;
     VkImage image_ = VK_NULL_HANDLE;
     VkImageView view_ = VK_NULL_HANDLE;
-    VkDeviceMemory memory_ = VK_NULL_HANDLE;
+    VkDeviceMemory memories_[JALIUM_VIDEO_SURFACE_MAX_PLANES]{};
+    std::shared_ptr<VulkanVideoSamplingResources> sampling_;
+    VkDescriptorPool descriptorPool_ = VK_NULL_HANDLE;
+    VkDescriptorSet descriptorSet_ = VK_NULL_HANDLE;
+    VkSemaphore acquireSemaphore_ = VK_NULL_HANDLE;
+    bool acquireWaitSubmitted_ = false;
+    bool hasSubmitted_ = false;
+    std::shared_ptr<std::vector<uint8_t>> readbackPixels_;
     uint64_t lifetimeContext_ = 0;
     uint64_t lifetimeReleaseCallback_ = 0;
     std::atomic<uint32_t> referenceCount_{1};
-    std::atomic<bool> needsInitialTransition_{true};
 };
 
-class VulkanTextFormat : public TextFormat, public FontUnitMetricsProvider, public FontMathConstantsProvider {
+class VulkanTextFormat : public TextFormat, public FontUnitMetricsProvider, public FontMathConstantsProvider, public TextFontFeatureProvider {
 public:
 #ifdef _WIN32
     VulkanTextFormat(
@@ -216,6 +255,7 @@ public:
 #endif
 
     ~VulkanTextFormat() override;
+    JaliumResult SetFontFeatures(const JaliumFontFeature* features, uint32_t count) override;
 
     void SetAlignment(int32_t alignment) override;
     void SetParagraphAlignment(int32_t alignment) override;
@@ -317,6 +357,8 @@ private:
     // factory or CreateTextFormat fails, in which case the measurement methods
     // fall back to the approximate-metrics path.
     Microsoft::WRL::ComPtr<IDWriteTextFormat> dwFormat_;
+    Microsoft::WRL::ComPtr<IDWriteTypography> typography_;
+    std::vector<JaliumFontFeature> fontFeatures_;
 
     // Per-format font-face metrics (ascent / descent / lineGap and the derived
     // WPF-style lineHeight) depend ONLY on this format's immutable font identity

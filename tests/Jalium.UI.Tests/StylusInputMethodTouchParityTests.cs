@@ -5,7 +5,7 @@ using Xunit;
 
 namespace Jalium.UI.Tests;
 
-[Collection(nameof(ParityFoundationBehaviorCollection))]
+[Collection("ParityFoundationBehaviorCollection")]
 public sealed class StylusInputMethodTouchParityTests
 {
     [Fact]

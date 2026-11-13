@@ -49,8 +49,9 @@ public class FocusedBorderThemeTests
 
     private static Brush InvokeFocusedBrushResolver(Control control)
     {
-        var method = control.GetType().GetMethod("ResolveFocusedBorderBrush",
-            BindingFlags.Instance | BindingFlags.NonPublic);
+        MethodInfo? method = null;
+        for (Type? type = control.GetType(); type != null && method == null; type = type.BaseType)
+            method = type.GetMethod("ResolveFocusedBorderBrush", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
         Assert.NotNull(method);
         return Assert.IsAssignableFrom<Brush>(method!.Invoke(control, null));
     }

@@ -478,7 +478,9 @@ internal static class WindowThemeModeChecks
                 renderThreadOverride = Environment.GetEnvironmentVariable("JALIUM_RENDER_THREAD"),
                 nativePreloadScope = "load preflight; dormant media/browser modules are not functionally exercised",
                 managedLoadPaths = new[] { typeof(Window).Assembly.Location, typeof(UIElement).Assembly.Location, typeof(JaliumMacApplication).Assembly.Location, Assembly.GetExecutingAssembly().Location } }));
-            app.Terminate(app);
+            app.Stop(app);
+            using var wake = NSEvent.OtherEvent(NSEventType.ApplicationDefined, default, 0, 0, 0, null, 0, 0, 0);
+            app.PostEvent(wake, false);
         }
         public void Dispose()
         {

@@ -25,7 +25,7 @@ public partial class ComboBoxAutomationPeer
     }
 
     private sealed class ComboBoxDataItemAutomationPeer(object item, ComboBoxAutomationPeer parent)
-        : SelectorItemAutomationPeer(item, parent)
+        : SelectorItemAutomationPeer(item, parent), Jalium.UI.Automation.Provider.IInvokeProvider
     {
         private ComboBox Combo => parent.ComboBoxOwner;
         public override bool IsSelected => !IsRetired && OccurrenceIndex >= 0 && Combo.SelectedIndex == OccurrenceIndex;
@@ -33,6 +33,17 @@ public partial class ComboBoxAutomationPeer
         protected override string GetNameCore() => ItemContainer is { } container
             && AutomationProperties.GetName(container) is { Length: > 0 } name ? name : parent.ItemText(Item, false);
         protected override bool IsEnabledCore() => Combo.IsEnabled && base.IsEnabledCore();
+        protected override object? GetPatternCore(PatternInterface patternInterface) =>
+            patternInterface == PatternInterface.Invoke ? this : base.GetPatternCore(patternInterface);
+        public void Invoke()
+        {
+            ThrowIfRetired();
+            Combo.SetAutomationSelectionAt(OccurrenceIndex, true);
+            // Selection callbacks may retire this row or disable its owner.
+            if (IsRetired || !Combo.IsEnabled) return;
+            Combo.SetAutomationValue(ComboBox.IsDropDownOpenProperty, false);
+            if (Combo.IsLoaded) Combo.Focus();
+        }
         public override void Select() { ThrowIfRetired(); Combo.SetAutomationSelectionAt(OccurrenceIndex, true); }
         public override void AddToSelection() { ThrowIfRetired(); Combo.SetAutomationSelectionAt(OccurrenceIndex, true); }
         public override void RemoveFromSelection() { ThrowIfRetired(); Combo.SetAutomationSelectionAt(OccurrenceIndex, false); }

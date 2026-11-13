@@ -209,6 +209,9 @@ internal static class CssAttributeSubstitution
 
     private static string? Attribute(CssNode node, CssExpandedName name)
     {
+        var dependent = node;
+        node = CssGeneratedContent.Origin(node) ?? node;
+        CssSelectorDependencies.For(dependent).Observe(node, name.LocalName);
         foreach (var item in Css.AttributeValues(node.Target, name.NamespaceUri, name.LocalName)) return item.Value;
         foreach (var item in CssXmlIdentity.Attributes(node.Target, name.NamespaceUri, name.LocalName))
             if (item.Value is not null) return item.Value;

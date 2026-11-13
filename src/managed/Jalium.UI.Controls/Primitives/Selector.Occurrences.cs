@@ -9,6 +9,10 @@ public abstract partial class Selector
     private bool _preserveSingleSelectedValue;
     private SingleSelectionWrite? _singleSelectionWrite;
 
+    private protected bool HasDeferredSelectedIndex => _selectionOccurrence == null &&
+        GetUncoercedBaseValueInternal(SelectedIndexProperty).value is int requested &&
+        requested >= 0 && requested >= Items.Count;
+
     private sealed class SingleSelectionWrite(DependencyProperty property, object? value)
     {
         internal readonly DependencyProperty Property = property;
@@ -27,7 +31,7 @@ public abstract partial class Selector
 
     private void RecordSingleSelectionRequest(DependencyProperty property, object? value)
     {
-        if (!_isReconcilingOccurrence || this is ListBox) return;
+        if (OwnsSelectionTransaction || !_isReconcilingOccurrence || this is ListBox) return;
         if (_singleSelectionWrite is { Pending: true } write && write.Property == property &&
             (property == SelectedIndexProperty ? Equals(write.Value, value) : ReferenceEquals(write.Value, value)))
         {
@@ -60,6 +64,7 @@ public abstract partial class Selector
 
     internal void OnItemOccurrencesChanged(ItemOccurrenceChange change)
     {
+        if (OwnsSelectionTransaction) return;
         var before = _selectionOccurrence;
         _selectionOccurrence = change.Map(before);
         if (_isReconcilingOccurrence) return;
@@ -70,6 +75,14 @@ public abstract partial class Selector
         }
         if (before != null || _selectionOccurrence != null)
             CommitSingleOccurrence(_selectionOccurrence, previous: before);
+        else if (GetUncoercedBaseValueInternal(SelectedIndexProperty).value is int requested &&
+                 requested >= 0 && requested < Items.Count)
+        {
+            // The collection has made a previously coerced index available.
+            // Publish its effective transition through the normal DP callback
+            // so templates, bindings and derived selectors see the same change.
+            OnPropertyChanged(new(SelectedIndexProperty, -1, requested));
+        }
     }
 
     private ItemOccurrence? ResolveSingleOccurrence(object? item)

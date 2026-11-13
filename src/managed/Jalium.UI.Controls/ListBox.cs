@@ -104,6 +104,9 @@ public partial class ListBox : Selector
 
     #region Constructor
 
+    static ListBox() => ItemsPanelProperty.OverrideMetadata(typeof(ListBox),
+        new PropertyMetadata(CreateItemsPanelTemplate(typeof(VirtualizingStackPanel))));
+
     /// <summary>
     /// Initializes a new instance of the <see cref="ListBox"/> class.
     /// </summary>
@@ -113,11 +116,6 @@ public partial class ListBox : Selector
         _selectedItemsView = new SelectedItemsCollection(this, _selectedItems);
         SetSelectedItemsCollectionView(_selectedItemsView);
         SetCurrentValue(UIElement.TransitionPropertyProperty, TransitionPropertyCollection.None());
-
-        if (ItemsPanel == null)
-        {
-            ItemsPanel = CreateItemsPanelTemplate(typeof(VirtualizingStackPanel));
-        }
 
         // Register input event handlers
         AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
@@ -164,10 +162,7 @@ public partial class ListBox : Selector
     #region Item Container
 
     /// <inheritdoc />
-    protected override Panel CreateItemsPanel()
-    {
-        return new VirtualizingStackPanel { Orientation = Orientation.Vertical };
-    }
+    protected override Panel CreateItemsPanel() => base.CreateItemsPanel();
 
     /// <inheritdoc />
     protected override FrameworkElement GetContainerForItem(object item)
@@ -796,6 +791,11 @@ public partial class ListBox : Selector
 /// </summary>
 public class ListBoxItem : ContentControl
 {
+    static ListBoxItem()
+    {
+        FocusableProperty.OverrideMetadata(typeof(ListBoxItem), new PropertyMetadata(true));
+    }
+
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
@@ -876,7 +876,6 @@ public class ListBoxItem : ContentControl
         UseTemplateContentManagement();
 
         SetCurrentValue(UIElement.TransitionPropertyProperty, TransitionPropertyCollection.None());
-        Focusable = true;
         // Register input event handlers
         AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
         AddHandler(MouseEnterEvent, new MouseEventHandler(OnMouseEnterHandler));

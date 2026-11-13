@@ -17,6 +17,53 @@ public sealed class GlyphRunDrawing : Drawing
         DependencyProperty.Register(nameof(FormattedText), typeof(FormattedText), typeof(GlyphRunDrawing), new PropertyMetadata(null));
     private static readonly DependencyProperty OriginProperty =
         DependencyProperty.Register(nameof(Origin), typeof(Point), typeof(GlyphRunDrawing), new PropertyMetadata(default(Point)));
+    private sealed record SvgOutline(PathGeometry Geometry, Point Origin, string Text, string Family, double Size, int Weight, int Style);
+    private static readonly DependencyProperty SvgOutlineProperty =
+        DependencyProperty.Register("SvgOutline", typeof(SvgOutline), typeof(GlyphRunDrawing), new PropertyMetadata(null));
+
+    // SVG layout has already shaped and measured this run. Keep its immutable
+    // vector ink while retaining the public glyph/font metadata drawing node.
+    internal void SetSvgOutline(PathGeometry geometry)
+    {
+        if (FormattedText is not { } text) return;
+        geometry.Freeze();
+        SetValue(SvgOutlineProperty, new SvgOutline(geometry, Origin, text.Text, text.FontFamily,
+            text.FontSize, text.FontWeight, text.FontStyle));
+    }
+
+    internal bool TryGetSvgOutline(out Geometry geometry)
+    {
+        if (GetValue(SvgOutlineProperty) is SvgOutline outline && FormattedText is { } text &&
+            text.Text == outline.Text && text.FontFamily == outline.Family && text.FontSize == outline.Size &&
+            text.FontWeight == outline.Weight && text.FontStyle == outline.Style && text.FontStretch == 5 &&
+            !text.HasCharacterFormatting && text.PlatformTextLine is null && text.GlyphVisibility == 0 &&
+            text.MaxTextWidth == 0 && text.MaxTextHeight == double.MaxValue && text.MaxLineCount == int.MaxValue &&
+            text.Trimming == TextTrimming.None && text.FlowDirection == FlowDirection.LeftToRight &&
+            text.TextAlignment == TextAlignment.Left)
+        {
+            geometry = outline.Geometry;
+            if (Origin != outline.Origin)
+            {
+                var moved = outline.Geometry.CloneCurrentValue();
+                var dx = Origin.X - outline.Origin.X; var dy = Origin.Y - outline.Origin.Y;
+                Point Move(Point point) => new(point.X + dx, point.Y + dy);
+                foreach (var figure in moved.Figures)
+                {
+                    figure.StartPoint = Move(figure.StartPoint);
+                    foreach (var segment in figure.Segments)
+                    {
+                        if (segment is LineSegment line) line.Point = Move(line.Point);
+                        else if (segment is PolyLineSegment lines)
+                            for (var index = 0; index < lines.Points.Count; index++) lines.Points[index] = Move(lines.Points[index]);
+                    }
+                }
+                moved.Freeze(); geometry = moved;
+            }
+            return true;
+        }
+        geometry = null!;
+        return false;
+    }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="GlyphRunDrawing"/> class.
@@ -100,7 +147,8 @@ public sealed class GlyphRunDrawing : Drawing
         if (ReferenceEquals(e.Property, ForegroundBrushProperty)
             || ReferenceEquals(e.Property, GlyphRunProperty)
             || ReferenceEquals(e.Property, FormattedTextProperty)
-            || ReferenceEquals(e.Property, OriginProperty))
+            || ReferenceEquals(e.Property, OriginProperty)
+            || ReferenceEquals(e.Property, SvgOutlineProperty))
         {
             WritePostscript();
         }
@@ -111,6 +159,10 @@ public sealed class GlyphRunDrawing : Drawing
     {
         get
         {
+            if (TryGetSvgOutline(out var outline))
+            {
+                return outline.Bounds;
+            }
             if (FormattedText != null)
             {
                 return new Rect(Origin.X, Origin.Y, FormattedText.Width, FormattedText.Height);
@@ -128,6 +180,11 @@ public sealed class GlyphRunDrawing : Drawing
     /// <inheritdoc />
     public override void RenderTo(DrawingContext context)
     {
+        if (TryGetSvgOutline(out var outline))
+        {
+            context.DrawGeometry(ForegroundBrush ?? FormattedText?.Foreground, null, outline);
+            return;
+        }
         if (FormattedText != null)
         {
             if (ForegroundBrush != null)

@@ -24,6 +24,7 @@ public interface IStoryboard
 /// <summary>
 /// Represents a visual state that an element can be in.
 /// </summary>
+[Markup.ContentProperty(nameof(Storyboard))]
 public class VisualState : DependencyObject
 {
     private readonly List<Setter> _setters = new();
@@ -101,12 +102,15 @@ public sealed class VisualStateChangedEventArgs : EventArgs
 /// <summary>
 /// Contains mutually exclusive visual states and manages transitions between them.
 /// </summary>
+[Markup.ContentProperty(nameof(States))]
 public class VisualStateGroup : DependencyObject
 {
     private readonly List<VisualState> _states = new();
     private readonly List<VisualTransition> _transitions = new();
     private VisualState? _currentState;
     private FrameworkElement? _attachedElement;
+    private readonly List<(FrameworkElement Target, DependencyProperty Property)> _transitionTargets = new();
+    private Storyboard? _transitionStoryboard;
 
     /// <summary>
     /// Gets or sets the name of the visual state group.
@@ -167,6 +171,8 @@ public class VisualStateGroup : DependencyObject
     /// </summary>
     internal void Detach()
     {
+        StopTransition();
+        _currentState?.Storyboard?.Stop();
         if (_currentState != null && _attachedElement != null)
         {
             RemoveStateSetters(_currentState, _attachedElement);
@@ -206,29 +212,27 @@ public class VisualStateGroup : DependencyObject
             transition = FindTransition(oldState?.Name, newState.Name);
         }
 
-        // Check if we should use animated transition
+        var fromValues = transition?.GeneratedDuration is { HasTimeSpan: true } transitionDuration &&
+            transitionDuration.TimeSpan > TimeSpan.Zero ? CaptureTransitionValues(oldState, newState) : null;
+        StopTransition();
+        oldState?.Storyboard?.Stop();
+        if (oldState != null) RemoveStateSetters(oldState, _attachedElement);
+        _currentState = newState;
+        VisualStateManager.ApplyCurrentStateSetters(stateGroupsRoot);
+
+        // The state supplies the resting values even when an animation is used.
+        // Removing its animation must reveal that state, rather than a stale style.
         if (transition?.GeneratedDuration is { HasTimeSpan: true } duration &&
             duration.TimeSpan > TimeSpan.Zero)
         {
-            ApplyAnimatedTransition(oldState, newState, transition);
+            ApplyAnimatedTransition(fromValues!, transition);
         }
-        else
+        else if (transition?.Storyboard is { } storyboard)
         {
-            // Immediate transition (no animation)
-            if (oldState != null)
-            {
-                // Stop previous state's storyboard if running
-                oldState.Storyboard?.Stop();
-                RemoveStateSetters(oldState, _attachedElement);
-            }
-
-            ApplyStateSetters(newState, _attachedElement);
-
-            // Begin new state's storyboard if present
-            newState.Storyboard?.Begin(_attachedElement);
+            _transitionStoryboard = storyboard;
+            storyboard.Begin(_attachedElement);
         }
-
-        _currentState = newState;
+        newState.Storyboard?.Begin(_attachedElement);
         _attachedElement.InvalidateVisual();
         RaiseCurrentStateChanged(stateGroupsRoot, oldState, newState, control);
         return true;
@@ -261,100 +265,47 @@ public class VisualStateGroup : DependencyObject
             new VisualStateChangedEventArgs(oldState, newState, control, stateGroupsRoot));
     }
 
-    private void ApplyAnimatedTransition(VisualState? fromState, VisualState toState, VisualTransition transition)
+    private Dictionary<(FrameworkElement Target, DependencyProperty Property), object?> CaptureTransitionValues(
+        VisualState? fromState, VisualState toState)
+    {
+        var values = new Dictionary<(FrameworkElement, DependencyProperty), object?>();
+        foreach (var setter in (fromState?.Setters ?? Array.Empty<Setter>()).Concat(toState.Setters))
+            if (_attachedElement != null && setter.ResolveTargetProperty(_attachedElement) is { } key)
+                values[key] = key.Target.GetValue(key.Property);
+        return values;
+    }
+
+    private void ApplyAnimatedTransition(
+        Dictionary<(FrameworkElement Target, DependencyProperty Property), object?> fromValues,
+        VisualTransition transition)
     {
         if (_attachedElement == null) return;
-
-        TimeSpan generatedDuration = transition.GeneratedDuration.HasTimeSpan
-            ? transition.GeneratedDuration.TimeSpan
-            : TimeSpan.Zero;
-
-        // Collect property changes
-        var fromSetters = fromState?.Setters.ToDictionary(
-            s => (s.TargetName, s.Property),
-            s => s.Value) ?? new Dictionary<(string?, DependencyProperty?), object?>();
-
-        var toSetters = toState.Setters.ToDictionary(
-            s => (s.TargetName, s.Property),
-            s => s.Value);
-
-        // Apply animations for changing properties
-        foreach (var (key, toValue) in toSetters)
+        var duration = transition.GeneratedDuration.TimeSpan;
+        foreach (var ((target, property), fromValue) in fromValues)
         {
-            var (targetName, property) = key;
-            if (property == null) continue;
-
-            // Resolve target element
-            var target = string.IsNullOrEmpty(targetName)
-                ? _attachedElement
-                : _attachedElement.FindName(targetName) as FrameworkElement;
-
-            if (target == null) continue;
-
-            // Get from value
-            object? fromValue;
-            if (fromSetters.TryGetValue(key, out var fv))
-            {
-                fromValue = fv;
-            }
-            else
-            {
-                fromValue = target.GetValue(property);
-            }
-
-            // Try to create animation
-            IAnimationTimeline? animation = null;
-
-            // Use custom factory if provided
-            if (transition.AnimationFactory != null)
-            {
-                animation = transition.AnimationFactory(property.PropertyType, fromValue, toValue, generatedDuration);
-            }
-
-            // Fallback: generate default animation for common types
-            animation ??= CreateDefaultAnimation(property.PropertyType, fromValue, toValue, generatedDuration);
-
-            // Apply animation or immediate value
-            if (animation != null)
-            {
-                target.BeginAnimation(property, animation);
-            }
-            else
-            {
-                // No animation available, apply value immediately
-                target.SetValue(property, toValue);
-            }
+            var toValue = target.GetValue(property);
+            if (Equals(fromValue, toValue)) continue;
+            var animation = transition.AnimationFactory?.Invoke(property.PropertyType, fromValue, toValue, duration)
+                ?? CreateDefaultAnimation(property.PropertyType, fromValue, toValue, duration);
+            if (animation == null) continue;
+            target.BeginAnimation(property, animation);
+            _transitionTargets.Add((target, property));
         }
+        _transitionStoryboard = transition.Storyboard;
+        _transitionStoryboard?.Begin(_attachedElement);
+    }
 
-        // Remove properties that are no longer in the new state
-        foreach (var (key, _) in fromSetters)
-        {
-            if (!toSetters.ContainsKey(key))
-            {
-                var (targetName, property) = key;
-                if (property == null) continue;
+    private void StopTransition()
+    {
+        _transitionStoryboard?.Stop();
+        _transitionStoryboard = null;
+        foreach (var (target, property) in _transitionTargets) target.BeginAnimation(property, null);
+        _transitionTargets.Clear();
+    }
 
-                var target = string.IsNullOrEmpty(targetName)
-                    ? _attachedElement
-                    : _attachedElement.FindName(targetName) as FrameworkElement;
-
-                if (target != null)
-                {
-                    // Stop any animation and clear the value
-                    target.BeginAnimation(property, null);
-                }
-            }
-        }
-
-        // Stop old state's storyboard
-        fromState?.Storyboard?.Stop();
-
-        // Begin transition storyboard if present
-        transition.Storyboard?.Begin(_attachedElement);
-
-        // Begin new state's storyboard
-        toState.Storyboard?.Begin(_attachedElement);
-
+    internal void ApplyCurrentSetters()
+    {
+        if (_currentState != null && _attachedElement != null) ApplyStateSetters(_currentState, _attachedElement);
     }
 
     private VisualTransition? FindTransition(string? from, string to)
@@ -386,7 +337,7 @@ public class VisualStateGroup : DependencyObject
     {
         foreach (var setter in state.Setters)
         {
-            setter.Apply(element);
+            setter.Apply(element, DependencyObject.LayerValueSource.VisualState);
         }
     }
 
@@ -395,7 +346,7 @@ public class VisualStateGroup : DependencyObject
         // Remove setters in reverse order
         for (int i = state.Setters.Count - 1; i >= 0; i--)
         {
-            state.Setters[i].Remove(element);
+            state.Setters[i].Remove(element, DependencyObject.LayerValueSource.VisualState);
         }
     }
 
@@ -423,6 +374,7 @@ public class VisualStateGroup : DependencyObject
 /// <summary>
 /// Defines a transition between visual states.
 /// </summary>
+[Markup.ContentProperty(nameof(Storyboard))]
 public class VisualTransition : DependencyObject
 {
     /// <summary>
@@ -545,7 +497,9 @@ public class VisualStateManager : DependencyObject
     public static bool GoToState(FrameworkElement control, string stateName, bool useTransitions)
     {
         ArgumentNullException.ThrowIfNull(control);
-        return GoToStateCommon(control, control, stateName, useTransitions);
+        ArgumentNullException.ThrowIfNull(stateName);
+        control.ApplyTemplate();
+        return GoToStateCommon(control, GetStateGroupsRoot(control), stateName, useTransitions);
     }
 
     /// <summary>
@@ -619,7 +573,7 @@ public class VisualStateManager : DependencyObject
     {
         ArgumentNullException.ThrowIfNull(control);
 
-        var groups = GetVisualStateGroups(control);
+        var groups = GetVisualStateGroups(GetStateGroupsRoot(control));
         if (groups == null)
             return null;
 
@@ -630,6 +584,30 @@ public class VisualStateManager : DependencyObject
         }
 
         return null;
+    }
+
+    internal static void ApplyCurrentStateSetters(FrameworkElement root)
+    {
+        if (GetVisualStateGroups(root) is not { } groups) return;
+        foreach (var item in groups)
+            if (item is VisualStateGroup group) group.ApplyCurrentSetters();
+    }
+
+    internal static void DetachVisualStateGroups(FrameworkElement element)
+    {
+        if (GetVisualStateGroups(element) is not { } groups) return;
+        foreach (var item in groups)
+            if (item is VisualStateGroup group) group.Detach();
+    }
+
+    private static FrameworkElement GetStateGroupsRoot(FrameworkElement control)
+    {
+        var root = control.StateGroupsRoot;
+        // Preserve explicitly attached states on a standalone element. Template
+        // states take precedence once a control has expanded its template.
+        return root != null &&
+            (GetVisualStateGroups(root) != null || GetCustomVisualStateManager(root) != null)
+            ? root : control;
     }
 
     private static bool GoToStateCommon(

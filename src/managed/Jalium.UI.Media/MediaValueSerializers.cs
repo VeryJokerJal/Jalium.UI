@@ -84,7 +84,7 @@ namespace Jalium.UI.Media
             _items.AddRange(collection);
         }
 
-        public Vector this[int index] { get => _items[index]; set => _items[index] = value; }
+        public Vector this[int index] { get => _items[index]; set => _items.SetItem(index, value); }
         object? IList.this[int index] { get => this[index]; set => this[index] = AnimatableListStorage<Vector>.Cast(value); }
         public int Count => _items.Count;
         bool ICollection<Vector>.IsReadOnly => _items.IsReadOnly;
@@ -130,13 +130,7 @@ namespace Jalium.UI.Media
         protected override void GetAsFrozenCore(Freezable source) { base.GetAsFrozenCore(source); _items.CopyFrom(((VectorCollection)source)._items, AnimatableListCloneMode.GetAsFrozen); }
         protected override void GetCurrentValueAsFrozenCore(Freezable source) { base.GetCurrentValueAsFrozenCore(source); _items.CopyFrom(((VectorCollection)source)._items, AnimatableListCloneMode.GetCurrentValueAsFrozen); }
 
-        private AnimatableListStorage<Vector> CreateStorage(int capacity = 0) => new(
-            () => ReadPreamble(),
-            () => WritePreamble(),
-            () => WritePostscript(),
-            (oldValue, newValue) => OnFreezablePropertyChanged(oldValue, newValue),
-            () => IsFrozen,
-            capacity);
+        private AnimatableListStorage<Vector> CreateStorage(int capacity = 0) => new(this, capacity);
 
         public override string ToString() => ToString(CultureInfo.CurrentCulture);
         public string ToString(IFormatProvider? provider) => string.Join(" ", this.Select(vector => vector.ToString(provider)));
@@ -330,7 +324,7 @@ namespace Jalium.UI.Media.Converters
         public override bool CanConvertFromString(string value, IValueSerializerContext? context) => value is not null;
         public override bool CanConvertToString(object value, IValueSerializerContext? context) => value is Geometry;
         public override object ConvertFromString(string value, IValueSerializerContext? context) => Geometry.Parse(value);
-        public override string ConvertToString(object value, IValueSerializerContext? context) => value is Geometry geometry ? geometry.ToString() ?? string.Empty : throw new ArgumentException("Value must be a Geometry.", nameof(value));
+        public override string ConvertToString(object value, IValueSerializerContext? context) => value is Geometry geometry ? geometry.ToString(CultureInfo.InvariantCulture) : throw new ArgumentException("Value must be a Geometry.", nameof(value));
     }
 
     public class TransformValueSerializer : ValueSerializer

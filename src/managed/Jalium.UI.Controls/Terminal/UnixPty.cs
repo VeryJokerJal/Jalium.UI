@@ -18,16 +18,16 @@ internal static partial class UnixPty
 {
     private const string Libc = "libc";
 
-    // open(2) flags (asm-generic, valid on x86_64/arm64/riscv Linux).
+    // Darwin and Linux use different open/spawn/ioctl constants. In particular,
+    // Linux SETSID (0x80) is START_SUSPENDED on Darwin.
     private const int O_RDWR = 0x2;
-    private const int O_NOCTTY = 0x100;
-    private const int O_CLOEXEC = 0x80000;
+    private static int NoControllingTerminalFlag => OperatingSystem.IsMacOS() ? 0x00020000 : 0x100;
+    private static int CloseOnExecFlag => OperatingSystem.IsMacOS() ? 0x01000000 : 0x80000;
 
-    // spawn(3) — identical value in glibc and musl.
-    private const short POSIX_SPAWN_SETSID = 0x80;
+    private static short NewSessionFlag => OperatingSystem.IsMacOS() ? (short)0x0400 : (short)0x80;
 
     // ioctl(2)
-    private const uint TIOCSWINSZ = 0x5414;
+    private static uint SetWindowSizeRequest => OperatingSystem.IsMacOS() ? 0x80087467u : 0x5414u;
 
     // waitpid(2)
     private const int WNOHANG = 1;
@@ -56,7 +56,7 @@ internal static partial class UnixPty
         int columns,
         int rows)
     {
-        var masterFd = posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC);
+        var masterFd = posix_openpt(O_RDWR | NoControllingTerminalFlag | CloseOnExecFlag);
         if (masterFd < 0)
             return null;
 
@@ -79,18 +79,38 @@ internal static partial class UnixPty
             var slavePath = Encoding.UTF8.GetString(
                 slaveNameBuffer, 0, terminator >= 0 ? terminator : slaveNameBuffer.Length);
 
-            // Apply the initial size to the master before the child starts so
-            // the shell's first prompt lays out at the right width.
-            SetSize(masterFd, columns, rows);
-
-            var pid = Spawn(shell, arguments, workingDirectory, extraEnvironment, slavePath);
-            if (pid <= 0)
+            // Darwin rejects TIOCSWINSZ until the slave is open. Hold an own
+            // non-controlling, close-on-exec descriptor through spawn so that
+            // even the child's first command sees the configured dimensions.
+            var initialSlave = OperatingSystem.IsMacOS()
+                ? OpenSlave(slavePath, O_RDWR | NoControllingTerminalFlag | CloseOnExecFlag) : -1;
+            if (OperatingSystem.IsMacOS() && initialSlave < 0)
             {
                 close(masterFd);
                 return null;
             }
 
-            return new UnixPtySession(masterFd, pid);
+            try
+            {
+                if (!SetSize(masterFd, columns, rows))
+                {
+                    close(masterFd);
+                    return null;
+                }
+
+                var pid = Spawn(shell, arguments, workingDirectory, extraEnvironment, slavePath);
+                if (pid <= 0)
+                {
+                    close(masterFd);
+                    return null;
+                }
+
+                return new UnixPtySession(masterFd, pid);
+            }
+            finally
+            {
+                if (initialSlave >= 0) close(initialSlave);
+            }
         }
         catch (DllNotFoundException)
         {
@@ -157,7 +177,8 @@ internal static partial class UnixPty
             {
                 // New session; opening the slave (fd 0) then makes it the
                 // controlling terminal. stdout/stderr dup from fd 0.
-                _ = posix_spawnattr_setflags(attr, POSIX_SPAWN_SETSID);
+                if (posix_spawnattr_setflags(attr, NewSessionFlag) != 0)
+                    return -1;
 
                 var slavePathUtf8 = MarshalUtf8(slavePath, argvHandles);
                 if (posix_spawn_file_actions_addopen(fileActions, 0, slavePathUtf8, O_RDWR, 0) != 0)
@@ -272,14 +293,19 @@ internal static partial class UnixPty
             yield return current.ToString();
     }
 
-    internal static void SetSize(int masterFd, int columns, int rows)
+    internal static bool SetSize(int masterFd, int columns, int rows)
     {
         var size = new WinSize
         {
             Rows = (ushort)Math.Clamp(rows, 1, ushort.MaxValue),
             Columns = (ushort)Math.Clamp(columns, 1, ushort.MaxValue),
         };
-        _ = ioctl(masterFd, TIOCSWINSZ, ref size);
+        // Darwin's public ioctl is variadic. Its fixed-signature system entry
+        // avoids the distinct ARM64 variadic argument ABI when called by P/Invoke.
+        var result = OperatingSystem.IsMacOS()
+            ? DarwinIoctl(masterFd, SetWindowSizeRequest, ref size)
+            : ioctl(masterFd, SetWindowSizeRequest, ref size);
+        return result == 0;
     }
 
     internal static int ReadMaster(int masterFd, byte[] buffer)
@@ -320,6 +346,10 @@ internal static partial class UnixPty
     [LibraryImport(Libc, SetLastError = true)]
     private static partial int unlockpt(int fd);
 
+    // Only the two required open(2) arguments are used: no O_CREAT/mode vararg.
+    [LibraryImport(Libc, EntryPoint = "open", StringMarshalling = StringMarshalling.Utf8, SetLastError = true)]
+    private static partial int OpenSlave(string path, int flags);
+
     [LibraryImport(Libc, SetLastError = true)]
     private static partial int ptsname_r(int fd, [Out] byte[] buffer, nuint bufferLength);
 
@@ -334,6 +364,9 @@ internal static partial class UnixPty
 
     [LibraryImport(Libc, SetLastError = true)]
     private static partial int ioctl(int fd, nuint request, ref WinSize size);
+
+    [LibraryImport(Libc, EntryPoint = "__ioctl", SetLastError = true)]
+    private static partial int DarwinIoctl(int fd, nuint request, ref WinSize size);
 
     [LibraryImport(Libc, SetLastError = true)]
     private static partial int kill(int pid, int signal);

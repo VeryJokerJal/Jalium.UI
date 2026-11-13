@@ -17,16 +17,48 @@ internal sealed record CssClipPathValue(CssClipShape Shape, CssClipBox Box,
 {
     internal static readonly CssClipPathValue None = new(CssClipShape.None, CssClipBox.Border, []);
 
-    internal Geometry? Resolve(UIElement element)
+    // These arrays contain computed shape values. Re-evaluation creates new
+    // arrays even when the value is unchanged; reference equality would keep
+    // invalidating layout and would defeat the flow snapshot cache.
+    public bool Equals(CssClipPathValue? other) => ReferenceEquals(this, other) || other is not null &&
+        Shape == other.Shape && Box == other.Box && Radius == other.Radius &&
+        Lengths.AsSpan().SequenceEqual(other.Lengths) &&
+        (RoundRadii is null ? other.RoundRadii is null :
+            other.RoundRadii is not null && RoundRadii.AsSpan().SequenceEqual(other.RoundRadii)) &&
+        CenterXFromFarEdge == other.CenterXFromFarEdge && CenterYFromFarEdge == other.CenterYFromFarEdge &&
+        PolygonFillRule == other.PolygonFillRule && PolygonRoundRadius.Equals(other.PolygonRoundRadius) &&
+        EqualityComparer<PathGeometry?>.Default.Equals(SvgPath, other.SvgPath) &&
+        EqualityComparer<CssShapePathValue?>.Default.Equals(ShapeData, other.ShapeData) &&
+        EqualityComparer<CssClipPathUrlResource?>.Default.Equals(UrlResource, other.UrlResource);
+
+    public override int GetHashCode()
+    {
+        var hash = new HashCode();
+        hash.Add(Shape); hash.Add(Box); hash.Add(Radius);
+        hash.Add(Lengths.Length);
+        foreach (var length in Lengths) hash.Add(length);
+        hash.Add(RoundRadii is not null);
+        if (RoundRadii is not null)
+        {
+            hash.Add(RoundRadii.Length);
+            foreach (var radius in RoundRadii) hash.Add(radius);
+        }
+        hash.Add(CenterXFromFarEdge); hash.Add(CenterYFromFarEdge);
+        hash.Add(PolygonFillRule); hash.Add(PolygonRoundRadius);
+        hash.Add(SvgPath); hash.Add(ShapeData); hash.Add(UrlResource);
+        return hash.ToHashCode();
+    }
+
+    internal Geometry? Resolve(UIElement element, Size? usedSize = null, double? usedContainingWidth = null)
     {
         if (Shape == CssClipShape.None) return null;
-        var size = element.RenderSize;
+        var size = usedSize ?? element.RenderSize;
         if (Shape == CssClipShape.Url) return UrlResource!.Resolve(size);
         var rect = new Rect(size);
         var insets = default(Thickness);
         if (element is FrameworkElement framework)
         {
-            var containingWidth = framework.CssLayout?.ContainingWidthCache ?? size.Width;
+            var containingWidth = usedContainingWidth ?? framework.CssLayout?.ContainingWidthCache ?? size.Width;
             var (border, padding) = CssBoxMetrics.BackgroundInsets(framework, containingWidth);
             insets = Box switch
             {
@@ -301,7 +333,7 @@ internal static class CssClipPathProperties
         }));
 
     internal static Geometry? GetGeometry(UIElement element)
-        => element.GetEffectiveValueLayer(ValueProperty) is
+        => !CssContentsLayout.IsContents(element) && element.GetEffectiveValueLayer(ValueProperty) is
             (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState)
             ? (element.GetValue(ValueProperty) as CssClipPathValue)?.Resolve(element) : null;
 }
@@ -311,7 +343,7 @@ internal sealed class CssClipPathCompiledValue(CssClipShape shape, CssClipBox bo
     CssLength[]? roundRadii = null,
     bool centerXFromFarEdge = false, bool centerYFromFarEdge = false,
     FillRule polygonFillRule = FillRule.Nonzero, CssLength? polygonRoundRadius = null,
-    PathGeometry? svgPath = null) : CssCompiledValue
+    PathGeometry? svgPath = null, DependencyProperty? property = null) : CssCompiledValue
 {
     public override bool TryApply(in CssApplyContext context, ICssSetterSink sink)
     {
@@ -344,7 +376,7 @@ internal sealed class CssClipPathCompiledValue(CssClipShape shape, CssClipBox bo
         if (used is null || roundRadii is not null && usedRound is null ||
             polygonRoundRadius is not null && (usedPolygonRound is null ||
                 !double.IsFinite(usedPolygonRadius) || usedPolygonRadius < 0)) return false;
-        sink.Set(CssClipPathProperties.ValueProperty, new CssClipPathValue(shape, box, used, radius,
+        sink.Set(property ?? CssClipPathProperties.ValueProperty, new CssClipPathValue(shape, box, used, radius,
             usedRound, centerXFromFarEdge, centerYFromFarEdge, polygonFillRule,
             usedPolygonRound is null ? default : usedPolygonRound[0], svgPath));
         return true;

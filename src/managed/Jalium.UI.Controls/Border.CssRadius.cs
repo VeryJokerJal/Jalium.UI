@@ -15,6 +15,7 @@ public partial class Border
 
     private bool TryGetCssRadius(out CssUsedBorderRadii radii)
     {
+        if (CssTableLayout.CollapsedDecoration(this)) { radii = default; return true; }
         // LiquidGlass and nonstandard native shapes keep their own contour.
         if (Shape == BorderShape.RoundedRectangle && !LiquidGlass &&
             CssBorderRadiusProperties.Get(this) is { } value)
@@ -112,6 +113,9 @@ public partial class Border
     protected override HitTestResult? HitTestCore(Point point)
     {
         var result = base.HitTestCore(point);
+        // The shared inline formatter already tested each rounded fragment.
+        // Its envelope includes gaps occupied by other sources on those lines.
+        if (IsCssInlineFrame) return result;
         if (!TryGetCssRadius(out var radii)) return result;
         if (result is not null && !ReferenceEquals(result.VisualHit, this)) return result;
         if (CssPointerEventsProperties.Effective(this) == CssPointerEventsMode.None) return null;

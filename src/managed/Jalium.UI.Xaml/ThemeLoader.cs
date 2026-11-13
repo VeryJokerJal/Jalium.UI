@@ -57,6 +57,13 @@ public static class ThemeLoader
                 return null;
             }
         };
+        Jalium.UI.Styling.CssStyleSheet.ApplicationResourceUriResolver = static uri =>
+        {
+            if (uri.IsAbsoluteUri || uri.OriginalString.Contains(";component/", StringComparison.OrdinalIgnoreCase))
+                return uri;
+            var assemblyName = Application.ResourceAssembly.GetName().Name;
+            return new Uri($"/{assemblyName};component/{uri.OriginalString.TrimStart('/')}", UriKind.Relative);
+        };
 
         // NOTE on intentional restraint: this ModuleInitializer ONLY registers callbacks
         // (XamlLoader, SourceLoader, StartupObjectLoader, type resolver, value converter).

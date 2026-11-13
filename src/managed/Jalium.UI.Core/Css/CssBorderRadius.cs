@@ -60,9 +60,11 @@ internal static class CssBorderRadiusProperties
     internal static CssBorderRadiusValue? Get(DependencyObject target)
     {
         var dp = CssDependencyPropertyLookup.Find(target.GetType(), "CornerRadius");
+        if (target is ICssStyledBox styled && CssDependencyPropertyLookup.Find(styled.StyleSource.GetType(), "CornerRadius") is null &&
+            target.GetEffectiveValueLayer(ValueProperty) is (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState))
+            return target.GetValue(ValueProperty) as CssBorderRadiusValue;
         if (dp is null)
-            return target is FrameworkElement &&
-                target.GetEffectiveValueLayer(ValueProperty) is
+            return target.GetEffectiveValueLayer(ValueProperty) is
                     (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState)
                 ? target.GetValue(ValueProperty) as CssBorderRadiusValue : null;
         if (target.HasLocalOrAnimatedValue(dp)) return null;

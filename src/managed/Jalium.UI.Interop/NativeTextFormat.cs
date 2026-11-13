@@ -48,11 +48,212 @@ public sealed class NativeTextFormat : IDisposable
     private TextTrimmingMode? _currentTrimming;
     internal bool NoWrap { get; private set; }
 
+    internal bool TrySetFlowDirection(FlowDirection direction) => TrySetTextDirection((int)direction);
+    internal bool TrySetTextOrientation(int orientation, int baseline = 0)
+    {
+        using var use = AcquireNativeUse();
+        try { return (JaliumResult)NativeMethods.TextFormatSetOrientation(use.Handle, orientation, baseline) == JaliumResult.Ok; }
+        catch (EntryPointNotFoundException) { return false; }
+    }
+    internal bool TrySetTextDirection(int direction)
+    {
+        using var use = AcquireNativeUse();
+        try
+        {
+            var result = (JaliumResult)NativeMethods.TextFormatSetDirection(use.Handle, direction);
+            if (result == JaliumResult.NotSupported) return false;
+            if (result != JaliumResult.Ok) throw new InvalidOperationException($"Cannot set paragraph direction: {result}");
+            return true;
+        }
+        catch (EntryPointNotFoundException) { return false; }
+    }
+
     internal void SetNoWrap(bool noWrap)
     {
         using var nativeUse = AcquireNativeUse();
         NativeMethods.TextFormatSetWordWrapping(nativeUse.Handle, noWrap ? 1 : 0);
         NoWrap = noWrap;
+    }
+
+    internal float UsedFontSize => _usedFontSize ?? FontSize;
+    private float? _usedFontSize;
+    internal bool TrySetFontFaceMetrics(CssFontFaceMetrics metrics)
+    {
+        using var use = AcquireNativeUse(); var data = NativeFontFaceMetrics.From(metrics);
+        try
+        {
+            var status = (JaliumResult)NativeMethods.TextFormatSetFontFaceMetrics(use.Handle, data, out float used);
+            if (status == JaliumResult.NotSupported) return false;
+            if (status != JaliumResult.Ok) throw new InvalidOperationException($"Cannot configure font-face metrics: {status}");
+            _usedFontSize = used; return true;
+        }
+        catch (EntryPointNotFoundException) { return false; }
+    }
+
+    internal bool TryGetFontInkBounds(string text, out Rect bounds)
+    {
+        using var use = AcquireNativeUse(); bounds = default;
+        try
+        {
+            if (NativeMethods.TextFormatGetFontInkBounds(use.Handle, text, (uint)text.Length, out var result) != 0) return false;
+            bounds = new(result.X, result.Y, result.Width, result.Height); return true;
+        }
+        catch (EntryPointNotFoundException) { return false; }
+    }
+
+    internal bool TryGetFontAspectMetric(byte metric, out double aspect)
+    {
+        using var use = AcquireNativeUse(); aspect = 0;
+        try { return NativeMethods.TextFormatGetFontAspectMetric(use.Handle, metric, out aspect) == 0; }
+        catch (EntryPointNotFoundException) { return false; }
+    }
+    internal unsafe bool TrySetFontSizeAdjust(CssFontSizeAdjust adjustment, FontFeatureRenderingSource.CapsContext context)
+    {
+        using var use = AcquireNativeUse();
+        var axes = context.Variations ?? [];
+        try
+        {
+            fixed (FontVariation* pointer = axes)
+            {
+                var status = (JaliumResult)NativeMethods.TextFormatSetFontSizeAdjust(use.Handle, adjustment.Metric, adjustment.Aspect,
+                    context.OpticalSizing, pointer, (uint)axes.Length, out float used);
+                if (status == JaliumResult.NotSupported) return false;
+                if (status != JaliumResult.Ok) throw new InvalidOperationException($"Cannot configure font-size-adjust: {status}");
+                _usedFontSize = used; return true;
+            }
+        }
+        catch (EntryPointNotFoundException) { return false; }
+    }
+
+    internal unsafe bool TrySetFontOpticalVariations(FontVariation[] axes, byte mode)
+    {
+        using var nativeUse = AcquireNativeUse();
+        try
+        {
+            fixed (FontVariation* pointer = axes)
+            {
+                var status = (JaliumResult)NativeMethods.TextFormatSetFontOpticalVariations(nativeUse.Handle, pointer, (uint)axes.Length, mode);
+                if (status == JaliumResult.NotSupported) return OpticalFallback();
+                if (status != JaliumResult.Ok) throw new InvalidOperationException($"Cannot configure font optical sizing: {status}");
+                return true;
+            }
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return OpticalFallback();
+        }
+        bool OpticalFallback()
+        {
+            // Preserve other explicit axes even if the old payload cannot
+            // recover the selected face's default optical coordinate.
+            if (mode == 1) return TrySetFontVariations(CssFontVariationSettings.Merge([new(0x6f70737a, FontSize)], axes));
+            return TrySetFontVariations(axes) && axes.Any(axis => axis.Tag == 0x6f70737a);
+        }
+    }
+
+    internal unsafe bool TrySetFontVariations(FontVariation[] axes)
+    {
+        using var nativeUse = AcquireNativeUse();
+        try
+        {
+            fixed (FontVariation* pointer = axes)
+            {
+                var status = (JaliumResult)NativeMethods.TextFormatSetFontVariations(nativeUse.Handle, pointer, (uint)axes.Length);
+                if (status == JaliumResult.NotSupported) return false;
+                if (status != JaliumResult.Ok) throw new InvalidOperationException($"Cannot configure font variations: {status}");
+                return true;
+            }
+        }
+        catch (EntryPointNotFoundException) { return false; }
+    }
+
+    internal unsafe JaliumResult SetFontFeatures(FontFeature[] features)
+    {
+        using var nativeUse = AcquireNativeUse();
+        fixed (FontFeature* pointer = features)
+            return (JaliumResult)NativeMethods.TextFormatSetFontFeatures(nativeUse.Handle, pointer, (uint)features.Length);
+    }
+
+    internal unsafe bool TryGetFontFeatureSupport(ReadOnlySpan<uint> tags, out byte[] supported, uint tables = 1)
+    {
+        if (tags.Length > FontFeature.MaximumCount) throw new ArgumentOutOfRangeException(nameof(tags));
+        using var nativeUse = AcquireNativeUse();
+        supported = new byte[tags.Length];
+        try
+        {
+            fixed (uint* input = tags)
+            fixed (byte* output = supported)
+            {
+                var status = (JaliumResult)NativeMethods.TextFormatGetFontFeatureSupport(nativeUse.Handle, tables, input, (uint)tags.Length, output);
+                if (status == JaliumResult.NotSupported) return false;
+                if (status != JaliumResult.Ok) throw new InvalidOperationException($"Cannot query font features: {status}");
+                return true;
+            }
+        }
+        catch (EntryPointNotFoundException) { return false; }
+    }
+
+    internal bool TrySetFontEmoji(FontFeatureRenderingSource.CapsContext context)
+    {
+        using var nativeUse = AcquireNativeUse();
+        try
+        {
+            var status = (JaliumResult)NativeMethods.TextFormatSetFontEmoji(nativeUse.Handle, context.Emoji, context.EmojiAfter);
+            if (status == JaliumResult.NotSupported) return false;
+            if (status != JaliumResult.Ok) throw new InvalidOperationException($"Cannot configure font emoji presentation: {status}");
+            return true;
+        }
+        catch (EntryPointNotFoundException) { return false; }
+    }
+
+    internal bool TrySetFontPosition(FontFeatureRenderingSource.CapsContext context, FontFeature[] features)
+    {
+        using var nativeUse = AcquireNativeUse();
+        uint flags = context.DisablePositionSynthesis ? 0u : 1u;
+        uint tag = FontFeature.TagOf(context.Position == 1 ? "subs" : "sups");
+        foreach (var feature in features)
+            if (feature.Tag == tag) flags = (flags & 1) | 2 | (feature.Value != 0 ? 4u : 0);
+        try
+        {
+            var status = (JaliumResult)NativeMethods.TextFormatSetFontPosition(nativeUse.Handle, context.Position, flags, context.PositionRun);
+            if (status == JaliumResult.NotSupported) return false;
+            if (status != JaliumResult.Ok) throw new InvalidOperationException($"Cannot configure font position: {status}");
+            return true;
+        }
+        catch (EntryPointNotFoundException) { return false; }
+    }
+
+    internal unsafe bool TrySetFontCaps(CssCapsVariant caps, FontFeatureRenderingSource.CapsContext context, FontFeature[] features)
+    {
+        using var nativeUse = AcquireNativeUse();
+        byte[] language = System.Text.Encoding.ASCII.GetBytes(context.Language ?? "en-US");
+        int flags = context.DisableSynthesis ? 0 : 1;
+        foreach (var feature in features)
+            if (feature.Tag == FontFeature.TagOf("smcp")) flags = (flags & 1) | 2 | (feature.Value != 0 ? 4 : 0);
+        try
+        {
+            fixed (byte* pointer = language)
+            {
+                var status = (JaliumResult)NativeMethods.TextFormatSetFontCaps(nativeUse.Handle, (uint)caps,
+                    flags, pointer, (uint)language.Length);
+                if (status == JaliumResult.NotSupported) return false;
+                if (status != JaliumResult.Ok) throw new InvalidOperationException($"Cannot configure font caps: {status}");
+                if (context.BoundaryFlags != 0)
+                {
+                    status = (JaliumResult)NativeMethods.TextFormatSetFontCapsContext(nativeUse.Handle, context.BoundaryFlags);
+                    if (status == JaliumResult.NotSupported) return false;
+                    if (status != JaliumResult.Ok) throw new InvalidOperationException($"Cannot configure font caps context: {status}");
+                }
+                if (context.Continuation != 0)
+                {
+                    status = (JaliumResult)NativeMethods.TextFormatSetFontCapsContinuation(nativeUse.Handle, context.Continuation);
+                    if (status == JaliumResult.NotSupported) return false;
+                    if (status != JaliumResult.Ok) throw new InvalidOperationException($"Cannot configure font caps continuation: {status}");
+                }
+                return true;
+            }
+        }
+        catch (EntryPointNotFoundException) { return false; }
     }
 
     internal unsafe JaliumResult SetFontFallbacks(IReadOnlyList<NativeTextFormat> fallbacks)
@@ -581,6 +782,18 @@ public sealed class NativeTextFormat : IDisposable
         }
         nativeUse = new NativeUse(this, handle);
         return true;
+    }
+
+    // Paragraph construction retains several formats at once. A heap lease can
+    // be tracked in its finally list while sharing the same lifetime gate as
+    // the stack-only leases used by individual measurement/drawing calls.
+    internal NativeLease? RetainForParagraph() => TryPinNativeHandle(out var handle) ? new(this, handle) : null;
+
+    internal sealed class NativeLease(NativeTextFormat owner, nint handle) : IDisposable
+    {
+        private NativeTextFormat? _owner = owner;
+        internal nint Handle { get; } = handle;
+        public void Dispose() => Interlocked.Exchange(ref _owner, null)?.ReleaseNativeUse();
     }
 
     private bool TryPinNativeHandle(out nint handle)

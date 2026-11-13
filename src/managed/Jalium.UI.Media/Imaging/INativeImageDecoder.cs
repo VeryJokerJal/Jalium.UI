@@ -9,6 +9,10 @@ namespace Jalium.UI.Media.Imaging;
 /// </remarks>
 public interface INativeImageDecoder
 {
+    /// <summary>Reports formats available without fetching an image. Override for additional installed codecs.</summary>
+    bool SupportsMimeType(string mimeType) => mimeType.ToLowerInvariant() is
+        "image/png" or "image/jpeg" or "image/gif" or "image/bmp" or "image/x-ms-bmp";
+
     /// <summary>
     /// 从内存字节解码图像为 BGRA8 / RGBA8 像素。
     /// </summary>

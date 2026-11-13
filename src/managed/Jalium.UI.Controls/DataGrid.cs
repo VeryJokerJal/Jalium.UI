@@ -43,6 +43,10 @@ internal interface IProvideDataGridColumn
 /// <summary>
 /// Represents a control that displays data in a customizable grid using TemplatedControl pattern.
 /// </summary>
+[TemplatePart(Name = "PART_DragGhost", Type = typeof(DataGridColumnDragIndicator))]
+[TemplatePart(Name = "PART_DropIndicator", Type = typeof(DataGridDropLocationIndicator))]
+[TemplatePart(Name = "PART_TopSpacer", Type = typeof(FrameworkElement))]
+[TemplatePart(Name = "PART_BottomSpacer", Type = typeof(FrameworkElement))]
 public class DataGrid : MultiSelector, IColumnHeaderHost
 {
     /// <summary>Begins editing the current cell.</summary>
@@ -246,12 +250,12 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty AlternatingRowBackgroundProperty =
         DependencyProperty.Register(nameof(AlternatingRowBackground), typeof(Brush), typeof(DataGrid),
-            new PropertyMetadata(null));
+            new PropertyMetadata(null, OnRowBrushChanged));
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty RowBackgroundProperty =
         DependencyProperty.Register(nameof(RowBackground), typeof(Brush), typeof(DataGrid),
-            new PropertyMetadata(null));
+            new PropertyMetadata(null, OnRowBrushChanged));
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty HorizontalGridLinesBrushProperty =
@@ -997,8 +1001,9 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
     private ScrollViewer? _dataScrollViewer;
     private FrameworkElement? _rowHeaderCorner;
     private readonly Dictionary<int, DataGridRow> _realizedRows = new();
-    private Border? _topSpacer;
-    private Border? _bottomSpacer;
+    private readonly HashSet<DataGridColumn> _attachedColumns = new();
+    private FrameworkElement? _topSpacer;
+    private FrameworkElement? _bottomSpacer;
     private DataGridRow? _placeholderRow;
     private int _realizedStartIndex = -1;
     private int _realizedEndIndex = -1;
@@ -1009,6 +1014,10 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
     private DataGridCell? _currentEditingCell;
     private DataGridColumn? _currentEditingColumn;
     private DataGridRow? _currentEditingRow;
+    private int _editVersion;
+    private bool _isCommittingEdit;
+    private bool _preserveGridSelectedValue;
+    private bool _hasPendingGridSelectedValue;
     private bool _isUpdatingColumnWidthFromResize;
     private bool _isSynchronizingSelection;
     private bool _selectionMutationOwnedByDataGrid;
@@ -1018,8 +1027,8 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
 
     // Drag reorder state
     private Canvas? _dragOverlay;
-    private Border? _dragGhost;
-    private Border? _dropIndicator;
+    private DataGridColumnDragIndicator? _dragGhost;
+    private DataGridDropLocationIndicator? _dropIndicator;
     private DataGridColumn? _dragColumn;
     private int _dragSourceIndex = -1;
     private Point _dragStartPoint;
@@ -1055,6 +1064,14 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
 
     #endregion
 
+    private static void OnRowBrushChanged(DependencyObject target, DependencyPropertyChangedEventArgs e)
+    {
+        var grid = (DataGrid)target;
+        foreach (var row in grid._realizedRows.Values.ToArray())
+            if (ReferenceEquals(row.ParentDataGrid, grid)) row.UpdateOwnerBackground();
+        grid._placeholderRow?.UpdateOwnerBackground();
+    }
+
     #region Template
 
     public override void OnApplyTemplate()
@@ -1070,11 +1087,15 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
 
         _columnHeadersHost = GetTemplateChild("PART_ColumnHeadersHost") as StackPanel;
         _rowsHost = GetTemplateChild("PART_RowsHost") as StackPanel;
+        _topSpacer = GetTemplateChild("PART_TopSpacer") as FrameworkElement;
+        _bottomSpacer = GetTemplateChild("PART_BottomSpacer") as FrameworkElement;
         _columnHeadersBorder = GetTemplateChild("PART_ColumnHeadersBorder") as FrameworkElement;
         _rowHeaderCorner = GetTemplateChild("PART_RowHeaderCorner") as FrameworkElement;
         _columnHeadersScrollViewer = GetTemplateChild("PART_ColumnHeadersScrollViewer") as ScrollViewer;
         _dataScrollViewer = GetTemplateChild("PART_DataScrollViewer") as ScrollViewer;
         _dragOverlay = GetTemplateChild("PART_DragOverlay") as Canvas;
+        _dragGhost = GetTemplateChild("PART_DragGhost") as DataGridColumnDragIndicator;
+        _dropIndicator = GetTemplateChild("PART_DropIndicator") as DataGridDropLocationIndicator;
 
         ApplyScrollBarVisibility();
         UpdateLayoutMetrics();
@@ -1095,6 +1116,10 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
     /// <inheritdoc />
     internal override void OnTemplateContentClearing()
     {
+        RetireColumnHeaders();
+        CleanupDragVisuals();
+        _dragGhost = null;
+        _dropIndicator = null;
         base.OnTemplateContentClearing();
 
         // Release the cached template parts before the tree is discarded. The row-refresh and
@@ -1109,6 +1134,8 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
 
         _columnHeadersHost = null;
         _rowsHost = null;
+        _topSpacer = null;
+        _bottomSpacer = null;
         _columnHeadersBorder = null;
         _rowHeaderCorner = null;
         _columnHeadersScrollViewer = null;
@@ -1387,10 +1414,21 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
         UpdateLayoutMetrics();
     }
 
+    private void RetireColumnHeaders()
+    {
+        if (_columnHeadersHost == null) return;
+        foreach (var header in _columnHeadersHost.Children.OfType<DataGridColumnHeader>().ToArray())
+        {
+            header.Click -= OnColumnHeaderClick;
+            header.ClearColumnHeader();
+        }
+    }
+
     private void RefreshColumnHeaders()
     {
         if (_columnHeadersHost == null) return;
 
+        RetireColumnHeaders();
         _columnHeadersHost.Children.Clear();
 
         for (var columnIndex = 0; columnIndex < Columns.Count; columnIndex++)
@@ -1414,7 +1452,7 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
                 header.Style = headerStyle;
             }
 
-            header.AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnColumnHeaderClick));
+            header.Click += OnColumnHeaderClick;
             header.UpdateSortIndicator(column.SortDirection);
 
             ApplyFrozenHeaderState(header, columnIndex);
@@ -1423,11 +1461,11 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
         }
     }
 
-    private void OnColumnHeaderClick(object sender, MouseButtonEventArgs e)
+    private void OnColumnHeaderClick(object sender, RoutedEventArgs e)
     {
         if (!CanUserSortColumns) return;
 
-        if (sender is DataGridColumnHeader header && header.Column != null && e.ChangedButton == MouseButton.Left)
+        if (sender is DataGridColumnHeader header && header.Column != null)
         {
             SortByColumn(header.Column);
             e.Handled = true;
@@ -1519,6 +1557,7 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
         row.IsNewItemPlaceholder = false;
         row.IsEditing = false;
         row.ParentDataGrid = null;
+        row.UpdateOwnerBackground();
         row.DataItem = null;
         if (!ReferenceEquals(row, item))
         {
@@ -1535,15 +1574,7 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
         row.ApplyOwnerDetailsSettings(RowDetailsTemplate, RowDetailsTemplateSelector);
         ApplyRowDetailsVisibility(row, raiseVisibilityChanged: false);
 
-        if (RowBackground != null)
-        {
-            row.Background = RowBackground;
-        }
-
-        if (row.RowIndex % 2 == 1 && AlternatingRowBackground != null)
-        {
-            row.AlternatingBackground = AlternatingRowBackground;
-        }
+        row.UpdateOwnerBackground();
 
         row.RowHeader = CreateRowHeader(row, item);
         ApplyRowValidationErrorTemplate(row);
@@ -1563,9 +1594,9 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
             Height = GetEffectiveRowHeight(),
             RowIndex = row.RowIndex,
             IsRowSelected = row.IsSelected,
-            Content = row.Header ?? item,
             RenderOffset = new Point(GetHorizontalScrollOffset(), 0)
         };
+        header.SetRowContent(row.Header ?? item, row.Header == null);
 
         var headerStyle = row.HeaderStyle;
         if (headerStyle != null)
@@ -1718,6 +1749,8 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
 
     private void RefreshRows()
     {
+        ++AutomationViewVersion;
+        (GetExistingAutomationPeer() as Jalium.UI.Automation.Peers.DataGridAutomationPeer)?.OnViewChanged();
         if (_rowsHost == null)
         {
             return;
@@ -1726,8 +1759,6 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
         UnloadRows(_realizedRows.Values.ToArray());
         _rowsHost.Children.Clear();
         _realizedRows.Clear();
-        _topSpacer = new Border();
-        _bottomSpacer = new Border();
         _realizedStartIndex = -1;
         _realizedEndIndex = -1;
         _realizedColumnStartIndex = -1;
@@ -1770,7 +1801,7 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
         int startIndex;
         int endIndex;
 
-        if (EnableRowVirtualization && _dataScrollViewer != null)
+        if (EnableRowVirtualization && _topSpacer != null && _bottomSpacer != null && _dataScrollViewer != null)
         {
             var viewportHeight = _dataScrollViewer.ViewportHeight > 0
                 ? _dataScrollViewer.ViewportHeight
@@ -1839,31 +1870,35 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
             return;
         }
 
-        _topSpacer ??= new Border();
-        _bottomSpacer ??= new Border();
 
-        _rowsHost.Children.Clear();
+        var desiredChildren = new List<UIElement>();
 
         _rowsHost.Children.BeginBatchUpdate();
         try
         {
             var topHeight = Math.Max(0, startIndex * rowHeight);
-            _topSpacer.Height = topHeight;
-            _topSpacer.Visibility = topHeight > 0 ? Visibility.Visible : Visibility.Collapsed;
-            _rowsHost.Children.Add(_topSpacer);
+            if (_topSpacer != null)
+            {
+                _topSpacer.Height = topHeight;
+                _topSpacer.Visibility = topHeight > 0 ? Visibility.Visible : Visibility.Collapsed;
+                desiredChildren.Add(_topSpacer);
+            }
 
             for (var i = startIndex; i <= endIndex; i++)
             {
                 if (_realizedRows.TryGetValue(i, out var row))
                 {
-                    _rowsHost.Children.Add(row);
+                    desiredChildren.Add(row);
                 }
             }
 
             var bottomHeight = Math.Max(0, (_items.Count - endIndex - 1) * rowHeight);
-            _bottomSpacer.Height = bottomHeight;
-            _bottomSpacer.Visibility = bottomHeight > 0 ? Visibility.Visible : Visibility.Collapsed;
-            _rowsHost.Children.Add(_bottomSpacer);
+            if (_bottomSpacer != null)
+            {
+                _bottomSpacer.Height = bottomHeight;
+                _bottomSpacer.Visibility = bottomHeight > 0 ? Visibility.Visible : Visibility.Collapsed;
+                desiredChildren.Add(_bottomSpacer);
+            }
 
             // The new-item placeholder is appended after the bottom spacer so
             // it is always pinned to the very end of the scrollable content,
@@ -1871,12 +1906,13 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
             if (ShowNewItemPlaceholder)
             {
                 _placeholderRow = BuildPlaceholderRow(rowHeight);
-                _rowsHost.Children.Add(_placeholderRow);
+                desiredChildren.Add(_placeholderRow);
             }
             else
             {
                 _placeholderRow = null;
             }
+            PanelChildReconciler.Synchronize(_rowsHost.Children, desiredChildren);
         }
         finally
         {
@@ -2223,6 +2259,10 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
         }
     }
 
+    internal int AutomationViewVersion { get; private set; }
+    internal IReadOnlyList<object> AutomationViewItems => _items;
+    internal DataGridRow? FindRealizedRowAt(int index) => _realizedRows.GetValueOrDefault(index);
+
     internal DataGridRow? FindRealizedRow(object item) =>
         _realizedRows.Values.FirstOrDefault(row => Equals(row.DataItem, item));
 
@@ -2386,6 +2426,34 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
         return true;
     }
 
+    internal override bool OwnsSelectionTransaction => true;
+
+    internal override bool TryApplySelectionProperty(DependencyProperty property, object? value)
+    {
+        // Index/item callbacks below use the display list, not the source collection.
+        if (property != SelectedValueProperty || _isSynchronizingSelection) return true;
+        var index = FindDisplayItemBySelectedValue(value);
+        var item = index >= 0 ? _items[index] : null;
+        _hasPendingGridSelectedValue = value != null && index < 0;
+        var preserve = _preserveGridSelectedValue;
+        _preserveGridSelectedValue = true;
+        try
+        {
+            if (SelectedIndex != index) SetCurrentValue(SelectedIndexProperty, index);
+            else if (!ReferenceEquals(SelectedItem, item)) SetCurrentValue(SelectedItemProperty, item);
+        }
+        finally { _preserveGridSelectedValue = preserve; }
+        return true;
+    }
+
+    private int FindDisplayItemBySelectedValue(object? value)
+    {
+        if (value == null) return -1;
+        for (var index = 0; index < _items.Count; index++)
+            if (Equals(ReadSelectedValueForItem(_items[index]), value)) return index;
+        return -1;
+    }
+
     private void UpdateSelectionPropertiesFromSelectedItems(int preferredIndex = -1)
     {
         object? selectedItem = null;
@@ -2413,8 +2481,8 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
         _isSynchronizingSelection = true;
         try
         {
-            SetValue(SelectedItemProperty, selectedItem);
-            SetValue(SelectedIndexProperty, selectedIndex);
+            UpdateSelectionPropertiesFromBatch(selectedIndex, selectedItem,
+                preserveSelectedValue: _preserveGridSelectedValue || _hasPendingGridSelectedValue);
         }
         finally
         {
@@ -2664,6 +2732,11 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
     private void SortByColumn(DataGridColumn column)
     {
         if (!column.CanUserSort) return;
+        if (_currentEditingCell != null)
+        {
+            if (!CommitEdit() || _currentEditingCell != null) return;
+            Focus();
+        }
 
         var sortingArgs = new DataGridSortingEventArgs(column);
         OnSorting(sortingArgs);
@@ -2682,17 +2755,7 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
 
         column.SortDirection = newDirection;
 
-        if (column is DataGridBoundColumn { Binding: Binding binding } && binding.Path != null)
-        {
-            var path = binding.Path.Path;
-            _items.Sort((a, b) =>
-            {
-                var valueA = GetPropertyValue(a, path);
-                var valueB = GetPropertyValue(b, path);
-                var result = Comparer.Default.Compare(valueA, valueB);
-                return newDirection == ListSortDirection.Descending ? -result : result;
-            });
-        }
+        ApplyCurrentSort();
 
         // Update sort indicator on column headers
         UpdateColumnHeaderSortIndicators();
@@ -2716,6 +2779,22 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
         }
 
         RefreshRows();
+    }
+
+    private void ApplyCurrentSort()
+    {
+        var column = Columns.FirstOrDefault(candidate => candidate.SortDirection != null);
+        if (column == null) return;
+        var path = column.SortMemberPath;
+        if (string.IsNullOrEmpty(path) && column is DataGridBoundColumn { Binding: Binding binding })
+            path = binding.Path?.Path;
+        if (string.IsNullOrEmpty(path)) return;
+        var descending = column.SortDirection == ListSortDirection.Descending;
+        _items.Sort((left, right) =>
+        {
+            var result = Comparer.Default.Compare(GetPropertyValue(left, path), GetPropertyValue(right, path));
+            return descending ? -result : result;
+        });
     }
 
     private void UpdateColumnHeaderSortIndicators()
@@ -2844,6 +2923,88 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
 
     #region Input Handling
 
+    private void MoveKeyboardSelection(int rowIndex, ModifierKeys modifiers)
+    {
+        if ((uint)rowIndex >= (uint)_items.Count ||
+            (_currentEditingCell != null && !CommitEdit(DataGridEditingUnit.Cell, exitEditingMode: true))) return;
+        var column = CurrentCell.Column;
+        if (column == null || !Columns.Contains(column) || column.Visibility != Visibility.Visible)
+            column = Columns.Where(candidate => candidate.Visibility == Visibility.Visible)
+                .OrderBy(candidate => candidate.DisplayIndex).FirstOrDefault();
+        if (SelectionUnit == DataGridSelectionUnit.Cell && column != null)
+            SelectCell(rowIndex, Columns.IndexOf(column), modifiers);
+        else
+            SelectRow(rowIndex, modifiers);
+        if (column != null)
+        {
+            SetCurrentValue(CurrentCellProperty, new DataGridCellInfo(_items[rowIndex], column));
+            ScrollIntoView(_items[rowIndex], column);
+        }
+        else ScrollIntoView(_items[rowIndex]);
+    }
+
+    private bool MoveKeyboardCell(KeyEventArgs args)
+    {
+        var wasEditing = _currentEditingCell != null;
+        if (wasEditing && !CommitEdit(DataGridEditingUnit.Cell, exitEditingMode: true)) return true;
+        if (wasEditing && _currentEditingCell != null) return true;
+        if (_items.Count == 0) { if (wasEditing) Focus(); return wasEditing; }
+        var columns = Columns.Where(column => column.Visibility == Visibility.Visible)
+            .OrderBy(column => column.DisplayIndex).ToArray();
+        if (columns.Length == 0) { if (wasEditing) Focus(); return wasEditing; }
+
+        var rowIndex = CurrentCell.Item != null ? _items.IndexOf(CurrentCell.Item) : SelectedIndex;
+        var columnIndex = Array.IndexOf(columns, CurrentCell.Column);
+        var backwards = args.KeyboardModifiers.HasFlag(ModifierKeys.Shift);
+        var targetIndex = rowIndex < 0 || columnIndex < 0
+            ? backwards ? _items.Count * columns.Length - 1 : 0
+            : rowIndex * columns.Length + columnIndex + (backwards ? -1 : 1);
+        if (targetIndex < 0 || targetIndex >= _items.Count * columns.Length)
+        {
+            if (!wasEditing) return false;
+            // Removing an editor changes the native input lifetime. Complete
+            // traversal here instead of relying on the retired key route.
+            if (!MoveFocus(backwards ? FocusNavigationDirection.Previous : FocusNavigationDirection.Next))
+                Focus();
+            return true;
+        }
+
+        var targetRow = targetIndex / columns.Length;
+        var column = columns[targetIndex % columns.Length];
+        // Commit observers may remove columns or rows. Never prepare a retired cell.
+        if (!Columns.Contains(column) || column.Visibility != Visibility.Visible) return true;
+        if (SelectionUnit == DataGridSelectionUnit.Cell)
+            SelectCell(targetRow, Columns.IndexOf(column), ModifierKeys.None);
+        else SelectRow(targetRow, ModifierKeys.None);
+        SetCurrentValue(CurrentCellProperty, new DataGridCellInfo(_items[targetRow], column));
+        ScrollIntoView(_items[targetRow], column);
+        if (!wasEditing || column.IsReadOnly || IsReadOnly || !BeginEdit(args)) Focus();
+        return true;
+    }
+
+    /// <inheritdoc />
+    protected override void OnPreviewKeyDown(KeyEventArgs e)
+    {
+        base.OnPreviewKeyDown(e);
+        if (e.Handled || !IsEnabled || _currentEditingCell == null ||
+            e.KeyboardModifiers != ModifierKeys.None)
+            return;
+
+        // Button and selector editors handle Enter themselves in the bubble phase.
+        // The grid owns the edit transaction, so finish it before those handlers run.
+        if (e.Key == Key.Enter)
+        {
+            if (_currentEditingCell.EditingElement is TextBox { AcceptsReturn: true }) return;
+            if (CommitEdit() && _currentEditingCell == null) Focus();
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Escape)
+        {
+            if (CancelEdit()) Focus();
+            e.Handled = true;
+        }
+    }
+
     /// <inheritdoc />
     protected override void OnKeyDown(KeyEventArgs e)
     {
@@ -2860,32 +3021,28 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
             case Key.Up:
                 if (SelectedIndex > 0)
                 {
-                    SelectedIndex--;
-                    ScrollSelectedIntoView();
+                    MoveKeyboardSelection(SelectedIndex - 1, e.KeyboardModifiers);
                     e.Handled = true;
                 }
                 break;
             case Key.Down:
                 if (SelectedIndex < _items.Count - 1)
                 {
-                    SelectedIndex++;
-                    ScrollSelectedIntoView();
+                    MoveKeyboardSelection(SelectedIndex + 1, e.KeyboardModifiers);
                     e.Handled = true;
                 }
                 break;
             case Key.Home:
                 if (_items.Count > 0)
                 {
-                    SelectedIndex = 0;
-                    ScrollSelectedIntoView();
+                    MoveKeyboardSelection(0, e.KeyboardModifiers);
                     e.Handled = true;
                 }
                 break;
             case Key.End:
                 if (_items.Count > 0)
                 {
-                    SelectedIndex = _items.Count - 1;
-                    ScrollSelectedIntoView();
+                    MoveKeyboardSelection(_items.Count - 1, e.KeyboardModifiers);
                     e.Handled = true;
                 }
                 break;
@@ -2921,11 +3078,8 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
                 }
                 break;
             case Key.Tab:
-                if (_currentEditingCell != null)
-                {
-                    CommitEdit();
-                    e.Handled = true;
-                }
+                if ((e.KeyboardModifiers & ~ModifierKeys.Shift) == ModifierKeys.None)
+                    e.Handled = MoveKeyboardCell(e);
                 break;
         }
     }
@@ -2981,6 +3135,12 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
     protected override void OnItemsChanged(NotifyCollectionChangedEventArgs e)
     {
         base.OnItemsChanged(e);
+        // Source collection indices no longer describe the sorted display list.
+        if (Columns.Any(column => column.SortDirection != null))
+        {
+            RefreshItems();
+            return;
+        }
         switch (e.Action)
         {
             case NotifyCollectionChangedAction.Add when e.NewItems != null:
@@ -3107,13 +3267,8 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
     {
         var oldSelectedItems = _selectedItems.ToArray();
         _items.Clear();
-        if (ItemsSource != null)
-        {
-            foreach (var item in ItemsSource)
-            {
-                _items.Add(item);
-            }
-        }
+        foreach (var item in Items) _items.Add(item);
+        ApplyCurrentSort();
 
         if (AutoGenerateColumns && Columns.Count == 0)
         {
@@ -3130,6 +3285,20 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
 
     private void ReconcileSelectionWithItems()
     {
+        if (_hasPendingGridSelectedValue && SelectedValue == null) _hasPendingGridSelectedValue = false;
+        if (_hasPendingGridSelectedValue && FindDisplayItemBySelectedValue(SelectedValue) is var pendingIndex && pendingIndex >= 0)
+        {
+            var synchronizing = _isSynchronizingSelection;
+            _isSynchronizingSelection = true;
+            try
+            {
+                ClearSelection();
+                AddToSelection(_items[pendingIndex]);
+                UpdateSelectionPropertiesFromBatch(pendingIndex, _items[pendingIndex], preserveSelectedValue: true);
+                _hasPendingGridSelectedValue = false;
+            }
+            finally { _isSynchronizingSelection = synchronizing; }
+        }
         var toRemove = _selectedItems.Where(item => !_items.Contains(item)).ToArray();
         foreach (var item in toRemove)
             RemoveFromSelection(item);
@@ -3369,6 +3538,7 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
         {
             var oldSelectedItems = dataGrid._selectedItems.ToArray();
             var newItem = e.NewValue;
+            if (!dataGrid._preserveGridSelectedValue) dataGrid._hasPendingGridSelectedValue = false;
 
             dataGrid._isSynchronizingSelection = true;
             try
@@ -3380,19 +3550,21 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
                     {
                         dataGrid.ClearSelection();
                         dataGrid.AddToSelection(newItem);
-                        dataGrid.SetValue(SelectedIndexProperty, index);
+                        dataGrid.UpdateSelectionPropertiesFromBatch(index, newItem,
+                            preserveSelectedValue: dataGrid._preserveGridSelectedValue);
                     }
                     else
                     {
                         dataGrid.ClearSelection();
-                        dataGrid.SetValue(SelectedIndexProperty, -1);
-                        dataGrid.SetValue(SelectedItemProperty, null);
+                        dataGrid.UpdateSelectionPropertiesFromBatch(-1, null,
+                            preserveSelectedValue: dataGrid._preserveGridSelectedValue);
                     }
                 }
                 else
                 {
                     dataGrid.ClearSelection();
-                    dataGrid.SetValue(SelectedIndexProperty, -1);
+                    dataGrid.UpdateSelectionPropertiesFromBatch(-1, null,
+                        preserveSelectedValue: dataGrid._preserveGridSelectedValue);
                 }
             }
             finally
@@ -3410,6 +3582,7 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
         if (d is DataGrid dataGrid && e.NewValue is int newIndex && !dataGrid._isSynchronizingSelection)
         {
             var oldSelectedItems = dataGrid._selectedItems.ToArray();
+            if (!dataGrid._preserveGridSelectedValue) dataGrid._hasPendingGridSelectedValue = false;
             dataGrid._isSynchronizingSelection = true;
             try
             {
@@ -3418,13 +3591,14 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
                     var item = dataGrid._items[newIndex];
                     dataGrid.ClearSelection();
                     dataGrid.AddToSelection(item);
-                    dataGrid.SetValue(SelectedItemProperty, item);
+                    dataGrid.UpdateSelectionPropertiesFromBatch(newIndex, item,
+                        preserveSelectedValue: dataGrid._preserveGridSelectedValue);
                 }
                 else
                 {
                     dataGrid.ClearSelection();
-                    dataGrid.SetValue(SelectedItemProperty, null);
-                    dataGrid.SetValue(SelectedIndexProperty, -1);
+                    dataGrid.UpdateSelectionPropertiesFromBatch(-1, null,
+                        preserveSelectedValue: dataGrid._preserveGridSelectedValue);
                 }
             }
             finally
@@ -3725,35 +3899,13 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
 
     private void OnColumnsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
-        if (e.OldItems != null)
+        foreach (var column in _attachedColumns.Where(column => !Columns.Contains(column)).ToArray())
         {
-            foreach (var oldItem in e.OldItems)
-            {
-                if (oldItem is DataGridColumn oldColumn && oldColumn.DataGridOwner == this)
-                {
-                    oldColumn.SetDataGridOwner(null);
-                }
-            }
+            if (ReferenceEquals(column.DataGridOwner, this)) column.SetDataGridOwner(null);
+            _attachedColumns.Remove(column);
         }
-
-        if (e.NewItems != null)
-        {
-            foreach (var newItem in e.NewItems)
-            {
-                if (newItem is DataGridColumn newColumn)
-                {
-                    newColumn.SetDataGridOwner(this);
-                }
-            }
-        }
-
-        if (e.Action == NotifyCollectionChangedAction.Reset)
-        {
-            foreach (var column in Columns)
-            {
-                column.SetDataGridOwner(this);
-            }
-        }
+        foreach (var column in Columns)
+            if (_attachedColumns.Add(column)) column.SetDataGridOwner(this);
 
         foreach (var row in _realizedRows.Values)
         {
@@ -3822,6 +3974,21 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
             return;
         }
 
+        if (change == DataGridColumnPropertyChange.Layout)
+        {
+            // Keep existing cells aligned with headers when Width/MinWidth/MaxWidth
+            // changes programmatically. Force-refresh can retain realized cells.
+            var columnIndex = Columns.IndexOf(column);
+            var width = GetRenderableColumnWidth(column);
+            foreach (var row in _realizedRows.Values)
+            {
+                if (row.CellsByColumn.TryGetValue(columnIndex, out var cell))
+                    cell.Width = width;
+            }
+        }
+
+        ++AutomationViewVersion;
+        (GetExistingAutomationPeer() as Jalium.UI.Automation.Peers.DataGridAutomationPeer)?.OnViewChanged();
         UpdateLayoutMetrics();
         RefreshColumnHeaders();
         UpdateRealizedRows(forceRefresh: true);
@@ -4333,56 +4500,81 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
     /// </summary>
     public bool CommitEdit(DataGridEditingUnit editingUnit, bool exitEditingMode)
     {
-        if (_currentEditingCell == null) return false;
+        if (_isCommittingEdit) return false;
+        _isCommittingEdit = true;
+        try { return CommitEditCore(editingUnit, exitEditingMode); }
+        finally { _isCommittingEdit = false; }
+    }
+
+    private bool CommitEditCore(DataGridEditingUnit editingUnit, bool exitEditingMode)
+    {
+        var cell = _currentEditingCell;
+        var row = _currentEditingRow;
+        var column = _currentEditingColumn;
+        if (cell == null || row == null || column == null) return false;
+        var version = _editVersion;
+        var item = row.DataItem;
+        bool IsCurrent() => version == _editVersion && ReferenceEquals(_currentEditingCell, cell) &&
+            ReferenceEquals(_currentEditingRow, row) && ReferenceEquals(_currentEditingColumn, column);
+        bool IsValidContext()
+        {
+            if (!IsCurrent()) return false;
+            if (ReferenceEquals(row.ParentDataGrid, this) && ReferenceEquals(row.DataItem, item) && Columns.Contains(column))
+                return true;
+            // A source/column observer can retire the container while an ending event runs.
+            // Discard only this transaction; a replacement edit belongs to its new caller.
+            var restoreFocus = cell.EditingElement?.IsKeyboardFocusWithin == true;
+            _currentEditingCell = null;
+            _currentEditingColumn = null;
+            _currentEditingRow = null;
+            cell.IsEditing = false;
+            row.IsEditing = false;
+            if (restoreFocus && _currentEditingCell == null) Focus();
+            return false;
+        }
 
         var endingArgs = new DataGridCellEditEndingEventArgs(
-            _currentEditingColumn!,
-            _currentEditingRow!,
-            _currentEditingCell.EditingElement ?? _currentEditingCell,
-            DataGridEditAction.Commit);
+            column, row, cell.EditingElement ?? cell, DataGridEditAction.Commit);
         OnCellEditEnding(endingArgs);
-
-        if (endingArgs.Cancel) return false;
+        if (!IsValidContext() || endingArgs.Cancel) return false;
 
         if (editingUnit == DataGridEditingUnit.Row)
         {
-            var rowEndingArgs = new DataGridRowEditEndingEventArgs(
-                _currentEditingRow!, DataGridEditAction.Commit);
+            var rowEndingArgs = new DataGridRowEditEndingEventArgs(row, DataGridEditAction.Commit);
             OnRowEditEnding(rowEndingArgs);
-            if (rowEndingArgs.Cancel) return false;
+            if (!IsValidContext() || rowEndingArgs.Cancel) return false;
         }
 
-        // Write back the edited value to the data item
-        if (_currentEditingColumn != null && _currentEditingRow?.DataItem != null && _currentEditingCell.EditingElement != null)
+        if (item != null && cell.EditingElement is { } editor)
         {
-            if (!_currentEditingColumn.CommitCellEditInternal(
-                    _currentEditingCell.EditingElement,
-                    _currentEditingRow.DataItem))
-            {
-                return false;
-            }
+            var committed = column.CommitCellEditInternal(editor, item);
+            if (!IsValidContext() || !committed) return false;
         }
-
-        if (editingUnit == DataGridEditingUnit.Row &&
-            _currentEditingRow != null &&
-            !ValidateRow(_currentEditingRow))
+        if (editingUnit == DataGridEditingUnit.Row)
         {
-            return false;
+            var valid = ValidateRow(row);
+            if (!IsValidContext() || !valid) return false;
         }
 
         if (exitEditingMode)
         {
-            _currentEditingCell.IsEditing = false;
-            _currentEditingRow!.IsEditing = false;
-
-            // Refresh the display element to show the updated value
-            RefreshCellDisplay(_currentEditingCell, _currentEditingColumn!, _currentEditingRow!);
-
+            cell.IsEditing = false;
+            if (!IsValidContext()) return false;
+            row.IsEditing = false;
+            if (!IsValidContext()) return false;
             _currentEditingCell = null;
             _currentEditingColumn = null;
             _currentEditingRow = null;
+            RefreshCellDisplay(cell, column, row);
+            if (_currentEditingCell == null && Columns.Any(candidate => candidate.SortDirection != null))
+            {
+                ApplyCurrentSort();
+                ReconcileSelectionWithItems();
+                RefreshRows();
+                if (CurrentCell.Item is { } current && CurrentCell.Column is { } currentColumn)
+                    ScrollIntoView(current, currentColumn);
+            }
         }
-
         return true;
     }
 
@@ -4569,16 +4761,33 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
 
         if (beginArgs.Cancel) return false;
 
+        ++_editVersion;
         _currentEditingCell = cell;
         _currentEditingColumn = column;
         _currentEditingRow = row;
         row.IsEditing = true;
         cell.IsEditing = true;
 
-        if (cell.EditingElement != null)
+        // Install and arrange the content presenter before a column prepares its
+        // editor's focus and selection. A replacement child has no input route yet.
+        cell.UpdateLayout();
+        if (!ReferenceEquals(_currentEditingCell, cell)) return false;
+        if (!cell.IsEditing || cell.EditingElement == null)
         {
+            _currentEditingCell = null;
+            _currentEditingColumn = null;
+            _currentEditingRow = null;
+            row.IsEditing = false;
+            return false;
+        }
+
+        if (cell.EditingElement is { } editingElement)
+        {
+            editingElement.Focus();
+            if (!ReferenceEquals(_currentEditingCell, cell) || !ReferenceEquals(cell.EditingElement, editingElement))
+                return false;
             cell.OriginalValue = column.PrepareCellForEditInternal(
-                cell.EditingElement, editingEventArgs ?? new RoutedEventArgs());
+                editingElement, editingEventArgs ?? new RoutedEventArgs());
         }
 
         var prepArgs = new DataGridPreparingCellForEditEventArgs(
@@ -4587,6 +4796,19 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
             editingEventArgs!,
             cell.EditingElement ?? cell);
         OnPreparingCellForEdit(prepArgs);
+
+        if (cell.EditingElement is { } editor)
+        {
+            var previousFocus = Keyboard.FocusedElement;
+            // The replacement editor may not be visible until this layout pass
+            // completes. Retry only while this edit and its focus context survive.
+            Dispatcher.BeginInvoke(Threading.DispatcherPriority.ContextIdle, () =>
+            {
+                if (ReferenceEquals(_currentEditingCell, cell) && ReferenceEquals(cell.EditingElement, editor) &&
+                    (ReferenceEquals(Keyboard.FocusedElement, this) || ReferenceEquals(Keyboard.FocusedElement, previousFocus)))
+                    editor.Focus();
+            });
+        }
 
         return true;
     }
@@ -4624,7 +4846,7 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
             return;
         }
 
-        if (EnableRowVirtualization && _dataScrollViewer != null)
+        if (EnableRowVirtualization && _topSpacer != null && _bottomSpacer != null && _dataScrollViewer != null)
         {
             _dataScrollViewer.ScrollToVerticalOffset(index * GetEffectiveRowHeight());
             UpdateRealizedRows(forceRefresh: true);
@@ -4721,7 +4943,7 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
     /// </summary>
     internal void StartColumnDrag(DataGridColumnHeader sourceHeader, DataGridColumn column)
     {
-        if (_dragOverlay == null || _columnHeadersHost == null || !CanUserReorderColumns || !column.CanUserReorder)
+        if (_columnHeadersHost == null || !CanUserReorderColumns || !column.CanUserReorder || !Columns.Contains(column))
             return;
 
         var reorderingArgs = new DataGridColumnReorderingEventArgs(column);
@@ -4731,58 +4953,36 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
             return;
         }
 
+        if (!Columns.Contains(column)) return;
         _dragColumn = column;
         _dragSourceIndex = Columns.IndexOf(column);
         _isColumnDragging = true;
         _dragStartPoint = new Point(GetColumnStartOffset(_dragSourceIndex), 0);
         _dragLastPoint = _dragStartPoint;
 
-        // Create ghost visual
         var headerHeight = GetEffectiveColumnHeaderHeight();
-        _dragGhost = new Border
+        try
         {
-            Width = GetRenderableColumnWidth(column),
-            Height = headerHeight,
-            Background = new SolidColorBrush(Color.FromArgb(180, 60, 60, 60)),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(120, 120, 120)),
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(3),
-            Opacity = 0.85,
-            IsHitTestVisible = false,
-            Child = new TextBlock
+            if (_dragGhost != null)
             {
-                Text = column.Header?.ToString() ?? "",
-                Foreground = Media.Brushes.White,
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(8, 0, 8, 0)
+                _dragGhost.SetCurrentValue(ContentControl.ContentProperty, column.Header?.ToString() ?? string.Empty);
+                _dragGhost.Width = GetRenderableColumnWidth(column);
+                _dragGhost.Height = headerHeight;
+                _dragGhost.ApplyOwnerStyle(DragIndicatorStyle);
             }
-        };
-
-        // Create drop indicator (vertical line)
-        var accentBrush = TryFindResource("AccentBrush") as Brush ?? new SolidColorBrush(ThemeColors.Accent);
-        _dropIndicator = new Border
-        {
-            Width = 2,
-            Height = headerHeight + 8,
-            Background = accentBrush,
-            IsHitTestVisible = false,
-            Visibility = Visibility.Collapsed
-        };
-
-        if (DragIndicatorStyle != null)
-        {
-            _dragGhost.Style = DragIndicatorStyle;
+            if (_dropIndicator != null)
+            {
+                _dropIndicator.Height = headerHeight + 8;
+                _dropIndicator.Visibility = Visibility.Collapsed;
+                _dropIndicator.ApplyOwnerStyle(DropLocationIndicatorStyle);
+            }
+            if (_dragOverlay != null) _dragOverlay.Visibility = Visibility.Visible;
         }
-
-        if (DropLocationIndicatorStyle != null)
+        catch
         {
-            _dropIndicator.Style = DropLocationIndicatorStyle;
+            CleanupDragVisuals();
+            throw;
         }
-
-        _dragOverlay.Children.Clear();
-        _dragOverlay.Children.Add(_dropIndicator);
-        _dragOverlay.Children.Add(_dragGhost);
-        _dragOverlay.Visibility = Visibility.Visible;
         OnColumnHeaderDragStarted(new DragStartedEventArgs(0, 0));
     }
 
@@ -4791,7 +4991,7 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
     /// </summary>
     internal void UpdateColumnDrag(Point positionInDataGrid)
     {
-        if (!_isColumnDragging || _dragGhost == null || _dropIndicator == null || _columnHeadersHost == null)
+        if (!_isColumnDragging || _columnHeadersHost == null)
             return;
 
         OnColumnHeaderDragDelta(new DragDeltaEventArgs(
@@ -4799,14 +4999,14 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
             positionInDataGrid.Y - _dragLastPoint.Y));
         _dragLastPoint = positionInDataGrid;
 
-        // Position ghost centered on cursor
-        var ghostX = positionInDataGrid.X - _dragGhost.Width / 2;
-        var ghostY = 0.0;
-        Canvas.SetLeft(_dragGhost, ghostX);
-        Canvas.SetTop(_dragGhost, ghostY);
+        if (_dragGhost != null)
+        {
+            Canvas.SetLeft(_dragGhost, positionInDataGrid.X - _dragGhost.Width / 2);
+            Canvas.SetTop(_dragGhost, 0);
+        }
 
-        // Calculate drop target
         var (targetIndex, indicatorX) = GetDropTargetIndex(positionInDataGrid.X);
+        if (_dropIndicator == null) return;
         if (targetIndex >= 0 && targetIndex != _dragSourceIndex && targetIndex != _dragSourceIndex + 1)
         {
             Canvas.SetLeft(_dropIndicator, indicatorX - 1);
@@ -4873,15 +5073,17 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
         _isColumnDragging = false;
         _dragColumn = null;
         _dragSourceIndex = -1;
-
-        if (_dragOverlay != null)
+        if (_dragOverlay != null) _dragOverlay.Visibility = Visibility.Collapsed;
+        if (_dragGhost != null)
         {
-            _dragOverlay.Children.Clear();
-            _dragOverlay.Visibility = Visibility.Collapsed;
+            _dragGhost.SetCurrentValue(ContentControl.ContentProperty, null);
+            _dragGhost.ClearOwnerStyle();
         }
-
-        _dragGhost = null;
-        _dropIndicator = null;
+        if (_dropIndicator != null)
+        {
+            _dropIndicator.Visibility = Visibility.Collapsed;
+            _dropIndicator.ClearOwnerStyle();
+        }
     }
 
     /// <summary>
@@ -5114,8 +5316,78 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
 /// <summary>
 /// Represents a row in a DataGrid.
 /// </summary>
+[TemplatePart(Name = "PART_CellsPanel", Type = typeof(StackPanel))]
+[TemplatePart(Name = "PART_DetailsPresenter", Type = typeof(DataGridDetailsPresenter))]
+[TemplateVisualState(Name = "Normal", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "PointerOver", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Disabled", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Selected", GroupName = "SelectionStates")]
+[TemplateVisualState(Name = "Unselected", GroupName = "SelectionStates")]
+[TemplateVisualState(Name = "GridLinesNone", GroupName = "GridLineStates")]
+[TemplateVisualState(Name = "GridLinesHorizontal", GroupName = "GridLineStates")]
 public class DataGridRow : Control
 {
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public static readonly DependencyProperty GridLinesVisibilityProperty =
+        DataGridCell.GridLinesVisibilityProperty.AddOwner(typeof(DataGridRow),
+            new FrameworkPropertyMetadata(DataGridGridLinesVisibility.None, FrameworkPropertyMetadataOptions.AffectsMeasure));
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public static readonly DependencyProperty HorizontalGridLinesBrushProperty =
+        DataGridCell.HorizontalGridLinesBrushProperty.AddOwner(typeof(DataGridRow));
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public static readonly DependencyProperty VerticalGridLinesBrushProperty =
+        DataGridCell.VerticalGridLinesBrushProperty.AddOwner(typeof(DataGridRow));
+
+    /// <summary>Gets or sets the grid lines presented by this row and its cells.</summary>
+    public DataGridGridLinesVisibility GridLinesVisibility
+    {
+        get => (DataGridGridLinesVisibility)GetValue(GridLinesVisibilityProperty)!;
+        set => SetValue(GridLinesVisibilityProperty, value);
+    }
+    /// <summary>Gets or sets the horizontal grid-line brush for this row.</summary>
+    public Brush? HorizontalGridLinesBrush
+    {
+        get => (Brush?)GetValue(HorizontalGridLinesBrushProperty);
+        set => SetValue(HorizontalGridLinesBrushProperty, value);
+    }
+    /// <summary>Gets or sets the vertical grid-line brush for this row.</summary>
+    public Brush? VerticalGridLinesBrush
+    {
+        get => (Brush?)GetValue(VerticalGridLinesBrushProperty);
+        set => SetValue(VerticalGridLinesBrushProperty, value);
+    }
+
+    internal void UpdateGridLineVisualState() => VisualStateManager.GoToState(this,
+        GridLinesVisibility is DataGridGridLinesVisibility.All or DataGridGridLinesVisibility.Horizontal
+            ? "GridLinesHorizontal" : "GridLinesNone", false);
+
+
+    private static readonly DependencyPropertyKey OwnerBackgroundPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(OwnerBackground), typeof(Brush), typeof(DataGridRow), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
+    public static readonly DependencyProperty OwnerBackgroundProperty = OwnerBackgroundPropertyKey.DependencyProperty;
+    /// <summary>The owning grid's normal or alternating background, used by the default row style.</summary>
+    public Brush? OwnerBackground => (Brush?)GetValue(OwnerBackgroundProperty);
+
+    internal void UpdateOwnerBackground()
+    {
+        AlternatingBackground = RowIndex % 2 == 1 ? ParentDataGrid?.AlternatingRowBackground : null;
+        SetValue(OwnerBackgroundPropertyKey, AlternatingBackground ?? ParentDataGrid?.RowBackground);
+    }
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        if (e.Property == IsEnabledProperty || e.Property == IsMouseOverProperty || e.Property == IsSelectedProperty)
+            UpdateVisualStates();
+        if (e.Property == IsSelectedProperty)
+            foreach (var cell in Cells) cell.UpdateSelectionVisualState(IsSelected);
+    }
+    protected virtual void UpdateVisualStates()
+    {
+        VisualStateManager.GoToState(this, !IsEnabled ? "Disabled" : IsMouseOver ? "PointerOver" : "Normal", false);
+        VisualStateManager.GoToState(this, IsSelected ? "Selected" : "Unselected", false);
+        UpdateGridLineVisualState();
+    }
+
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
@@ -5295,7 +5567,15 @@ public class DataGridRow : Control
         set => Item = value;
     }
     internal int RowIndex { get; set; }
-    internal DataGrid? ParentDataGrid { get; set; }
+    private static readonly DependencyPropertyKey ParentDataGridPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(ParentDataGrid), typeof(DataGrid), typeof(DataGridRow), new PropertyMetadata(null));
+    public static readonly DependencyProperty ParentDataGridProperty = ParentDataGridPropertyKey.DependencyProperty;
+    /// <summary>The grid that currently owns this row, available to custom templates.</summary>
+    public DataGrid? ParentDataGrid
+    {
+        get => (DataGrid?)GetValue(ParentDataGridProperty);
+        internal set => SetValue(ParentDataGridPropertyKey, value);
+    }
     internal Brush? AlternatingBackground { get; set; }
     internal Style? AppliedOwnerStyle { get; set; }
     internal DataGridRowHeader? RowHeader { get; set; }
@@ -5400,7 +5680,7 @@ public class DataGridRow : Control
     {
         if (RowHeader != null)
         {
-            RowHeader.Content = newHeader ?? Item;
+            RowHeader.SetRowContent(newHeader ?? Item, newHeader == null);
         }
     }
 
@@ -5421,7 +5701,7 @@ public class DataGridRow : Control
 
         if (RowHeader != null && Header == null)
         {
-            RowHeader.Content = newItem;
+            RowHeader.SetRowContent(newItem, usesItemContent: true);
         }
     }
 
@@ -5443,48 +5723,45 @@ public class DataGridRow : Control
         RaiseEvent(e);
     }
 
+    protected override void OnTemplateChanging()
+    {
+        _cellsPanel?.Children.Clear();
+        if (_detailsPresenter != null)
+        {
+            _detailsPresenter.Content = null;
+            _detailsPresenter.DataGridOwner = null;
+            _detailsPresenter.RowItem = null;
+        }
+        _cellsPanel = null;
+        _detailsPresenter = null;
+        base.OnTemplateChanging();
+    }
+
     public override void OnApplyTemplate()
     {
         base.OnApplyTemplate();
-
         _cellsPanel = GetTemplateChild("PART_CellsPanel") as StackPanel;
-
+        _detailsPresenter = GetTemplateChild("PART_DetailsPresenter") as DataGridDetailsPresenter;
         if (_cellsPanel != null)
         {
-            _cellsPanel.Orientation = Orientation.Vertical;
             _cellsPanel.Children.BeginBatchUpdate();
             try
             {
-                var cellsPanel = new StackPanel { Orientation = Orientation.Horizontal };
-                if (RowHeader != null)
-                {
-                    cellsPanel.Children.Add(RowHeader);
-                }
-
-                foreach (var cell in Cells)
-                {
-                    cellsPanel.Children.Add(cell);
-                }
-
-                _cellsPanel.Children.Add(cellsPanel);
-                _detailsPresenter = new DataGridDetailsPresenter
-                {
-                    DataGridOwner = ParentDataGrid,
-                    RowItem = DataItem,
-                    Visibility = DetailsVisibility,
-                    Content = _detailsElement
-                };
-                _cellsPanel.Children.Add(_detailsPresenter);
+                if (RowHeader != null) _cellsPanel.Children.Add(RowHeader);
+                foreach (var cell in Cells) _cellsPanel.Children.Add(cell);
             }
-            finally
-            {
-                _cellsPanel.Children.EndBatchUpdate();
-            }
+            finally { _cellsPanel.Children.EndBatchUpdate(); }
         }
-
+        if (_detailsPresenter != null)
+        {
+            _detailsPresenter.DataGridOwner = ParentDataGrid;
+            _detailsPresenter.RowItem = DataItem;
+            _detailsPresenter.Content = _detailsElement;
+        }
         SyncRowHeaderAppearance();
         ApplyValidationErrorTemplate();
-        RestoreNonSelectedBackground();
+        UpdateOwnerBackground();
+        UpdateVisualStates();
     }
 
     private static void OnIsSelectedChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -5653,7 +5930,7 @@ public class DataGridRow : Control
         }
 
         var header = Header ?? Item;
-        RowHeader.Content = header;
+        RowHeader.SetRowContent(header, Header == null);
 
         var style = HeaderStyle;
         if (style != null)
@@ -5683,20 +5960,7 @@ public class DataGridRow : Control
         }
     }
 
-    private void RestoreNonSelectedBackground()
-    {
-        if (!IsSelected)
-        {
-            if (AlternatingBackground != null)
-            {
-                Background = AlternatingBackground;
-            }
-            else
-            {
-                Background = ParentDataGrid?.RowBackground;
-            }
-        }
-    }
+    private void RestoreNonSelectedBackground() => UpdateOwnerBackground();
 }
 
 #endregion
@@ -5706,8 +5970,62 @@ public class DataGridRow : Control
 /// <summary>
 /// Represents a cell in a DataGrid.
 /// </summary>
+[TemplateVisualState(Name = "Selected", GroupName = "SelectionStates")]
+[TemplateVisualState(Name = "Unselected", GroupName = "SelectionStates")]
+[TemplateVisualState(Name = "GridLinesNone", GroupName = "GridLineStates")]
+[TemplateVisualState(Name = "GridLinesHorizontal", GroupName = "GridLineStates")]
+[TemplateVisualState(Name = "GridLinesVertical", GroupName = "GridLineStates")]
+[TemplateVisualState(Name = "GridLinesAll", GroupName = "GridLineStates")]
 public class DataGridCell : ContentControl
 {
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public static readonly DependencyProperty GridLinesVisibilityProperty = DependencyProperty.Register(
+        nameof(GridLinesVisibility), typeof(DataGridGridLinesVisibility), typeof(DataGridCell),
+        new FrameworkPropertyMetadata(DataGridGridLinesVisibility.None, FrameworkPropertyMetadataOptions.AffectsMeasure,
+            OnGridLinesVisibilityChanged));
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public static readonly DependencyProperty HorizontalGridLinesBrushProperty = DependencyProperty.Register(
+        nameof(HorizontalGridLinesBrush), typeof(Brush), typeof(DataGridCell),
+        new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public static readonly DependencyProperty VerticalGridLinesBrushProperty = DependencyProperty.Register(
+        nameof(VerticalGridLinesBrush), typeof(Brush), typeof(DataGridCell),
+        new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
+
+    /// <summary>Gets or sets the grid lines presented by the cell template.</summary>
+    public DataGridGridLinesVisibility GridLinesVisibility
+    {
+        get => (DataGridGridLinesVisibility)GetValue(GridLinesVisibilityProperty)!;
+        set => SetValue(GridLinesVisibilityProperty, value);
+    }
+    /// <summary>Gets or sets the horizontal grid-line brush.</summary>
+    public Brush? HorizontalGridLinesBrush
+    {
+        get => (Brush?)GetValue(HorizontalGridLinesBrushProperty);
+        set => SetValue(HorizontalGridLinesBrushProperty, value);
+    }
+    /// <summary>Gets or sets the vertical grid-line brush.</summary>
+    public Brush? VerticalGridLinesBrush
+    {
+        get => (Brush?)GetValue(VerticalGridLinesBrushProperty);
+        set => SetValue(VerticalGridLinesBrushProperty, value);
+    }
+
+    private static void OnGridLinesVisibilityChanged(DependencyObject owner, DependencyPropertyChangedEventArgs args)
+    {
+        if (owner is DataGridCell cell) cell.UpdateGridLineVisualState();
+        else if (owner is DataGridRow row) row.UpdateGridLineVisualState();
+        else if (owner is TreeDataGridRow treeRow) treeRow.UpdateGridLineVisualState();
+    }
+
+    private void UpdateGridLineVisualState() => VisualStateManager.GoToState(this, GridLinesVisibility switch
+    {
+        DataGridGridLinesVisibility.All => "GridLinesAll",
+        DataGridGridLinesVisibility.Horizontal => "GridLinesHorizontal",
+        DataGridGridLinesVisibility.Vertical => "GridLinesVertical",
+        _ => "GridLinesNone"
+    }, false);
+
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
@@ -5814,8 +6132,18 @@ public class DataGridCell : ContentControl
     public DataGridCell()
     {
         UseTemplateContentManagement();
-        Focusable = false;
     }
+
+    public override void OnApplyTemplate()
+    {
+        base.OnApplyTemplate();
+        UpdateSelectionVisualState();
+        UpdateGridLineVisualState();
+    }
+
+    internal void UpdateSelectionVisualState(bool? isRowSelected = null) =>
+        VisualStateManager.GoToState(this, IsSelected && !(isRowSelected ?? FindParentRow(this)?.IsSelected ?? false)
+            ? "Selected" : "Unselected", false);
 
     private static void OnColumnPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
@@ -5854,6 +6182,8 @@ public class DataGridCell : ContentControl
         {
             return;
         }
+
+        cell.UpdateSelectionVisualState();
 
         if (e.NewValue is true)
         {
@@ -5906,15 +6236,14 @@ public class DataGridCell : ContentControl
                 OriginalValue = column.GetCellValueInternal(row.DataItem);
 
                 var editingElement = column.BuildVisualTree(isEditing: true, row.DataItem, this);
+                if (editingElement == null)
+                {
+                    SetCurrentValue(IsEditingProperty, false);
+                    return;
+                }
                 editingElement.DataContext = row.DataItem;
                 EditingElement = editingElement;
                 Content = editingElement;
-
-                editingElement.Focus();
-                if (editingElement is TextBox textBox)
-                {
-                    textBox.SelectAll();
-                }
             }
         }
         else
@@ -5952,54 +6281,6 @@ public class DataGridCell : ContentControl
     }
 
     /// <inheritdoc />
-    protected override Size MeasureOverride(Size constraint)
-    {
-        var horizontal = IsGridLineVisible(horizontal: true) ? 1.0 : 0.0;
-        var vertical = IsGridLineVisible(horizontal: false) ? 1.0 : 0.0;
-        var contentConstraint = SubtractGridLines(constraint, vertical, horizontal);
-        var measured = base.MeasureOverride(contentConstraint);
-        return new Size(measured.Width + vertical, measured.Height + horizontal);
-    }
-
-    /// <inheritdoc />
-    protected override Size ArrangeOverride(Size arrangeSize)
-    {
-        var horizontal = IsGridLineVisible(horizontal: true) ? 1.0 : 0.0;
-        var vertical = IsGridLineVisible(horizontal: false) ? 1.0 : 0.0;
-        var contentSize = SubtractGridLines(arrangeSize, vertical, horizontal);
-        var arranged = base.ArrangeOverride(contentSize);
-        return new Size(arranged.Width + vertical, arranged.Height + horizontal);
-    }
-
-    /// <inheritdoc />
-    protected override void OnRender(DrawingContext drawingContext)
-    {
-        base.OnRender(drawingContext);
-
-        var owner = OwningDataGrid;
-        if (owner == null)
-        {
-            return;
-        }
-
-        if (IsGridLineVisible(horizontal: false) && RenderSize.Width >= 1.0)
-        {
-            drawingContext.DrawRectangle(
-                owner.VerticalGridLinesBrush,
-                null,
-                new Rect(RenderSize.Width - 1.0, 0.0, 1.0, RenderSize.Height));
-        }
-
-        if (IsGridLineVisible(horizontal: true) && RenderSize.Height >= 1.0)
-        {
-            drawingContext.DrawRectangle(
-                owner.HorizontalGridLinesBrush,
-                null,
-                new Rect(0.0, RenderSize.Height - 1.0, RenderSize.Width, 1.0));
-        }
-    }
-
-    /// <inheritdoc />
     protected override void OnPreviewKeyDown(KeyEventArgs e)
     {
         base.OnPreviewKeyDown(e);
@@ -6017,33 +6298,9 @@ public class DataGridCell : ContentControl
         base.OnTextInput(e);
     }
 
-    private DataGrid? OwningDataGrid =>
+    internal DataGrid? OwningDataGrid =>
         FindParentRow(this)?.ParentDataGrid ??
         (GetValue(ColumnProperty) as DataGridColumn)?.DataGridOwner;
-
-    private bool IsGridLineVisible(bool horizontal)
-    {
-        var owner = OwningDataGrid;
-        if (owner == null)
-        {
-            return false;
-        }
-
-        return owner.GridLinesVisibility == DataGridGridLinesVisibility.All ||
-            (horizontal && owner.GridLinesVisibility == DataGridGridLinesVisibility.Horizontal) ||
-            (!horizontal && owner.GridLinesVisibility == DataGridGridLinesVisibility.Vertical);
-    }
-
-    private static Size SubtractGridLines(Size size, double width, double height)
-    {
-        var contentWidth = double.IsPositiveInfinity(size.Width)
-            ? size.Width
-            : Math.Max(0.0, size.Width - width);
-        var contentHeight = double.IsPositiveInfinity(size.Height)
-            ? size.Height
-            : Math.Max(0.0, size.Height - height);
-        return new Size(contentWidth, contentHeight);
-    }
 
     /// <summary>
     /// Walks up the visual tree to find the parent DataGridRow.
@@ -6283,6 +6540,7 @@ public abstract class DataGridColumn : DependencyObject
     private const double DefaultMinWidth = 20.0;
 
     private DataGrid? _dataGridOwner;
+    private readonly List<WeakReference<TreeDataGrid>> _treeDataGridOwners = new();
     private BindingBase? _clipboardContentBinding;
     private bool _isSettingDisplayIndex;
 
@@ -6565,8 +6823,13 @@ public abstract class DataGridColumn : DependencyObject
         SetValue(ActualWidthPropertyKey, Math.Clamp(value, minimum, maximum));
     }
 
-    private void NotifyOwner(DataGridColumnPropertyChange change) =>
+    private void NotifyOwner(DataGridColumnPropertyChange change)
+    {
         _dataGridOwner?.OnColumnPropertyChanged(this, change);
+        foreach (var reference in _treeDataGridOwners.ToArray())
+            if (reference.TryGetTarget(out var owner)) owner.OnColumnPropertyChanged(this, change);
+        _treeDataGridOwners.RemoveAll(reference => !reference.TryGetTarget(out _));
+    }
 
     private static void OnHeaderPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
         ((DataGridColumn)d).NotifyOwner(DataGridColumnPropertyChange.Header);
@@ -6682,16 +6945,35 @@ public abstract class DataGridColumn : DependencyObject
     protected virtual bool OnCoerceIsReadOnly(bool baseValue) =>
         baseValue || (_dataGridOwner?.IsReadOnly ?? false);
 
+    internal void AddTreeDataGridOwner(TreeDataGrid owner)
+    {
+        _treeDataGridOwners.RemoveAll(reference => !reference.TryGetTarget(out _));
+        if (!_treeDataGridOwners.Any(reference => reference.TryGetTarget(out var target) && ReferenceEquals(target, owner)))
+            _treeDataGridOwners.Add(new WeakReference<TreeDataGrid>(owner));
+    }
+
+    internal void RemoveTreeDataGridOwner(TreeDataGrid owner) =>
+        _treeDataGridOwners.RemoveAll(reference => !reference.TryGetTarget(out var target) || ReferenceEquals(target, owner));
+
     /// <summary>Notifies realized cells that a column-specific presentation property changed.</summary>
-    protected void NotifyPropertyChanged(string propertyName) =>
+    protected void NotifyPropertyChanged(string propertyName)
+    {
         _dataGridOwner?.RefreshColumnCellContent(this, propertyName);
+        foreach (var reference in _treeDataGridOwners.ToArray())
+            if (reference.TryGetTarget(out var owner)) owner.RefreshColumnCellContent(this, propertyName);
+        _treeDataGridOwners.RemoveAll(reference => !reference.TryGetTarget(out _));
+    }
 
     /// <summary>Refreshes one realized cell after a column presentation property changes.</summary>
     protected internal virtual void RefreshCellContent(FrameworkElement element, string propertyName)
     {
         if (element is DataGridCell cell)
         {
-            _dataGridOwner?.RefreshColumnCellContent(this, cell, propertyName);
+            if (cell.OwningDataGrid is { } dataGrid)
+                dataGrid.RefreshColumnCellContent(this, cell, propertyName);
+            else
+                foreach (var reference in _treeDataGridOwners.ToArray())
+                    if (reference.TryGetTarget(out var owner)) owner.RefreshColumnCellContent(this, cell, propertyName);
         }
     }
 
@@ -6787,6 +7069,13 @@ public abstract class DataGridColumn : DependencyObject
 
     public event EventHandler<DataGridCellClipboardEventArgs> PastingCellClipboardContent = null!;
 
+    protected static void ApplyDisplayBinding(FrameworkElement element, DependencyProperty property, BindingBase? bindingBase)
+    {
+        if (bindingBase is Binding binding)
+            element.SetBinding(property, binding.CloneWithMode(
+                binding.Mode == BindingMode.OneTime ? BindingMode.OneTime : BindingMode.OneWay));
+    }
+
     protected static object? GetBindingValue(BindingBase? bindingBase, object item)
     {
         if (bindingBase is not Binding binding || binding.Path == null)
@@ -6841,12 +7130,11 @@ public abstract class DataGridColumn : DependencyObject
 
         try
         {
-            var targetType = Nullable.GetUnderlyingType(property.PropertyType) ?? property.PropertyType;
-            var converted = value == null || targetType.IsInstanceOfType(value)
-                ? value
-                : targetType.IsEnum
-                    ? Enum.Parse(targetType, value.ToString()!, ignoreCase: true)
-                    : Convert.ChangeType(value, targetType, CultureInfo.CurrentCulture);
+            var converted = BindingValueCoercion.Coerce(value, property.PropertyType, CultureInfo.CurrentCulture);
+            if (converted != null && !property.PropertyType.IsInstanceOfType(converted))
+            {
+                return false;
+            }
             property.SetValue(target, converted);
             return true;
         }
@@ -6955,47 +7243,8 @@ public abstract class DataGridBoundColumn : DataGridColumn
     /// </summary>
     /// <param name="dataItem">The data item to write to.</param>
     /// <param name="value">The value to set.</param>
-    protected void SetCellValue(object dataItem, object? value)
-    {
-        if (Binding is not Binding binding || binding.Path == null) return;
-
-        var parts = binding.Path.CachedPathSegments;
-        var target = dataItem;
-
-        // Navigate to the parent object for nested paths
-        for (int i = 0; i < parts.Length - 1; i++)
-        {
-            if (target == null) return;
-            var prop = DataGrid.GetCachedProperty(target.GetType(), parts[i]);
-            target = prop?.GetValue(target);
-        }
-
-        if (target == null) return;
-
-        var finalProp = DataGrid.GetCachedProperty(target.GetType(), parts[^1]);
-        if (finalProp?.CanWrite == true)
-        {
-            try
-            {
-                var targetType = Nullable.GetUnderlyingType(finalProp.PropertyType) ?? finalProp.PropertyType;
-                var convertedValue = value == null || targetType.IsInstanceOfType(value)
-                    ? value
-                    : targetType.IsEnum
-                        ? Enum.Parse(targetType, value.ToString()!, ignoreCase: true)
-                        : Convert.ChangeType(value, targetType, CultureInfo.CurrentCulture);
-                finalProp.SetValue(target, convertedValue);
-            }
-            catch (InvalidCastException)
-            {
-                // If conversion fails, try setting the raw value
-                finalProp.SetValue(target, value);
-            }
-            catch (FormatException)
-            {
-                // If format conversion fails, ignore the write-back
-            }
-        }
-    }
+    protected void SetCellValue(object dataItem, object? value) =>
+        _ = SetBindingValue(Binding, dataItem, value);
 
     protected override void SetClipboardCellValue(object item, object value) =>
         SetCellValue(item, value);
@@ -7009,8 +7258,8 @@ public abstract class DataGridBoundColumn : DataGridColumn
 
 public class DataGridTextColumn : DataGridBoundColumn
 {
-    private static readonly Style s_defaultElementStyle = CreateDefaultElementStyle();
-    private static readonly Style s_defaultEditingElementStyle = CreateDefaultEditingElementStyle();
+    private static readonly ComponentResourceKey s_defaultElementStyleKey = new(typeof(DataGridTextColumn), nameof(DefaultElementStyle));
+    private static readonly ComponentResourceKey s_defaultEditingElementStyleKey = new(typeof(DataGridTextColumn), nameof(DefaultEditingElementStyle));
 
     public static readonly DependencyProperty FontFamilyProperty =
         DependencyProperty.Register(nameof(FontFamily), typeof(Jalium.UI.Media.FontFamily), typeof(DataGridTextColumn),
@@ -7032,9 +7281,11 @@ public class DataGridTextColumn : DataGridBoundColumn
         DependencyProperty.Register(nameof(Foreground), typeof(Brush), typeof(DataGridTextColumn),
             new PropertyMetadata(SystemColors.ControlTextBrush, OnTextAppearanceChanged));
 
-    public static Style DefaultElementStyle => s_defaultElementStyle;
+    public static ComponentResourceKey DefaultElementStyleKey => s_defaultElementStyleKey;
+    public static ComponentResourceKey DefaultEditingElementStyleKey => s_defaultEditingElementStyleKey;
+    public static Style DefaultElementStyle => DataGridColumnThemeResources.GetStyle(DefaultElementStyleKey);
 
-    public static Style DefaultEditingElementStyle => s_defaultEditingElementStyle;
+    public static Style DefaultEditingElementStyle => DataGridColumnThemeResources.GetStyle(DefaultEditingElementStyleKey);
 
     public Jalium.UI.Media.FontFamily FontFamily
     {
@@ -7069,16 +7320,10 @@ public class DataGridTextColumn : DataGridBoundColumn
     protected override FrameworkElement GenerateElement(DataGridCell cell, object dataItem)
     {
         var value = GetCellValue(dataItem);
-        var textBlock = new TextBlock
-        {
-            Text = value?.ToString() ?? "",
-            VerticalAlignment = VerticalAlignment.Center,
-            FontFamily = FontFamily,
-            FontSize = FontSize,
-            FontStyle = FontStyle,
-            FontWeight = FontWeight,
-            Foreground = Foreground
-        };
+        var textBlock = DataGridColumnThemeResources.CreateElement<TextBlock>("DataGridTextColumn.DisplayTemplate");
+        textBlock.Text = value?.ToString() ?? "";
+        ApplyDisplayBinding(textBlock, TextBlock.TextProperty, Binding);
+        ApplyTextProperties(textBlock);
         textBlock.Style = ElementStyle ?? DefaultElementStyle;
         return textBlock;
     }
@@ -7086,18 +7331,9 @@ public class DataGridTextColumn : DataGridBoundColumn
     protected override FrameworkElement GenerateEditingElement(DataGridCell cell, object dataItem)
     {
         var value = GetCellValue(dataItem);
-        var textBox = new TextBox
-        {
-            Text = value?.ToString() ?? "",
-            BorderThickness = new Thickness(0),
-            Background = Jalium.UI.Media.Brushes.Transparent,
-            VerticalAlignment = VerticalAlignment.Center,
-            FontFamily = FontFamily,
-            FontSize = FontSize,
-            FontStyle = FontStyle,
-            FontWeight = FontWeight,
-            Foreground = Foreground
-        };
+        var textBox = DataGridColumnThemeResources.CreateElement<TextBox>("DataGridTextColumn.EditingTemplate");
+        textBox.Text = value?.ToString() ?? "";
+        ApplyTextProperties(textBox);
         textBox.Style = EditingElementStyle ?? DefaultEditingElementStyle;
         return textBox;
     }
@@ -7147,39 +7383,39 @@ public class DataGridTextColumn : DataGridBoundColumn
         }
     }
 
+    private static readonly (DependencyProperty Column, DependencyProperty Element)[] s_textProperties =
+    [
+        (FontFamilyProperty, TextBlock.FontFamilyProperty), (FontSizeProperty, TextBlock.FontSizeProperty),
+        (FontStyleProperty, TextBlock.FontStyleProperty), (FontWeightProperty, TextBlock.FontWeightProperty),
+        (ForegroundProperty, TextBlock.ForegroundProperty)
+    ];
+
+    private void ApplyTextProperties(DependencyObject element)
+    {
+        foreach (var (columnProperty, elementProperty) in s_textProperties)
+            if (GetValueSourceInternal(columnProperty).BaseValueSource != BaseValueSource.Default)
+                element.SetValue(elementProperty, GetValue(columnProperty));
+    }
+
     private static void OnTextAppearanceChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
         ((DataGridTextColumn)d).NotifyPropertyChanged(e.Property.Name);
 
-    private static Style CreateDefaultElementStyle()
-    {
-        var style = new Style(typeof(TextBlock));
-        style.Setters.Add(new Setter(FrameworkElement.MarginProperty, new Thickness(2, 0, 2, 0)));
-        style.Seal();
-        return style;
-    }
-
-    private static Style CreateDefaultEditingElementStyle()
-    {
-        var style = new Style(typeof(TextBox));
-        style.Setters.Add(new Setter(Control.BorderThicknessProperty, new Thickness(0)));
-        style.Setters.Add(new Setter(Control.PaddingProperty, new Thickness(0)));
-        style.Seal();
-        return style;
-    }
 }
 
 public class DataGridCheckBoxColumn : DataGridBoundColumn
 {
-    private static readonly Style s_defaultElementStyle = CreateDefaultElementStyle();
-    private static readonly Style s_defaultEditingElementStyle = CreateDefaultEditingElementStyle();
+    private static readonly ComponentResourceKey s_defaultElementStyleKey = new(typeof(DataGridCheckBoxColumn), nameof(DefaultElementStyle));
+    private static readonly ComponentResourceKey s_defaultEditingElementStyleKey = new(typeof(DataGridCheckBoxColumn), nameof(DefaultEditingElementStyle));
 
     public static readonly DependencyProperty IsThreeStateProperty =
         DependencyProperty.Register(nameof(IsThreeState), typeof(bool), typeof(DataGridCheckBoxColumn),
             new PropertyMetadata(false, OnIsThreeStateChanged));
 
-    public static Style DefaultElementStyle => s_defaultElementStyle;
+    public static ComponentResourceKey DefaultElementStyleKey => s_defaultElementStyleKey;
+    public static ComponentResourceKey DefaultEditingElementStyleKey => s_defaultEditingElementStyleKey;
+    public static Style DefaultElementStyle => DataGridColumnThemeResources.GetStyle(DefaultElementStyleKey);
 
-    public static Style DefaultEditingElementStyle => s_defaultEditingElementStyle;
+    public static Style DefaultEditingElementStyle => DataGridColumnThemeResources.GetStyle(DefaultEditingElementStyleKey);
 
     /// <summary>
     /// Gets or sets whether the CheckBox is a three-state checkbox.
@@ -7193,28 +7429,20 @@ public class DataGridCheckBoxColumn : DataGridBoundColumn
     protected override FrameworkElement GenerateElement(DataGridCell cell, object dataItem)
     {
         var value = GetCellValue(dataItem);
-        var checkBox = new CheckBox
-        {
-            IsChecked = value as bool? ?? (value is bool b ? b : null),
-            IsEnabled = false,
-            IsThreeState = IsThreeState,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center
-        };
+        var checkBox = DataGridColumnThemeResources.CreateElement<CheckBox>("DataGridCheckBoxColumn.DisplayTemplate");
+        checkBox.IsChecked = value as bool? ?? (value is bool b ? b : null);
+        checkBox.IsThreeState = IsThreeState;
         checkBox.Style = ElementStyle ?? DefaultElementStyle;
+        ApplyDisplayBinding(checkBox, CheckBox.IsCheckedProperty, Binding);
         return checkBox;
     }
 
     protected override FrameworkElement GenerateEditingElement(DataGridCell cell, object dataItem)
     {
         var value = GetCellValue(dataItem);
-        var checkBox = new CheckBox
-        {
-            IsChecked = value as bool? ?? (value is bool b ? b : null),
-            IsThreeState = IsThreeState,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center
-        };
+        var checkBox = DataGridColumnThemeResources.CreateElement<CheckBox>("DataGridCheckBoxColumn.EditingTemplate");
+        checkBox.IsChecked = value as bool? ?? (value is bool b ? b : null);
+        checkBox.IsThreeState = IsThreeState;
         checkBox.Style = EditingElementStyle ?? DefaultEditingElementStyle;
         return checkBox;
     }
@@ -7258,31 +7486,12 @@ public class DataGridCheckBoxColumn : DataGridBoundColumn
     private static void OnIsThreeStateChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
         ((DataGridCheckBoxColumn)d).NotifyPropertyChanged(nameof(IsThreeState));
 
-    private static Style CreateDefaultElementStyle()
-    {
-        var style = new Style(typeof(CheckBox));
-        style.Setters.Add(new Setter(UIElement.IsHitTestVisibleProperty, false));
-        style.Setters.Add(new Setter(UIElement.FocusableProperty, false));
-        style.Setters.Add(new Setter(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Center));
-        style.Setters.Add(new Setter(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Top));
-        style.Seal();
-        return style;
-    }
-
-    private static Style CreateDefaultEditingElementStyle()
-    {
-        var style = new Style(typeof(CheckBox));
-        style.Setters.Add(new Setter(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Center));
-        style.Setters.Add(new Setter(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Top));
-        style.Seal();
-        return style;
-    }
 }
 
 public class DataGridComboBoxColumn : DataGridColumn
 {
-    private static readonly Style s_defaultElementStyle = CreateDefaultComboBoxStyle();
-    private static readonly Style s_defaultEditingElementStyle = CreateDefaultComboBoxStyle();
+    private static readonly ComponentResourceKey s_defaultElementStyleKey = new(typeof(DataGridComboBoxColumn), nameof(DefaultElementStyle));
+    private static readonly ComponentResourceKey s_defaultEditingElementStyleKey = new(typeof(DataGridComboBoxColumn), nameof(DefaultEditingElementStyle));
     private static readonly ComponentResourceKey s_textBlockComboBoxStyleKey =
         new(typeof(DataGridComboBoxColumn), nameof(TextBlockComboBoxStyleKey));
 
@@ -7304,11 +7513,11 @@ public class DataGridComboBoxColumn : DataGridColumn
 
     public static readonly DependencyProperty ElementStyleProperty =
         DependencyProperty.Register(nameof(ElementStyle), typeof(Style), typeof(DataGridComboBoxColumn),
-            new PropertyMetadata(s_defaultElementStyle, OnComboBoxPropertyChanged));
+            new PropertyMetadata(null, OnComboBoxPropertyChanged));
 
     public static readonly DependencyProperty EditingElementStyleProperty =
         DependencyProperty.Register(nameof(EditingElementStyle), typeof(Style), typeof(DataGridComboBoxColumn),
-            new PropertyMetadata(s_defaultEditingElementStyle, OnComboBoxPropertyChanged));
+            new PropertyMetadata(null, OnComboBoxPropertyChanged));
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Items)]
     public IEnumerable ItemsSource
@@ -7341,9 +7550,11 @@ public class DataGridComboBoxColumn : DataGridColumn
         set => SetValue(EditingElementStyleProperty, value);
     }
 
-    public static Style DefaultElementStyle => s_defaultElementStyle;
+    public static ComponentResourceKey DefaultElementStyleKey => s_defaultElementStyleKey;
+    public static ComponentResourceKey DefaultEditingElementStyleKey => s_defaultEditingElementStyleKey;
+    public static Style DefaultElementStyle => DataGridColumnThemeResources.GetStyle(DefaultElementStyleKey);
 
-    public static Style DefaultEditingElementStyle => s_defaultEditingElementStyle;
+    public static Style DefaultEditingElementStyle => DataGridColumnThemeResources.GetStyle(DefaultEditingElementStyleKey);
 
     public static ComponentResourceKey TextBlockComboBoxStyleKey => s_textBlockComboBoxStyleKey;
 
@@ -7417,10 +7628,7 @@ public class DataGridComboBoxColumn : DataGridColumn
 
     protected override FrameworkElement GenerateElement(DataGridCell cell, object dataItem)
     {
-        var comboBox = CreateComboBox(dataItem, isEditing: false);
-        comboBox.IsHitTestVisible = false;
-        comboBox.Focusable = false;
-        return comboBox;
+        return CreateComboBox(dataItem, isEditing: false);
     }
 
     protected override FrameworkElement GenerateEditingElement(DataGridCell cell, object dataItem)
@@ -7493,15 +7701,12 @@ public class DataGridComboBoxColumn : DataGridColumn
 
     private ComboBox CreateComboBox(object dataItem, bool isEditing)
     {
-        var comboBox = new ComboBox
-        {
-            VerticalAlignment = VerticalAlignment.Center,
-            ItemsSource = ItemsSource,
-            DisplayMemberPath = DisplayMemberPath,
-            SelectedValuePath = SelectedValuePath,
-            Style = isEditing ? EditingElementStyle : ElementStyle,
-            IsSynchronizedWithCurrentItem = false
-        };
+        var comboBox = DataGridColumnThemeResources.CreateElement<ComboBox>(
+            isEditing ? "DataGridComboBoxColumn.EditingTemplate" : "DataGridComboBoxColumn.DisplayTemplate");
+        comboBox.ItemsSource = ItemsSource;
+        comboBox.DisplayMemberPath = DisplayMemberPath;
+        comboBox.SelectedValuePath = SelectedValuePath;
+        comboBox.Style = isEditing ? EditingElementStyle : ElementStyle;
 
         if (SelectedItemBinding != null)
         {
@@ -7516,6 +7721,13 @@ public class DataGridComboBoxColumn : DataGridColumn
             comboBox.Text = GetBindingValue(TextBinding, dataItem)?.ToString() ?? string.Empty;
         }
 
+        if (!isEditing)
+        {
+            var binding = SelectedItemBinding ?? SelectedValueBinding ?? TextBinding;
+            var property = SelectedItemBinding != null ? ComboBox.SelectedItemProperty :
+                SelectedValueBinding != null ? ComboBox.SelectedValueProperty : ComboBox.TextProperty;
+            ApplyDisplayBinding(comboBox, property, binding);
+        }
         return comboBox;
     }
 
@@ -7531,13 +7743,6 @@ public class DataGridComboBoxColumn : DataGridColumn
         ((DataGridComboBoxColumn)d).NotifyPropertyChanged(e.Property.Name);
     }
 
-    private static Style CreateDefaultComboBoxStyle()
-    {
-        var style = new Style(typeof(ComboBox));
-        style.Setters.Add(new Setter(Selector.IsSynchronizedWithCurrentItemProperty, false));
-        style.Seal();
-        return style;
-    }
 }
 
 public class DataGridTemplateColumn : DataGridColumn
@@ -7600,7 +7805,10 @@ public class DataGridTemplateColumn : DataGridColumn
             }
         }
 
-        return new TextBlock { Text = dataItem?.ToString() ?? "" };
+        var fallback = DataGridColumnThemeResources.CreateElement<TextBlock>("DataGridTextColumn.DisplayTemplate");
+        fallback.Text = dataItem?.ToString() ?? "";
+        fallback.Style = DataGridTextColumn.DefaultElementStyle;
+        return fallback;
     }
 
     protected override FrameworkElement GenerateEditingElement(DataGridCell cell, object dataItem)
@@ -7636,17 +7844,19 @@ public class DataGridTemplateColumn : DataGridColumn
 /// </summary>
 public class DataGridHyperlinkColumn : DataGridBoundColumn
 {
-    private static readonly Style s_defaultElementStyle = CreateDefaultElementStyle();
-    private static readonly Style s_defaultEditingElementStyle = CreateDefaultEditingElementStyle();
+    private static readonly ComponentResourceKey s_defaultElementStyleKey = new(typeof(DataGridHyperlinkColumn), nameof(DefaultElementStyle));
+    private static readonly ComponentResourceKey s_defaultEditingElementStyleKey = new(typeof(DataGridHyperlinkColumn), nameof(DefaultEditingElementStyle));
     private BindingBase? _contentBinding;
 
     public static readonly DependencyProperty TargetNameProperty =
         DependencyProperty.Register(nameof(TargetName), typeof(string), typeof(DataGridHyperlinkColumn),
             new PropertyMetadata(string.Empty, OnTargetNameChanged));
 
-    public static Style DefaultElementStyle => s_defaultElementStyle;
+    public static ComponentResourceKey DefaultElementStyleKey => s_defaultElementStyleKey;
+    public static ComponentResourceKey DefaultEditingElementStyleKey => s_defaultEditingElementStyleKey;
+    public static Style DefaultElementStyle => DataGridColumnThemeResources.GetStyle(DefaultElementStyleKey);
 
-    public static Style DefaultEditingElementStyle => s_defaultEditingElementStyle;
+    public static Style DefaultEditingElementStyle => DataGridColumnThemeResources.GetStyle(DefaultEditingElementStyleKey);
 
     /// <summary>
     /// Gets or sets the binding for the text content of the hyperlink.
@@ -7680,11 +7890,8 @@ public class DataGridHyperlinkColumn : DataGridBoundColumn
     {
         var uri = GetCellValue(dataItem);
         var displayText = ContentBinding != null ? GetContentValue(dataItem) : uri;
-        var button = new HyperlinkButton
-        {
-            Content = displayText?.ToString() ?? "",
-            VerticalAlignment = VerticalAlignment.Center
-        };
+        var button = DataGridColumnThemeResources.CreateElement<HyperlinkButton>("DataGridHyperlinkColumn.DisplayTemplate");
+        button.Content = displayText?.ToString() ?? "";
 
         if (uri is Uri uriValue)
         {
@@ -7695,21 +7902,17 @@ public class DataGridHyperlinkColumn : DataGridBoundColumn
             button.NavigateUri = parsed;
         }
 
-        if (ElementStyle != null)
-            button.Style = ElementStyle;
+        button.Style = ElementStyle ?? DefaultElementStyle;
+        ApplyDisplayBinding(button, HyperlinkButton.ContentProperty, ContentBinding ?? Binding);
+        ApplyDisplayBinding(button, HyperlinkButton.NavigateUriProperty, Binding);
         return button;
     }
 
     protected override FrameworkElement GenerateEditingElement(DataGridCell cell, object dataItem)
     {
         var value = GetCellValue(dataItem);
-        var textBox = new TextBox
-        {
-            Text = value?.ToString() ?? "",
-            BorderThickness = new Thickness(0),
-            Background = Jalium.UI.Media.Brushes.Transparent,
-            VerticalAlignment = VerticalAlignment.Center
-        };
+        var textBox = DataGridColumnThemeResources.CreateElement<TextBox>("DataGridHyperlinkColumn.EditingTemplate");
+        textBox.Text = value?.ToString() ?? "";
         textBox.Style = EditingElementStyle ?? DefaultEditingElementStyle;
         return textBox;
     }
@@ -7760,22 +7963,6 @@ public class DataGridHyperlinkColumn : DataGridBoundColumn
     private static void OnTargetNameChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
         ((DataGridHyperlinkColumn)d).NotifyPropertyChanged(nameof(TargetName));
 
-    private static Style CreateDefaultElementStyle()
-    {
-        var style = new Style(typeof(TextBlock));
-        style.Setters.Add(new Setter(FrameworkElement.MarginProperty, new Thickness(2, 0, 2, 0)));
-        style.Seal();
-        return style;
-    }
-
-    private static Style CreateDefaultEditingElementStyle()
-    {
-        var style = new Style(typeof(TextBox));
-        style.Setters.Add(new Setter(Control.BorderThicknessProperty, new Thickness(0)));
-        style.Setters.Add(new Setter(Control.PaddingProperty, new Thickness(0)));
-        style.Seal();
-        return style;
-    }
 }
 
 #endregion

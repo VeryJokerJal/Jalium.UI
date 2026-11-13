@@ -1,3 +1,4 @@
+using Jalium.UI.Media;
 using System.Reflection;
 using Jalium.UI;
 using Jalium.UI.Controls;
@@ -12,14 +13,16 @@ namespace Jalium.UI.Tests;
 /// pointer (bottom edge for page-down, top edge for page-up — Microsoft's trough design) instead
 /// of running all the way to Minimum/Maximum.
 /// </summary>
-public class ScrollBarTrackPagingTests
+public class ScrollBarTrackPagingTests : IDisposable
 {
+    public ScrollBarTrackPagingTests() => ScrollBarTemplateTestHelper.Register();
+
     [Fact]
     public void PageDown_HeldWithTrackPagingTarget_StopsAtTarget_NotMaximum()
     {
         var scrollBar = MakeVerticalScrollBar();
         scrollBar.LargeChange = 100;
-        var track = Assert.IsType<Track>(scrollBar.GetVisualChild(1));
+        var track = Assert.IsType<Track>(scrollBar.FindName("PART_Track"));
         var increase = Assert.IsType<RepeatButton>(track.IncreaseRepeatButton);
 
         // Arm paging directly so the clamp is isolated from the input wiring.
@@ -41,7 +44,7 @@ public class ScrollBarTrackPagingTests
         var scrollBar = MakeVerticalScrollBar();
         scrollBar.LargeChange = 100;
         scrollBar.Value = 1000;
-        var track = Assert.IsType<Track>(scrollBar.GetVisualChild(1));
+        var track = Assert.IsType<Track>(scrollBar.FindName("PART_Track"));
         var decrease = Assert.IsType<RepeatButton>(track.DecreaseRepeatButton);
 
         SetField(scrollBar, "_trackPagingTargetValue", 500.0);
@@ -62,7 +65,7 @@ public class ScrollBarTrackPagingTests
         // proving the clamp — not some unrelated cap — is what stops paging in the test above.
         var scrollBar = MakeVerticalScrollBar();
         scrollBar.LargeChange = 100;
-        var track = Assert.IsType<Track>(scrollBar.GetVisualChild(1));
+        var track = Assert.IsType<Track>(scrollBar.FindName("PART_Track"));
         var increase = Assert.IsType<RepeatButton>(track.IncreaseRepeatButton);
 
         for (int i = 0; i < 50; i++)
@@ -77,7 +80,7 @@ public class ScrollBarTrackPagingTests
     public void TrackPagingTarget_AlignsLeadingEdgeToPointer_PerMicrosoftDesign()
     {
         var scrollBar = MakeVerticalScrollBar();
-        var track = Assert.IsType<Track>(scrollBar.GetVisualChild(1));
+        var track = Assert.IsType<Track>(scrollBar.FindName("PART_Track"));
         var thumb = Assert.IsType<Thumb>(track.Thumb);
 
         var range = scrollBar.Maximum - scrollBar.Minimum;
@@ -113,7 +116,7 @@ public class ScrollBarTrackPagingTests
         // without waiting out the RepeatButton's initial Delay or a separate click.
         var scrollBar = MakeVerticalScrollBar();
         scrollBar.LargeChange = 100;
-        var track = Assert.IsType<Track>(scrollBar.GetVisualChild(1));
+        var track = Assert.IsType<Track>(scrollBar.FindName("PART_Track"));
         var increase = Assert.IsType<RepeatButton>(track.IncreaseRepeatButton);
         var thumb = Assert.IsType<Thumb>(track.Thumb);
 
@@ -136,7 +139,7 @@ public class ScrollBarTrackPagingTests
     {
         var scrollBar = MakeVerticalScrollBar();
         scrollBar.LargeChange = 100;
-        var track = Assert.IsType<Track>(scrollBar.GetVisualChild(1));
+        var track = Assert.IsType<Track>(scrollBar.FindName("PART_Track"));
         var increase = Assert.IsType<RepeatButton>(track.IncreaseRepeatButton);
         var thumb = Assert.IsType<Thumb>(track.Thumb);
 
@@ -304,4 +307,6 @@ public class ScrollBarTrackPagingTests
             modifiers: ModifierKeys.None,
             timestamp: 1);
     }
+    public void Dispose() => ScrollBarTemplateTestHelper.Reset();
+
 }

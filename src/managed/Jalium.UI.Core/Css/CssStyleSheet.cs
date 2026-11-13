@@ -12,12 +12,18 @@ public readonly struct CssParseDiagnostic
     public CssDiagnosticSeverity Severity { get; }
     public string Message { get; }
     public int Line { get; }
+    /// <summary>Zero-based UTF-16 source offset, or -1 for diagnostics without a source location.</summary>
+    public int Start { get; }
+    /// <summary>Length of the relevant source range in UTF-16 code units.</summary>
+    public int Length { get; }
 
-    internal CssParseDiagnostic(CssDiagnosticSeverity severity, string message, int line)
+    internal CssParseDiagnostic(CssDiagnosticSeverity severity, string message, int line, int start = -1, int length = 0)
     {
         Severity = severity;
         Message = message;
         Line = line;
+        Start = start;
+        Length = length;
     }
 
     public override string ToString() => $"{Severity} (line {Line}): {Message}";
@@ -83,7 +89,10 @@ public sealed partial class CssStyleSheet
     internal CssLayerDeclaration[] Layers { get; }
     internal CssPropertyRegistration[] Properties { get; }
     internal CssFontFaceRule[] FontFaces { get; }
+    internal CssFontFeatureValuesRule[] FontFeatureValues { get; }
     internal CssKeyframesRule[] Keyframes { get; }
+    internal CssCounterStyleRule[] CounterStyles { get; }
+    internal CssPageRule[] PageRules { get; }
 
     internal CssStateMask AncestorStateUnion { get; }
 
@@ -92,6 +101,11 @@ public sealed partial class CssStyleSheet
     internal bool HasCombinators { get; }
 
     internal bool UsesId { get; }
+
+    // Parsed sheets are immutable. Dependency metadata must not recursively walk
+    // the same selectors again for every element in a newly opened dialog.
+    internal bool HasStructuralDependencies { get; }
+    internal string[] StructuralAttributeNames { get; }
 
     public string? SourceLabel { get; }
 
@@ -103,17 +117,26 @@ public sealed partial class CssStyleSheet
     /// </summary>
     internal static Func<Uri, Stream?>? UriStreamResolver { get; set; }
 
+    /// <summary>Qualifies application-relative CSS paths for generated resources.</summary>
+    internal static Func<Uri, Uri>? ApplicationResourceUriResolver { get; set; }
+
     internal CssStyleSheet(CssRule[] rules, CssParseDiagnostic[] diagnostics, string? sourceLabel, CssImport[]? imports = null,
         CssLayerDeclaration[]? layers = null, CssPropertyRegistration[]? properties = null,
-        CssFontFaceRule[]? fonts = null, CssKeyframesRule[]? keyframes = null)
+        CssFontFaceRule[]? fonts = null, CssKeyframesRule[]? keyframes = null, CssCounterStyleRule[]? counterStyles = null,
+        CssFontFeatureValuesRule[]? fontFeatureValues = null, CssPageRule[]? pageRules = null)
     {
         Rules = rules;
         Imports = imports ?? [];
         Layers = layers ?? [];
         Properties = properties ?? [];
         FontFaces = fonts ?? [];
+        FontFeatureValues = fontFeatureValues ?? [];
         Keyframes = keyframes ?? [];
-        if (FontFaces.Length > 0) CssFontFaces.IsActive = true;
+        CounterStyles = counterStyles ?? [];
+        PageRules = pageRules ?? [];
+        if (CounterStyles.Length > 0) CssCounterStyles.IsActive = true;
+        if (PageRules.Length > 0) CssPageRules.IsActive = true;
+        if (FontFaces.Length > 0 || FontFeatureValues.Length > 0) CssFontFaces.IsActive = true;
         if (Properties.Length > 0) CssRegisteredProperties.IsActive = true;
         _diagnostics = diagnostics;
         SourceLabel = sourceLabel;
@@ -140,6 +163,15 @@ public sealed partial class CssStyleSheet
         AnyStateUnion = anyStates;
         HasCombinators = hasCombinators;
         UsesId = usesId;
+        var structuralAttributes = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var rule in rules)
+        {
+            if (!rule.HasStructuralDependencies) continue;
+            HasStructuralDependencies = true;
+            foreach (var selector in rule.DependencySelectors)
+                foreach (var name in selector.AttributeNames()) structuralAttributes.Add(name);
+        }
+        StructuralAttributeNames = structuralAttributes.ToArray();
     }
 
     public static CssStyleSheet Parse(string cssText, string? sourceLabel = null)
@@ -155,6 +187,7 @@ public sealed partial class CssStyleSheet
         foreach (var property in sheet.Properties) property.BaseUri = baseUri;
         foreach (var font in sheet.FontFaces) font.BaseUri = baseUri;
         foreach (var keyframes in sheet.Keyframes) keyframes.BaseUri = baseUri;
+        foreach (var counter in sheet.CounterStyles) counter.BaseUri = baseUri;
         return sheet;
     }
 
@@ -165,6 +198,7 @@ public sealed partial class CssStyleSheet
         foreach (var rule in sheet.Rules) rule.ResourceResolver = resolver;
         foreach (var font in sheet.FontFaces) font.Resolver = resolver;
         foreach (var keyframes in sheet.Keyframes) keyframes.ResourceResolver = resolver;
+        foreach (var counter in sheet.CounterStyles) counter.ResourceResolver = resolver;
         return sheet;
     }
 
@@ -180,10 +214,24 @@ public sealed partial class CssStyleSheet
         }
     }
 
-    /// <summary>Loads a style sheet from a pack/application URI (e.g. "/App;component/styles/app.css").</summary>
+    /// <summary>Loads a CSS file without expanding <c>@import</c>. Relative paths use the current working directory.</summary>
+    public static CssStyleSheet FromFile(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        var fullPath = Path.GetFullPath(path);
+        using var stream = File.OpenRead(fullPath);
+        using var buffer = new MemoryStream();
+        stream.CopyTo(buffer);
+        var (text, _) = CssStyleSheetEncoding.Decode(buffer.ToArray());
+        return Parse(text, fullPath, new Uri(fullPath));
+    }
+
+    /// <summary>Loads a style sheet from a pack/application or file URI without expanding <c>@import</c>.</summary>
     public static CssStyleSheet FromUri(Uri uri)
     {
         ArgumentNullException.ThrowIfNull(uri);
+        if (uri.IsAbsoluteUri && uri.IsFile) return FromFile(uri.LocalPath);
+        uri = ApplicationResourceUriResolver?.Invoke(uri) ?? uri;
         if (CssCompiledStyleRegistry.TryCreateResource(uri, out var compiled)) return compiled;
         var resolver = UriStreamResolver;
         var stream = resolver?.Invoke(uri);

@@ -1,0 +1,366 @@
+name: NuGet 26.11.0 package qualification
+
+on:
+  push:
+    branches: [codex/nuget-26.11.0]
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [all, android-retry, common-retry, android-consumer, linux-consumer]
+        default: all
+      source_run:
+        description: Qualified common-package run for an Android retry
+        type: string
+        default: '38538030308'
+      framework_ref:
+        type: string
+        required: false
+      android_run:
+        type: string
+        default: '38540272797'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: nuget-26.11.0-${{ inputs.mode || 'all' }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_SOURCE: ${{ inputs.framework_ref || github.sha }}
+  DOTNET_NOLOGO: '1'
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+
+jobs:
+  linux-native:
+    if: ${{ inputs.mode == '' || inputs.mode == 'all' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: linux-x64
+            runner: ubuntu-24.04
+            image: glibc
+          - rid: linux-arm64
+            runner: ubuntu-24.04-arm
+            image: glibc
+          - rid: linux-musl-x64
+            runner: ubuntu-24.04
+            image: mcr.microsoft.com/dotnet/sdk:10.0-alpine3.24
+          - rid: linux-musl-arm64
+            runner: ubuntu-24.04-arm
+            image: mcr.microsoft.com/dotnet/sdk:10.0-alpine3.23
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_SOURCE }}
+      - name: Build Ubuntu baseline image
+        if: matrix.image == 'glibc'
+        run: docker build --build-arg JALIUM_INSTALL_DOTNET=1 --build-arg JALIUM_DOTNET_SDK_VERSION=10.0.300 -t nuget-native -f eng/linux/ubuntu20.04-glibc.Dockerfile .
+      - name: Build glibc payload
+        if: matrix.image == 'glibc'
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:/work" -w /work -e JALIUM_NATIVE_BUILD_TESTS=0 nuget-native bash -euo pipefail -c '
+            bash eng/linux/build-native.sh "${{ matrix.rid }}" Release
+            bash eng/linux/check-native-exports.sh "src/native/bin/native/${{ matrix.rid }}/Release"
+            bash eng/linux/check-symbol-versions.sh "src/native/bin/native/${{ matrix.rid }}/Release" 2.31 3.4.28
+          '
+      - name: Build musl payload
+        if: matrix.image != 'glibc'
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:/work" -w /work -e JALIUM_NATIVE_BUILD_TESTS=0 '${{ matrix.image }}' sh -ec '
+            apk add --no-cache bash build-base cmake ninja pkgconf python3 git linux-headers binutils file coreutils zlib-dev libx11-dev libxext-dev libxrandr-dev libxi-dev libxcursor-dev wayland-dev wayland-protocols xkeyboard-config-dev libxkbcommon-dev vulkan-loader-dev fontconfig-dev gstreamer-dev gst-plugins-base-dev
+            bash eng/linux/build-native.sh "${{ matrix.rid }}" Release
+            bash eng/linux/check-native-exports.sh "src/native/bin/native/${{ matrix.rid }}/Release"
+          '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.rid }}
+          path: src/native/bin/native/${{ matrix.rid }}/Release
+          include-hidden-files: true
+          if-no-files-found: error
+
+  windows-native:
+    if: ${{ inputs.mode == '' || inputs.mode == 'all' }}
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_SOURCE }}
+      - uses: microsoft/setup-msbuild@v2
+      - name: Install Vulkan SDK
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'vulkansdk.exe'
+          Invoke-WebRequest 'https://sdk.lunarg.com/sdk/download/1.4.341.1/windows/vulkansdk-windows-X64-1.4.341.1.exe' -OutFile $installer
+          $p = Start-Process $installer -ArgumentList '--root C:\VulkanSDK\1.4.341.1 --accept-licenses --default-answer --confirm-command install' -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw 'Vulkan SDK installation failed' }
+          'VULKAN_SDK=C:\VulkanSDK\1.4.341.1' | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Build full Windows shared and static payloads
+        shell: pwsh
+        run: |
+          ./samples/build-native-static.ps1 -Configuration Release
+          cmake -S src/native -B "$env:RUNNER_TEMP/native" -A x64 -DJALIUM_NATIVE_RID=win-x64 -DJALIUM_BUILD_VULKAN=ON -DJALIUM_BUILD_STATIC=OFF -DJALIUM_BUILD_DEMOS=OFF
+          if ($LASTEXITCODE -ne 0) { throw 'Windows configure failed' }
+          cmake --build "$env:RUNNER_TEMP/native" --config Release --target jalium.native.package.complete --parallel 4
+          if ($LASTEXITCODE -ne 0) { throw 'Windows shared payload build failed' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-windows
+          path: src/native/bin
+          include-hidden-files: true
+          if-no-files-found: error
+
+  common-packages:
+    if: ${{ always() && !cancelled() && (inputs.mode == 'common-retry' || (needs.linux-native.result == 'success' && needs.windows-native.result == 'success')) }}
+    needs: [linux-native, windows-native]
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: automation
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_SOURCE }}
+          path: Jalium.UI
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.300
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-windows
+          run-id: ${{ inputs.mode == 'common-retry' && inputs.source_run || github.run_id }}
+          github-token: ${{ github.token }}
+          path: Jalium.UI/src/native/bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-linux-x64
+          run-id: ${{ inputs.mode == 'common-retry' && inputs.source_run || github.run_id }}
+          github-token: ${{ github.token }}
+          path: Jalium.UI/src/native/bin/native/linux-x64/Release
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-linux-arm64
+          run-id: ${{ inputs.mode == 'common-retry' && inputs.source_run || github.run_id }}
+          github-token: ${{ github.token }}
+          path: Jalium.UI/src/native/bin/native/linux-arm64/Release
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-linux-musl-x64
+          run-id: ${{ inputs.mode == 'common-retry' && inputs.source_run || github.run_id }}
+          github-token: ${{ github.token }}
+          path: Jalium.UI/src/native/bin/native/linux-musl-x64/Release
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-linux-musl-arm64
+          run-id: ${{ inputs.mode == 'common-retry' && inputs.source_run || github.run_id }}
+          github-token: ${{ github.token }}
+          path: Jalium.UI/src/native/bin/native/linux-musl-arm64/Release
+      - name: Pack thirteen common and desktop packages
+        shell: pwsh
+        run: |
+          python automation/eng/release/pack-nuget.py Jalium.UI "$env:RUNNER_TEMP/packages" "$env:RUNNER_TEMP/package-build" --source-commit "$env:RELEASE_SOURCE"
+          if ($LASTEXITCODE -ne 0) { throw 'Package build failed' }
+      - name: Verify packaged Windows consumer
+        shell: pwsh
+        run: |
+          $config = "$env:RUNNER_TEMP/package-build/NuGet.release.config"
+          $output = "$env:RUNNER_TEMP/consumer"
+          dotnet publish Jalium.UI/tests/Jalium.UI.NuGetTest.Desktop/Jalium.UI.NuGetTest.Desktop.csproj -c Release -r win-x64 --self-contained true -m:1 -p:JaliumPackageVersion=26.11.0 -p:JaliumBuildRoot="$env:RUNNER_TEMP/consumer-build" -p:RestoreConfigFile="$config" -p:RestorePackagesPath="$env:RUNNER_TEMP/consumer-nuget" -p:GeneratePackageOnBuild=false -o $output
+          if ($LASTEXITCODE -ne 0) { throw 'Windows package consumer publish failed' }
+          & "$output/Jalium.UI.NuGetTest.Desktop.exe"
+          if ($LASTEXITCODE -ne 0) { throw 'Windows package consumer did not start and exit successfully' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nuget-common
+          path: ${{ runner.temp }}/packages/*
+          if-no-files-found: error
+
+  android-package:
+    if: ${{ inputs.mode == '' || inputs.mode == 'all' || inputs.mode == 'android-retry' || inputs.mode == 'android-consumer' }}
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: automation
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_SOURCE }}
+          path: Jalium.UI
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.300
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install pinned Android tools
+        shell: pwsh
+        run: |
+          dotnet workload install android --version 10.0.300.2
+          if ($LASTEXITCODE -ne 0) { throw 'Android workload installation failed' }
+          & "$env:ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager.bat" 'ndk;27.2.12479018' 'platforms;android-36' 'build-tools;36.0.0'
+          if ($LASTEXITCODE -ne 0) { throw 'Android SDK installation failed' }
+      - name: Build both Android ABIs
+        if: inputs.mode != 'android-consumer'
+        shell: bash
+        run: |
+          export ANDROID_SDK_ROOT="$(cygpath -u "$ANDROID_HOME")"
+          export ANDROID_NDK_ROOT="$ANDROID_SDK_ROOT/ndk/27.2.12479018"
+          bash Jalium.UI/src/native/build-android.sh all
+      - name: Pack Android entry
+        if: inputs.mode != 'android-consumer'
+        shell: pwsh
+        run: |
+          python automation/eng/release/pack-nuget.py Jalium.UI "$env:RUNNER_TEMP/packages" "$env:RUNNER_TEMP/package-build" --entry Android --source-commit "$env:RELEASE_SOURCE"
+          if ($LASTEXITCODE -ne 0) { throw 'Android package build failed' }
+      - uses: actions/download-artifact@v4
+        if: inputs.mode == 'android-retry' || inputs.mode == 'android-consumer'
+        with:
+          name: nuget-common
+          run-id: ${{ inputs.source_run }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/packages
+      - uses: actions/download-artifact@v4
+        if: inputs.mode == 'android-consumer'
+        with:
+          name: nuget-android
+          run-id: ${{ inputs.android_run }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/packages
+      - name: Verify Android NuGet consumers for both ABIs
+        if: inputs.mode == 'android-retry' || inputs.mode == 'android-consumer'
+        shell: pwsh
+        run: |
+          if ('${{ inputs.mode }}' -eq 'android-consumer') {
+            python automation/eng/release/normalize-android-nuget.py "$env:RUNNER_TEMP/packages"
+            if ($LASTEXITCODE -ne 0) { throw 'Android dependency normalization failed' }
+          }
+          $feed = "$env:RUNNER_TEMP/packages"
+          "<configuration><packageSources><clear/><add key='release' value='$feed'/><add key='nuget.org' value='https://api.nuget.org/v3/index.json'/></packageSources><packageSourceMapping><packageSource key='release'><package pattern='Jalium.*'/></packageSource><packageSource key='nuget.org'><package pattern='*'/></packageSource></packageSourceMapping></configuration>" | Set-Content "$env:RUNNER_TEMP/consumer-NuGet.config"
+          foreach ($rid in @('android-arm64', 'android-x64')) {
+            $output = "$env:RUNNER_TEMP/consumer-$rid"
+            dotnet publish Jalium.UI/tests/Jalium.UI.NuGetTest.Android/Jalium.UI.NuGetTest.Android.csproj -c Release -r $rid -m:1 -p:JaliumPackageVersion=26.11.0 -p:JaliumBuildRoot="$env:RUNNER_TEMP/consumer-build-$rid" -p:RestoreConfigFile="$env:RUNNER_TEMP/consumer-NuGet.config" -p:RestorePackagesPath="$env:RUNNER_TEMP/consumer-nuget" -p:JavaSdkDirectory="$env:JAVA_HOME" -p:AndroidSdkDirectory="$env:ANDROID_HOME" -p:AndroidPackageFormats=apk -p:AndroidKeyStore=false -p:GeneratePackageOnBuild=false -o $output
+            if ($LASTEXITCODE -ne 0) { throw "Android NuGet consumer failed: $rid" }
+            $apk = @(Get-ChildItem $output -Filter '*-Signed.apk')
+            if ($apk.Count -ne 1) { throw "Expected one APK: $rid" }
+            & "$env:ANDROID_HOME/build-tools/36.0.0/apksigner.bat" verify --verbose $apk[0].FullName
+            if ($LASTEXITCODE -ne 0) { throw 'APK signature invalid' }
+            & "$env:ANDROID_HOME/build-tools/36.0.0/zipalign.exe" -c -P 16 -v 4 $apk[0].FullName
+            if ($LASTEXITCODE -ne 0) { throw 'APK alignment invalid' }
+            $env:QUALIFIED_APK = $apk[0].FullName
+            $env:QUALIFIED_ABI = if ($rid -eq 'android-arm64') { 'arm64-v8a' } else { 'x86_64' }
+            python -c "import os,zipfile; z=zipfile.ZipFile(os.environ['QUALIFIED_APK']); abi=os.environ['QUALIFIED_ABI']; names=z.namelist(); assert {n.split('/')[1] for n in names if n.startswith('lib/') and n.endswith('.so')}=={abi}; assert all('lib/'+abi+'/libjalium.native.'+name+'.so' in names for name in ['core','platform','media.core','media','text','vulkan','software'])"
+            if ($LASTEXITCODE -ne 0) { throw 'APK native payload invalid' }
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nuget-android
+          path: |
+            ${{ runner.temp }}/packages/Jalium.UI.Android.26.11.0.*
+          if-no-files-found: error
+
+  linux-consumer:
+    if: ${{ always() && !cancelled() && (inputs.mode == 'linux-consumer' || needs.common-packages.result == 'success') }}
+    needs: common-packages
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: linux-x64
+            runner: ubuntu-24.04
+            image: glibc
+          - rid: linux-arm64
+            runner: ubuntu-24.04-arm
+            image: glibc
+          - rid: linux-musl-x64
+            runner: ubuntu-24.04
+            image: mcr.microsoft.com/dotnet/sdk:10.0-alpine3.24
+          - rid: linux-musl-arm64
+            runner: ubuntu-24.04-arm
+            image: mcr.microsoft.com/dotnet/sdk:10.0-alpine3.23
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_SOURCE }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: nuget-common
+          run-id: ${{ inputs.mode == 'linux-consumer' && inputs.source_run || github.run_id }}
+          github-token: ${{ github.token }}
+          path: packages
+      - name: Prepare glibc consumer image
+        if: matrix.image == 'glibc'
+        run: docker build --build-arg JALIUM_INSTALL_DOTNET=1 --build-arg JALIUM_DOTNET_SDK_VERSION=10.0.300 -t nuget-consumer -f eng/linux/ubuntu20.04-glibc.Dockerfile .
+      - name: Test glibc deployment shapes
+        if: matrix.image == 'glibc'
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:/work" -w /work -e JALIUM_RENDER_BACKEND=software -e JALIUM_WINDOW_SYSTEM=x11 nuget-consumer bash -euo pipefail -c '
+            for mode in self-contained single-file aot; do
+              bash eng/linux/test-nuget-consumer.sh "${{ matrix.rid }}" /work/packages "/tmp/consumer-${{ matrix.rid }}" 26.11.0 "$mode"
+            done
+          '
+
+      - name: Test musl deployment shapes
+        if: matrix.image != 'glibc'
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:/work" -w /work -e JALIUM_RENDER_BACKEND=software -e JALIUM_WINDOW_SYSTEM=x11 '${{ matrix.image }}' sh -ec '
+            apk add --no-cache bash clang lld build-base binutils file coreutils python3 git zlib-dev libx11 libxext libxrandr libxi libxcursor wayland-libs-client wayland-libs-cursor libxkbcommon vulkan-loader mesa-vulkan-swrast fontconfig font-dejavu font-noto-cjk gstreamer gst-plugins-base gst-plugins-good xvfb-run
+            for mode in self-contained single-file aot; do
+              bash eng/linux/test-nuget-consumer.sh "${{ matrix.rid }}" /work/packages "/tmp/consumer-${{ matrix.rid }}" 26.11.0 "$mode"
+            done
+          '
+
+  windows-static-consumer:
+    needs: common-packages
+    if: ${{ always() && !cancelled() && (inputs.mode == 'android-retry' || (inputs.mode == 'common-retry' && needs.common-packages.result == 'success')) }}
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_SOURCE }}
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.300
+      - uses: actions/download-artifact@v4
+        with:
+          name: nuget-common
+          run-id: ${{ inputs.mode == 'common-retry' && github.run_id || inputs.source_run }}
+          github-token: ${{ github.token }}
+          path: packages
+      - name: Publish and run a static NativeAOT package consumer
+        shell: pwsh
+        run: |
+          $consumer = "$env:RUNNER_TEMP/static-consumer"
+          New-Item -ItemType Directory $consumer | Out-Null
+          @'
+          <Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0-windows</TargetFramework><OutputType>Exe</OutputType><ImplicitUsings>enable</ImplicitUsings><PublishAot>true</PublishAot><UseJaliumNativeAot>true</UseJaliumNativeAot></PropertyGroup><ItemGroup><PackageReference Include="Jalium.UI.Desktop" Version="26.11.0" /></ItemGroup></Project>
+          '@ | Set-Content "$consumer/Consumer.csproj"
+          @'
+          using Jalium.UI;
+          using Jalium.UI.Controls;
+          var app = new Application();
+          var window = new Window { Title = "NuGet static NativeAOT consumer", Width = 600, Height = 400, Content = new TextBlock { Text = "26.11.0" } };
+          app.MainWindow = window;
+          window.Shown += (_, _) => { Console.WriteLine("[nuget-static] ready"); new Thread(() => { Thread.Sleep(1000); window.Dispatcher.BeginInvoke((Action)window.Close); }) { IsBackground = true }.Start(); };
+          window.Closed += (_, _) => Console.WriteLine("[nuget-static] completed");
+          return app.Run();
+          '@ | Set-Content "$consumer/Program.cs"
+          $feed = Join-Path $env:GITHUB_WORKSPACE 'packages'
+          "<configuration><packageSources><clear/><add key='release' value='$feed'/><add key='nuget.org' value='https://api.nuget.org/v3/index.json'/></packageSources><packageSourceMapping><packageSource key='release'><package pattern='Jalium.*'/></packageSource><packageSource key='nuget.org'><package pattern='*'/></packageSource></packageSourceMapping></configuration>" | Set-Content "$consumer/NuGet.config"
+          dotnet publish "$consumer/Consumer.csproj" -c Release -r win-x64 --self-contained true -p:RestorePackagesPath="$env:RUNNER_TEMP/static-nuget" -o "$consumer/published"
+          if ($LASTEXITCODE -ne 0) { throw 'Static NativeAOT NuGet consumer publish failed' }
+          & "$consumer/published/Consumer.exe"
+          if ($LASTEXITCODE -ne 0) { throw 'Static NativeAOT NuGet consumer did not start and exit normally' }

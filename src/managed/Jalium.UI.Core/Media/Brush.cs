@@ -14,9 +14,9 @@ public abstract partial class Brush : Animatable, IFormattable
     // A paint-only copy shares mutable children with its authored brush. The
     // authored brush owns invalidation; child events must not retain each copy.
     internal bool IsTransientPaintCopy { get; set; }
-    private WeakReference<UIElement>? _singleRenderOwner;
+    private WeakReference<DependencyObject>? _singleRenderOwner;
     private int _singleRenderOwnerReferenceCount;
-    private ConditionalWeakTable<UIElement, RenderOwnerRegistration>? _renderOwners;
+    private ConditionalWeakTable<DependencyObject, RenderOwnerRegistration>? _renderOwners;
 
     /// <summary>Initializes a brush on the current dispatcher.</summary>
     protected Brush()
@@ -42,12 +42,20 @@ public abstract partial class Brush : Animatable, IFormattable
         DependencyProperty.Register(nameof(RelativeTransform), typeof(Transform), typeof(Brush), new PropertyMetadata(s_identityTransform));
 
     internal static readonly DependencyProperty CssGradientLayoutProperty =
-        DependencyProperty.RegisterAttached("CssGradientLayout", typeof(Jalium.UI.Styling.CssGradientLayout),
+        DependencyProperty.RegisterAttached("CssGradientLayout", typeof(Jalium.UI.Styling.CssImageLayout),
             typeof(Brush), new PropertyMetadata(null));
 
     internal Jalium.UI.Styling.CssGradientLayout? CssGradientLayout
     {
-        get => (Jalium.UI.Styling.CssGradientLayout?)GetValue(CssGradientLayoutProperty);
+        get => CssImageLayout as Jalium.UI.Styling.CssGradientLayout;
+        set => SetValue(CssGradientLayoutProperty, value);
+    }
+
+    // Keep the gradient accessor for existing gradient authoring while sharing
+    // actual-bound resolution with other generated CSS images.
+    internal Jalium.UI.Styling.CssImageLayout? CssImageLayout
+    {
+        get => (Jalium.UI.Styling.CssImageLayout?)GetValue(CssGradientLayoutProperty);
         set => SetValue(CssGradientLayoutProperty, value);
     }
 
@@ -84,10 +92,10 @@ public abstract partial class Brush : Animatable, IFormattable
     string IFormattable.ToString(string? format, IFormatProvider? provider) => ToString(provider);
 
     /// <summary>
-    /// Adds a weak visual owner for in-place brush change invalidation. A single element can
+    /// Adds a weak visual or document owner for in-place brush change invalidation. An owner can
     /// consume the same brush through multiple dependency properties, hence the reference count.
     /// </summary>
-    internal void AddRenderOwner(UIElement owner)
+    internal void AddRenderOwner(DependencyObject owner)
     {
         if (IsFrozen)
         {
@@ -103,7 +111,7 @@ public abstract partial class Brush : Animatable, IFormattable
 
         if (_singleRenderOwner is null)
         {
-            _singleRenderOwner = new WeakReference<UIElement>(owner);
+            _singleRenderOwner = new WeakReference<DependencyObject>(owner);
             _singleRenderOwnerReferenceCount = 1;
             return;
         }
@@ -123,7 +131,7 @@ public abstract partial class Brush : Animatable, IFormattable
 
         // The overwhelmingly common case is a brush owned by one visual; keep that path to one
         // WeakReference. Promote to an ephemeron table only when a brush is genuinely shared.
-        owners = new ConditionalWeakTable<UIElement, RenderOwnerRegistration>();
+        owners = new ConditionalWeakTable<DependencyObject, RenderOwnerRegistration>();
         owners.Add(existingOwner, new RenderOwnerRegistration
         {
             ReferenceCount = _singleRenderOwnerReferenceCount
@@ -134,8 +142,8 @@ public abstract partial class Brush : Animatable, IFormattable
         _singleRenderOwnerReferenceCount = 0;
     }
 
-    /// <summary>Removes one dependency-property use of this brush from a visual owner.</summary>
-    internal void RemoveRenderOwner(UIElement owner)
+    /// <summary>Removes one dependency-property use of this brush from a drawing owner.</summary>
+    internal void RemoveRenderOwner(DependencyObject owner)
     {
         if (_renderOwners is { } owners)
         {
@@ -169,20 +177,27 @@ public abstract partial class Brush : Animatable, IFormattable
         {
             foreach (var owner in owners)
             {
-                owner.Key.InvalidateVisual();
+                InvalidateOwner(owner.Key);
             }
             return;
         }
 
         if (_singleRenderOwner?.TryGetTarget(out var singleOwner) == true)
         {
-            singleOwner.InvalidateVisual();
+            InvalidateOwner(singleOwner);
         }
         else
         {
             _singleRenderOwner = null;
             _singleRenderOwnerReferenceCount = 0;
         }
+    }
+
+    private static void InvalidateOwner(DependencyObject owner)
+    {
+        if (owner is UIElement visual) visual.InvalidateVisual();
+        else if (owner is FrameworkContentElement content)
+            Jalium.UI.Styling.CssDocumentConsumers.Invalidate(Jalium.UI.Styling.CssNode.Get(content));
     }
 
     protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
@@ -232,7 +247,7 @@ public sealed class SolidColorBrush : Brush
     /// </summary>
     public SolidColorBrush()
     {
-        Color = Color.Transparent;
+        SetInitialLocalValue(ColorProperty, Color.Transparent);
     }
 
     /// <summary>
@@ -241,7 +256,7 @@ public sealed class SolidColorBrush : Brush
     /// <param name="color">The brush color.</param>
     public SolidColorBrush(Color color)
     {
-        Color = color;
+        SetInitialLocalValue(ColorProperty, color);
     }
 
     /// <summary>
@@ -251,7 +266,7 @@ public sealed class SolidColorBrush : Brush
     internal SolidColorBrush(Dispatcher dispatcher, Color color)
         : base(dispatcher)
     {
-        Color = color;
+        SetInitialLocalValue(ColorProperty, color);
     }
 
     public new SolidColorBrush Clone() => (SolidColorBrush)base.Clone();
@@ -380,6 +395,32 @@ public abstract class GradientBrush : Brush
     public new GradientBrush Clone() => (GradientBrush)base.Clone();
     public new GradientBrush CloneCurrentValue() => (GradientBrush)base.CloneCurrentValue();
 
+    // SVG objectBoundingBox interpolation differs from WPF's physical endpoint
+    // projection on a non-square box. A dependency property preserves this
+    // semantic through ordinary Freezable clones and nested drawing snapshots.
+    private static readonly DependencyProperty UsesNormalizedInterpolationProperty =
+        DependencyProperty.Register(nameof(UsesNormalizedInterpolation), typeof(bool), typeof(GradientBrush), new PropertyMetadata(false));
+    internal bool UsesNormalizedInterpolation
+    {
+        get => (bool)(GetValue(UsesNormalizedInterpolationProperty) ?? false);
+        set => SetValue(UsesNormalizedInterpolationProperty, value);
+    }
+
+    private static readonly DependencyProperty UsesCssImageCoordinatesProperty =
+        DependencyProperty.Register(nameof(UsesCssImageCoordinates), typeof(bool), typeof(GradientBrush), new PropertyMetadata(false));
+    internal bool UsesCssImageCoordinates
+    {
+        get => (bool)(GetValue(UsesCssImageCoordinatesProperty) ?? false);
+        set => SetValue(UsesCssImageCoordinatesProperty, value);
+    }
+
+    protected override void OnChanged()
+    {
+        // Includes edits inside either transform, not just replacing the object.
+        InvalidateContentHash();
+        base.OnChanged();
+    }
+
     protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
     {
         base.OnPropertyChanged(e);
@@ -401,6 +442,8 @@ public abstract class GradientBrush : Brush
             || ReferenceEquals(e.Property, SpreadMethodProperty)
             || ReferenceEquals(e.Property, MappingModeProperty)
             || ReferenceEquals(e.Property, ColorInterpolationModeProperty)
+            || ReferenceEquals(e.Property, UsesNormalizedInterpolationProperty)
+            || ReferenceEquals(e.Property, UsesCssImageCoordinatesProperty)
             || ReferenceEquals(e.Property, CssGradientLayoutProperty))
         {
             InvalidateContentHash();
@@ -477,6 +520,19 @@ public abstract class GradientBrush : Brush
         hash = unchecked((hash ^ (long)MappingMode) * FnvPrime);
         hash = unchecked((hash ^ (long)ColorInterpolationMode) * FnvPrime);
         hash = unchecked((hash ^ BitConverter.DoubleToInt64Bits(Opacity)) * FnvPrime);
+        hash = unchecked((hash ^ (UsesNormalizedInterpolation ? 1 : 0)) * FnvPrime);
+        hash = unchecked((hash ^ (UsesCssImageCoordinates ? 1 : 0)) * FnvPrime);
+        void FoldTransform(Transform? transform)
+        {
+            var matrix = transform?.Value ?? Matrix.Identity;
+            hash = unchecked((hash ^ BitConverter.DoubleToInt64Bits(matrix.M11)) * FnvPrime);
+            hash = unchecked((hash ^ BitConverter.DoubleToInt64Bits(matrix.M12)) * FnvPrime);
+            hash = unchecked((hash ^ BitConverter.DoubleToInt64Bits(matrix.M21)) * FnvPrime);
+            hash = unchecked((hash ^ BitConverter.DoubleToInt64Bits(matrix.M22)) * FnvPrime);
+            hash = unchecked((hash ^ BitConverter.DoubleToInt64Bits(matrix.OffsetX)) * FnvPrime);
+            hash = unchecked((hash ^ BitConverter.DoubleToInt64Bits(matrix.OffsetY)) * FnvPrime);
+        }
+        FoldTransform(Transform); FoldTransform(RelativeTransform);
 
         var stops = GradientStops;
         int count = stops.Count;
@@ -489,6 +545,13 @@ public abstract class GradientBrush : Brush
             uint argb = ((uint)s.Color.A << 24) | ((uint)s.Color.R << 16) |
                         ((uint)s.Color.G << 8) | s.Color.B;
             hash = unchecked((hash ^ argb) * FnvPrime);
+            hash = unchecked((hash ^ BitConverter.SingleToInt32Bits(s.Color.ScA)) * FnvPrime);
+            if (ColorInterpolationMode == ColorInterpolationMode.ScRgbLinearInterpolation)
+            {
+                hash = unchecked((hash ^ BitConverter.SingleToInt32Bits(s.Color.ScR)) * FnvPrime);
+                hash = unchecked((hash ^ BitConverter.SingleToInt32Bits(s.Color.ScG)) * FnvPrime);
+                hash = unchecked((hash ^ BitConverter.SingleToInt32Bits(s.Color.ScB)) * FnvPrime);
+            }
             hash = unchecked((hash ^ BitConverter.DoubleToInt64Bits(s.Offset)) * FnvPrime);
         }
 
@@ -622,6 +685,23 @@ public sealed class RadialGradientBrush : GradientBrush
     public static readonly DependencyProperty RadiusYProperty =
         DependencyProperty.Register(nameof(RadiusY), typeof(double), typeof(RadialGradientBrush), new PropertyMetadata(0.5d));
 
+    // SVG2 interpolates two circles, including exterior and shrinking cones.
+    // Keep this separate from the public WPF-compatible focal-point behavior.
+    internal static readonly DependencyProperty SvgFocalRadiusProperty =
+        DependencyProperty.Register(nameof(SvgFocalRadius), typeof(double), typeof(RadialGradientBrush), new PropertyMetadata(0d));
+    internal static readonly DependencyProperty UsesSvgRadialInterpolationProperty =
+        DependencyProperty.Register(nameof(UsesSvgRadialInterpolation), typeof(bool), typeof(RadialGradientBrush), new PropertyMetadata(false));
+    internal double SvgFocalRadius
+    {
+        get => (double)(GetValue(SvgFocalRadiusProperty) ?? 0d);
+        set => SetValue(SvgFocalRadiusProperty, value);
+    }
+    internal bool UsesSvgRadialInterpolation
+    {
+        get => (bool)(GetValue(UsesSvgRadialInterpolationProperty) ?? false);
+        set => SetValue(UsesSvgRadialInterpolationProperty, value);
+    }
+
     /// <summary>
     /// Gets or sets the center of the gradient.
     /// </summary>
@@ -691,7 +771,9 @@ public sealed class RadialGradientBrush : GradientBrush
         if (ReferenceEquals(e.Property, CenterProperty)
             || ReferenceEquals(e.Property, GradientOriginProperty)
             || ReferenceEquals(e.Property, RadiusXProperty)
-            || ReferenceEquals(e.Property, RadiusYProperty))
+            || ReferenceEquals(e.Property, RadiusYProperty)
+            || ReferenceEquals(e.Property, SvgFocalRadiusProperty)
+            || ReferenceEquals(e.Property, UsesSvgRadialInterpolationProperty))
         {
             InvalidateContentHash();
             WritePostscript();
@@ -709,6 +791,8 @@ public sealed class RadialGradientBrush : GradientBrush
         hash = unchecked((hash ^ BitConverter.DoubleToInt64Bits(GradientOrigin.Y)) * FnvPrime);
         hash = unchecked((hash ^ BitConverter.DoubleToInt64Bits(RadiusX)) * FnvPrime);
         hash = unchecked((hash ^ BitConverter.DoubleToInt64Bits(RadiusY)) * FnvPrime);
+        hash = unchecked((hash ^ BitConverter.DoubleToInt64Bits(SvgFocalRadius)) * FnvPrime);
+        hash = unchecked((hash ^ (UsesSvgRadialInterpolation ? 1L : 0L)) * FnvPrime);
         return hash;
     }
 }
