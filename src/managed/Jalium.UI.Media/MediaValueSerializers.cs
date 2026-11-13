@@ -324,7 +324,7 @@ namespace Jalium.UI.Media.Converters
         public override bool CanConvertFromString(string value, IValueSerializerContext? context) => value is not null;
         public override bool CanConvertToString(object value, IValueSerializerContext? context) => value is Geometry;
         public override object ConvertFromString(string value, IValueSerializerContext? context) => Geometry.Parse(value);
-        public override string ConvertToString(object value, IValueSerializerContext? context) => value is Geometry geometry ? geometry.ToString() ?? string.Empty : throw new ArgumentException("Value must be a Geometry.", nameof(value));
+        public override string ConvertToString(object value, IValueSerializerContext? context) => value is Geometry geometry ? geometry.ToString(CultureInfo.InvariantCulture) : throw new ArgumentException("Value must be a Geometry.", nameof(value));
     }
 
     public class TransformValueSerializer : ValueSerializer

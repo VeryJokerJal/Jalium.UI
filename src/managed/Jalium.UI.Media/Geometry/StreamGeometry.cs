@@ -195,6 +195,10 @@ public sealed class StreamGeometry : Geometry
     public PathGeometry? GetPathGeometry() => _pathGeometry;
 
     /// <inheritdoc />
+    protected override string ConvertToString(IFormatProvider? provider) =>
+        PathGeometry.FormatPathData(_pathGeometry?.Figures, FillRule, provider);
+
+    /// <inheritdoc />
     public override PathGeometry GetFlattenedPathGeometry(double tolerance, ToleranceType toleranceType)
         => _pathGeometry?.GetFlattenedPathGeometry(tolerance, toleranceType) ?? new PathGeometry();
 

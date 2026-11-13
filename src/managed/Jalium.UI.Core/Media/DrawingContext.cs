@@ -1393,9 +1393,16 @@ public abstract class Geometry : Animatable, IFormattable
     public override string ToString() => ToString(System.Globalization.CultureInfo.CurrentCulture);
 
     /// <summary>Formats the geometry as path markup.</summary>
-    public string ToString(IFormatProvider? provider) =>
+    public string ToString(IFormatProvider? provider)
+    {
+        ReadPreamble();
+        return ConvertToString(provider);
+    }
+
+    /// <summary>Formats path data, preserving curve segments in path-based geometries.</summary>
+    protected virtual string ConvertToString(IFormatProvider? provider) =>
         GetFlattenedPathGeometry(StandardFlatteningTolerance, ToleranceType.Absolute)
-            .Figures.ToString(provider);
+            .ToString(provider);
 
     string IFormattable.ToString(string? format, IFormatProvider? provider) =>
         ToString(provider);
@@ -2363,6 +2370,18 @@ public sealed class PathGeometry : Geometry
     {
         get => (FillRule)GetValue(FillRuleProperty)!;
         set { SetValue(FillRuleProperty, value); WritePostscript(); }
+    }
+
+    /// <inheritdoc />
+    protected override string ConvertToString(IFormatProvider? provider) =>
+        FormatPathData(Figures, FillRule, provider);
+
+    internal static string FormatPathData(PathFigureCollection? figures, FillRule fillRule, IFormatProvider? provider)
+    {
+        string data = figures?.ToString(provider) ?? string.Empty;
+        return fillRule == FillRule.Nonzero
+            ? (data.Length == 0 ? "F1" : "F1 " + data)
+            : data;
     }
 
     public static PathGeometry CreateFromGeometry(Geometry geometry)
