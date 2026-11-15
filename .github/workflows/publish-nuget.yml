@@ -18,6 +18,10 @@ on:
         type: string
         required: true
         default: '76855d6ff8f55985411a8e7be5956612ccea9a46'
+      symbols_only:
+        description: Retry only companion symbol packages
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -79,7 +83,13 @@ jobs:
       - name: Publish qualified packages and symbols
         env:
           NUGET_TEMP_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
-        run: python3 eng/release/publish-qualified-nuget.py push packages
+          SYMBOLS_ONLY: ${{ inputs.symbols_only }}
+        run: |
+          if [ "$SYMBOLS_ONLY" = 'true' ]; then
+            python3 eng/release/publish-qualified-nuget.py push packages --symbols-only
+          else
+            python3 eng/release/publish-qualified-nuget.py push packages
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:

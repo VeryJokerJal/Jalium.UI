@@ -67,7 +67,7 @@ def verify(folder, version, commit, original):
     print(f"Verified {manifest['packageCount']} packages and {len(symbols)} symbol packages.")
 
 
-def push(folder):
+def push(folder, symbols_only=False):
     key = os.environ["NUGET_TEMP_API_KEY"]
     assert key, "Temporary NuGet credential missing"
     manifest = json.loads((folder / "nuget-release-manifest.json").read_text())
@@ -75,17 +75,17 @@ def push(folder):
     records = {item["id"]: item for item in manifest["packages"]}
     assert set(records) == set(ORDER), "Unexpected package closure"
     receipt = {"version": manifest["version"], "sourceCommit": manifest["sourceCommit"], "uploads": []}
-    uploads = [(records[identity], False) for identity in ORDER] + [(item, True) for item in symbols]
+    uploads = ([] if symbols_only else [(records[identity], False) for identity in ORDER]) + [(item, True) for item in symbols]
     for item, is_symbols in uploads:
         package = folder / item["file"]
         assert hashlib.sha256(package.read_bytes()).hexdigest() == item["sha256"], "Package changed before upload"
-        source = "https://www.nuget.org/api/v2/symbolpackage" if is_symbols else "https://api.nuget.org/v3/index.json"
+        # The CLI discovers SymbolPackagePublish from the V3 service index.
+        # A V2 symbol endpoint can silently skip .snupkg inputs.
+        source = "https://api.nuget.org/v3/index.json"
         command = ["dotnet", "nuget", "push", str(package), "--source", source, "--api-key", key,
                    "--skip-duplicate", "--timeout", "600"]
         if not is_symbols:
             command.append("--no-symbols")
-        else:
-            command.append("--no-service-endpoint")
         print(f"Publishing {item['file']}", flush=True)
         result = subprocess.run(command, check=False)
         receipt["uploads"].append({"id": item["id"], "file": item["file"], "symbols": is_symbols,
@@ -93,7 +93,7 @@ def push(folder):
         (folder / "nuget-publish-results.json").write_text(json.dumps(receipt, indent=2) + "\n")
         if result.returncode:
             raise RuntimeError(f"NuGet rejected {item['file']} (exit {result.returncode})")
-    print(f"Submitted {len(records)} packages and {len(symbols)} symbol packages.")
+    print(f"Submitted {0 if symbols_only else len(records)} packages and {len(symbols)} symbol packages.")
 
 
 def main():
@@ -109,6 +109,7 @@ def main():
     verify_parser.add_argument("original", type=Path)
     push_parser = commands.add_parser("push")
     push_parser.add_argument("folder", type=Path)
+    push_parser.add_argument("--symbols-only", action="store_true")
     args = vars(parser.parse_args())
     command = args.pop("command")
     globals()[command](**args)
