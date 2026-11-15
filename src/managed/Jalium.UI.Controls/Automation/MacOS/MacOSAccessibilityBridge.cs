@@ -12,7 +12,7 @@ namespace Jalium.UI.Controls.Automation.MacOS;
 /// <summary>Owns one live AppKit accessibility tree and its reverse P/Invoke.</summary>
 internal sealed unsafe class MacOSAccessibilityBridge : IDisposable
 {
-    private static readonly HashSet<MacOSAccessibilityBridge> s_windows = [];
+    private static MacOSAccessibilityBridge[] s_windows = [];
     private static readonly object s_gate = new();
     private static readonly EventSink s_sink = new();
     private static IAutomationEventSink? s_previousSink;
@@ -35,12 +35,12 @@ internal sealed unsafe class MacOSAccessibilityBridge : IDisposable
                 Marshal.GetFunctionPointerForDelegate(s_callback), GCHandle.ToIntPtr(_context));
             lock (s_gate)
             {
-                if (s_windows.Count == 0)
+                if (s_windows.Length == 0)
                 {
                     s_previousSink = AutomationPeer.EventSink;
                     AutomationPeer.EventSink = s_sink;
                 }
-                s_windows.Add(this);
+                Volatile.Write(ref s_windows, [.. s_windows, this]);
             }
         }
         catch
@@ -63,8 +63,8 @@ internal sealed unsafe class MacOSAccessibilityBridge : IDisposable
         if (_context.IsAllocated) _context.Free();
         lock (s_gate)
         {
-            s_windows.Remove(this);
-            if (s_windows.Count == 0)
+            Volatile.Write(ref s_windows, s_windows.Where(bridge => !ReferenceEquals(bridge, this)).ToArray());
+            if (s_windows.Length == 0)
             {
                 if (ReferenceEquals(AutomationPeer.EventSink, s_sink))
                     AutomationPeer.EventSink = s_previousSink;
@@ -94,31 +94,34 @@ internal sealed unsafe class MacOSAccessibilityBridge : IDisposable
 
     private static void Notify(AutomationPeer peer, MacOSAXNotification notification)
     {
-        MacOSAccessibilityBridge[] windows;
-        lock (s_gate) windows = s_windows.ToArray();
-        foreach (var bridge in windows)
+        // Membership changes only on window creation/disposal. Each event can
+        // reuse the stable snapshot without a lock, array copy or closure.
+        foreach (var bridge in Volatile.Read(ref s_windows))
         {
-            void Publish()
-            {
-                try
-                {
-                    if (!bridge._disposed && bridge._tree.TryGetId(peer, out ulong id))
-                    {
-                        var effectiveNotification = notification == MacOSAXNotification.Focus && !peer.HasKeyboardFocus()
-                            ? MacOSAXNotification.Layout : notification;
-                        // A hidden or newly omitted peer is no longer a valid
-                        // AppKit notification target. Announce changed ancestry
-                        // at the live root, preserving cached hidden identities.
-                        if (effectiveNotification == MacOSAXNotification.Layout) id = 1;
-                        MacOSAccessibilityNative.Notify(bridge._platform.PlatformHandle, id, effectiveNotification);
-                    }
-                }
-                catch (Exception error) { Debug.WriteLine($"[macOS accessibility notification] {error}"); }
-            }
-            if (bridge._window.Dispatcher.CheckAccess()) Publish();
-            else if (!bridge._window.Dispatcher.HasShutdownStarted)
-                bridge._window.Dispatcher.BeginInvoke(Publish);
+            if (bridge._window.Dispatcher.CheckAccess()) Publish(bridge, peer, notification);
+            else if (!bridge._window.Dispatcher.HasShutdownStarted) Post(bridge, peer, notification);
         }
+    }
+
+    private static void Post(MacOSAccessibilityBridge bridge, AutomationPeer peer, MacOSAXNotification notification) =>
+        bridge._window.Dispatcher.BeginInvoke(() => Publish(bridge, peer, notification));
+
+    private static void Publish(MacOSAccessibilityBridge bridge, AutomationPeer peer, MacOSAXNotification notification)
+    {
+        try
+        {
+            if (!bridge._disposed && bridge._tree.TryGetId(peer, out ulong id))
+            {
+                var effectiveNotification = notification == MacOSAXNotification.Focus && !peer.HasKeyboardFocus()
+                    ? MacOSAXNotification.Layout : notification;
+                // A hidden or newly omitted peer is no longer a valid
+                // AppKit notification target. Announce changed ancestry
+                // at the live root, preserving cached hidden identities.
+                if (effectiveNotification == MacOSAXNotification.Layout) id = 1;
+                MacOSAccessibilityNative.Notify(bridge._platform.PlatformHandle, id, effectiveNotification);
+            }
+        }
+        catch (Exception error) { Debug.WriteLine($"[macOS accessibility notification] {error}"); }
     }
 
     private sealed class EventSink : IAutomationEventSink
