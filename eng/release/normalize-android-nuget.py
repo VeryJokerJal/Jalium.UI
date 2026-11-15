@@ -14,7 +14,7 @@ import zipfile
 
 folder = Path(sys.argv[1])
 records = []
-for path in sorted(folder.glob('Jalium.UI.Android.26.11.0.*')):
+for path in sorted(folder.glob('Jalium.UI.Android.*')):
     if path.suffix not in ['.nupkg', '.snupkg']:
         continue
     temp = path.with_name(path.name + '.normalized')

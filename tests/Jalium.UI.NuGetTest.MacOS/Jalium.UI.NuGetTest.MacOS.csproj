@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-macos</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <SupportedOSPlatformVersion>15.0</SupportedOSPlatformVersion>
+    <ApplicationId>com.jalium.nuget-consumer</ApplicationId>
+    <JaliumPackageVersion Condition="'$(JaliumPackageVersion)' == ''">$(Version)</JaliumPackageVersion>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Jalium.UI.MacOS" Version="$(JaliumPackageVersion)" />
+  </ItemGroup>
+</Project>

@@ -66,7 +66,7 @@ Build native applications with **C#**, **JALXAML with Razor syntax**, and **CSS 
 ## Platforms and status
 
 > [!IMPORTANT]
-> The current source version is **26.11.0**, defined in [`Directory.Build.props`](https://github.com/VeryJokerJal/Jalium.UI/blob/master/Directory.Build.props). Because the framework is under active development, keep all `Jalium.UI.*` package versions strictly aligned. Source support, package layouts, and validation coverage have distinct boundaries.
+> The current source version is **26.11.1**, defined in [`Directory.Build.props`](https://github.com/VeryJokerJal/Jalium.UI/blob/master/Directory.Build.props). Because the framework is under active development, keep all `Jalium.UI.*` package versions strictly aligned. Source support, package layouts, and validation coverage have distinct boundaries.
 
 | Platform | Application entry | Native host and rendering | Scope |
 | --- | --- | --- | --- |
@@ -256,10 +256,10 @@ Generated markup and explicitly registered views help trimming/AOT. Runtime pars
 Choose the entry package for the application platform:
 
 ```bash
-dotnet add package Jalium.UI.Desktop --version 26.11.0   # Windows
-dotnet add package Jalium.UI.Linux --version 26.11.0     # Linux
-dotnet add package Jalium.UI.MacOS --version 26.11.0     # macOS
-dotnet add package Jalium.UI.Android --version 26.11.0   # Android
+dotnet add package Jalium.UI.Desktop --version 26.11.1   # Windows
+dotnet add package Jalium.UI.Linux --version 26.11.1     # Linux
+dotnet add package Jalium.UI.MacOS --version 26.11.1     # macOS
+dotnet add package Jalium.UI.Android --version 26.11.1   # Android
 ```
 
 Run only the command for your target. Match the project's target framework to the platform table and install its .NET workload where required. Shared libraries can reference `Jalium.UI`; the final application supplies the native platform entry. Use the source projects for iOS/tvOS development and their static native payloads.
@@ -281,7 +281,7 @@ On Windows, create an empty directory containing `HelloJalium.csproj`:
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Jalium.UI.Desktop" Version="26.11.0" />
+    <PackageReference Include="Jalium.UI.Desktop" Version="26.11.1" />
   </ItemGroup>
 </Project>
 ```

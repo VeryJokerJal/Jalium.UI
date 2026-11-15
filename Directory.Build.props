@@ -53,9 +53,9 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
     <!-- Versioning -->
-    <Version>26.11.0</Version>
-    <AssemblyVersion>26.11.0.0</AssemblyVersion>
-    <FileVersion>26.11.0.0</FileVersion>
+    <Version>26.11.1</Version>
+    <AssemblyVersion>26.11.1.0</AssemblyVersion>
+    <FileVersion>26.11.1.0</FileVersion>
 
     <!-- NuGet Package Metadata -->
     <Authors>Jal</Authors>

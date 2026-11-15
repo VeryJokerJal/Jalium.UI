@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
-"""Pack the common 26.11.0 dependency closure from an explicit release checkout."""
+"""Pack a version-consistent dependency closure from an explicit release checkout."""
 import argparse
 import json
 import pathlib
 import subprocess
 import xml.etree.ElementTree as ET
 
-VERSION = "26.11.0"
-SOURCE = "a8467a8e723ba4dec090e6e141691ae91c16b639"
 COMMON = ["Jalium.UI.Xaml.SourceGenerator", "Jalium.UI.Build", "Jalium.UI.Managed",
           "Jalium.UI.Core", "Jalium.UI.Media", "Jalium.UI.Input", "Jalium.UI.Interop",
           "Jalium.UI.Controls", "Jalium.UI.Gpu", "Jalium.UI.Xaml"]
@@ -20,10 +18,13 @@ def main():
     parser.add_argument("build", type=pathlib.Path)
     parser.add_argument("--entry", choices=["common", "Android", "MacOS"], default="common")
     parser.add_argument("--allow-newer-xcode", action="store_true")
-    parser.add_argument("--source-commit", default=SOURCE,
-                        help="Explicit revision for a supplemental packaging correction")
+    parser.add_argument("--source-commit", required=True,
+                        help="Full source revision selected for this release")
     args = parser.parse_args()
     source = args.source.resolve(strict=True)
+    version = ET.parse(source / "Directory.Build.props").getroot().findtext(".//Version")
+    if not version or "-" in version or not all(part.isdigit() for part in version.split(".")):
+        raise ValueError("A stable numeric release version is required")
     output = args.output.resolve()
     build = args.build.resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -71,15 +72,18 @@ def main():
     else:
         # Bootstrap packages are local compiler inputs only. The common release
         # job supplies the complete Build package with Windows static archives.
-        projects = projects[:2] + [source / "src/packaging" / ("Jalium.UI." + args.entry) /
-                                   ("Jalium.UI." + args.entry + ".csproj")]
+        bootstrap = [project for project in projects[:2]
+                     if not (output / f"{project.stem}.{version}.nupkg").is_file()]
+        projects = bootstrap + [source / "src/packaging" / ("Jalium.UI." + args.entry) /
+                                ("Jalium.UI." + args.entry + ".csproj")]
     packed = []
     for project in projects:
         subprocess.run(["dotnet", "pack", str(project), "-c", "Release", "-m:1", *properties], check=True)
-        package = output / (project.stem + "." + VERSION + ".nupkg")
+        package = output / (project.stem + "." + version + ".nupkg")
         assert package.is_file(), package
         packed.append(package.name)
-    (build / "pack-result.json").write_text(json.dumps({"sourceCommit": head, "packages": packed}, indent=2) + "\n")
+    (build / "pack-result.json").write_text(json.dumps({"sourceCommit": head, "version": version,
+                                                       "packages": packed}, indent=2) + "\n")
 
 
 if __name__ == "__main__":
