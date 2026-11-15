@@ -51,7 +51,8 @@ internal sealed partial class NativePlatformWindow : IPlatformGestureInput
     {
         if (!_macOSGesturesRegistered) return;
         _macOSGesturesRegistered = false;
-        _ = NativeMethods.AppleWindowSetGestureCallback(_handle, 0, 0);
+        if (OperatingSystem.IsMacOS())
+            _ = NativeMethods.AppleWindowSetGestureCallback(_handle, 0, 0);
     }
 
     private static int OnMacOSGesture(nint pointer, nint context)

@@ -101,9 +101,14 @@ public sealed class CompilePreprocessedCssTask : Microsoft.Build.Utilities.Task
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         var worker = Path.Combine(Path.GetDirectoryName(typeof(CssTooling).Assembly.Location)!,
             "tools", "css-tooling", "index.cjs");
-        var node = Path.Combine(Path.GetDirectoryName(worker)!, "node", CssTooling.HostRid,
-            OperatingSystem.IsWindows() ? "node.exe" : "node");
-        foreach (var path in dependencies.Append(worker).Append(node).Append(typeof(CssTooling).Assembly.Location))
+        var node = Environment.GetEnvironmentVariable("JALIUM_CSS_NODE");
+        if (string.IsNullOrWhiteSpace(node))
+            node = Path.Combine(Path.GetDirectoryName(worker)!, "node", CssTooling.HostRid,
+                OperatingSystem.IsWindows() ? "node.exe" : "node");
+        // The package ships a compressed runtime. Its archive and checksum are
+        // the stable compiler inputs; the extracted per-user cache is disposable.
+        var runtimeFiles = File.Exists(node) ? new[] { node } : new[] { node + ".br", node + ".sha256" };
+        foreach (var path in dependencies.Append(worker).Concat(runtimeFiles).Append(typeof(CssTooling).Assembly.Location))
         {
             hash.AppendData(Encoding.UTF8.GetBytes(path));
             if (!File.Exists(path)) return null;

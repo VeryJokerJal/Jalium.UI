@@ -75,7 +75,8 @@ internal sealed partial class NativePlatformWindow
     {
         if (!_macOSTabletsRegistered) return;
         _macOSTabletsRegistered = false;
-        _ = NativeMethods.AppleWindowSetTabletCallback(_handle, 0, 0);
+        if (OperatingSystem.IsMacOS())
+            _ = NativeMethods.AppleWindowSetTabletCallback(_handle, 0, 0);
     }
 
     private static int OnMacOSTablet(nint pointer, nint context)
