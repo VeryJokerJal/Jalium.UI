@@ -134,6 +134,28 @@ class Probe {
         self.assertIn("jalium_platform_unlisted_import", output)
         self.assertIn("declared/PInvoke C ABI missing:", output)
 
+    def test_test_hook_import_is_optional_in_production_payload(self) -> None:
+        tests = self.repo / "tests/NativeProbe.cs"
+        tests.parent.mkdir()
+        tests.write_text('''
+class NativeProbe {
+    [DllImport("jalium.native.platform", EntryPoint = "jalium_test_wayland_probe")]
+    static extern int Inject();
+}
+''', encoding="utf-8")
+        self.assertIn("jalium_test_wayland_probe", validator.extract_pinvokes(self.repo)["platform"])
+        status, output = self.validate()
+        self.assertEqual(0, status, output)
+        self.defined["platform"].add("jalium_test_wayland_probe")
+        status, output = self.validate()
+        self.assertEqual(0, status, output)
+
+    def test_undeclared_test_hook_export_is_rejected(self) -> None:
+        self.defined["platform"].add("jalium_test_undeclared")
+        status, output = self.validate()
+        self.assertEqual(1, status)
+        self.assertIn("undeclared C ABI exports: jalium_test_undeclared", output)
+
     def test_new_shared_declaration_is_still_required(self) -> None:
         with self.platform_header.open("a", encoding="utf-8") as file:
             file.write("\nJALIUM_PLATFORM_API int jalium_platform_future_capability(void);\n")

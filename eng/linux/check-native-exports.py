@@ -271,7 +271,11 @@ def main() -> int:
         )
     for library, symbols in pinvokes.items():
         allowed[library].update(symbols)
-        required[library].update(symbols)
+        # Native test hooks are also imported by integration tests, but release
+        # payloads deliberately build without JALIUM_NATIVE_BUILD_TESTS.
+        required[library].update(
+            symbol for symbol in symbols if not symbol.startswith("jalium_test_")
+        )
     for library, symbols in FIXED_SYMBOLS.items():
         allowed[library].update(symbols)
         required[library].update(symbols)

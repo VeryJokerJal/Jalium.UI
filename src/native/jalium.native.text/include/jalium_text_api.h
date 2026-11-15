@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #if defined(_WIN32)
+    #define JALIUM_TEXT_LOCAL
     #if defined(JALIUM_STATIC)
         #define JALIUM_TEXT_API
     #elif defined(JALIUM_TEXT_EXPORTS)
@@ -12,6 +13,7 @@
     #endif
 #else
     #define JALIUM_TEXT_API __attribute__((visibility("default")))
+    #define JALIUM_TEXT_LOCAL __attribute__((visibility("hidden")))
 #endif
 
 #ifdef __cplusplus

@@ -171,7 +171,9 @@ private:
         std::vector<ShapedGlyph> glyphs;
     };
 
-    struct LayoutResult {
+    // Keep shared_ptr control-block RTTI for this private snapshot out of the
+    // public ABI, even though its enclosing text format is exported.
+    struct JALIUM_TEXT_LOCAL LayoutResult {
         std::vector<LayoutLine> lines;
         float totalWidth = 0;
         float totalWidthIncludingTrailingWhitespace = 0;
