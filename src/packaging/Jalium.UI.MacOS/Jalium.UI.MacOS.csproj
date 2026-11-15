@@ -5,6 +5,8 @@
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' and '$(RuntimeIdentifiers)' == ''">$(NETCoreSdkRuntimeIdentifier)</RuntimeIdentifier>
     <RootNamespace>Jalium.UI.MacOS</RootNamespace>
     <AssemblyName>Jalium.UI.MacOS</AssemblyName>
+    <!-- The managed entry assembly is shared by both packaged native RIDs. -->
+    <PlatformTarget>AnyCPU</PlatformTarget>
     <IsPackable>true</IsPackable>
     <PackageId>Jalium.UI.MacOS</PackageId>
     <Description>Jalium.UI native AppKit and Metal entry package for arm64 and x64 macOS.</Description>

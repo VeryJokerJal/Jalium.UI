@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import struct
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -57,6 +58,11 @@ def verify(folder, version, commit):
                 for library in ["core", "d3d12", "vulkan", "software", "platform", "media.core", "media.windows", "aot", "browser"]:
                     assert f"build/nativeaot/win-x64/jalium.native.{library}.static.lib" in names, (package, library)
             elif identity == "Jalium.UI.MacOS":
+                assemblies = [name for name in names if name.startswith("lib/") and name.endswith("/Jalium.UI.MacOS.dll")]
+                assert len(assemblies) == 1, (package, "portable macOS managed assembly")
+                assembly = archive.read(assemblies[0])
+                pe_offset = struct.unpack_from("<I", assembly, 0x3c)[0]
+                assert struct.unpack_from("<H", assembly, pe_offset + 4)[0] == 0x14c, (package, "macOS library must target AnyCPU")
                 for rid in ["osx-arm64", "osx-x64"]:
                     for file in ["libjalium.native.core.dylib", "libjalium.native.platform.dylib", "jalium_core.metallib", "jalium_vello.metallib", "jalium_metal_manifest.json"]:
                         assert f"runtimes/{rid}/native/{file}" in names, (package, rid, file)
