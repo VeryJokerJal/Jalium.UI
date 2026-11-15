@@ -188,6 +188,7 @@ jobs:
           if-no-files-found: error
 
   windows-consumer:
+    if: ${{ always() && !cancelled() && needs.common-packages.result == 'success' }}
     needs: common-packages
     runs-on: windows-2025
     timeout-minutes: 30
@@ -522,6 +523,7 @@ jobs:
           if-no-files-found: error
 
   macos-consumer:
+    if: ${{ always() && !cancelled() && needs.macos-package.result == 'success' && needs.common-packages.result == 'success' }}
     needs: [macos-package, common-packages]
     strategy:
       fail-fast: false
@@ -600,7 +602,7 @@ jobs:
           if-no-files-found: ignore
 
   qualified-packages:
-    if: ${{ inputs.mode == '' || inputs.mode == 'all' || inputs.mode == 'qualify-existing-native' }}
+    if: ${{ always() && !cancelled() && (inputs.mode == '' || inputs.mode == 'all' || inputs.mode == 'qualify-existing-native') && needs.common-packages.result == 'success' && needs.windows-consumer.result == 'success' && needs.android-package.result == 'success' && needs.linux-consumer.result == 'success' && needs.windows-static-consumer.result == 'success' && needs.macos-consumer.result == 'success' }}
     needs: [common-packages, windows-consumer, android-package, linux-consumer, windows-static-consumer, macos-consumer]
     runs-on: ubuntu-24.04
     steps:
