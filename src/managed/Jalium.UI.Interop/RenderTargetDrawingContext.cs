@@ -2414,7 +2414,12 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         // Handle geometry types
         if (geometry is RectangleGeometry rectGeom)
         {
-            if (rectGeom.RadiusX > 0 || rectGeom.RadiusY > 0)
+            if (rectGeom.HasPerCornerRadii || rectGeom.RadiusX < 0 || rectGeom.RadiusY < 0 ||
+                rectGeom.Rect.Width <= 0 || rectGeom.Rect.Height <= 0)
+            {
+                DrawPathGeometry(brush, pen, rectGeom.GetPathGeometry());
+            }
+            else if (rectGeom.RadiusX > 0 || rectGeom.RadiusY > 0)
             {
                 DrawRoundedRectangle(brush, pen, rectGeom.Rect, rectGeom.RadiusX, rectGeom.RadiusY);
             }
@@ -2425,7 +2430,11 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         }
         else if (geometry is EllipseGeometry ellipseGeom)
         {
-            DrawEllipse(brush, pen, ellipseGeom.Center, ellipseGeom.RadiusX, ellipseGeom.RadiusY);
+            if (ellipseGeom.RadiusX == 0 || ellipseGeom.RadiusY == 0 ||
+                !double.IsFinite(ellipseGeom.RadiusX) || !double.IsFinite(ellipseGeom.RadiusY))
+                DrawPathGeometry(brush, pen, ellipseGeom.GetPathGeometry());
+            else
+                DrawEllipse(brush, pen, ellipseGeom.Center, Math.Abs(ellipseGeom.RadiusX), Math.Abs(ellipseGeom.RadiusY));
         }
         else if (geometry is LineGeometry lineGeom)
         {
@@ -2568,14 +2577,25 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         if (fillFigures is { Count: > 0 })
             DrawCompoundPathFill(brush!, fillFigures, pathGeom.FillRule, geoBounds);
 
-        // Preserve union coverage for compound and closed software paths;
-        // compositing their segments separately darkens translucent joins.
+        // Keep native stroke metadata and union coverage for open paths too.
+        // The polygon route cannot express per-segment gaps or smooth joins.
         if (pen?.Brush != null)
         {
             if (TryDrawImageBrushStroke(pen, pathGeom)) return;
-            if (_renderTarget.Backend == RenderBackend.Metal ||
-                _renderTarget.Backend == RenderBackend.Software && pathGeom.Figures.Count > 0 &&
-                pathGeom.Figures.All(figure => figure.IsClosed && figure.Segments.All(segment => segment.IsStroked)))
+            if (_renderTarget.Backend != RenderBackend.Metal &&
+                (pen.StartLineCap != pen.EndLineCap || pen.StartLineCap == PenLineCap.Triangle ||
+                 pen.DashCap == PenLineCap.Triangle ||
+                 pathGeom.Figures.Any(figure => figure.Segments.Any(segment => !segment.IsStroked || segment.IsSmoothJoin))))
+            {
+                // Backends using the polygon stroke route cannot preserve these
+                // per-segment flags and asymmetric caps. Fill the actual stroke
+                // region while retaining the original stroke paint coordinates.
+                var outline = pathGeom.GetWidenedPathGeometry(pen, DevicePathTolerance(), ToleranceType.Absolute);
+                if (outline.Figures.Count > 0)
+                    DrawCompoundPathFill(pen.Brush, outline.Figures.ToArray(), FillRule.Nonzero, geoBounds, pen);
+                return;
+            }
+            if (_renderTarget.Backend is RenderBackend.Metal or RenderBackend.Software)
             {
                 DrawCompoundPathStroke(pen, pathGeom, geoBounds);
                 return;
@@ -2650,7 +2670,8 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         Brush brush,
         IReadOnlyList<PathFigure> figures,
         FillRule fillRule,
-        Rect geoBounds)
+        Rect geoBounds,
+        Pen? strokePen = null)
     {
         if (_svgDiagActive)
             _svgDrawCompoundCount++;
@@ -2684,9 +2705,11 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         if (cmds.Count == 0) return;
 
         var screenBounds = new Rect(geoBounds.X + ox, geoBounds.Y + oy, geoBounds.Width, geoBounds.Height);
-        var nativeBrush = GetNativeBrush(brush,
-            (float)screenBounds.X, (float)screenBounds.Y,
-            (float)screenBounds.Width, (float)screenBounds.Height);
+        var nativeBrush = strokePen is null
+            ? GetNativeBrush(brush, (float)screenBounds.X, (float)screenBounds.Y,
+                (float)screenBounds.Width, (float)screenBounds.Height)
+            : GetNativeStrokeBrush(strokePen, (float)screenBounds.X, (float)screenBounds.Y,
+                (float)screenBounds.Width, (float)screenBounds.Height);
         if (nativeBrush != null)
         {
             int rule = fillRule == FillRule.Nonzero ? 1 : 0;

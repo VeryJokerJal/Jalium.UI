@@ -193,6 +193,12 @@ internal sealed class CssRoundedRectangleGeometry : Geometry
     internal ClipEdges ClipEdges { get; }
     internal PathGeometry Path { get; }
     public override Rect Bounds => Rect;
+    protected override PathGeometry GetPathGeometryCore()
+    {
+        var result = Path.ClonePathGeometry();
+        result.Transform = Transform?.CloneCurrentValue();
+        return result;
+    }
 
     internal CssRoundedRectangleGeometry(Rect rect, CssUsedBorderRadii radii, ClipEdges clipEdges = ClipEdges.All, Rect? clipReference = null)
     {
@@ -255,6 +261,11 @@ internal sealed class CssRoundedRectangleGeometry : Geometry
     }
 
     public override bool FillContains(Point point) => Rect.Width > 0 && Rect.Height > 0 && SignedDistance(point) <= 0;
+    public override bool FillContains(Point point, double tolerance, ToleranceType type)
+    {
+        ValidateTolerance(tolerance);
+        return FillContains(point);
+    }
     public override bool MayHaveCurves() => true;
     public override PathGeometry GetFlattenedPathGeometry(double tolerance, ToleranceType toleranceType)
         => Path.GetFlattenedPathGeometry(tolerance, toleranceType);

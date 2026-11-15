@@ -1,6 +1,7 @@
 using Jalium.UI;
 using Jalium.UI.Media.Animation;
 using Jalium.UI.Threading;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Media;
 
@@ -1112,11 +1113,11 @@ public abstract class Geometry : Animatable, IFormattable
 
     /// <summary>
     /// Returns true if the specified point is within the filled area of the geometry.
-    /// Default implementation uses bounding box; subclasses can override for precision.
+    /// The default implementation tests the flattened filled contours.
     /// </summary>
     public virtual bool FillContains(Point point)
     {
-        return Bounds.Contains(point);
+        return GetFlattenedPathGeometry().FillContains(point);
     }
 
     /// <summary>
@@ -1125,7 +1126,8 @@ public abstract class Geometry : Animatable, IFormattable
     /// </summary>
     public virtual bool FillContains(Point point, double tolerance, ToleranceType type)
     {
-        return FillContains(point);
+        ValidateTolerance(tolerance);
+        return GetFlattenedPathGeometry(tolerance, type).FillContains(point);
     }
 
     /// <summary>Returns whether this geometry completely contains another geometry.</summary>
@@ -1147,14 +1149,7 @@ public abstract class Geometry : Animatable, IFormattable
     /// </summary>
     public virtual bool StrokeContains(Pen pen, Point point)
     {
-        if (pen == null) return false;
-        var bounds = Bounds;
-        var half = pen.Thickness / 2;
-        var outer = new Rect(bounds.X - half, bounds.Y - half,
-            bounds.Width + pen.Thickness, bounds.Height + pen.Thickness);
-        var inner = new Rect(bounds.X + half, bounds.Y + half,
-            Math.Max(0, bounds.Width - pen.Thickness), Math.Max(0, bounds.Height - pen.Thickness));
-        return outer.Contains(point) && !inner.Contains(point);
+        return pen is not null && StrokeContains(pen, point, StandardFlatteningTolerance, ToleranceType.Absolute);
     }
 
     /// <summary>Tests a point against the stroked outline using the requested tolerance.</summary>
@@ -1162,7 +1157,7 @@ public abstract class Geometry : Animatable, IFormattable
     {
         ArgumentNullException.ThrowIfNull(pen);
         ValidateTolerance(tolerance);
-        return StrokeContains(pen, hitPoint);
+        return GetWidenedPathGeometry(pen, tolerance, type).FillContains(hitPoint);
     }
 
     /// <summary>Gets the geometry bounds expanded by the supplied pen.</summary>
@@ -1173,13 +1168,10 @@ public abstract class Geometry : Animatable, IFormattable
     public virtual Rect GetRenderBounds(Pen pen, double tolerance, ToleranceType type)
     {
         ValidateTolerance(tolerance);
-        Rect bounds = Bounds;
-        if (bounds.IsEmpty || pen is null || pen.Thickness <= 0)
-            return bounds;
-
-        double half = pen.Thickness / 2.0;
-        return new Rect(bounds.X - half, bounds.Y - half,
-            bounds.Width + pen.Thickness, bounds.Height + pen.Thickness);
+        var bounds = Bounds;
+        if (pen is not null && pen.Thickness > 0)
+            bounds.Union(GetWidenedPathGeometry(pen, tolerance, type).Bounds);
+        return bounds;
     }
 
     /// <summary>
@@ -1195,7 +1187,7 @@ public abstract class Geometry : Animatable, IFormattable
     /// </summary>
     public virtual PathGeometry GetFlattenedPathGeometry(double tolerance, ToleranceType toleranceType)
     {
-        // Default: return empty. Subclasses override with meaningful implementations.
+        ValidateTolerance(tolerance);
         return new PathGeometry();
     }
 
@@ -1236,9 +1228,10 @@ public abstract class Geometry : Animatable, IFormattable
     /// <returns>A PathGeometry representing the widened stroke outline.</returns>
     public virtual PathGeometry GetWidenedPathGeometry(Pen pen, double tolerance, ToleranceType toleranceType)
     {
-        // Default: flatten, then widen the flattened geometry
-        var flat = GetFlattenedPathGeometry(tolerance, toleranceType);
-        return flat.GetWidenedPathGeometry(pen, tolerance, toleranceType);
+        ArgumentNullException.ThrowIfNull(pen);
+        ValidateTolerance(tolerance);
+        var absolute = AbsoluteTolerance(tolerance, toleranceType);
+        return GeometryStroke.Widen(GetFlattenedPathGeometry(absolute, ToleranceType.Absolute), pen, absolute);
     }
 
     /// <summary>
@@ -1260,7 +1253,8 @@ public abstract class Geometry : Animatable, IFormattable
     /// <returns>A simplified PathGeometry.</returns>
     public virtual PathGeometry GetOutlinedPathGeometry(double tolerance, ToleranceType toleranceType)
     {
-        return GetFlattenedPathGeometry(tolerance, toleranceType);
+        ValidateTolerance(tolerance);
+        return GeometryBoolean.Outline(GetFlattenedPathGeometry(tolerance, toleranceType));
     }
 
     /// <summary>
@@ -1269,23 +1263,7 @@ public abstract class Geometry : Animatable, IFormattable
     /// </summary>
     public virtual IntersectionDetail FillContainsWithDetail(Geometry geometry)
     {
-        var thisBounds = Bounds;
-        var otherBounds = geometry.Bounds;
-
-        // Check for no intersection
-        var intersection = Rect.Intersect(thisBounds, otherBounds);
-        if (intersection.Width <= 0 || intersection.Height <= 0)
-            return IntersectionDetail.Empty;
-
-        // Check if this geometry fully contains the other
-        if (thisBounds.Contains(otherBounds))
-            return IntersectionDetail.FullyContains;
-
-        // Check if this geometry is fully inside the other
-        if (otherBounds.Contains(thisBounds))
-            return IntersectionDetail.FullyInside;
-
-        return IntersectionDetail.Intersects;
+        return FillContainsWithDetail(geometry, StandardFlatteningTolerance, ToleranceType.Absolute);
     }
 
     /// <summary>Gets the fill intersection relationship using the requested tolerance.</summary>
@@ -1296,7 +1274,8 @@ public abstract class Geometry : Animatable, IFormattable
     {
         ArgumentNullException.ThrowIfNull(geometry);
         ValidateTolerance(tolerance);
-        return FillContainsWithDetail(geometry);
+        return GeometryBoolean.Relate(GetFlattenedPathGeometry(tolerance, type),
+            GeometryComposition.FlattenChild(geometry, geometry.AbsoluteTolerance(tolerance, type)));
     }
 
     /// <summary>
@@ -1304,26 +1283,8 @@ public abstract class Geometry : Animatable, IFormattable
     /// </summary>
     public virtual IntersectionDetail StrokeContainsWithDetail(Pen pen, Geometry geometry)
     {
-        if (pen == null) return IntersectionDetail.Empty;
-
-        var half = pen.Thickness / 2;
-        var thisBounds = Bounds;
-        var strokeBounds = new Rect(
-            thisBounds.X - half, thisBounds.Y - half,
-            thisBounds.Width + pen.Thickness, thisBounds.Height + pen.Thickness);
-        var otherBounds = geometry.Bounds;
-
-        var intersection = Rect.Intersect(strokeBounds, otherBounds);
-        if (intersection.Width <= 0 || intersection.Height <= 0)
-            return IntersectionDetail.Empty;
-
-        if (strokeBounds.Contains(otherBounds))
-            return IntersectionDetail.FullyContains;
-
-        if (otherBounds.Contains(strokeBounds))
-            return IntersectionDetail.FullyInside;
-
-        return IntersectionDetail.Intersects;
+        if (pen is null) return IntersectionDetail.Empty;
+        return StrokeContainsWithDetail(pen, geometry, StandardFlatteningTolerance, ToleranceType.Absolute);
     }
 
     /// <summary>Gets the stroke intersection relationship using the requested tolerance.</summary>
@@ -1336,7 +1297,8 @@ public abstract class Geometry : Animatable, IFormattable
         ArgumentNullException.ThrowIfNull(pen);
         ArgumentNullException.ThrowIfNull(geometry);
         ValidateTolerance(tolerance);
-        return StrokeContainsWithDetail(pen, geometry);
+        return GeometryBoolean.Relate(GetWidenedPathGeometry(pen, tolerance, type),
+            GeometryComposition.FlattenChild(geometry, geometry.AbsoluteTolerance(tolerance, type)));
     }
 
     /// <summary>
@@ -1378,7 +1340,7 @@ public abstract class Geometry : Animatable, IFormattable
         }
         PathGeometry left = GeometryComposition.FlattenChild(geometry1, tolerance);
         PathGeometry right = GeometryComposition.FlattenChild(geometry2, tolerance);
-        return Combine(left, right, mode, transform);
+        return GeometryBoolean.Combine(left, right, mode, transform);
     }
 
     /// <summary>
@@ -1401,8 +1363,22 @@ public abstract class Geometry : Animatable, IFormattable
 
     /// <summary>Formats path data, preserving curve segments in path-based geometries.</summary>
     protected virtual string ConvertToString(IFormatProvider? provider) =>
-        GetFlattenedPathGeometry(StandardFlatteningTolerance, ToleranceType.Absolute)
-            .ToString(provider);
+        GetPathGeometryCore().ToString(provider);
+
+    // Conversion preserves the source's curves and root transform. Flattening
+    // deliberately stays in local coordinates; consumers apply that transform.
+    internal PathGeometry ToPathGeometry() => GetPathGeometryCore();
+
+    protected virtual PathGeometry GetPathGeometryCore()
+    {
+        var result = GetFlattenedPathGeometry();
+        result.Transform = Transform?.CloneCurrentValue();
+        return result;
+    }
+
+    protected double AbsoluteTolerance(double tolerance, ToleranceType type) =>
+        type == ToleranceType.Relative && !Bounds.IsEmpty
+            ? tolerance * Math.Max(Bounds.Width, Bounds.Height) : tolerance;
 
     string IFormattable.ToString(string? format, IFormatProvider? provider) =>
         ToString(provider);
@@ -1596,7 +1572,8 @@ public sealed class RectangleGeometry : Geometry
     {
         var rect = Rect;
         var clipEdges = BoundsClipEdges;
-        if (rect.IsEmpty || !double.IsFinite(point.X) || !double.IsFinite(point.Y) ||
+        if (rect.IsEmpty || (clipEdges == ClipEdges.All && (rect.Width <= 0 || rect.Height <= 0)) ||
+            !double.IsFinite(point.X) || !double.IsFinite(point.Y) ||
             ((clipEdges & ClipEdges.Left) != 0 && point.X < rect.Left) ||
             ((clipEdges & ClipEdges.Top) != 0 && point.Y < rect.Top) ||
             ((clipEdges & ClipEdges.Right) != 0 && point.X > rect.Right) ||
@@ -1623,11 +1600,11 @@ public sealed class RectangleGeometry : Geometry
                        radii.BottomLeft, left: true, top: false);
         }
 
-        var radiusX = double.IsFinite(RadiusX) && RadiusX > 0
-            ? Math.Min(RadiusX, rect.Width / 2.0)
+        var radiusX = double.IsFinite(RadiusX)
+            ? Math.Min(Math.Abs(RadiusX), rect.Width / 2.0)
             : 0.0;
-        var radiusY = double.IsFinite(RadiusY) && RadiusY > 0
-            ? Math.Min(RadiusY, rect.Height / 2.0)
+        var radiusY = double.IsFinite(RadiusY)
+            ? Math.Min(Math.Abs(RadiusY), rect.Height / 2.0)
             : 0.0;
         if (radiusX <= 0 || radiusY <= 0)
         {
@@ -1690,9 +1667,18 @@ public sealed class RectangleGeometry : Geometry
     {
         var r = Rect;
         var geom = new PathGeometry { Transform = Transform };
-        if (r.Width <= 0 || r.Height <= 0) return geom;
+        if (r.IsEmpty) return geom;
 
         var figure = new PathFigure { IsClosed = true, IsFilled = true };
+        if (HasPerCornerRadii)
+        {
+            var corners = CornerRadius.Normalize(r.Width, r.Height);
+            var radii = new CssUsedBorderRadii(new Size(corners.TopLeft, corners.TopLeft),
+                new Size(corners.TopRight, corners.TopRight), new Size(corners.BottomRight, corners.BottomRight),
+                new Size(corners.BottomLeft, corners.BottomLeft));
+            geom.Figures.Add(CssRoundedRectangleGeometry.Figure(r, radii));
+            return geom;
+        }
         var rx = double.IsFinite(RadiusX) ? Math.Min(Math.Abs(RadiusX), r.Width / 2) : 0;
         var ry = double.IsFinite(RadiusY) ? Math.Min(Math.Abs(RadiusY), r.Height / 2) : 0;
         if (rx <= 0 || ry <= 0)
@@ -1723,6 +1709,12 @@ public sealed class RectangleGeometry : Geometry
         return geom;
     }
 
+    public override bool FillContains(Point point, double tolerance, ToleranceType type)
+    {
+        ValidateTolerance(tolerance);
+        return FillContains(point);
+    }
+
     /// <inheritdoc />
     public override PathGeometry GetFlattenedPathGeometry(double tolerance, ToleranceType toleranceType)
         => GetPathGeometry().GetFlattenedPathGeometry(tolerance, toleranceType);
@@ -1731,11 +1723,30 @@ public sealed class RectangleGeometry : Geometry
     public override double GetArea(double tolerance, ToleranceType type)
     {
         ValidateTolerance(tolerance);
-        double width = Math.Max(0, Rect.Width);
-        double height = Math.Max(0, Rect.Height);
-        double rx = Math.Min(Math.Abs(RadiusX), width / 2.0);
-        double ry = Math.Min(Math.Abs(RadiusY), height / 2.0);
-        return width * height - (4.0 - Math.PI) * rx * ry;
+        return GetArea();
+    }
+
+    public override double GetArea()
+    {
+        double width = Math.Max(0, Rect.Width), height = Math.Max(0, Rect.Height);
+        if (HasPerCornerRadii)
+        {
+            var r = CornerRadius.Normalize(width, height);
+            return width * height - (1 - Math.PI / 4) *
+                (r.TopLeft * r.TopLeft + r.TopRight * r.TopRight + r.BottomRight * r.BottomRight + r.BottomLeft * r.BottomLeft);
+        }
+        double rx = double.IsFinite(RadiusX) ? Math.Min(Math.Abs(RadiusX), width / 2) : 0;
+        double ry = double.IsFinite(RadiusY) ? Math.Min(Math.Abs(RadiusY), height / 2) : 0;
+        return width * height - (4 - Math.PI) * rx * ry;
+    }
+
+    public override bool IsEmpty() => Rect.IsEmpty;
+    public override bool MayHaveCurves() => HasPerCornerRadii || (RadiusX != 0 && RadiusY != 0);
+    protected override PathGeometry GetPathGeometryCore()
+    {
+        var result = GetPathGeometry();
+        result.Transform = Transform?.CloneCurrentValue();
+        return result;
     }
 
     public new RectangleGeometry Clone() => (RectangleGeometry)base.Clone();
@@ -1845,10 +1856,10 @@ public sealed class EllipseGeometry : Geometry
     {
         var rx = Math.Abs(RadiusX);
         var ry = Math.Abs(RadiusY);
-        if (rx < 1e-10 || ry < 1e-10) return false;
-        var dx = point.X - Center.X;
-        var dy = point.Y - Center.Y;
-        return (dx * dx) / (rx * rx) + (dy * dy) / (ry * ry) <= 1.0;
+        if (!(rx > 0) || !(ry > 0) || !double.IsFinite(rx) || !double.IsFinite(ry)) return false;
+        var dx = (point.X - Center.X) / rx;
+        var dy = (point.Y - Center.Y) / ry;
+        return dx * dx + dy * dy <= 1.0;
     }
 
     internal PathGeometry GetPathGeometry()
@@ -1856,7 +1867,7 @@ public sealed class EllipseGeometry : Geometry
         var geom = new PathGeometry { Transform = Transform };
         var rx = Math.Abs(RadiusX);
         var ry = Math.Abs(RadiusY);
-        if (!double.IsFinite(rx) || !double.IsFinite(ry) || rx <= 0 || ry <= 0) return geom;
+        if (!double.IsFinite(rx) || !double.IsFinite(ry)) return geom;
         var radius = new Size(rx, ry);
         var figure = new PathFigure
         {
@@ -1875,33 +1886,9 @@ public sealed class EllipseGeometry : Geometry
     /// <inheritdoc />
     public override PathGeometry GetFlattenedPathGeometry(double tolerance, ToleranceType toleranceType)
     {
-        var rx = Math.Abs(RadiusX);
-        var ry = Math.Abs(RadiusY);
-        if (!double.IsFinite(rx) || !double.IsFinite(ry) || rx < 1e-10 || ry < 1e-10) return new PathGeometry();
-
-        var geom = new PathGeometry();
-        var figure = new PathFigure { IsClosed = true, IsFilled = true };
-
-        var safeTolerance = double.IsFinite(tolerance) && tolerance > 0 ? tolerance : StandardFlatteningTolerance;
-        var errorRatio = Math.Clamp(safeTolerance / Math.Max(rx, ry), 1e-300, 2);
-        var step = errorRatio < 1e-4 ? 2*Math.Sqrt(2*errorRatio) : 2*Math.Acos(1-errorRatio);
-        var segments = (int)Math.Clamp(Math.Ceiling(2*Math.PI/step), 16, 65536);
-        // Keep the cardinal points in the polygon. A quarter turn must produce
-        // the same flattened ellipse as swapping its radii; rounding upward
-        // also preserves the requested sagitta tolerance.
-        segments = (segments + 3) & ~3;
-        figure.StartPoint = new Point(Center.X + rx, Center.Y);
-
-        for (int i = 1; i <= segments; i++)
-        {
-            var angle = 2 * Math.PI * i / segments;
-            figure.Segments.Add(new LineSegment(i == segments ? figure.StartPoint : new Point(
-                Center.X + rx * Math.Cos(angle),
-                Center.Y + ry * Math.Sin(angle))) { IsSmoothJoin = true });
-        }
-
-        geom.Figures.Add(figure);
-        return geom;
+        ValidateTolerance(tolerance);
+        tolerance = AbsoluteTolerance(tolerance, toleranceType);
+        return GetPathGeometry().GetFlattenedPathGeometry(tolerance, ToleranceType.Absolute);
     }
 
     /// <inheritdoc />
@@ -1917,6 +1904,15 @@ public sealed class EllipseGeometry : Geometry
     }
 
     /// <inheritdoc />
+    public override bool IsEmpty() => false;
+    public override bool MayHaveCurves() => true;
+    protected override PathGeometry GetPathGeometryCore()
+    {
+        var result = GetPathGeometry();
+        result.Transform = Transform?.CloneCurrentValue();
+        return result;
+    }
+
     public new EllipseGeometry Clone() => (EllipseGeometry)base.Clone();
     public new EllipseGeometry CloneCurrentValue() => (EllipseGeometry)base.CloneCurrentValue();
     protected override Freezable CreateInstanceCore() => new EllipseGeometry();
@@ -2004,6 +2000,7 @@ public sealed class LineGeometry : Geometry
     /// <inheritdoc />
     public override PathGeometry GetFlattenedPathGeometry(double tolerance, ToleranceType toleranceType)
     {
+        ValidateTolerance(tolerance);
         var geom = new PathGeometry();
         var figure = new PathFigure
         {
@@ -2129,6 +2126,16 @@ public sealed class GeometryGroup : Geometry
     }
 
     /// <inheritdoc />
+    public override bool IsEmpty() => Children.Count == 0 || GeometryComposition.Leaves(this).All(item => item.Geometry.IsEmpty());
+    public override bool MayHaveCurves() => GeometryComposition.Leaves(this).Any(item => item.Geometry.MayHaveCurves());
+    protected override PathGeometry GetPathGeometryCore()
+    {
+        var result = new PathGeometry { FillRule = FillRule, Transform = Transform?.CloneCurrentValue() };
+        foreach (var (geometry, matrix) in GeometryComposition.Leaves(this))
+            GeometryPathTransform.Append(result, geometry.ToPathGeometry(), matrix);
+        return result;
+    }
+
     public new GeometryGroup Clone() => (GeometryGroup)base.Clone();
     public new GeometryGroup CloneCurrentValue() => (GeometryGroup)base.CloneCurrentValue();
     protected override Freezable CreateInstanceCore() => new GeometryGroup();
@@ -2268,6 +2275,8 @@ public sealed class CombinedGeometry : Geometry
     public override double GetArea(double tolerance, ToleranceType type) =>
         GetFlattenedPathGeometry(tolerance, type).ComputeArea();
 
+    public override bool MayHaveCurves() => (Geometry1?.MayHaveCurves() ?? false) || (Geometry2?.MayHaveCurves() ?? false);
+
     public new CombinedGeometry Clone() => (CombinedGeometry)base.Clone();
     public new CombinedGeometry CloneCurrentValue() => (CombinedGeometry)base.CloneCurrentValue();
     protected override Freezable CreateInstanceCore() => new CombinedGeometry();
@@ -2387,8 +2396,10 @@ public sealed class PathGeometry : Geometry
     public static PathGeometry CreateFromGeometry(Geometry geometry)
     {
         ArgumentNullException.ThrowIfNull(geometry);
-        return geometry is PathGeometry path ? path.Clone() : geometry.GetFlattenedPathGeometry();
+        return geometry.ToPathGeometry();
     }
+
+    protected override PathGeometry GetPathGeometryCore() => ClonePathGeometry();
 
     public void Clear()
     {
@@ -2412,20 +2423,15 @@ public sealed class PathGeometry : Geometry
     }
 
     /// <summary>
-    /// Appends the figures of <paramref name="geometry"/> to this path. A
-    /// <see cref="PathGeometry"/> source contributes its figures directly (curves
-    /// preserved); any other geometry is flattened first.
+    /// Appends independent figures of <paramref name="geometry"/> to this path,
+    /// preserving curves and baking the source transform into their coordinates.
     /// </summary>
     public void AddGeometry(Geometry geometry)
     {
-        if (geometry == null) return;
-        // Deep-copy so the appended figures are independent of the source (no aliasing of the
-        // source's mutable PathFigure instances): a PathGeometry source is cloned; any other
-        // geometry is flattened (which already yields a fresh copy).
-        var source = geometry is PathGeometry pg ? pg.ClonePathGeometry() : geometry.GetFlattenedPathGeometry();
-        if (source == null) return;
-        foreach (var figure in source.Figures)
-            Figures.Add(figure);
+        WritePreamble();
+        ArgumentNullException.ThrowIfNull(geometry);
+        var source = geometry.ToPathGeometry();
+        GeometryPathTransform.Append(this, source, source.Transform?.Value ?? Matrix.Identity);
     }
 
     /// <inheritdoc />
@@ -2651,56 +2657,11 @@ public sealed class PathGeometry : Geometry
         UpdateBounds(matrix.Transform(start), ref minX, ref minY, ref maxX, ref maxY);
         UpdateBounds(matrix.Transform(arc.Point), ref minX, ref minY, ref maxX, ref maxY);
 
-        var rx = Math.Abs(arc.Size.Width);
-        var ry = Math.Abs(arc.Size.Height);
-        if (rx < 1e-10 || ry < 1e-10) return;
-
-        var end = arc.Point;
-        var dx = (start.X - end.X) / 2.0;
-        var dy = (start.Y - end.Y) / 2.0;
-
-        var rot = arc.RotationAngle * Math.PI / 180.0;
-        var cosR = Math.Cos(rot);
-        var sinR = Math.Sin(rot);
-
-        var x1p = cosR * dx + sinR * dy;
-        var y1p = -sinR * dx + cosR * dy;
-
-        // Correct radii
-        var x1pSq = x1p * x1p;
-        var y1pSq = y1p * y1p;
-        var rxSq = rx * rx;
-        var rySq = ry * ry;
-        var lambda = x1pSq / rxSq + y1pSq / rySq;
-        if (lambda > 1)
-        {
-            var sqrtL = Math.Sqrt(lambda);
-            rx *= sqrtL;
-            ry *= sqrtL;
-            rxSq = rx * rx;
-            rySq = ry * ry;
-        }
-
-        // Center
-        var sign = (arc.IsLargeArc != (arc.SweepDirection == SweepDirection.Clockwise)) ? 1.0 : -1.0;
-        var sq = Math.Max(0, (rxSq * rySq - rxSq * y1pSq - rySq * x1pSq) / (rxSq * y1pSq + rySq * x1pSq));
-        var coef = sign * Math.Sqrt(sq);
-
-        var cxp = coef * rx * y1p / ry;
-        var cyp = -coef * ry * x1p / rx;
-
-        var cx = cosR * cxp - sinR * cyp + (start.X + end.X) / 2.0;
-        var cy = sinR * cxp + cosR * cyp + (start.Y + end.Y) / 2.0;
-
-        // Angle range
-        var startAngle = Math.Atan2((y1p - cyp) / ry, (x1p - cxp) / rx);
-        var endAngle = Math.Atan2((-y1p - cyp) / ry, (-x1p - cxp) / rx);
-        var deltaAngle = endAngle - startAngle;
-
-        if (arc.SweepDirection == SweepDirection.Clockwise && deltaAngle < 0)
-            deltaAngle += 2 * Math.PI;
-        else if (arc.SweepDirection == SweepDirection.Counterclockwise && deltaAngle > 0)
-            deltaAngle -= 2 * Math.PI;
+        if (!GeometryArc.TryCreate(start, arc, out var parameters)) return;
+        var rx = parameters.RadiusX; var ry = parameters.RadiusY;
+        var cx = parameters.CenterX; var cy = parameters.CenterY;
+        var cosR = parameters.Cosine; var sinR = parameters.Sine;
+        var startAngle = parameters.StartAngle; var deltaAngle = parameters.SweepAngle;
 
         // For a rotated ellipse x(θ) = cx + rx·cos(θ)·cos(rot) - ry·sin(θ)·sin(rot)
         //                        y(θ) = cy + rx·cos(θ)·sin(rot) + ry·sin(θ)·cos(rot)
@@ -2773,7 +2734,7 @@ public sealed class PathGeometry : Geometry
         {
             // CCW sweep: angle is in arc if deltaAngle <= diff <= 0
             // diff is in [0, 2π), so shift by -2π
-            if (diff > Math.PI) diff -= 2 * Math.PI;
+            if (diff > 1e-10) diff -= 2 * Math.PI;
             return diff <= 1e-10 && diff >= deltaAngle - 1e-10;
         }
     }
@@ -2786,84 +2747,22 @@ public sealed class PathGeometry : Geometry
     /// <param name="tangent">The tangent vector at the specified fraction (normalized).</param>
     public void GetPointAtFractionLength(double progress, out Point point, out Point tangent)
     {
-        progress = Math.Clamp(progress, 0.0, 1.0);
-
-        if (Figures.Count == 0)
+        if (!double.IsFinite(progress)) throw new ArgumentOutOfRangeException(nameof(progress));
+        progress = Math.Clamp(progress, 0, 1);
+        var edges = LengthEdges().ToList();
+        var remaining = progress * edges.Sum(edge => edge.Length);
+        for (var index = 0; index < edges.Count; index++)
         {
-            point = new Point(0, 0);
-            tangent = new Point(1, 0);
-            return;
-        }
-
-        // Calculate total path length
-        var totalLength = GetTotalLength();
-        if (totalLength <= 0)
-        {
-            point = Figures[0].StartPoint;
-            tangent = new Point(1, 0);
-            return;
-        }
-
-        var targetLength = progress * totalLength;
-        var currentLength = 0.0;
-
-        foreach (var figure in Figures)
-        {
-            var currentPoint = figure.StartPoint;
-
-            foreach (var segment in figure.Segments)
+            var edge = edges[index];
+            if (remaining <= edge.Length || index == edges.Count - 1)
             {
-                var segmentLength = GetSegmentLength(currentPoint, segment);
-
-                if (currentLength + segmentLength >= targetLength)
-                {
-                    // The target point is within this segment
-                    var segmentProgress = segmentLength > 0
-                        ? (targetLength - currentLength) / segmentLength
-                        : 0;
-
-                    GetPointOnSegment(currentPoint, segment, segmentProgress, out point, out tangent);
-                    return;
-                }
-
-                currentLength += segmentLength;
-                currentPoint = segment.GetEndPoint(currentPoint);
+                point = Lerp(edge.Start, edge.End, Math.Clamp(remaining / edge.Length, 0, 1));
+                tangent = new Point((edge.End.X - edge.Start.X) / edge.Length, (edge.End.Y - edge.Start.Y) / edge.Length);
+                return;
             }
-
-            // Handle closed figures
-            if (figure.IsClosed)
-            {
-                var closeLength = Distance(currentPoint, figure.StartPoint);
-                if (currentLength + closeLength >= targetLength)
-                {
-                    var closeProgress = closeLength > 0
-                        ? (targetLength - currentLength) / closeLength
-                        : 0;
-                    point = Lerp(currentPoint, figure.StartPoint, closeProgress);
-                    var diff = new Point(figure.StartPoint.X - currentPoint.X, figure.StartPoint.Y - currentPoint.Y);
-                    var len = Math.Sqrt(diff.X * diff.X + diff.Y * diff.Y);
-                    tangent = len > 0 ? new Point(diff.X / len, diff.Y / len) : new Point(1, 0);
-                    return;
-                }
-                currentLength += closeLength;
-            }
+            remaining -= edge.Length;
         }
-
-        // Return the end point
-        var lastFigure = Figures[^1];
-        if (lastFigure.Segments.Count > 0)
-        {
-            var lastPoint = lastFigure.StartPoint;
-            foreach (var seg in lastFigure.Segments)
-            {
-                lastPoint = seg.GetEndPoint(lastPoint);
-            }
-            point = lastPoint;
-        }
-        else
-        {
-            point = lastFigure.StartPoint;
-        }
+        point = Figures.Count == 0 ? default : Figures[0].StartPoint;
         tangent = new Point(1, 0);
     }
 
@@ -2872,69 +2771,24 @@ public sealed class PathGeometry : Geometry
     /// </summary>
     public double GetTotalLength()
     {
-        var totalLength = 0.0;
+        return LengthEdges().Sum(edge => edge.Length);
+    }
 
-        foreach (var figure in Figures)
+    private IEnumerable<(Point Start, Point End, double Length)> LengthEdges()
+    {
+        var flat = MayHaveCurves() ? GetFlattenedPathGeometry(0.001, ToleranceType.Absolute) : this;
+        foreach (var figure in flat.Figures)
         {
-            var currentPoint = figure.StartPoint;
-
+            var current = figure.StartPoint;
             foreach (var segment in figure.Segments)
+            foreach (var end in segment.GetPoints())
             {
-                totalLength += GetSegmentLength(currentPoint, segment);
-                currentPoint = segment.GetEndPoint(currentPoint);
+                var length = Distance(current, end);
+                if (length > 0) yield return (current, end, length);
+                current = end;
             }
-
-            if (figure.IsClosed)
-            {
-                totalLength += Distance(currentPoint, figure.StartPoint);
-            }
-        }
-
-        return totalLength;
-    }
-
-    private static double GetSegmentLength(Point startPoint, PathSegment segment)
-    {
-        return segment switch
-        {
-            LineSegment line => Distance(startPoint, line.Point),
-            PolyLineSegment poly => GetPolyLineLength(startPoint, poly.Points),
-            BezierSegment bezier => GetBezierLength(startPoint, bezier.Point1, bezier.Point2, bezier.Point3),
-            QuadraticBezierSegment quad => GetQuadraticBezierLength(startPoint, quad.Point1, quad.Point2),
-            PolyBezierSegment polyBezier => GetPolyBezierLength(startPoint, polyBezier.Points),
-            PolyQuadraticBezierSegment polyQuad => GetPolyQuadraticBezierLength(startPoint, polyQuad.Points),
-            ArcSegment arc => GetArcLength(startPoint, arc),
-            _ => 0
-        };
-    }
-
-    private static void GetPointOnSegment(Point startPoint, PathSegment segment, double progress, out Point point, out Point tangent)
-    {
-        switch (segment)
-        {
-            case LineSegment line:
-                point = Lerp(startPoint, line.Point, progress);
-                var lineDiff = new Point(line.Point.X - startPoint.X, line.Point.Y - startPoint.Y);
-                var lineLen = Math.Sqrt(lineDiff.X * lineDiff.X + lineDiff.Y * lineDiff.Y);
-                tangent = lineLen > 0 ? new Point(lineDiff.X / lineLen, lineDiff.Y / lineLen) : new Point(1, 0);
-                break;
-
-            case BezierSegment bezier:
-                GetCubicBezierPointAndTangent(startPoint, bezier.Point1, bezier.Point2, bezier.Point3, progress, out point, out tangent);
-                break;
-
-            case QuadraticBezierSegment quad:
-                GetQuadraticBezierPointAndTangent(startPoint, quad.Point1, quad.Point2, progress, out point, out tangent);
-                break;
-
-            case ArcSegment arc:
-                GetArcPointAndTangent(startPoint, arc, progress, out point, out tangent);
-                break;
-
-            default:
-                point = startPoint;
-                tangent = new Point(1, 0);
-                break;
+            if (figure.IsClosed && current != figure.StartPoint)
+                yield return (current, figure.StartPoint, Distance(current, figure.StartPoint));
         }
     }
 
@@ -2944,202 +2798,16 @@ public sealed class PathGeometry : Geometry
     private static double Distance(Point a, Point b) =>
         Math.Sqrt((b.X - a.X) * (b.X - a.X) + (b.Y - a.Y) * (b.Y - a.Y));
 
-    private static double GetPolyLineLength(Point start, IList<Point> points)
-    {
-        var length = 0.0;
-        var current = start;
-        foreach (var pt in points)
-        {
-            length += Distance(current, pt);
-            current = pt;
-        }
-        return length;
-    }
-
-    private static double GetBezierLength(Point p0, Point p1, Point p2, Point p3, int samples = 20)
-    {
-        var length = 0.0;
-        var prev = p0;
-        for (var i = 1; i <= samples; i++)
-        {
-            var t = i / (double)samples;
-            var pt = GetCubicBezierPoint(p0, p1, p2, p3, t);
-            length += Distance(prev, pt);
-            prev = pt;
-        }
-        return length;
-    }
-
-    private static double GetQuadraticBezierLength(Point p0, Point p1, Point p2, int samples = 20)
-    {
-        var length = 0.0;
-        var prev = p0;
-        for (var i = 1; i <= samples; i++)
-        {
-            var t = i / (double)samples;
-            var pt = GetQuadraticBezierPoint(p0, p1, p2, t);
-            length += Distance(prev, pt);
-            prev = pt;
-        }
-        return length;
-    }
-
-    private static double GetPolyBezierLength(Point start, IList<Point> points)
-    {
-        var length = 0.0;
-        var current = start;
-        for (var i = 0; i + 2 < points.Count; i += 3)
-        {
-            length += GetBezierLength(current, points[i], points[i + 1], points[i + 2]);
-            current = points[i + 2];
-        }
-        return length;
-    }
-
-    private static double GetPolyQuadraticBezierLength(Point start, IList<Point> points)
-    {
-        var length = 0.0;
-        var current = start;
-        for (var i = 0; i + 1 < points.Count; i += 2)
-        {
-            length += GetQuadraticBezierLength(current, points[i], points[i + 1]);
-            current = points[i + 1];
-        }
-        return length;
-    }
-
-    private static double GetArcLength(Point start, ArcSegment arc)
-    {
-        // Approximate arc length using line segments
-        var length = 0.0;
-        var prev = start;
-        const int samples = 20;
-        for (var i = 1; i <= samples; i++)
-        {
-            GetArcPointAndTangent(start, arc, i / (double)samples, out var pt, out _);
-            length += Distance(prev, pt);
-            prev = pt;
-        }
-        return length;
-    }
-
-    private static Point GetCubicBezierPoint(Point p0, Point p1, Point p2, Point p3, double t)
-    {
-        var u = 1 - t;
-        var tt = t * t;
-        var uu = u * u;
-        var uuu = uu * u;
-        var ttt = tt * t;
-
-        return new Point(
-            uuu * p0.X + 3 * uu * t * p1.X + 3 * u * tt * p2.X + ttt * p3.X,
-            uuu * p0.Y + 3 * uu * t * p1.Y + 3 * u * tt * p2.Y + ttt * p3.Y
-        );
-    }
-
-    private static Point GetQuadraticBezierPoint(Point p0, Point p1, Point p2, double t)
-    {
-        var u = 1 - t;
-        return new Point(
-            u * u * p0.X + 2 * u * t * p1.X + t * t * p2.X,
-            u * u * p0.Y + 2 * u * t * p1.Y + t * t * p2.Y
-        );
-    }
-
-    private static void GetCubicBezierPointAndTangent(Point p0, Point p1, Point p2, Point p3, double t, out Point point, out Point tangent)
-    {
-        point = GetCubicBezierPoint(p0, p1, p2, p3, t);
-
-        // Derivative of cubic Bezier
-        var u = 1 - t;
-        var dx = 3 * u * u * (p1.X - p0.X) + 6 * u * t * (p2.X - p1.X) + 3 * t * t * (p3.X - p2.X);
-        var dy = 3 * u * u * (p1.Y - p0.Y) + 6 * u * t * (p2.Y - p1.Y) + 3 * t * t * (p3.Y - p2.Y);
-
-        var len = Math.Sqrt(dx * dx + dy * dy);
-        tangent = len > 0 ? new Point(dx / len, dy / len) : new Point(1, 0);
-    }
-
-    private static void GetQuadraticBezierPointAndTangent(Point p0, Point p1, Point p2, double t, out Point point, out Point tangent)
-    {
-        point = GetQuadraticBezierPoint(p0, p1, p2, t);
-
-        // Derivative of quadratic Bezier
-        var dx = 2 * (1 - t) * (p1.X - p0.X) + 2 * t * (p2.X - p1.X);
-        var dy = 2 * (1 - t) * (p1.Y - p0.Y) + 2 * t * (p2.Y - p1.Y);
-
-        var len = Math.Sqrt(dx * dx + dy * dy);
-        tangent = len > 0 ? new Point(dx / len, dy / len) : new Point(1, 0);
-    }
-
-    private static void GetArcPointAndTangent(Point start, ArcSegment arc, double progress, out Point point, out Point tangent)
-    {
-        var end = arc.Point;
-        var rx = arc.Size.Width;
-        var ry = arc.Size.Height;
-
-        // Degenerate: zero radii or coincident endpoints → linear fallback
-        if (rx == 0 || ry == 0 || start == end)
-        {
-            point = Lerp(start, end, progress);
-            var diff = new Point(end.X - start.X, end.Y - start.Y);
-            var dLen = Math.Sqrt(diff.X * diff.X + diff.Y * diff.Y);
-            tangent = dLen > 0 ? new Point(diff.X / dLen, diff.Y / dLen) : new Point(1, 0);
-            return;
-        }
-
-        // SVG endpoint → center parameterization
-        var dx = (start.X - end.X) / 2;
-        var dy = (start.Y - end.Y) / 2;
-        var rotAngle = arc.RotationAngle * Math.PI / 180;
-        var cosA = Math.Cos(rotAngle);
-        var sinA = Math.Sin(rotAngle);
-        var x1p = cosA * dx + sinA * dy;
-        var y1p = -sinA * dx + cosA * dy;
-
-        // Ensure radii are large enough
-        var x1pSq = x1p * x1p;
-        var y1pSq = y1p * y1p;
-        var rxSq = rx * rx;
-        var rySq = ry * ry;
-        var lambda = x1pSq / rxSq + y1pSq / rySq;
-        if (lambda > 1) { var sl = Math.Sqrt(lambda); rx *= sl; ry *= sl; rxSq = rx * rx; rySq = ry * ry; }
-
-        var sign = (arc.IsLargeArc != (arc.SweepDirection == SweepDirection.Clockwise)) ? 1.0 : -1.0;
-        var sq = Math.Max(0, (rxSq * rySq - rxSq * y1pSq - rySq * x1pSq) / (rxSq * y1pSq + rySq * x1pSq));
-        var coef = sign * Math.Sqrt(sq);
-        var cxp = coef * rx * y1p / ry;
-        var cyp = -coef * ry * x1p / rx;
-        var cx = cosA * cxp - sinA * cyp + (start.X + end.X) / 2;
-        var cy = sinA * cxp + cosA * cyp + (start.Y + end.Y) / 2;
-
-        var startAngle = Math.Atan2((y1p - cyp) / ry, (x1p - cxp) / rx);
-        var endAngle = Math.Atan2((-y1p - cyp) / ry, (-x1p - cxp) / rx);
-        var deltaAngle = endAngle - startAngle;
-        if (arc.SweepDirection == SweepDirection.Clockwise && deltaAngle < 0) deltaAngle += 2 * Math.PI;
-        else if (arc.SweepDirection == SweepDirection.Counterclockwise && deltaAngle > 0) deltaAngle -= 2 * Math.PI;
-
-        var angle = startAngle + deltaAngle * progress;
-        var px = rx * Math.Cos(angle);
-        var py = ry * Math.Sin(angle);
-        point = new Point(cosA * px - sinA * py + cx, sinA * px + cosA * py + cy);
-
-        // Tangent: derivative of the parametric arc
-        var tdx = -rx * Math.Sin(angle) * deltaAngle;
-        var tdy = ry * Math.Cos(angle) * deltaAngle;
-        var tx = cosA * tdx - sinA * tdy;
-        var ty = sinA * tdx + cosA * tdy;
-        var tLen = Math.Sqrt(tx * tx + ty * ty);
-        tangent = tLen > 0 ? new Point(tx / tLen, ty / tLen) : new Point(1, 0);
-    }
-
     /// <inheritdoc />
     public override bool FillContains(Point point)
     {
         // Ray-casting algorithm: cast a horizontal ray from point to the right.
         // Count crossings and track signed winding number for Nonzero fill rule.
         var flat = MayHaveCurves() ? GetFlattenedPathGeometry() : this;
+        if (!double.IsFinite(point.X) || !double.IsFinite(point.Y)) return false;
         int crossings = 0;
         int winding = 0;
+        bool boundary = false;
 
         foreach (var figure in flat.Figures)
         {
@@ -3166,6 +2834,12 @@ public sealed class PathGeometry : Geometry
             {
                 var a = pts[i];
                 var b = pts[i + 1];
+                if (point.X >= Math.Min(a.X, b.X) && point.X <= Math.Max(a.X, b.X) &&
+                    point.Y >= Math.Min(a.Y, b.Y) && point.Y <= Math.Max(a.Y, b.Y))
+                {
+                    var cross = (point.X - a.X) * (b.Y - a.Y) - (point.Y - a.Y) * (b.X - a.X);
+                    boundary |= Math.Abs(cross) <= 1e-10 * Distance(a, b);
+                }
 
                 // Check if the ray from point going right crosses edge (a, b)
                 if (a.Y <= point.Y && b.Y > point.Y)
@@ -3191,10 +2865,8 @@ public sealed class PathGeometry : Geometry
             }
         }
 
-        if (FillRule == FillRule.EvenOdd)
-            return (crossings % 2) != 0;
-        else
-            return winding != 0;
+        var inside = FillRule == FillRule.EvenOdd ? crossings % 2 != 0 : winding != 0;
+        return inside || (boundary && GeometryBoolean.BoundaryContains(flat, point));
     }
 
     /// <summary>
@@ -3221,6 +2893,9 @@ public sealed class PathGeometry : Geometry
     /// <inheritdoc />
     public override PathGeometry GetFlattenedPathGeometry(double tolerance, ToleranceType toleranceType)
     {
+        ValidateTolerance(tolerance);
+        tolerance = AbsoluteTolerance(tolerance, toleranceType);
+        if (tolerance == 0) tolerance = 1e-6;
         var result = new PathGeometry { FillRule = FillRule };
 
         foreach (var figure in Figures)
@@ -3358,7 +3033,10 @@ public sealed class PathGeometry : Geometry
             d2 = Math.Abs(nx * (p2.X - p0.X) + ny * (p2.Y - p0.Y));
         }
 
-        if (d1 + d2 <= tolerance)
+        // Perpendicular distance alone misses collinear curves that reverse
+        // direction, collapsing a loop/overshoot into the endpoint chord.
+        var excess = Distance(p0, p1) + Distance(p1, p2) + Distance(p2, p3) - Math.Sqrt(len2);
+        if (d1 + d2 <= tolerance && excess <= tolerance)
         {
             points.Add(p3);
             return;
@@ -3379,64 +3057,16 @@ public sealed class PathGeometry : Geometry
     private static List<Point> FlattenArc(Point start, ArcSegment arc, double tolerance)
     {
         var points = new List<Point>();
-        var end = arc.Point;
-        var rx = arc.Size.Width;
-        var ry = arc.Size.Height;
-
-        if (start == end) return points;
-        if (rx == 0 || ry == 0)
+        if (!GeometryArc.TryCreate(start, arc, out var parameters))
         {
-            points.Add(end);
+            points.Add(arc.Point);
             return points;
         }
-
-        var dx = (start.X - end.X) / 2;
-        var dy = (start.Y - end.Y) / 2;
-        var rot = arc.RotationAngle * Math.PI / 180;
-        var cosA = Math.Cos(rot);
-        var sinA = Math.Sin(rot);
-        var x1p = cosA * dx + sinA * dy;
-        var y1p = -sinA * dx + cosA * dy;
-
-        var x1pSq = x1p * x1p;
-        var y1pSq = y1p * y1p;
-        var rxSq = rx * rx;
-        var rySq = ry * ry;
-        var lambda = x1pSq / rxSq + y1pSq / rySq;
-        if (lambda > 1)
-        {
-            var sl = Math.Sqrt(lambda);
-            rx *= sl; ry *= sl;
-            rxSq = rx * rx; rySq = ry * ry;
-        }
-
-        var sign = (arc.IsLargeArc != (arc.SweepDirection == SweepDirection.Clockwise)) ? 1.0 : -1.0;
-        var sq = Math.Max(0, (rxSq * rySq - rxSq * y1pSq - rySq * x1pSq) / (rxSq * y1pSq + rySq * x1pSq));
-        var coef = sign * Math.Sqrt(sq);
-        var cxp = coef * rx * y1p / ry;
-        var cyp = -coef * ry * x1p / rx;
-        var cx = cosA * cxp - sinA * cyp + (start.X + end.X) / 2;
-        var cy = sinA * cxp + cosA * cyp + (start.Y + end.Y) / 2;
-
-        var startAngle = Math.Atan2((y1p - cyp) / ry, (x1p - cxp) / rx);
-        var endAngle = Math.Atan2((-y1p - cyp) / ry, (-x1p - cxp) / rx);
-        var deltaAngle = endAngle - startAngle;
-        if (arc.SweepDirection == SweepDirection.Clockwise && deltaAngle < 0) deltaAngle += 2 * Math.PI;
-        else if (arc.SweepDirection == SweepDirection.Counterclockwise && deltaAngle > 0) deltaAngle -= 2 * Math.PI;
-
-        var safeTolerance = double.IsFinite(tolerance) && tolerance > 0 ? tolerance : StandardFlatteningTolerance;
-        var errorRatio = Math.Clamp(safeTolerance / Math.Max(rx, ry), 1e-300, 2);
-        var step = errorRatio < 1e-4 ? 2*Math.Sqrt(2*errorRatio) : 2*Math.Acos(1-errorRatio);
-        var segments = (int)Math.Clamp(Math.Ceiling(Math.Abs(deltaAngle)/step), 1, 65536);
-        for (int i = 1; i <= segments; i++)
-        {
-            var t = i / (double)segments;
-            var angle = startAngle + deltaAngle * t;
-            var px = rx * Math.Cos(angle);
-            var py = ry * Math.Sin(angle);
-            points.Add(i == segments ? end : new Point(cosA * px - sinA * py + cx, sinA * px + cosA * py + cy));
-        }
-
+        var errorRatio = Math.Clamp(tolerance / Math.Max(parameters.RadiusX, parameters.RadiusY), 1e-300, 2);
+        var step = errorRatio < 1e-4 ? 2 * Math.Sqrt(2 * errorRatio) : 2 * Math.Acos(1 - errorRatio);
+        var segments = (int)Math.Clamp(Math.Ceiling(Math.Abs(parameters.SweepAngle) / step), 1, 65536);
+        for (var index = 1; index <= segments; index++)
+            points.Add(index == segments ? arc.Point : parameters.PointAt(index / (double)segments));
         return points;
     }
 
@@ -3456,401 +3086,17 @@ public sealed class PathGeometry : Geometry
     /// <inheritdoc />
     public override PathGeometry GetWidenedPathGeometry(Pen pen, double tolerance, ToleranceType toleranceType)
     {
-        if (pen == null) throw new ArgumentNullException(nameof(pen));
-        if (pen.Thickness <= 0) return new PathGeometry();
-
-        var flat = GetFlattenedPathGeometry(tolerance, toleranceType);
-        var result = new PathGeometry { FillRule = FillRule.Nonzero };
-        var halfWidth = pen.Thickness / 2.0;
-
-        foreach (var figure in flat.Figures)
-        {
-            // Extract the polyline points from the flattened figure
-            var points = new List<Point> { figure.StartPoint };
-            foreach (var seg in figure.Segments)
-            {
-                if (seg is LineSegment ls) points.Add(ls.Point);
-                else if (seg is PolyLineSegment pls) points.AddRange(pls.Points);
-            }
-
-            if (points.Count < 2) continue;
-
-            // Close the figure if needed by appending start point
-            bool isClosed = figure.IsClosed;
-            if (isClosed)
-            {
-                var first = points[0];
-                var last = points[^1];
-                if (Math.Abs(first.X - last.X) > 1e-10 || Math.Abs(first.Y - last.Y) > 1e-10)
-                    points.Add(first);
-            }
-
-            // Remove consecutive duplicate points
-            var cleaned = new List<Point> { points[0] };
-            for (int i = 1; i < points.Count; i++)
-            {
-                if (Math.Abs(points[i].X - cleaned[^1].X) > 1e-10 ||
-                    Math.Abs(points[i].Y - cleaned[^1].Y) > 1e-10)
-                {
-                    cleaned.Add(points[i]);
-                }
-            }
-            points = cleaned;
-
-            if (points.Count < 2) continue;
-
-            // Compute normals for each segment
-            int segCount = points.Count - 1;
-            var normals = new (double nx, double ny)[segCount];
-            for (int i = 0; i < segCount; i++)
-            {
-                var dx = points[i + 1].X - points[i].X;
-                var dy = points[i + 1].Y - points[i].Y;
-                var len = Math.Sqrt(dx * dx + dy * dy);
-                if (len < 1e-10) { normals[i] = (0, 0); continue; }
-                normals[i] = (-dy / len, dx / len);
-            }
-
-            // Compute left and right offset polylines
-            var leftSide = new List<Point>();
-            var rightSide = new List<Point>();
-
-            for (int i = 0; i < segCount; i++)
-            {
-                var (nx, ny) = normals[i];
-                if (nx == 0 && ny == 0) continue;
-
-                var p0 = points[i];
-                var p1 = points[i + 1];
-
-                var l0 = new Point(p0.X + nx * halfWidth, p0.Y + ny * halfWidth);
-                var l1 = new Point(p1.X + nx * halfWidth, p1.Y + ny * halfWidth);
-                var r0 = new Point(p0.X - nx * halfWidth, p0.Y - ny * halfWidth);
-                var r1 = new Point(p1.X - nx * halfWidth, p1.Y - ny * halfWidth);
-
-                if (leftSide.Count == 0)
-                {
-                    leftSide.Add(l0);
-                    rightSide.Add(r0);
-                }
-                else
-                {
-                    // Handle join between previous segment and this one
-                    WidenAddJoin(leftSide, l0, points[i], halfWidth, pen.LineJoin, pen.MiterLimit);
-                    WidenAddJoin(rightSide, r0, points[i], halfWidth, pen.LineJoin, pen.MiterLimit);
-                }
-
-                leftSide.Add(l1);
-                rightSide.Add(r1);
-            }
-
-            if (leftSide.Count == 0 || rightSide.Count == 0) continue;
-
-            if (isClosed)
-            {
-                // For closed paths: handle the join at the closure point
-                if (leftSide.Count > 1 && rightSide.Count > 1)
-                {
-                    WidenAddJoin(leftSide, leftSide[0], points[0], halfWidth, pen.LineJoin, pen.MiterLimit);
-                    WidenAddJoin(rightSide, rightSide[0], points[0], halfWidth, pen.LineJoin, pen.MiterLimit);
-                }
-
-                // Left side figure (outer contour)
-                var leftFigure = new PathFigure
-                {
-                    StartPoint = leftSide[0],
-                    IsClosed = true,
-                    IsFilled = true,
-                };
-                for (int i = 1; i < leftSide.Count; i++)
-                    leftFigure.Segments.Add(new LineSegment(leftSide[i]));
-                result.Figures.Add(leftFigure);
-
-                // Right side figure (inner contour) — reversed winding so Nonzero fill
-                // rule creates a hole, producing a proper stroke outline.
-                var rightFigure = new PathFigure
-                {
-                    StartPoint = rightSide[^1],
-                    IsClosed = true,
-                    IsFilled = true,
-                };
-                for (int i = rightSide.Count - 2; i >= 0; i--)
-                    rightFigure.Segments.Add(new LineSegment(rightSide[i]));
-                result.Figures.Add(rightFigure);
-            }
-            else
-            {
-                // Open path: build a single closed contour:
-                // left side forward + end cap + right side reversed + start cap
-                var contour = new PathFigure
-                {
-                    StartPoint = leftSide[0],
-                    IsClosed = true,
-                    IsFilled = true,
-                };
-
-                // Left side forward
-                for (int i = 1; i < leftSide.Count; i++)
-                    contour.Segments.Add(new LineSegment(leftSide[i]));
-
-                // End cap
-                var endLeft = leftSide[^1];
-                var endRight = rightSide[^1];
-                var endPoint = points[^1];
-                WidenAddCap(contour, endLeft, endRight, endPoint, halfWidth, pen.EndLineCap, false);
-
-                // Right side reversed
-                for (int i = rightSide.Count - 1; i >= 0; i--)
-                    contour.Segments.Add(new LineSegment(rightSide[i]));
-
-                // Start cap
-                var startRight = rightSide[0];
-                var startLeft = leftSide[0];
-                var startPoint = points[0];
-                WidenAddCap(contour, startRight, startLeft, startPoint, halfWidth, pen.StartLineCap, true);
-
-                result.Figures.Add(contour);
-            }
-        }
-
-        return result;
-    }
-
-    /// <summary>
-    /// Adds a line join between the previous offset point and the new offset point.
-    /// </summary>
-    private static void WidenAddJoin(List<Point> side, Point newPoint, Point vertex,
-        double halfWidth, PenLineJoin joinType, double miterLimit)
-    {
-        if (side.Count == 0)
-        {
-            side.Add(newPoint);
-            return;
-        }
-
-        var prevPoint = side[^1];
-        var dx = newPoint.X - prevPoint.X;
-        var dy = newPoint.Y - prevPoint.Y;
-        var dist = Math.Sqrt(dx * dx + dy * dy);
-
-        if (dist < 1e-10)
-            return;
-
-        switch (joinType)
-        {
-            case PenLineJoin.Bevel:
-                // Connect with a straight line (bevel)
-                side.Add(newPoint);
-                break;
-
-            case PenLineJoin.Round:
-            {
-                // Generate arc points from prevPoint to newPoint around the vertex
-                var angle1 = Math.Atan2(prevPoint.Y - vertex.Y, prevPoint.X - vertex.X);
-                var angle2 = Math.Atan2(newPoint.Y - vertex.Y, newPoint.X - vertex.X);
-                var deltaAngle = angle2 - angle1;
-
-                // Normalize to [-PI, PI]
-                while (deltaAngle > Math.PI) deltaAngle -= 2 * Math.PI;
-                while (deltaAngle < -Math.PI) deltaAngle += 2 * Math.PI;
-
-                // Only add arc for the outside of the turn
-                if (Math.Abs(deltaAngle) > 1e-6 && Math.Abs(deltaAngle) < Math.PI * 1.999)
-                {
-                    var steps = Math.Max(2, (int)(Math.Abs(deltaAngle) / (Math.PI / 8)));
-                    for (int j = 1; j <= steps; j++)
-                    {
-                        var t = j / (double)steps;
-                        var angle = angle1 + deltaAngle * t;
-                        side.Add(new Point(
-                            vertex.X + halfWidth * Math.Cos(angle),
-                            vertex.Y + halfWidth * Math.Sin(angle)));
-                    }
-                }
-                else
-                {
-                    side.Add(newPoint);
-                }
-                break;
-            }
-
-            case PenLineJoin.Miter:
-            default:
-            {
-                // Compute miter point by intersecting the two offset edges
-                if (side.Count >= 2)
-                {
-                    var pp = side[^2];
-                    var d1x = prevPoint.X - pp.X;
-                    var d1y = prevPoint.Y - pp.Y;
-                    var d2x = newPoint.X - prevPoint.X;
-                    var d2y = newPoint.Y - prevPoint.Y;
-
-                    var cross = d1x * d2y - d1y * d2x;
-
-                    if (Math.Abs(cross) > 1e-10)
-                    {
-                        var t1x = newPoint.X - prevPoint.X;
-                        var t1y = newPoint.Y - prevPoint.Y;
-                        var t = (t1x * (prevPoint.Y - pp.Y) - t1y * (prevPoint.X - pp.X)) /
-                                (d1x * t1y - d1y * t1x);
-
-                        if (!double.IsNaN(t) && !double.IsInfinity(t))
-                        {
-                            var miterPt = new Point(
-                                pp.X + d1x * t,
-                                pp.Y + d1y * t);
-
-                            // Check miter limit
-                            var miterDx = miterPt.X - vertex.X;
-                            var miterDy = miterPt.Y - vertex.Y;
-                            var miterDist = Math.Sqrt(miterDx * miterDx + miterDy * miterDy);
-
-                            if (miterDist <= halfWidth * miterLimit)
-                            {
-                                // Replace last point with miter point
-                                side[^1] = miterPt;
-                                side.Add(newPoint);
-                            }
-                            else
-                            {
-                                // Miter limit exceeded: fall back to bevel
-                                side.Add(newPoint);
-                            }
-                        }
-                        else
-                        {
-                            side.Add(newPoint);
-                        }
-                    }
-                    else
-                    {
-                        side.Add(newPoint);
-                    }
-                }
-                else
-                {
-                    side.Add(newPoint);
-                }
-                break;
-            }
-        }
-    }
-
-    /// <summary>
-    /// Adds a line cap between two offset endpoints at the end (or start) of an open path.
-    /// </summary>
-    private static void WidenAddCap(PathFigure figure, Point from, Point to, Point endPoint,
-        double halfWidth, PenLineCap capType, bool isStart)
-    {
-        switch (capType)
-        {
-            case PenLineCap.Flat:
-                // Direct connection
-                figure.Segments.Add(new LineSegment(to));
-                break;
-
-            case PenLineCap.Square:
-            {
-                // Extend by halfWidth in the tangent direction
-                var capDx = from.X - to.X;
-                var capDy = from.Y - to.Y;
-                var capLen = Math.Sqrt(capDx * capDx + capDy * capDy);
-                if (capLen < 1e-10)
-                {
-                    figure.Segments.Add(new LineSegment(to));
-                    break;
-                }
-
-                // Tangent direction perpendicular to from->to, pointing outward
-                double tx, ty;
-                if (isStart)
-                {
-                    tx = -(from.Y - to.Y) / capLen;
-                    ty = (from.X - to.X) / capLen;
-                }
-                else
-                {
-                    tx = (from.Y - to.Y) / capLen;
-                    ty = -(from.X - to.X) / capLen;
-                }
-
-                var ext1 = new Point(from.X + tx * halfWidth, from.Y + ty * halfWidth);
-                var ext2 = new Point(to.X + tx * halfWidth, to.Y + ty * halfWidth);
-                figure.Segments.Add(new LineSegment(ext1));
-                figure.Segments.Add(new LineSegment(ext2));
-                figure.Segments.Add(new LineSegment(to));
-                break;
-            }
-
-            case PenLineCap.Round:
-            {
-                // Semicircular cap around endPoint
-                var angle1 = Math.Atan2(from.Y - endPoint.Y, from.X - endPoint.X);
-                var angle2 = Math.Atan2(to.Y - endPoint.Y, to.X - endPoint.X);
-                var capDelta = angle2 - angle1;
-
-                // Normalize and ensure we go around the outside (semicircle)
-                if (capDelta > Math.PI) capDelta -= 2 * Math.PI;
-                if (capDelta < -Math.PI) capDelta += 2 * Math.PI;
-
-                if (Math.Abs(capDelta) < Math.PI - 0.01)
-                {
-                    if (capDelta > 0) capDelta -= 2 * Math.PI;
-                    else capDelta += 2 * Math.PI;
-                }
-
-                var steps = Math.Max(4, (int)(Math.Abs(capDelta) / (Math.PI / 8)));
-                for (int j = 1; j <= steps; j++)
-                {
-                    var t = j / (double)steps;
-                    var angle = angle1 + capDelta * t;
-                    figure.Segments.Add(new LineSegment(new Point(
-                        endPoint.X + halfWidth * Math.Cos(angle),
-                        endPoint.Y + halfWidth * Math.Sin(angle))));
-                }
-                break;
-            }
-
-            case PenLineCap.Triangle:
-            {
-                // Triangle cap: point extends halfWidth outward
-                var capDx = from.X - to.X;
-                var capDy = from.Y - to.Y;
-                var capLen = Math.Sqrt(capDx * capDx + capDy * capDy);
-                if (capLen < 1e-10)
-                {
-                    figure.Segments.Add(new LineSegment(to));
-                    break;
-                }
-
-                double tx, ty;
-                if (isStart)
-                {
-                    tx = -(from.Y - to.Y) / capLen;
-                    ty = (from.X - to.X) / capLen;
-                }
-                else
-                {
-                    tx = (from.Y - to.Y) / capLen;
-                    ty = -(from.X - to.X) / capLen;
-                }
-
-                var tip = new Point(endPoint.X + tx * halfWidth, endPoint.Y + ty * halfWidth);
-                figure.Segments.Add(new LineSegment(tip));
-                figure.Segments.Add(new LineSegment(to));
-                break;
-            }
-        }
+        ArgumentNullException.ThrowIfNull(pen);
+        ValidateTolerance(tolerance);
+        var absolute = AbsoluteTolerance(tolerance, toleranceType);
+        return GeometryStroke.Widen(GetFlattenedPathGeometry(absolute, ToleranceType.Absolute), pen, absolute);
     }
 
     /// <inheritdoc />
     public override PathGeometry GetOutlinedPathGeometry(double tolerance, ToleranceType toleranceType)
     {
-        // Flatten to remove curves, producing a simplified outline.
-        // A full implementation would also resolve self-intersections;
-        // for now, flattening is the primary simplification step.
-        return GetFlattenedPathGeometry(tolerance, toleranceType);
+        ValidateTolerance(tolerance);
+        return GeometryBoolean.Outline(GetFlattenedPathGeometry(tolerance, toleranceType));
     }
 }
 

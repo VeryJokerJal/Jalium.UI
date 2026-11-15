@@ -51,6 +51,47 @@ internal static class GeometryBoolean
         return Math.Abs(Clipper.Area(solution));
     }
 
+    internal static PathGeometry Outline(PathGeometry path) =>
+        Combine(path, new PathGeometry(), GeometryCombineMode.Union, null);
+
+    internal static bool BoundaryContains(PathGeometry path, Point point)
+    {
+        var contours = Contours(path);
+        var frame = Prepare(contours, []);
+        var outlines = Execute(contours, [], ClipType.Union, Rule(path.FillRule), frame.Precision);
+        var x = point.X - frame.X;
+        var y = point.Y - frame.Y;
+        foreach (var contour in outlines)
+        for (var index = 0; index < contour.Count; index++)
+        {
+            var a = contour[index];
+            var b = contour[(index + 1) % contour.Count];
+            const double epsilon = 1e-8;
+            if (x < Math.Min(a.x, b.x) - epsilon || x > Math.Max(a.x, b.x) + epsilon ||
+                y < Math.Min(a.y, b.y) - epsilon || y > Math.Max(a.y, b.y) + epsilon) continue;
+            var dx = b.x - a.x; var dy = b.y - a.y;
+            if (Math.Abs((x - a.x) * dy - (y - a.y) * dx) <= epsilon * Math.Sqrt(dx * dx + dy * dy))
+                return true;
+        }
+        return false;
+    }
+
+    internal static IntersectionDetail Relate(PathGeometry first, PathGeometry second)
+    {
+        var subject = Contours(first);
+        var clip = Contours(second);
+        var frame = Prepare(subject, clip);
+        subject = Execute(subject, [], ClipType.Union, Rule(first.FillRule), frame.Precision);
+        clip = Execute(clip, [], ClipType.Union, Rule(second.FillRule), frame.Precision);
+        if (Execute(subject, clip, ClipType.Intersection, ClipFillRule.NonZero, frame.Precision).Count == 0)
+            return IntersectionDetail.Empty;
+        if (Execute(clip, subject, ClipType.Difference, ClipFillRule.NonZero, frame.Precision).Count == 0)
+            return IntersectionDetail.FullyContains;
+        if (Execute(subject, clip, ClipType.Difference, ClipFillRule.NonZero, frame.Precision).Count == 0)
+            return IntersectionDetail.FullyInside;
+        return IntersectionDetail.Intersects;
+    }
+
     private static ClipFillRule Rule(FillRule rule) => rule == FillRule.EvenOdd ? ClipFillRule.EvenOdd : ClipFillRule.NonZero;
 
     private static PathsD Execute(PathsD subject, PathsD clip, ClipType operation, ClipFillRule rule, int precision)

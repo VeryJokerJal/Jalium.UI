@@ -44,24 +44,7 @@ internal static class GeometryComposition
 
     internal static void Append(PathGeometry target, PathGeometry source, Matrix matrix)
     {
-        foreach (var figure in source.Figures)
-        {
-            var output = new PathFigure { StartPoint = matrix.Transform(figure.StartPoint),
-                IsClosed = figure.IsClosed, IsFilled = figure.IsFilled };
-            foreach (var segment in figure.Segments)
-            {
-                if (segment is LineSegment line)
-                    output.Segments.Add(new LineSegment(matrix.Transform(line.Point), line.IsStroked)
-                        { IsSmoothJoin = line.IsSmoothJoin });
-                else if (segment is PolyLineSegment poly)
-                {
-                    var transformed = new PolyLineSegment { IsStroked = poly.IsStroked, IsSmoothJoin = poly.IsSmoothJoin };
-                    foreach (var point in poly.Points) transformed.Points.Add(matrix.Transform(point));
-                    output.Segments.Add(transformed);
-                }
-            }
-            target.Figures.Add(output);
-        }
+        GeometryPathTransform.Append(target, source, matrix);
     }
 
     internal static Rect GroupBounds(GeometryGroup group)

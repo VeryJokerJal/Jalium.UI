@@ -284,6 +284,10 @@
     <Compile Include="../Jalium.UI.Tests/ThemeTemplateSmokeTests.cs" Link="Themes/ThemeTemplateSmokeTests.cs" />
     <Compile Include="../Jalium.UI.Tests/MutableBrushOwnerInvalidationTests.cs" Link="PathRendering/MutableBrushOwnerInvalidationTests.cs" />
     <Compile Include="../Jalium.UI.Tests/GeometryPathParityTests.cs" Link="PathRendering/GeometryPathParityTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/GeometrySerializationTests.cs" Link="PathRendering/GeometrySerializationTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/GeometryImplementationTests.cs" Link="PathRendering/GeometryImplementationTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/GeometryNativeRenderingTests.cs" Link="PathRendering/GeometryNativeRenderingTests.cs" />
+    <Compile Include="../Jalium.UI.Tests/ShapeGeometryAndFreezeTests.cs" Link="PathRendering/ShapeGeometryAndFreezeTests.cs" />
     <Compile Include="../Jalium.UI.Tests/ShapeStrokeDashArrayParityTests.cs" Link="PathRendering/ShapeStrokeDashArrayParityTests.cs" />
     <Compile Include="../Jalium.UI.Tests/SoftwareVectorRasterizerTests.cs" Link="PathRendering/SoftwareVectorRasterizerTests.cs" />
     <Compile Include="../Jalium.UI.Tests/PathStrokeOpacityEndToEndTests.cs" Link="PathRendering/PathStrokeOpacityEndToEndTests.cs" />

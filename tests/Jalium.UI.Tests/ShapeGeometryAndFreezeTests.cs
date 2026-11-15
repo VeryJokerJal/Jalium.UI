@@ -347,18 +347,10 @@ public class ShapeGeometryAndFreezeTests
                   "<defs><path id='other' d='M0 20 H180'/></defs>" +
                   "<text font-size='30'><textPath href='#other' path='M20 70 H200' " +
                   "side='right'>O</textPath></text></svg>";
-        var run = Assert.Single(CollectGlyphRuns(SvgImage.FromSvgString(svg).Drawing));
+        var drawing = SvgImage.FromSvgString(svg).Drawing;
+        var run = Assert.Single(CollectGlyphRuns(drawing));
         Assert.Equal(200, run.Origin.X, 1);
-        var rotations = new List<RotateTransform>();
-        FindRotations(SvgImage.FromSvgString(svg).Drawing, rotations);
-        Assert.Contains(rotations, rotation => Math.Abs(rotation.Angle) == 180);
-
-        static void FindRotations(Drawing? drawing, List<RotateTransform> found)
-        {
-            if (drawing is not DrawingGroup group) return;
-            if (group.Transform is RotateTransform rotation) found.Add(rotation);
-            foreach (var child in group.Children) FindRotations(child, found);
-        }
+        AssertGlyphRotation(drawing, run, 180, new Point(200, 70));
     }
 
     [Fact]
@@ -383,26 +375,133 @@ public class ShapeGeometryAndFreezeTests
                   "<text font-size='25'><textPath path='M20 70 C80 10 140 130 200 70'>" +
                   "OOOOO</textPath></text></svg>";
         var image = SvgImage.FromSvgString(svg);
-        var runs = CollectGlyphRuns(image.Drawing);
-        Assert.Equal(10, runs.Count);
-        for (var index = 0; index < 5; index++)
+        Assert.True(NativeTextOutline.TryGetPath("O", "Segoe UI", 25, 400, 0,
+            out var data, out var advance, out var baseline));
+        var reference = PathMarkupParser.ParseSvgPathData(data).GetFlattenedPathGeometry(0.01, ToleranceType.Absolute);
+        var source = ContourPoints(reference);
+        var actual = new List<Point>();
+        CollectTextContours(image.Drawing, Matrix.Identity, actual);
+        // Contiguous glyphs may share one GeometryDrawing. Count and compare
+        // the actual ink contours rather than assuming one drawing per glyph.
+        Assert.Equal(source.Length * 10, actual.Count);
+        for (var glyph = 0; glyph < 10; glyph++)
         {
-            Assert.Equal(runs[index + 5].Origin.X, runs[index].Origin.X, 1);
-            Assert.Equal(runs[index + 5].Origin.Y, runs[index].Origin.Y, 1);
+            var (center, angle) = SampleTextCurve((glyph % 5 + 0.5) * advance);
+            var cosine = Math.Cos(angle * Math.PI / 180);
+            var sine = Math.Sin(angle * Math.PI / 180);
+            var pivot = new Point(center.X - cosine * advance / 2, center.Y - sine * advance / 2);
+            for (var index = 0; index < source.Length; index++)
+            {
+                var x = source[index].X;
+                var y = source[index].Y - baseline;
+                var observed = actual[glyph * source.Length + index];
+                Assert.InRange(Math.Abs(observed.X - (pivot.X + x * cosine - y * sine)), 0, 0.35);
+                Assert.InRange(Math.Abs(observed.Y - (pivot.Y + x * sine + y * cosine)), 0, 0.35);
+                if (glyph >= 5)
+                {
+                    Assert.Equal(actual[(glyph - 5) * source.Length + index].X, observed.X, 7);
+                    Assert.Equal(actual[(glyph - 5) * source.Length + index].Y, observed.Y, 7);
+                }
+            }
         }
-        var rotations = new List<double>();
-        FindRotations(image.Drawing, rotations);
-        Assert.Equal(10, rotations.Count);
-        Assert.True(rotations[0] < 0);
-        Assert.True(rotations[4] > rotations[0]);
-        for (var index = 0; index < 5; index++)
-            Assert.Equal(rotations[index + 5], rotations[index], 1);
+    }
 
-        static void FindRotations(Drawing? drawing, List<double> found)
+    private static Point[] ContourPoints(PathGeometry geometry) => geometry.Figures.SelectMany(figure =>
+        new[] { figure.StartPoint }.Concat(figure.Segments.SelectMany(segment => segment.GetPoints()))).ToArray();
+
+    private static void CollectTextContours(Drawing? drawing, Matrix parent, List<Point> points)
+    {
+        if (drawing is DrawingGroup group)
         {
-            if (drawing is not DrawingGroup group) return;
-            if (group.Transform is RotateTransform rotation) found.Add(rotation.Angle);
-            foreach (var child in group.Children) FindRotations(child, found);
+            var matrix = Matrix.Multiply(group.Transform?.Value ?? Matrix.Identity, parent);
+            foreach (var child in group.Children) CollectTextContours(child, matrix, points);
+            return;
+        }
+        Geometry? geometry = drawing is GeometryDrawing shape ? shape.Geometry : null;
+        if (drawing is GlyphRunDrawing glyph)
+        {
+            Assert.True(glyph.TryGetSvgOutline(out geometry));
+        }
+        if (geometry is null) return;
+        var transform = Matrix.Multiply(geometry.Transform?.Value ?? Matrix.Identity, parent);
+        foreach (var point in ContourPoints(geometry.GetFlattenedPathGeometry(0.01, ToleranceType.Absolute)))
+            points.Add(transform.Transform(point));
+    }
+
+    private static (Point Point, double Angle) SampleTextCurve(double distance)
+    {
+        Point At(double t)
+        {
+            var u = 1 - t;
+            return new Point(20 * u * u * u + 240 * u * u * t + 420 * u * t * t + 200 * t * t * t,
+                70 * u * u * u + 30 * u * u * t + 390 * u * t * t + 70 * t * t * t);
+        }
+        var previous = At(0);
+        for (var step = 1; step <= 10000; step++)
+        {
+            var t = step / 10000.0;
+            var point = At(t);
+            var length = Math.Sqrt(Math.Pow(point.X - previous.X, 2) + Math.Pow(point.Y - previous.Y, 2));
+            if (distance <= length)
+            {
+                t = (step - 1 + distance / length) / 10000.0;
+                var dy = -180 * (1 - t) * (1 - t) + 720 * (1 - t) * t - 180 * t * t;
+                return (At(t), Math.Atan2(dy, 180) * 180 / Math.PI);
+            }
+            distance -= length;
+            previous = point;
+        }
+        throw new InvalidOperationException("Reference text exceeds the curve length.");
+    }
+
+    private static void AssertGlyphRotation(Drawing? drawing, GlyphRunDrawing run,
+        double angle, Point pivot, double angleTolerance = 0.00001)
+    {
+        if (!run.TryGetSvgOutline(out var actual))
+        {
+            // The native text fallback still expresses the rotation as a group.
+            var rotations = new List<RotateTransform>();
+            void Find(Drawing? node)
+            {
+                if (node is not DrawingGroup group) return;
+                if (group.Transform is RotateTransform rotation) rotations.Add(rotation);
+                foreach (var child in group.Children) Find(child);
+            }
+            Find(drawing);
+            Assert.Contains(rotations, rotation =>
+                Math.Abs(rotation.Angle - angle) <= angleTolerance &&
+                Math.Abs(rotation.CenterX - pivot.X) < 0.2 && Math.Abs(rotation.CenterY - pivot.Y) < 0.2);
+            return;
+        }
+
+        var text = run.FormattedText!;
+        Assert.True(NativeTextOutline.TryGetPath(text.Text, text.FontFamily, (float)text.FontSize,
+            text.FontWeight, text.FontStyle, out var data, out _, out _));
+        var reference = PathMarkupParser.ParseSvgPathData(data).GetFlattenedPathGeometry(0.01, ToleranceType.Absolute);
+        var source = ContourPoints(reference);
+        var result = ContourPoints(Assert.IsType<PathGeometry>(actual));
+        Assert.NotEmpty(source);
+        Assert.Equal(source.Length, result.Length);
+
+        // Infer the applied angle from a contour edge, then check every point
+        // against independent rotation math. This catches a wrong pivot or a
+        // partially transformed glyph as well as missing/reversed rotation.
+        var edge = Enumerable.Range(1, source.Length - 1).First(index => source[index] != source[0]);
+        var observed = Math.Atan2(result[edge].Y - result[0].Y, result[edge].X - result[0].X) -
+            Math.Atan2(source[edge].Y - source[0].Y, source[edge].X - source[0].X);
+        var delta = Math.IEEERemainder(observed * 180 / Math.PI - angle, 360);
+        Assert.InRange(Math.Abs(delta), 0, angleTolerance);
+        var cosine = Math.Cos(observed);
+        var sine = Math.Sin(observed);
+        // Curve sampling has its own approximation tolerance; explicit rotation
+        // lists and straight text paths use the exact pivot.
+        var coordinateTolerance = angleTolerance > 0.001 ? 0.3 : 0.00001;
+        for (var index = 0; index < source.Length; index++)
+        {
+            var x = source[index].X + run.Origin.X - pivot.X;
+            var y = source[index].Y + run.Origin.Y - pivot.Y;
+            Assert.InRange(Math.Abs(result[index].X - (pivot.X + x * cosine - y * sine)), 0, coordinateTolerance);
+            Assert.InRange(Math.Abs(result[index].Y - (pivot.Y + x * sine + y * cosine)), 0, coordinateTolerance);
         }
     }
 
@@ -600,24 +699,10 @@ public class ShapeGeometryAndFreezeTests
                   "<text x='20 50 80' y='60' rotate='0 90 180' font-size='30'>" +
                   "A<tspan rotate='-30'>B</tspan>C</text></svg>";
         var image = SvgImage.FromSvgString(svg);
-        Assert.Equal(new[] { "A", "B", "C" },
-            CollectGlyphRuns(image.Drawing).Select(run => run.FormattedText!.Text));
-        var rotations = new List<RotateTransform>();
-        CollectRotations(image.Drawing, rotations);
-        Assert.Equal(2, rotations.Count);
-        Assert.Equal(-30, rotations[0].Angle);
-        Assert.Equal(50, rotations[0].CenterX);
-        Assert.Equal(60, rotations[0].CenterY);
-        Assert.Equal(180, rotations[1].Angle);
-        Assert.Equal(80, rotations[1].CenterX);
-        Assert.Equal(60, rotations[1].CenterY);
-
-        static void CollectRotations(Drawing? drawing, List<RotateTransform> found)
-        {
-            if (drawing is not DrawingGroup group) return;
-            if (group.Transform is RotateTransform rotation) found.Add(rotation);
-            foreach (var child in group.Children) CollectRotations(child, found);
-        }
+        var runs = CollectGlyphRuns(image.Drawing);
+        Assert.Equal(new[] { "A", "B", "C" }, runs.Select(run => run.FormattedText!.Text));
+        AssertGlyphRotation(image.Drawing, runs[1], -30, new Point(50, 60));
+        AssertGlyphRotation(image.Drawing, runs[2], 180, new Point(80, 60));
     }
 
     [Fact]
