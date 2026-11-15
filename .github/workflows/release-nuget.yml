@@ -1,16 +1,14 @@
 name: NuGet 26.11.1 package qualification
 
 on:
-  push:
-    branches: [codex/nuget-26.11.1]
   workflow_dispatch:
     inputs:
       mode:
         type: choice
-        options: [all, android-retry, common-retry, android-consumer, linux-consumer]
+        options: [all, qualify-existing-native, android-retry, common-retry, android-consumer, linux-consumer]
         default: all
       source_run:
-        description: Qualified common-package run for an Android retry
+        description: Source artifact run for a retry or native artifact reuse
         type: string
         default: ''
       framework_ref:
@@ -34,6 +32,19 @@ env:
   DOTNET_CLI_TELEMETRY_OPTOUT: '1'
 
 jobs:
+  native-artifact-source:
+    if: inputs.mode == 'qualify-existing-native'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_SOURCE }}
+          fetch-depth: 0
+      - name: Verify identical native source and successful artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 eng/release/check-native-artifacts.py '${{ github.repository }}' '${{ inputs.source_run }}' "$RELEASE_SOURCE"
+
   linux-native:
     if: ${{ inputs.mode == '' || inputs.mode == 'all' }}
     strategy:
@@ -117,8 +128,8 @@ jobs:
           if-no-files-found: error
 
   common-packages:
-    if: ${{ always() && !cancelled() && (inputs.mode == 'common-retry' || (needs.linux-native.result == 'success' && needs.windows-native.result == 'success')) }}
-    needs: [linux-native, windows-native]
+    if: ${{ always() && !cancelled() && (inputs.mode == 'common-retry' || needs.native-artifact-source.result == 'success' || (needs.linux-native.result == 'success' && needs.windows-native.result == 'success')) }}
+    needs: [linux-native, windows-native, native-artifact-source]
     runs-on: windows-2025
     timeout-minutes: 60
     steps:
@@ -131,36 +142,38 @@ jobs:
           path: Jalium.UI
           fetch-depth: 0
       - uses: actions/setup-dotnet@v4
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
         with:
           dotnet-version: 10.0.300
       - uses: actions/download-artifact@v4
         with:
           name: native-windows
-          run-id: ${{ inputs.mode == 'common-retry' && inputs.source_run || github.run_id }}
+          run-id: ${{ (inputs.mode == 'common-retry' || inputs.mode == 'qualify-existing-native') && inputs.source_run || github.run_id }}
           github-token: ${{ github.token }}
           path: Jalium.UI/src/native/bin
       - uses: actions/download-artifact@v4
         with:
           name: native-linux-x64
-          run-id: ${{ inputs.mode == 'common-retry' && inputs.source_run || github.run_id }}
+          run-id: ${{ (inputs.mode == 'common-retry' || inputs.mode == 'qualify-existing-native') && inputs.source_run || github.run_id }}
           github-token: ${{ github.token }}
           path: Jalium.UI/src/native/bin/native/linux-x64/Release
       - uses: actions/download-artifact@v4
         with:
           name: native-linux-arm64
-          run-id: ${{ inputs.mode == 'common-retry' && inputs.source_run || github.run_id }}
+          run-id: ${{ (inputs.mode == 'common-retry' || inputs.mode == 'qualify-existing-native') && inputs.source_run || github.run_id }}
           github-token: ${{ github.token }}
           path: Jalium.UI/src/native/bin/native/linux-arm64/Release
       - uses: actions/download-artifact@v4
         with:
           name: native-linux-musl-x64
-          run-id: ${{ inputs.mode == 'common-retry' && inputs.source_run || github.run_id }}
+          run-id: ${{ (inputs.mode == 'common-retry' || inputs.mode == 'qualify-existing-native') && inputs.source_run || github.run_id }}
           github-token: ${{ github.token }}
           path: Jalium.UI/src/native/bin/native/linux-musl-x64/Release
       - uses: actions/download-artifact@v4
         with:
           name: native-linux-musl-arm64
-          run-id: ${{ inputs.mode == 'common-retry' && inputs.source_run || github.run_id }}
+          run-id: ${{ (inputs.mode == 'common-retry' || inputs.mode == 'qualify-existing-native') && inputs.source_run || github.run_id }}
           github-token: ${{ github.token }}
           path: Jalium.UI/src/native/bin/native/linux-musl-arm64/Release
       - name: Pack thirteen common and desktop packages
@@ -168,24 +181,61 @@ jobs:
         run: |
           python automation/eng/release/pack-nuget.py Jalium.UI "$env:RUNNER_TEMP/packages" "$env:RUNNER_TEMP/package-build" --source-commit "$env:RELEASE_SOURCE"
           if ($LASTEXITCODE -ne 0) { throw 'Package build failed' }
-      - name: Verify packaged Windows consumer
-        shell: pwsh
-        run: |
-          $config = "$env:RUNNER_TEMP/package-build/NuGet.release.config"
-          $output = "$env:RUNNER_TEMP/consumer"
-          dotnet publish Jalium.UI/tests/Jalium.UI.NuGetTest.Desktop/Jalium.UI.NuGetTest.Desktop.csproj -c Release -r win-x64 --self-contained true -m:1 -p:JaliumPackageVersion=26.11.1 -p:JaliumBuildRoot="$env:RUNNER_TEMP/consumer-build" -p:RestoreConfigFile="$config" -p:RestorePackagesPath="$env:RUNNER_TEMP/consumer-nuget" -p:GeneratePackageOnBuild=false -o $output
-          if ($LASTEXITCODE -ne 0) { throw 'Windows package consumer publish failed' }
-          & "$output/Jalium.UI.NuGetTest.Desktop.exe"
-          if ($LASTEXITCODE -ne 0) { throw 'Windows package consumer did not start and exit successfully' }
       - uses: actions/upload-artifact@v4
         with:
           name: nuget-common
           path: ${{ runner.temp }}/packages/*
           if-no-files-found: error
 
+  windows-consumer:
+    needs: common-packages
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_SOURCE }}
+      - uses: actions/setup-dotnet@v4
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
+        with:
+          dotnet-version: 10.0.300
+      - uses: actions/download-artifact@v4
+        with:
+          name: nuget-common
+          path: ${{ runner.temp }}/packages
+      - name: Restore, publish and run packaged Windows consumer
+        shell: pwsh
+        timeout-minutes: 25
+        run: |
+          $feed = "$env:RUNNER_TEMP/packages"
+          $config = "$env:RUNNER_TEMP/consumer-NuGet.config"
+          "<configuration><packageSources><clear/><add key='release' value='$feed'/><add key='nuget.org' value='https://api.nuget.org/v3/index.json'/></packageSources><packageSourceMapping><packageSource key='release'><package pattern='Jalium.*'/></packageSource><packageSource key='nuget.org'><package pattern='*'/></packageSource></packageSourceMapping></configuration>" | Set-Content $config
+          $project = 'tests/Jalium.UI.NuGetTest.Desktop/Jalium.UI.NuGetTest.Desktop.csproj'
+          $properties = @('-p:JaliumPackageVersion=26.11.1', "-p:JaliumBuildRoot=$env:RUNNER_TEMP/consumer-build", "-p:RestorePackagesPath=$env:RUNNER_TEMP/consumer-nuget", '-p:RuntimeIdentifier=win-x64', '-p:SelfContained=true', '-p:GeneratePackageOnBuild=false')
+          dotnet restore $project --configfile $config --verbosity normal @properties
+          if ($LASTEXITCODE -ne 0) { throw 'Windows package restore failed' }
+          $output = "$env:RUNNER_TEMP/consumer"
+          dotnet publish $project -c Release --no-restore -m:1 -o $output @properties
+          if ($LASTEXITCODE -ne 0) { throw 'Windows package consumer publish failed' }
+          $stdout = "$env:RUNNER_TEMP/windows-consumer.stdout.log"
+          $stderr = "$env:RUNNER_TEMP/windows-consumer.stderr.log"
+          $process = Start-Process "$output/Jalium.UI.NuGetTest.Desktop.exe" -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          if (-not $process.WaitForExit(60000)) { Stop-Process -Id $process.Id -Force; throw 'Windows package consumer timed out' }
+          Get-Content $stdout, $stderr
+          if ($process.ExitCode -ne 0) { throw 'Windows package consumer failed' }
+          $log = Get-Content $stdout -Raw
+          if ($log -notmatch '\[nuget-consumer\] ready' -or $log -notmatch '\[nuget-consumer\] completed') { throw 'Windows startup or shutdown marker missing' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: consumer-windows
+          path: ${{ runner.temp }}/windows-consumer.*.log
+          if-no-files-found: ignore
+
   android-package:
     needs: common-packages
-    if: ${{ always() && !cancelled() && (((inputs.mode == '' || inputs.mode == 'all') && needs.common-packages.result == 'success') || inputs.mode == 'android-retry' || inputs.mode == 'android-consumer') }}
+    if: ${{ always() && !cancelled() && (((inputs.mode == '' || inputs.mode == 'all' || inputs.mode == 'qualify-existing-native') && needs.common-packages.result == 'success') || inputs.mode == 'android-retry' || inputs.mode == 'android-consumer') }}
     runs-on: windows-2025
     timeout-minutes: 60
     steps:
@@ -198,6 +248,8 @@ jobs:
           path: Jalium.UI
           fetch-depth: 0
       - uses: actions/setup-dotnet@v4
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
         with:
           dotnet-version: 10.0.300
       - uses: actions/setup-java@v4
@@ -331,6 +383,8 @@ jobs:
         with:
           ref: ${{ env.RELEASE_SOURCE }}
       - uses: actions/setup-dotnet@v4
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
         with:
           dotnet-version: 10.0.300
       - uses: actions/download-artifact@v4
@@ -361,8 +415,12 @@ jobs:
           "<configuration><packageSources><clear/><add key='release' value='$feed'/><add key='nuget.org' value='https://api.nuget.org/v3/index.json'/></packageSources><packageSourceMapping><packageSource key='release'><package pattern='Jalium.*'/></packageSource><packageSource key='nuget.org'><package pattern='*'/></packageSource></packageSourceMapping></configuration>" | Set-Content "$consumer/NuGet.config"
           dotnet publish "$consumer/Consumer.csproj" -c Release -r win-x64 --self-contained true -p:RestorePackagesPath="$env:RUNNER_TEMP/static-nuget" -o "$consumer/published"
           if ($LASTEXITCODE -ne 0) { throw 'Static NativeAOT NuGet consumer publish failed' }
-          & "$consumer/published/Consumer.exe"
-          if ($LASTEXITCODE -ne 0) { throw 'Static NativeAOT NuGet consumer did not start and exit normally' }
+          $process = Start-Process "$consumer/published/Consumer.exe" -PassThru -RedirectStandardOutput "$consumer/stdout.log" -RedirectStandardError "$consumer/stderr.log"
+          if (-not $process.WaitForExit(60000)) { Stop-Process -Id $process.Id -Force; throw 'Static NativeAOT consumer timed out' }
+          Get-Content "$consumer/stdout.log", "$consumer/stderr.log"
+          if ($process.ExitCode -ne 0) { throw 'Static NativeAOT NuGet consumer failed' }
+          $log = Get-Content "$consumer/stdout.log" -Raw
+          if ($log -notmatch '\[nuget-static\] ready' -or $log -notmatch '\[nuget-static\] completed') { throw 'Static startup or shutdown marker missing' }
 
   macos-native:
     if: ${{ inputs.mode == '' || inputs.mode == 'all' }}
@@ -399,7 +457,8 @@ jobs:
           if-no-files-found: error
 
   macos-package:
-    needs: [macos-native, common-packages]
+    if: ${{ always() && !cancelled() && needs.common-packages.result == 'success' && (needs.macos-native.result == 'success' || needs.native-artifact-source.result == 'success') }}
+    needs: [macos-native, common-packages, native-artifact-source]
     runs-on: macos-26
     timeout-minutes: 60
     steps:
@@ -418,6 +477,8 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_${{ steps.tools.outputs.xcode }}.app/Contents/Developer
       - uses: actions/setup-dotnet@v4
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
         with:
           dotnet-version: ${{ steps.tools.outputs.dotnetSdk }}
       - name: Install macOS workload
@@ -425,10 +486,14 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: native-osx-arm64
+          run-id: ${{ inputs.mode == 'qualify-existing-native' && inputs.source_run || github.run_id }}
+          github-token: ${{ github.token }}
           path: src/native/bin/native/osx-arm64/Release
       - uses: actions/download-artifact@v4
         with:
           name: native-osx-x64
+          run-id: ${{ inputs.mode == 'qualify-existing-native' && inputs.source_run || github.run_id }}
+          github-token: ${{ github.token }}
           path: src/native/bin/native/osx-x64/Release
       - uses: actions/download-artifact@v4
         with:
@@ -484,6 +549,8 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_${{ steps.tools.outputs.xcode }}.app/Contents/Developer
       - uses: actions/setup-dotnet@v4
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
         with:
           dotnet-version: ${{ steps.tools.outputs.dotnetSdk }}
       - run: dotnet workload install macos --version '${{ steps.tools.outputs.workloadSet }}'
@@ -533,8 +600,8 @@ jobs:
           if-no-files-found: ignore
 
   qualified-packages:
-    if: ${{ inputs.mode == '' || inputs.mode == 'all' }}
-    needs: [common-packages, android-package, linux-consumer, windows-static-consumer, macos-consumer]
+    if: ${{ inputs.mode == '' || inputs.mode == 'all' || inputs.mode == 'qualify-existing-native' }}
+    needs: [common-packages, windows-consumer, android-package, linux-consumer, windows-static-consumer, macos-consumer]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

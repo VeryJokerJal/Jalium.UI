@@ -11,6 +11,19 @@ COMMON = ["Jalium.UI.Xaml.SourceGenerator", "Jalium.UI.Build", "Jalium.UI.Manage
           "Jalium.UI.Controls", "Jalium.UI.Gpu", "Jalium.UI.Xaml"]
 
 
+def verify_build_payload_mappings(nuspec):
+    files = ET.parse(nuspec).getroot().findall(".//{*}file")
+    prefix = "tasks/net10.0/tools/css-tooling/node/"
+    expected = set()
+    for rid in ("win-x64", "win-arm64", "linux-x64", "linux-arm64", "osx-x64", "osx-arm64"):
+        binary = "node.exe" if rid.startswith("win-") else "node"
+        expected.update(prefix + rid + "/" + binary + suffix for suffix in (".br", ".sha256"))
+    nodes = [item for item in files if "tools/css-tooling/node/" in item.get("target", "").replace("\\", "/")]
+    assert len(nodes) == len(expected), "CSS host runtimes were duplicated or omitted during package item batching"
+    assert {item.get("target", "").replace("\\", "/") for item in nodes} == expected, "Incorrect CSS runtime package paths"
+    assert len({item.get("src") for item in nodes}) == len(expected), "Duplicate CSS runtime sources"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=pathlib.Path)
@@ -78,9 +91,19 @@ def main():
                                 ("Jalium.UI." + args.entry + ".csproj")]
     packed = []
     for project in projects:
+        if project.stem == "Jalium.UI.Build":
+            # Inspect the generated map before ZIP creation. An unqualified
+            # MSBuild metadata expression can multiply large host runtimes by
+            # every existing Content item and otherwise create multi-GB files.
+            subprocess.run(["dotnet", "pack", str(project), "-c", "Release", "-m:1", *properties,
+                            "-p:ContinuePackingAfterGeneratingNuspec=false"], check=True)
+            specs = list((build / "obj" / project.stem).rglob(f"{project.stem}.{version}.nuspec"))
+            assert len(specs) == 1, specs
+            verify_build_payload_mappings(specs[0])
         subprocess.run(["dotnet", "pack", str(project), "-c", "Release", "-m:1", *properties], check=True)
         package = output / (project.stem + "." + version + ".nupkg")
         assert package.is_file(), package
+        assert package.stat().st_size < 250_000_000, (package, "NuGet.org package size limit")
         packed.append(package.name)
     (build / "pack-result.json").write_text(json.dumps({"sourceCommit": head, "version": version,
                                                        "packages": packed}, indent=2) + "\n")

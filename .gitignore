@@ -427,3 +427,6 @@ src/native/out/
 
 # Local machine state created by development tools.
 /Library/
+
+# Generated, checksum-verified CSS host runtimes
+src/managed/Jalium.UI.Css.Tooling/tools/css-tooling/node/

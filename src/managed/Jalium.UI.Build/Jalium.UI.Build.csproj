@@ -94,8 +94,9 @@
       <!-- TargetOutputs gives us the actual output path even when a caller has
            customized BaseOutputPath. Package the complete dependency closure so
            dotnet exec can honor jalxamlc.deps.json on every supported host. -->
-      <_JalxamlCompilerOutput Include="$(_JalxamlCompilerOutputDirectory)**\*" />
-      <Content Include="@(_JalxamlCompilerOutput)" PackagePath="tools\net10.0\%(RecursiveDir)%(Filename)%(Extension)" />
+      <_JalxamlCompilerOutput Include="$(_JalxamlCompilerOutputDirectory)**\*"
+                              Exclude="$(_JalxamlCompilerOutputDirectory)**\tools\css-tooling\node\**\*" />
+      <Content Include="@(_JalxamlCompilerOutput)" PackagePath="tools\net10.0\%(_JalxamlCompilerOutput.RecursiveDir)%(_JalxamlCompilerOutput.Filename)%(_JalxamlCompilerOutput.Extension)" />
     </ItemGroup>
 
     <Error Condition="'@(_JalxamlCompilerTargetPath)' == '' or !Exists('@(_JalxamlCompilerTargetPath)')" Text="The portable JALXAML compiler failed to build; jalxamlc.dll is required in the Jalium.UI.Build package." />
@@ -104,8 +105,9 @@
   <Target Name="PrepareCssToolchainBeforePack" BeforeTargets="_GetPackageFiles">
     <Exec Command="dotnet run --project &quot;$(MSBuildThisFileDirectory)..\..\..\tools\Jalium.UI.Css.ToolchainPrep\Jalium.UI.Css.ToolchainPrep.csproj&quot; --configuration $(Configuration)" />
     <ItemGroup>
-      <Content Include="..\Jalium.UI.Css.Tooling\tools\css-tooling\node\**\*"
-               PackagePath="tasks\net10.0\tools\css-tooling\node\%(RecursiveDir)%(Filename)%(Extension)" Pack="true" />
+      <_CssNodePayload Include="..\Jalium.UI.Css.Tooling\tools\css-tooling\node\**\*.br;..\Jalium.UI.Css.Tooling\tools\css-tooling\node\**\*.sha256" />
+      <Content Include="@(_CssNodePayload)"
+               PackagePath="tasks\net10.0\tools\css-tooling\node\%(_CssNodePayload.RecursiveDir)%(_CssNodePayload.Filename)%(_CssNodePayload.Extension)" Pack="true" />
     </ItemGroup>
   </Target>
 

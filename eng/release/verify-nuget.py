@@ -6,6 +6,7 @@ import io
 import json
 from pathlib import Path
 import re
+import subprocess
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -21,6 +22,7 @@ def verify(folder, version, commit):
     assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version), "Stable three-part version required"
     assert re.fullmatch(r"[0-9a-f]{40}", commit), "Full source commit required"
     for package in sorted(folder.glob("*.nupkg")):
+        assert package.stat().st_size < 250_000_000, (package, "NuGet.org package size limit")
         with zipfile.ZipFile(package) as archive:
             assert archive.testzip() is None, package
             specs = [name for name in archive.namelist() if name.endswith(".nuspec")]
@@ -42,6 +44,16 @@ def verify(folder, version, commit):
                     assert f"runtimes/{rid}/native/{core}" in names, (package, rid)
             elif identity == "Jalium.UI.Build":
                 assert "tools/net10.0/jalxamlc.dll" in names, package
+                for rid in ["win-x64", "win-arm64", "linux-x64", "linux-arm64", "osx-x64", "osx-arm64"]:
+                    binary = "node.exe" if rid.startswith("win-") else "node"
+                    path = f"tasks/net10.0/tools/css-tooling/node/{rid}/{binary}"
+                    assert path not in names and path + ".br" in names and path + ".sha256" in names, (package, rid)
+                    checksum = archive.read(path + ".sha256").decode().strip().lower()
+                    assert re.fullmatch(r"[0-9a-f]{64}", checksum), (package, rid)
+                    subprocess.run(["node", "-e", "const fs=require('node:fs'),z=require('node:zlib'),c=require('node:crypto');"
+                        "const b=z.brotliDecompressSync(fs.readFileSync(0),{maxOutputLength:256*1024*1024});"
+                        "if(c.createHash('sha256').update(b).digest('hex')!==process.argv[1])process.exit(1);", checksum],
+                        input=archive.read(path + ".br"), check=True)
                 for library in ["core", "d3d12", "vulkan", "software", "platform", "media.core", "media.windows", "aot", "browser"]:
                     assert f"build/nativeaot/win-x64/jalium.native.{library}.static.lib" in names, (package, library)
             elif identity == "Jalium.UI.MacOS":

@@ -23,43 +23,51 @@ foreach (var (rid, archive, expected) in selected)
     if (File.Exists(executable))
     {
         Console.WriteLine($"{rid}: already present");
-        continue;
-    }
-    Console.WriteLine($"{rid}: downloading Node {version}");
-    var bytes = await client.GetByteArrayAsync($"https://nodejs.org/download/release/v{version}/{archive}");
-    var actual = Convert.ToHexString(SHA256.HashData(bytes));
-    if (!actual.Equals(expected, StringComparison.OrdinalIgnoreCase))
-        throw new InvalidDataException($"SHA-256 mismatch for {archive}: {actual}");
-    Directory.CreateDirectory(Path.GetDirectoryName(executable)!);
-    await using var archiveStream = new MemoryStream(bytes);
-    var entryName = rid.StartsWith("win-", StringComparison.Ordinal) ? "node.exe" : "bin/node";
-    if (archive.EndsWith(".zip", StringComparison.Ordinal))
-    {
-        using var zip = new ZipArchive(archiveStream, ZipArchiveMode.Read);
-        var entry = zip.Entries.Single(item => item.FullName.EndsWith("/" + entryName, StringComparison.Ordinal));
-        await using var input = entry.Open();
-        await using var output = File.Create(executable);
-        await input.CopyToAsync(output);
     }
     else
     {
-        await using var gzip = new GZipStream(archiveStream, CompressionMode.Decompress);
-        using var tar = new TarReader(gzip);
-        TarEntry? entry;
-        var found = false;
-        while ((entry = tar.GetNextEntry()) is not null)
+        Console.WriteLine($"{rid}: downloading Node {version}");
+        var bytes = await client.GetByteArrayAsync($"https://nodejs.org/download/release/v{version}/{archive}");
+        var actual = Convert.ToHexString(SHA256.HashData(bytes));
+        if (!actual.Equals(expected, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException($"SHA-256 mismatch for {archive}: {actual}");
+        Directory.CreateDirectory(Path.GetDirectoryName(executable)!);
+        await using var archiveStream = new MemoryStream(bytes);
+        var entryName = rid.StartsWith("win-", StringComparison.Ordinal) ? "node.exe" : "bin/node";
+        if (archive.EndsWith(".zip", StringComparison.Ordinal))
         {
-            if (!entry.Name.EndsWith("/" + entryName, StringComparison.Ordinal)) continue;
-            if (entry.DataStream is null) throw new InvalidDataException($"Missing Node binary in {archive}");
+            using var zip = new ZipArchive(archiveStream, ZipArchiveMode.Read);
+            var entry = zip.Entries.Single(item => item.FullName.EndsWith("/" + entryName, StringComparison.Ordinal));
+            await using var input = entry.Open();
             await using var output = File.Create(executable);
-            await entry.DataStream.CopyToAsync(output);
-            found = true;
-            break;
+            await input.CopyToAsync(output);
         }
-        if (!found) throw new InvalidDataException($"Missing Node binary in {archive}");
-        if (!OperatingSystem.IsWindows())
-            File.SetUnixFileMode(executable, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
-                UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+        else
+        {
+            await using var gzip = new GZipStream(archiveStream, CompressionMode.Decompress);
+            using var tar = new TarReader(gzip);
+            TarEntry? entry;
+            var found = false;
+            while ((entry = tar.GetNextEntry()) is not null)
+            {
+                if (!entry.Name.EndsWith("/" + entryName, StringComparison.Ordinal)) continue;
+                if (entry.DataStream is null) throw new InvalidDataException($"Missing Node binary in {archive}");
+                await using var output = File.Create(executable);
+                await entry.DataStream.CopyToAsync(output);
+                found = true;
+                break;
+            }
+            if (!found) throw new InvalidDataException($"Missing Node binary in {archive}");
+            if (!OperatingSystem.IsWindows())
+                File.SetUnixFileMode(executable, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                    UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+        }
     }
-    Console.WriteLine($"{rid}: ready");
+    var binary = await File.ReadAllBytesAsync(executable);
+    var compressed = new byte[BrotliEncoder.GetMaxCompressedLength(binary.Length)];
+    if (!BrotliEncoder.TryCompress(binary, compressed, out var written, quality: 7, window: 22))
+        throw new InvalidDataException($"Could not compress Node runtime for {rid}.");
+    await File.WriteAllBytesAsync(executable + ".br", compressed.AsMemory(0, written));
+    await File.WriteAllTextAsync(executable + ".sha256", Convert.ToHexString(SHA256.HashData(binary)) + "\n");
+    Console.WriteLine($"{rid}: ready ({written} compressed bytes)");
 }

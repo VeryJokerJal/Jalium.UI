@@ -65,6 +65,7 @@ public static class CssTooling
         var executable = Environment.GetEnvironmentVariable("JALIUM_CSS_NODE");
         if (string.IsNullOrWhiteSpace(executable))
             executable = Path.Combine(root, "node", HostRid, OperatingSystem.IsWindows() ? "node.exe" : "node");
+        executable = BundledNodeRuntime.Resolve(executable);
         var worker = Path.Combine(root, "index.cjs");
         if (!File.Exists(executable) || !File.Exists(worker))
             throw new FileNotFoundException($"Framework CSS tooling for {HostRid} is missing at '{root}'.");
