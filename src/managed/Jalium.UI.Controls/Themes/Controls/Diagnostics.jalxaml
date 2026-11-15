@@ -1,0 +1,75 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Style TargetType="DebugHudOverlay">
+        <Setter Property="Background" Value="#EB101016" />
+        <Setter Property="BorderBrush" Value="#5064A0DC" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="6" />
+        <Setter Property="Padding" Value="10,8" />
+        <Setter Property="HorizontalAlignment" Value="Left" />
+        <Setter Property="VerticalAlignment" Value="Top" />
+        <Setter Property="Margin" Value="4,4,0,0" />
+        <Setter Property="IsHitTestVisible" Value="False" />
+        <Setter Property="Visibility" Value="Collapsed" />
+        <Setter Property="FontFamily" Value="{ThemeResource MonoFontFamily}" />
+        <Setter Property="FontSize" Value="10" />
+        <Setter Property="Foreground" Value="#C88C919B" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="DebugHudOverlay">
+                <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="{TemplateBinding CornerRadius}"
+                        Padding="{TemplateBinding Padding}">
+                    <VisualStateManager.VisualStateGroups>
+                        <VisualStateGroup x:Name="FrameRateStates">
+                            <VisualState x:Name="Healthy">
+                                <VisualState.Setters><Setter TargetName="PART_FpsText" Property="Foreground" Value="#50FF50" /></VisualState.Setters>
+                            </VisualState>
+                            <VisualState x:Name="Fair">
+                                <VisualState.Setters><Setter TargetName="PART_FpsText" Property="Foreground" Value="#FFDC3C" /></VisualState.Setters>
+                            </VisualState>
+                            <VisualState x:Name="Critical">
+                                <VisualState.Setters><Setter TargetName="PART_FpsText" Property="Foreground" Value="#FF4646" /></VisualState.Setters>
+                            </VisualState>
+                        </VisualStateGroup>
+                        <VisualStateGroup x:Name="WorstFrameStates">
+                            <VisualState x:Name="WorstNormal" />
+                            <VisualState x:Name="WorstSlow">
+                                <VisualState.Setters><Setter TargetName="PART_WorstFrameText" Property="Foreground" Value="#FFB43C" /></VisualState.Setters>
+                            </VisualState>
+                        </VisualStateGroup>
+                        <VisualStateGroup x:Name="FrameTimeStates">
+                            <VisualState x:Name="TotalNormal" />
+                            <VisualState x:Name="TotalSlow">
+                                <VisualState.Setters><Setter TargetName="PART_TimingText" Property="Foreground" Value="#FFB43C" /></VisualState.Setters>
+                            </VisualState>
+                        </VisualStateGroup>
+                        <VisualStateGroup x:Name="PipelineStates">
+                            <VisualState x:Name="FramesNormal" />
+                            <VisualState x:Name="FramesFailed">
+                                <VisualState.Setters><Setter TargetName="PART_FramesText" Property="Foreground" Value="#FFB43C" /></VisualState.Setters>
+                            </VisualState>
+                        </VisualStateGroup>
+                    </VisualStateManager.VisualStateGroups>
+                    <StackPanel>
+                        <WrapPanel Orientation="Horizontal">
+                            <TextBlock x:Name="PART_FpsText" Text="{TemplateBinding FpsText}" FontSize="20" FontWeight="Bold" Margin="0,0,4,0" />
+                            <TextBlock Text="FPS" Foreground="#DCAAB4BE" Margin="0,8,12,0" />
+                            <TextBlock Text="{TemplateBinding RenderPathText}" Margin="0,8,0,0" />
+                            <TextBlock x:Name="PART_WorstFrameText" Text="{TemplateBinding WorstFrameText}" Margin="16,8,0,0" />
+                        </WrapPanel>
+                        <TextBlock x:Name="PART_TimingText" TextWrapping="Wrap" Text="{TemplateBinding TimingText}" Foreground="#F5F0F0F0" Margin="0,4,0,2" />
+                        <StackPanel x:Name="PART_FrameTimeBar" Orientation="Horizontal" Margin="0,0,0,6" Width="{TemplateBinding BarWidth}" ClipToBounds="True">
+                            <Rectangle Width="{TemplateBinding LayoutBarWidth}" Height="3" Fill="#C850B4FF" HorizontalAlignment="Left" />
+                            <Rectangle Width="{TemplateBinding RenderBarWidth}" Height="3" Fill="#C8FFA028" HorizontalAlignment="Left" />
+                            <Rectangle Width="{TemplateBinding PresentBarWidth}" Height="3" Fill="#C864DC64" HorizontalAlignment="Left" />
+                        </StackPanel>
+                        <TextBlock x:Name="PART_FramesText" TextWrapping="Wrap" Text="{TemplateBinding FramesText}" />
+                        <TextBlock Text="{TemplateBinding DirtyText}" TextWrapping="Wrap" Foreground="#DCAAB4BE" Margin="0,0,0,6" />
+                        <TextBlock Text="{TemplateBinding WindowText}" TextWrapping="Wrap" />
+                        <TextBlock Text="{TemplateBinding GcText}" TextWrapping="Wrap" />
+                    </StackPanel>
+                </Border>
+            </ControlTemplate>
+        </Setter>
+    </Style>
+</ResourceDictionary>

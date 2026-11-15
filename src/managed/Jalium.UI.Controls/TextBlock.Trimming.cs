@@ -75,7 +75,87 @@ public partial class TextBlock
         }
 
         var ellipsisRun = GetRunAtTrimBoundary(line.StartIndex, bestLength, lineEnd);
-        trimmed = new TrimmedLine(bestLength, bestWidth, ellipsisRun, fragmented);
+        string? paintedPrefix = null;
+        var partialSourceStart = -1;
+        var partialSourceLength = 0;
+        var partialPieceCount = 0;
+        var partialStartOffset = 0.0;
+        if (TextTrimming == TextTrimming.CharacterEllipsis && line.StartIndex + bestLength < lineEnd)
+        {
+            var nextStart = line.StartIndex + bestLength;
+            var nextEnd = Math.Min(lineEnd, GraphemeClusters.NextBoundary(_visualText, nextStart));
+            if (nextEnd > nextStart)
+            {
+                var nextPaint = PaintSlice(nextStart, nextEnd - nextStart);
+                var paintBoundaries = GraphemeClusters.GetBoundaries(nextPaint);
+                if (paintBoundaries.Length > 2)
+                {
+                    var subRun = GetRunAtTrimBoundary(line.StartIndex, bestLength + 1, lineEnd);
+                    var ellipsisWidth = MeasureEllipsis(subRun).WidthIncludingTrailingWhitespace;
+                    var prefixBeforePartial = bestLength > 0
+                        ? MeasureInlineRange(line.StartIndex, bestLength,
+                              includeTrailingWhitespace: true, forceFragmented: true, tabOrigin: tabOrigin) +
+                          WordSpacingBeforeSeparator(nextStart) +
+                          LetterSpacingAtBoundary(nextStart, line.StartIndex, lineEnd)
+                        : 0.0;
+                    InternalPaintSpacingUnit? internalUnit = null;
+                    if (fragmented)
+                    {
+                        var unitIndex = FirstInternalPaintUnitAtOrAfter(nextStart);
+                        if (unitIndex < _internalPaintSpacingUnits.Count &&
+                            _internalPaintSpacingUnits[unitIndex].Start == nextStart &&
+                            _internalPaintSpacingUnits[unitIndex].End == nextEnd &&
+                            ReferenceEquals(_internalPaintSpacingUnits[unitIndex].Run, subRun))
+                            internalUnit = _internalPaintSpacingUnits[unitIndex];
+                    }
+                    for (var pieceCount = 1; pieceCount < paintBoundaries.Length - 1; pieceCount++)
+                    {
+                        var subPaint = nextPaint[..paintBoundaries[pieceCount]];
+                        if (!fragmented)
+                        {
+                            var candidatePaint = PaintSlice(line.StartIndex, bestLength) + subPaint;
+                            if (MeasureTextWidth(candidatePaint + "…") <= contentWidth)
+                            {
+                                paintedPrefix = candidatePaint;
+                                bestWidth = MeasureTextWidth(candidatePaint, includeTrailingWhitespace: true);
+                                ellipsisRun = subRun;
+                            }
+                            else break;
+                        }
+                        else
+                        {
+                            var partialWidth = 0.0;
+                            if (internalUnit is not null && pieceCount <= internalUnit.Pieces.Length)
+                            {
+                                for (var piece = 0; piece < pieceCount; piece++)
+                                    partialWidth += internalUnit.GapsBefore[piece] +
+                                        internalUnit.Pieces[piece].WidthIncludingTrailingWhitespace;
+                            }
+                            else
+                            {
+                                partialWidth = (subRun is null ? MeasureText(subPaint) : MeasureRunText(subRun, subPaint))
+                                    .WidthIncludingTrailingWhitespace;
+                            }
+                            var spacingBeforeEllipsis = LetterSpacingBeforeEllipsis(
+                                line.StartIndex, bestLength + (nextEnd - nextStart), subRun, ellipsisWidth);
+                            if (prefixBeforePartial + partialWidth + spacingBeforeEllipsis + ellipsisWidth <= contentWidth)
+                            {
+                                bestWidth = prefixBeforePartial + partialWidth + spacingBeforeEllipsis;
+                                ellipsisRun = subRun;
+                                paintedPrefix = PaintSlice(line.StartIndex, bestLength) + subPaint;
+                                partialSourceStart = nextStart;
+                                partialSourceLength = nextEnd - nextStart;
+                                partialPieceCount = pieceCount;
+                                partialStartOffset = prefixBeforePartial;
+                            }
+                            else break;
+                        }
+                    }
+                }
+            }
+        }
+        trimmed = new TrimmedLine(bestLength, bestWidth, ellipsisRun, fragmented,
+            paintedPrefix, partialSourceStart, partialSourceLength, partialPieceCount, partialStartOffset);
         return true;
     }
 
@@ -137,6 +217,41 @@ public partial class TextBlock
             if (trimmed.PrefixLength > 0)
                 DrawStyledInlineLine(context, line, originX, lineY,
                     line.StartIndex + trimmed.PrefixLength);
+            if (trimmed.PartialPieceCount > 0 && trimmed.PartialSourceStart >= 0)
+            {
+                var partialX = originX + trimmed.PartialStartOffset;
+                var nextStart = trimmed.PartialSourceStart;
+                var nextEnd = nextStart + trimmed.PartialSourceLength;
+                var paintStart = _paintOffsets is not null ? _paintOffsets[nextStart] : nextStart;
+                var unitIndex = FirstInternalPaintUnitAtOrAfter(nextStart);
+                if (unitIndex < _internalPaintSpacingUnits.Count &&
+                    _internalPaintSpacingUnits[unitIndex] is { } unit &&
+                    unit.Start == nextStart && unit.End == nextEnd &&
+                    ReferenceEquals(unit.Run, trimmed.EllipsisRun) &&
+                    trimmed.PartialPieceCount <= unit.Pieces.Length)
+                {
+                    var nextPaint = PaintSlice(nextStart, trimmed.PartialSourceLength);
+                    var paintBoundaries = GraphemeClusters.GetBoundaries(nextPaint);
+                    for (var piece = 0; piece < trimmed.PartialPieceCount; piece++)
+                    {
+                        partialX += unit.GapsBefore[piece];
+                        DrawMeasuredFragment(context, unit.Run, unit.Pieces[piece], ref partialX,
+                            lineY, line, nextStart, trimmed.PartialSourceLength,
+                            paintStart + paintBoundaries[piece]);
+                    }
+                }
+                else
+                {
+                    var nextPaint = PaintSlice(nextStart, trimmed.PartialSourceLength);
+                    var paintBoundaries = GraphemeClusters.GetBoundaries(nextPaint);
+                    var subPaint = nextPaint[..paintBoundaries[trimmed.PartialPieceCount]];
+                    var measured = trimmed.EllipsisRun is null
+                        ? MeasureText(subPaint)
+                        : MeasureRunText(trimmed.EllipsisRun, subPaint);
+                    DrawMeasuredFragment(context, trimmed.EllipsisRun, measured, ref partialX,
+                        lineY, line, nextStart, trimmed.PartialSourceLength, paintStart);
+                }
+            }
 
             var run = trimmed.EllipsisRun;
             var formatted = MeasureEllipsis(run).FormattedText!;
@@ -151,20 +266,29 @@ public partial class TextBlock
             formatted.MaxTextWidth = double.MaxValue;
             formatted.MaxTextHeight = Math.Max(line.Height, size * 2);
             formatted.ApplyTextOptionsFrom(this);
-            context.DrawText(formatted, new Point(originX + trimmed.PrefixWidth,
-                lineY + line.Baseline - ascent));
+            DrawDocumentGlyphs(context, formatted, UsesCssLineMetrics
+                ? TextPaintOrigin(formatted, line, originX + trimmed.PrefixWidth, lineY)
+                : new Point(originX + trimmed.PrefixWidth, lineY + line.Baseline - ascent), line.StartIndex + trimmed.PrefixLength, 0);
             return;
         }
 
-        var text = PaintSlice(line.StartIndex, trimmed.PrefixLength) + "…";
+        var text = (trimmed.PaintedPrefix ?? PaintSlice(line.StartIndex, trimmed.PrefixLength)) + "…";
         var formattedLine = MeasureText(text).FormattedText!;
         formattedLine.Foreground = Foreground;
         formattedLine.MaxTextWidth = double.MaxValue;
-        formattedLine.MaxTextHeight = line.Height;
+        formattedLine.MaxTextHeight = TextPaintHeight(line);
         formattedLine.ApplyTextOptionsFrom(this);
-        context.DrawText(formattedLine, new Point(originX, lineY));
+        DrawDocumentGlyphs(context, formattedLine, TextPaintOrigin(formattedLine, line, originX, lineY), line.StartIndex, trimmed.PrefixLength);
     }
 
-    private readonly record struct TrimmedLine(int PrefixLength, double PrefixWidth,
-        Run? EllipsisRun, bool Fragmented);
+    private readonly record struct TrimmedLine(
+        int PrefixLength,
+        double PrefixWidth,
+        Run? EllipsisRun,
+        bool Fragmented,
+        string? PaintedPrefix = null,
+        int PartialSourceStart = -1,
+        int PartialSourceLength = 0,
+        int PartialPieceCount = 0,
+        double PartialStartOffset = 0);
 }

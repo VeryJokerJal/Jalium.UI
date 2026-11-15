@@ -88,6 +88,30 @@ public partial class XamlReader
     }
 
     /// <summary>
+    /// Builds a designer tree without opening native windows while applying XAML properties.
+    /// </summary>
+    public static object ParseForDesigner(string xaml)
+        => ParseForDesigner(xaml, new XamlDesignerOptions());
+
+    public static object ParseForDesigner(string xaml, XamlDesignerOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(xaml);
+        ArgumentNullException.ThrowIfNull(options);
+
+        using var xmlReader = JalxamlParser.CreateReader(xaml);
+        var parsed = LoadInternal(xmlReader, null, options.CssResourceBaseUri, null, designerOptions: options);
+        if (parsed is DependencyObject dependencyObject)
+        {
+            DesignerProperties.SetIsInDesignMode(dependencyObject, true);
+        }
+        if (parsed is Window window && window.Visibility == Visibility.Hidden && !xaml.Contains("Hidden", StringComparison.OrdinalIgnoreCase))
+        {
+            window.Visibility = Visibility.Visible;
+        }
+        return parsed;
+    }
+
+    /// <summary>
     /// Hot-reload variant of <see cref="Parse(string)"/>: builds a standalone object tree (no existing
     /// root) but wires inline event handlers to <paramref name="codeBehindForEvents"/> — the live
     /// instance being patched — so a grafted new element's Click/KeyDown/etc. handlers work without a
@@ -100,6 +124,7 @@ public partial class XamlReader
         using var xmlReader = JalxamlParser.CreateReader(xaml);
         return LoadInternal(xmlReader, null, null, null, codeBehindForEvents: codeBehindForEvents);
     }
+
 
     /// <summary>
     /// Reads XAML from a stream and creates an object tree.
@@ -687,21 +712,24 @@ public partial class XamlReader
 
     private static object LoadInternal(XmlReader reader, object? existingInstance, Uri? baseUri, Assembly? sourceAssembly,
         ResourceDictionary? parentResourceDictionary = null, Dictionary<string, object>? namedElementsOut = null,
-        object? codeBehindForEvents = null, bool restrictive = false)
+        object? codeBehindForEvents = null, bool restrictive = false, XamlDesignerOptions? designerOptions = null)
     {
-
+        using var cssResourceScope = Jalium.UI.Styling.Css.PushDesignerResourceBaseUri(
+            designerOptions is { EnableCss: true } ? designerOptions.CssResourceBaseUri : null);
         var context = new XamlParserContext
         {
             BaseUri = baseUri,
             SourceAssembly = sourceAssembly,
             ParentResourceDictionary = parentResourceDictionary,
             IsRestrictive = restrictive,
+            DesignerOptions = designerOptions,
             // Hot reload parses a STANDALONE source tree (existingInstance == null) yet still needs its
             // inline event handlers (Click=…) to bind to the LIVE instance's code-behind so grafted new
             // elements stay interactive. codeBehindForEvents carries that target and affects ONLY event
             // wiring — the root is still built fresh because existingInstance remains null.
             CodeBehindInstance = codeBehindForEvents ?? existingInstance
         };
+        AddInheritedAmbientResources(context);
 
         while (reader.Read())
         {
@@ -840,6 +868,15 @@ public partial class XamlReader
             typeExtension.TypeResolver = context.CaptureMarkupTypeResolver();
 
         XamlBuilder.SetXmlIdentity(instance,namespaceUri,elementName,resetAttributes:true);
+        Jalium.UI.Styling.CssXmlIdentity.RecordSourceAssembly(instance, context.SourceAssembly);
+        if (context.DesignerOptions is { } designerOptions)
+        {
+            Jalium.UI.Styling.CssXmlIdentity.RecordDesignerContext(instance, designerOptions.EnableCss, designerOptions.CssResourceBaseUri);
+            if (instance is FrameworkTemplate frameworkTemplate)
+                Jalium.UI.Styling.CssXmlIdentity.RecordDesignerContext(frameworkTemplate.Resources, designerOptions.EnableCss, designerOptions.CssResourceBaseUri);
+            if (instance is DependencyObject designObject)
+                DesignerProperties.SetIsInDesignMode(designObject, true);
+        }
 
         // Parse attributes before pushing the current element so ResourceDictionary Source
         // can replace the placeholder instance with an x:Class-derived dictionary.
@@ -969,6 +1006,10 @@ public partial class XamlReader
                 {
                     fe.Name = value;
                 }
+                else if (instance is VisualState state)
+                    state.Name = value;
+                else if (instance is VisualStateGroup group)
+                    group.Name = value;
                 else
                 {
                     var nameProperty = instance.GetType().GetProperty(nameof(FrameworkElement.Name));
@@ -1012,6 +1053,9 @@ public partial class XamlReader
         {
             throw new XamlParseException($"Cannot resolve attached property owner type: {ownerTypeName}");
         }
+
+        if (ownerType == typeof(Jalium.UI.Styling.Css) && context.DesignerOptions is { EnableCss: false })
+            return;
 
         var attachedProperty = instance is DependencyObject
             ? DependencyProperty.FromName(ownerType, propertyName)
@@ -1589,13 +1633,18 @@ public partial class XamlReader
                 ownerTypeName);
             if (attachedOwnerType != null && attachedOwnerType != type)
             {
+                if (attachedOwnerType == typeof(Jalium.UI.Styling.Css) && context.DesignerOptions is { EnableCss: false })
+                {
+                    SkipElement(reader);
+                    return;
+                }
                 ParseAttachedPropertyElement(reader, instance, attachedOwnerType, propertyName, depth, isEmpty, context);
                 return;
             }
         }
 
         // Regular property element syntax
-        var property = type.GetProperty(propertyName);
+        var property = ResolvePublicProperty(type, propertyName);
         if (property == null)
         {
             throw new XamlParseException($"Property '{propertyName}' not found on type '{type.Name}'");
@@ -1654,7 +1703,7 @@ public partial class XamlReader
                 {
                     if (propertyValue is System.Collections.IDictionary dictionary)
                     {
-                        object? key = resourceKey;
+                        object? key = ResolveDictionaryKey(resourceKey, instance, context);
                         if (key == null && childValue is Style style && style.TargetType != null)
                         {
                             key = style.TargetType;
@@ -1748,6 +1797,15 @@ public partial class XamlReader
 
         object? assignedValue = null;
         var hasValue = false;
+        System.Collections.IList? collection = null;
+        if (targetType != null && typeof(System.Collections.IList).IsAssignableFrom(targetType))
+        {
+            if (targetType.IsAssignableFrom(typeof(System.Collections.ArrayList)))
+                collection = new System.Collections.ArrayList();
+            else
+                collection = ownerType.GetMethod($"Get{propertyName}", BindingFlags.Public | BindingFlags.Static)
+                    ?.Invoke(null, [instance]) as System.Collections.IList;
+        }
 
         while (reader.Read())
         {
@@ -1781,7 +1839,13 @@ public partial class XamlReader
                 childValue = TypeConverterRegistry.ConvertValue(stringValue, targetType);
             }
 
-            assignedValue = childValue;
+            if (collection != null && targetType?.IsInstanceOfType(childValue) != true)
+            {
+                collection.Add(childValue);
+                assignedValue = collection;
+            }
+            else
+                assignedValue = childValue;
             hasValue = true;
         }
 
@@ -1810,6 +1874,15 @@ public partial class XamlReader
 
     [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
         Justification = "This is the runtime XAML markup-extension resolution tail; invoking it is the documented consumer responsibility under AOT. The base MarkupExtension.ProvideValue carries RequiresDynamicCode only because 'some extensions (e.g. x:Array) construct arrays of a runtime-supplied element Type' — that single extension is the dynamic-code case. The built-in extensions reachable here (Binding/StaticResource/DynamicResource/TemplateBinding/x:Static etc.) construct no runtime-typed arrays, so no dynamic code is emitted at this call site.")]
+    [RequiresUnreferencedCode("Resource key markup extensions may resolve static members through reflection.")]
+    private static object? ResolveDictionaryKey(string? resourceKey, object owner, XamlParserContext context)
+    {
+        if (resourceKey == null) return null;
+        if (resourceKey.StartsWith("{}", StringComparison.Ordinal)) return resourceKey[2..];
+        return MarkupExtensionParser.TryParse(resourceKey, owner, null, context, out var resolved)
+            ? resolved : resourceKey;
+    }
+
     private static object? ResolveMarkupExtensionValueIfNeeded(
         object? value,
         object targetObject,
@@ -2077,6 +2150,10 @@ public partial class XamlReader
                     // Parse triggers normally
                     ParseControlTemplateTriggers(reader, template, context);
                 }
+                else if (parts.Length == 2 && parts[1] == "Resources")
+                {
+                    ParsePropertyElement(reader, template, context);
+                }
                 else
                 {
                     // Skip unknown property elements
@@ -2110,6 +2187,10 @@ public partial class XamlReader
         {
             template.VisualTreeXaml = visualTreeXaml.ToString();
             template.SourceAssembly = context.SourceAssembly;
+            template.AmbientResourceDictionaries = context.SnapshotAmbientResourceDictionaries();
+
+            if (context.DesignerOptions is { } designerOptions)
+                template.XamlParserOverride = (xaml, assembly) => ParseTemplateXaml(xaml, assembly, designerOptions);
 
             // Register the XAML parser callback if not already set
             ControlTemplate.XamlParser ??= ParseTemplateXaml;
@@ -2195,6 +2276,8 @@ public partial class XamlReader
         {
             template.VisualTreeXaml = visualTreeXaml.ToString();
             template.SourceAssembly = context.SourceAssembly;
+            if (context.DesignerOptions is { } designerOptions)
+                template.XamlParserOverride = (xaml, assembly) => ParseTemplateXaml(xaml, assembly, designerOptions);
             // 记下解析时刻栈中的 ResourceDictionary 链，让 LoadContent 时可解析祖先 {StaticResource}。
             template.AmbientResourceDictionaries = context.SnapshotAmbientResourceDictionaries();
 
@@ -2253,6 +2336,8 @@ public partial class XamlReader
         {
             template.VisualTreeXaml = visualTreeXaml.ToString();
             template.SourceAssembly = context.SourceAssembly;
+            if (context.DesignerOptions is { } designerOptions)
+                template.XamlParserOverride = (xaml, assembly) => ParseTemplateXaml(xaml, assembly, designerOptions);
             template.AmbientResourceDictionaries = context.SnapshotAmbientResourceDictionaries();
 
             // Register the XAML parser callback if not already set
@@ -2281,6 +2366,9 @@ public partial class XamlReader
     /// Parses template XAML content and returns the root element.
     /// </summary>
     private static FrameworkElement? ParseTemplateXaml(string xaml, Assembly? sourceAssembly)
+        => ParseTemplateXaml(xaml, sourceAssembly, null);
+
+    private static FrameworkElement? ParseTemplateXaml(string xaml, Assembly? sourceAssembly, XamlDesignerOptions? designerOptions)
     {
         if (string.IsNullOrEmpty(xaml))
             return null;
@@ -2288,7 +2376,8 @@ public partial class XamlReader
         using var xmlReader = JalxamlParser.CreateReader(xaml);
         var context = new XamlParserContext
         {
-            SourceAssembly = sourceAssembly
+            SourceAssembly = sourceAssembly,
+            DesignerOptions = designerOptions,
         };
 
         // 把模板被声明时的祖先 ResourceDictionary 链注入新解析上下文的 ambient 栈底，
@@ -2297,6 +2386,17 @@ public partial class XamlReader
         var inheritedAmbient = TemplateAmbientResourceContext.Current;
         if (inheritedAmbient != null && inheritedAmbient.Count > 0)
         {
+            foreach (var parent in inheritedAmbient)
+                if (Jalium.UI.Styling.CssXmlIdentity.DesignerContext(parent) is { } designerContext)
+                {
+                    context.DesignerOptions = new XamlDesignerOptions
+                    {
+                        EnableCss = designerContext.EnableCss,
+                        CssResourceBaseUri = designerContext.BaseUri,
+                        TypeResolver = designerOptions?.TypeResolver,
+                    };
+                    break;
+                }
             // 反向 push 让最外层资源在栈底，模板自身资源（首次 push 进栈的）保持在上方优先匹配。
             for (int i = inheritedAmbient.Count - 1; i >= 0; i--)
             {
@@ -2309,6 +2409,7 @@ public partial class XamlReader
             if (xmlReader.NodeType == XmlNodeType.Element)
             {
                 var result = ParseElement(xmlReader, context);
+                RegisterNamedElementsInScope(result, context.NamedElements);
                 return result as FrameworkElement;
             }
         }
@@ -2327,6 +2428,8 @@ public partial class XamlReader
         resourceDict.Source = sourceUri;
         resourceDict.BaseUri = context.BaseUri;
         resourceDict.SourceAssembly = context.SourceAssembly;
+        if (context.DesignerOptions is { } designerOptions)
+            Jalium.UI.Styling.CssXmlIdentity.RecordDesignerContext(resourceDict, designerOptions.EnableCss, designerOptions.CssResourceBaseUri);
 
         // Find the parent ResourceDictionary (the one that will contain this in MergedDictionaries)
         // The parent is needed so child XAML can reference resources from sibling dictionaries
@@ -2339,6 +2442,11 @@ public partial class XamlReader
         {
             if (ResourceDictionary.SourceLoader != null)
             {
+                // Source callbacks start a new parser/builder. Preserve the declaring
+                // dictionary chain so sibling resources remain available to BasedOn.
+                var ambient = context.SnapshotAmbientResourceDictionaries()?.Where(dictionary =>
+                    !ReferenceEquals(dictionary, resourceDict)).ToArray();
+                using var ambientScope = TemplateAmbientResourceContext.Push(ambient);
                 var loadedDict = ResourceDictionary.SourceLoader(resourceDict, sourceUri, context.SourceAssembly);
                 if (loadedDict != null)
                 {
@@ -2686,7 +2794,7 @@ public partial class XamlReader
             return instance;
         }
 
-        var property = type.GetProperty(propertyName);
+        var property = ResolvePublicProperty(type, propertyName);
 
         if (property == null)
         {
@@ -3357,7 +3465,8 @@ public partial class XamlReader
             child = ResolveMarkupExtensionValueIfNeeded(child, resourceDict, null, context)!;
             if (!string.IsNullOrEmpty(resourceKey))
             {
-                resourceDict[resourceKey] = child;
+                var key = ResolveDictionaryKey(resourceKey, resourceDict, context);
+                if (key != null) resourceDict[key] = child;
             }
             else if (TryGetImplicitResourceKey(child, out var implicitKey))
             {
@@ -3427,6 +3536,18 @@ public partial class XamlReader
         else if (parent is Window window && child is UIElement windowContent)
         {
             window.Content = windowContent;
+        }
+        else if (parent is IAddChild addChild)
+        {
+            // Timeline groups and keyframe animations expose the XAML child
+            // contract directly rather than a ContentProperty attribute.
+            addChild.AddChild(child);
+        }
+        else if (parent is System.Collections.IList collection)
+        {
+            // Collection objects can be the XAML content container themselves,
+            // for example SwipeItems. Keep explicit content and IAddChild first.
+            collection.Add(child);
         }
     }
 
@@ -3596,12 +3717,21 @@ public partial class XamlReader
 
     internal static XamlParserContext CreateBuilderContext(object? component, Uri? baseUri, Assembly? sourceAssembly)
     {
-        return new XamlParserContext
+        var context = new XamlParserContext
         {
             BaseUri = baseUri,
             SourceAssembly = sourceAssembly,
             CodeBehindInstance = component,
         };
+        AddInheritedAmbientResources(context);
+        return context;
+    }
+
+    private static void AddInheritedAmbientResources(XamlParserContext context)
+    {
+        if (TemplateAmbientResourceContext.Current is not { } ambient) return;
+        for (var index = ambient.Count - 1; index >= 0; index--)
+            context.PushParent(ambient[index]);
     }
 
     [RequiresUnreferencedCode("XamlBuilder.SetProperty forwards to the runtime XamlReader.SetProperty path which uses reflection / type converters / markup extensions.")]
@@ -3791,7 +3921,10 @@ public partial class XamlReader
             if (propertyName == nameof(ResourceDictionary.ThemeDictionaries))
             {
                 if (resourceKey != null)
-                    owner.ThemeDictionaries[resourceKey] = builtInDictionary;
+                {
+                    var key = ResolveDictionaryKey(resourceKey, owner, context);
+                    if (key != null) owner.ThemeDictionaries[key] = builtInDictionary;
+                }
                 return;
             }
         }
@@ -3834,7 +3967,7 @@ public partial class XamlReader
             return;
         }
 
-        var property = type.GetProperty(propertyName);
+        var property = ResolvePublicProperty(type, propertyName);
         if (property == null)
         {
             return;
@@ -3870,7 +4003,7 @@ public partial class XamlReader
         {
             if (propertyValue is System.Collections.IDictionary dictionary)
             {
-                object? key = resourceKey;
+                object? key = ResolveDictionaryKey(resourceKey, instance, context);
                 if (key == null && childValue is Style style && style.TargetType != null)
                 {
                     key = style.TargetType;
@@ -3934,7 +4067,7 @@ public partial class XamlReader
         }
 
         object? targetProperty = DependencyProperty.FromName(target.GetType(), propertyName)
-            ?? (object?)target.GetType().GetProperty(propertyName);
+            ?? (object?)ResolvePublicProperty(target.GetType(), propertyName);
         ResourceDictionaryDiagnosticsStore.NotifyStaticResourceResolved(
             target,
             targetProperty,
@@ -3967,6 +4100,16 @@ public partial class XamlReader
             if (dp != null)
             {
                 DynamicResourceBindingOperations.SetDynamicResource(fe, dp, key);
+                return;
+            }
+        }
+
+        if (target is DependencyObject dependencyObject && context.FindParent<FrameworkElement>() is { } host)
+        {
+            var dp = DependencyProperty.FromName(target.GetType(), propertyName);
+            if (dp != null)
+            {
+                DynamicResourceBindingOperations.SetDynamicResourceForNonVisual(host, dependencyObject, dp, key);
                 return;
             }
         }
@@ -4019,7 +4162,7 @@ public partial class XamlReader
     [RequiresUnreferencedCode("ApplyResolvedValue assigns a property by name via reflection.")]
     private static void ApplyResolvedValue(object target, string propertyName, object value, XamlParserContext context)
     {
-        var property = target.GetType().GetProperty(propertyName);
+        var property = ResolvePublicProperty(target.GetType(), propertyName);
         if (property == null || !property.CanWrite)
             return;
 
@@ -4035,6 +4178,28 @@ public partial class XamlReader
         if (converted != null)
         {
             property.SetValue(target, converted);
+        }
+    }
+
+    [RequiresUnreferencedCode("Resolves public XAML properties on the target's runtime type.")]
+    private static PropertyInfo? ResolvePublicProperty(Type type, string propertyName)
+    {
+        try
+        {
+            return type.GetProperty(propertyName);
+        }
+        catch (AmbiguousMatchException)
+        {
+            // A derived control can hide a framework property with a different
+            // type (EditControl.Language is string; FrameworkElement.Language is
+            // XmlLanguage). XAML follows the most-derived public declaration.
+            for (var current = type; current != null; current = current.BaseType)
+            {
+                var property = current.GetProperty(propertyName,
+                    BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly);
+                if (property != null) return property;
+            }
+            return null;
         }
     }
 
@@ -4195,6 +4360,7 @@ internal sealed class XamlParserContext : IAmbientResourceProvider
     private string? _currentResourceKey;
     private XmlReader? _markupReader;
     private XamlParserContext? _markupTypeContext;
+    internal IReadOnlyDictionary<string, string>? CompiledMarkupNamespaces { get; set; }
 
     internal MarkupReaderScope EnterMarkupReader(XmlReader reader)
     {
@@ -4214,7 +4380,7 @@ internal sealed class XamlParserContext : IAmbientResourceProvider
         {
             JalxamlReader jalxaml => jalxaml.SnapshotNamespacesInScope(),
             IXmlNamespaceResolver xml => new Dictionary<string, string>(xml.GetNamespacesInScope(XmlNamespaceScope.All)),
-            _ => null,
+            _ => CompiledMarkupNamespaces,
         };
         if (namespaces is null) return null;
         // Retained extensions capture only a namespace snapshot and a type-only
@@ -4241,6 +4407,7 @@ internal sealed class XamlParserContext : IAmbientResourceProvider
     /// Gets or sets the assembly used for loading embedded resources.
     /// </summary>
     public Assembly? SourceAssembly { get; set; }
+    internal XamlDesignerOptions? DesignerOptions { get; set; }
 
     /// <summary>
     /// Gets or sets the parent ResourceDictionary for ambient resource lookup.
@@ -4517,7 +4684,11 @@ internal sealed class XamlParserContext : IAmbientResourceProvider
     /// <summary>
     /// Pushes an object onto the parent stack.
     /// </summary>
-    public void PushParent(object parent) => _parentStack.Push(parent);
+    public void PushParent(object parent)
+    {
+        Jalium.UI.Styling.CssXmlIdentity.RecordSourceAssembly(parent, SourceAssembly);
+        _parentStack.Push(parent);
+    }
 
     /// <summary>
     /// Pops an object from the parent stack.
@@ -4709,6 +4880,11 @@ internal sealed class XamlParserContext : IAmbientResourceProvider
 
     public Type? ResolveType(string namespaceUri, string typeName)
     {
+        // Preview assemblies can be reloaded or share type names across projects. Keep
+        // these resolutions outside the process-wide runtime type and miss caches.
+        if (DesignerOptions?.TypeResolver?.Invoke(namespaceUri, typeName) is { } projectType)
+            return projectType;
+
         var cacheKey = new TypeCacheKey(namespaceUri, typeName, SourceAssembly);
         if (TypeResolutionCacheHolder.Types.TryGetValue(cacheKey, out var cachedType))
         {
@@ -5036,6 +5212,7 @@ public static class XamlTypeRegistry
     [return: DynamicallyAccessedMembers(BuiltinTypeMembers)]
     private static Type? ResolveCoreBuiltinType(string typeName) => typeName switch
     {
+        "AppBarEdge" => typeof(global::Jalium.UI.Shell.AppBarEdge),
         "Application" => typeof(global::Jalium.UI.Application),
         "ColorConvertedBitmapExtension" => typeof(global::Jalium.UI.ColorConvertedBitmapExtension),
         "Condition" => typeof(global::Jalium.UI.Condition),
@@ -5060,6 +5237,7 @@ public static class XamlTypeRegistry
         "Trigger" => typeof(global::Jalium.UI.Trigger),
         "UIElement" => typeof(global::Jalium.UI.UIElement),
         "Window" => typeof(global::Jalium.UI.Window),
+        "WindowAppBar" => typeof(global::Jalium.UI.Shell.WindowAppBar),
         _ => null,
     };
 
@@ -5124,8 +5302,12 @@ public static class XamlTypeRegistry
         "Css" => typeof(global::Jalium.UI.Styling.Css),
         "DataGrid" => typeof(global::Jalium.UI.Controls.DataGrid),
         "DataGridCell" => typeof(global::Jalium.UI.Controls.DataGridCell),
+        "DataGridDetailsPresenter" => typeof(global::Jalium.UI.Controls.Primitives.DataGridDetailsPresenter),
+        "DataGridColumnDragIndicator" => typeof(global::Jalium.UI.Controls.DataGridColumnDragIndicator),
+        "DataGridDropLocationIndicator" => typeof(global::Jalium.UI.Controls.DataGridDropLocationIndicator),
         "DataGridColumnHeader" => typeof(global::Jalium.UI.Controls.Primitives.DataGridColumnHeader),
         "DataGridRow" => typeof(global::Jalium.UI.Controls.DataGridRow),
+        "DataGridRowHeader" => typeof(global::Jalium.UI.Controls.Primitives.DataGridRowHeader),
         "DataTemplateSelector" => typeof(global::Jalium.UI.Controls.DataTemplateSelector),
         "DatePicker" => typeof(global::Jalium.UI.Controls.DatePicker),
         "DatePickerTextBox" => typeof(global::Jalium.UI.Controls.Primitives.DatePickerTextBox),
@@ -5160,6 +5342,7 @@ public static class XamlTypeRegistry
         "ItemsPanelTemplate" => typeof(global::Jalium.UI.Controls.ItemsPanelTemplate),
         "ItemsPresenter" => typeof(global::Jalium.UI.Controls.ItemsPresenter),
         "JsonTreeViewer" => typeof(global::Jalium.UI.Controls.JsonTreeViewer),
+        "JsonTreeNodePresenter" => typeof(global::Jalium.UI.Controls.JsonTreeNodePresenter),
         "Label" => typeof(global::Jalium.UI.Controls.Label),
         "ListBox" => typeof(global::Jalium.UI.Controls.ListBox),
         "ListBoxItem" => typeof(global::Jalium.UI.Controls.ListBoxItem),
@@ -5173,10 +5356,12 @@ public static class XamlTypeRegistry
         "MenuBarItem" => typeof(global::Jalium.UI.Controls.MenuBarItem),
         "MenuFlyout" => typeof(global::Jalium.UI.Controls.MenuFlyout),
         "MenuFlyoutItem" => typeof(global::Jalium.UI.Controls.MenuFlyoutItem),
+        "MenuFlyoutPresenter" => typeof(global::Jalium.UI.Controls.MenuFlyoutPresenter),
         "MenuFlyoutSeparator" => typeof(global::Jalium.UI.Controls.MenuFlyoutSeparator),
         "MenuFlyoutSubItem" => typeof(global::Jalium.UI.Controls.MenuFlyoutSubItem),
         "MenuItem" => typeof(global::Jalium.UI.Controls.MenuItem),
         "MiniMap" => typeof(global::Jalium.UI.Controls.MiniMap),
+        "NavigationWindow" => typeof(global::Jalium.UI.Navigation.NavigationWindow),
         "NavigationView" => typeof(global::Jalium.UI.Controls.NavigationView),
         "NavigationViewItem" => typeof(global::Jalium.UI.Controls.NavigationViewItem),
         "NavigationViewItemHeader" => typeof(global::Jalium.UI.Controls.NavigationViewItemHeader),
@@ -5189,6 +5374,8 @@ public static class XamlTypeRegistry
         "Popup" => typeof(global::Jalium.UI.Controls.Primitives.Popup),
         "ProgressBar" => typeof(global::Jalium.UI.Controls.ProgressBar),
         "PropertyGrid" => typeof(global::Jalium.UI.Controls.PropertyGrid),
+        "PropertyGridRow" => typeof(global::Jalium.UI.Controls.PropertyGridRow),
+        "PropertyGridEditor" => typeof(global::Jalium.UI.Controls.PropertyGridEditor),
         "QRCode" => typeof(global::Jalium.UI.Controls.QRCode),
         "RadioButton" => typeof(global::Jalium.UI.Controls.RadioButton),
         "RangeSlider" => typeof(global::Jalium.UI.Controls.RangeSlider),
@@ -5232,6 +5419,7 @@ public static class XamlTypeRegistry
         "TransitioningContentControl" => typeof(global::Jalium.UI.Controls.TransitioningContentControl),
         "TreeDataGrid" => typeof(global::Jalium.UI.Controls.TreeDataGrid),
         "TreeDataGridRow" => typeof(global::Jalium.UI.Controls.TreeDataGridRow),
+        "TreeDataGridCellPresenter" => typeof(global::Jalium.UI.Controls.TreeDataGridCellPresenter),
         "TreeSelector" => typeof(global::Jalium.UI.Controls.TreeSelector),
         "TreeSelectorItem" => typeof(global::Jalium.UI.Controls.TreeSelectorItem),
         "TreeView" => typeof(global::Jalium.UI.Controls.TreeView),

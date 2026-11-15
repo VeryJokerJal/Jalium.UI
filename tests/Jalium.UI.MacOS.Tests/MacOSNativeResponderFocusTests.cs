@@ -224,8 +224,7 @@ public sealed partial class MacOSAccessibilityFocusHostTests
         internal FocusPlatform Native => Platform.Native;
         internal ResponderHost(string kind)
         { Platform = new(kind == "pass-through" ? "native" : kind, hitTest: kind != "pass-through"); }
-        internal void Send(bool gained) => typeof(Window).GetMethod("OnPlatformEvent", Private)!.Invoke(Inner.Source,
-            [new PlatformEvent { Type = gained ? PlatformEventType.ResponderFocusGained : PlatformEventType.ResponderFocusLost }]);
+        internal void Send(bool gained) => Inner.SendResponder(gained);
         internal void SendKey() => typeof(Window).GetMethod("OnPlatformEvent", Private)!.Invoke(Inner.Source,
             [new PlatformEvent { Type = PlatformEventType.KeyDown, KeyCode = KeyInterop.VirtualKeyFromKey(Key.F8), Modifiers = 8 }]);
         public void Dispose() => Platform.Dispose();

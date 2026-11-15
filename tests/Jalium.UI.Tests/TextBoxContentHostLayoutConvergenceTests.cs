@@ -17,6 +17,29 @@ namespace Jalium.UI.Tests;
 public class TextBoxContentHostLayoutConvergenceTests
 {
     [Fact]
+    public void UnboundedNoWrapMeasure_UsesTextExtentAfterAWideArrange()
+    {
+        var owner = new TextBox { Text = "short" };
+        var host = new TextBoxContentHost(owner);
+        host.Measure(new Size(900, 100));
+        host.Arrange(new Rect(0, 0, 900, 100));
+
+        host.Measure(new Size(double.PositiveInfinity, 100));
+        double shortWidth = host.DesiredSize.Width;
+        Assert.InRange(shortWidth, 1, 200);
+
+        owner.Text = new string('W', 70);
+        host.InvalidateMeasure();
+        host.Measure(new Size(double.PositiveInfinity, 100));
+        Assert.True(host.DesiredSize.Width > shortWidth);
+
+        owner.Text = "short";
+        host.InvalidateMeasure();
+        host.Measure(new Size(double.PositiveInfinity, 100));
+        Assert.Equal(shortWidth, host.DesiredSize.Width);
+    }
+
+    [Fact]
     public void InfiniteMeasureWithFiniteArrange_StopsRequestingRemeasure()
     {
         var owner = new TextBox { Text = "a line of text long enough to have a real measured width" };

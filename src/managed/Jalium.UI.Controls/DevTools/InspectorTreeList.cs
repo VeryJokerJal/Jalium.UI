@@ -4,9 +4,12 @@ using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using Jalium.UI.Controls.Primitives;
-using Jalium.UI.Input;
 using Jalium.UI.Media;
-using ShapePath = Jalium.UI.Shapes.Path;
+using Jalium.UI.Automation;
+using Jalium.UI.Automation.Peers;
+using Jalium.UI.Automation.Provider;
+using Jalium.UI.Input;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI.Controls.DevTools;
 
@@ -58,168 +61,60 @@ internal sealed class BulkObservableCollection<T> : ObservableCollection<T>
     }
 }
 
-/// <summary>
-/// Row container for the inspector list. Builds the row visual (indent + chevron + label) directly,
-/// so realized containers are enumerable for the expand/collapse reveal animation. Rows always keep
-/// their full layout height (the VSP virtualizes normally); the reveal is render-only — a clipped
-/// content slide via <see cref="SetRevealProgress"/> (no opacity) — so it never affects layout,
-/// never stacks rows, never allocates per-row alpha layers, and stays O(viewport).
-/// </summary>
-internal sealed class InspectorRowContainer : ListBoxItem
+/// <summary>Connects the Inspector's visual model to the reusable, themed row control.</summary>
+internal sealed class InspectorRowContainer : DevToolsTreeItem
 {
-    private const double IndentSize = 14;
-
-    private readonly Grid _content;
-    private readonly Border _indent;
-    private readonly Border _expanderHit;
-    private readonly ShapePath _arrow;
-    private readonly TextBlock _label;
     private Action<InspectorRow>? _onToggle;
-    private TranslateTransform? _revealTranslate;
-    private double _lastRevealY = double.NaN;
-
+    private bool _binding;
     public InspectorRow? Row { get; private set; }
-
-    public InspectorRowContainer()
-    {
-        SetCurrentValue(TransitionPropertyProperty, TransitionPropertyCollection.None());
-        MinHeight = 0;
-        Padding = new Thickness(0);
-        ClipToBounds = true; // clips the reveal slide (content translated up) to the row's slot
-
-        var grid = new Grid();
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-
-        _indent = new Border();
-        Grid.SetColumn(_indent, 0);
-
-        // Rounded down-triangle chevron — same geometry as the legacy TreeViewItem expander.
-        _arrow = new ShapePath
-        {
-            Data = "M 733.87,841.90 L 1160.54,273.07 A 170.67,170.67,0,0,0,1024.00,0 H 170.67 A 170.67,170.67,0,0,0,34.14,273.07 L 460.80,841.90 A 170.67,170.67,0,0,0,733.87,841.90 Z",
-            Fill = new SolidColorBrush(DevToolsTheme.TextPrimaryColor),
-            Width = 8,
-            Height = 8,
-            Stretch = Stretch.Uniform,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        _expanderHit = new Border
-        {
-            Width = 16,
-            Background = new SolidColorBrush(Color.FromArgb(0, 0, 0, 0)), // transparent yet hit-testable
-            Child = _arrow,
-        };
-        Grid.SetColumn(_expanderHit, 1);
-        _expanderHit.AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnExpanderMouseDown), handledEventsToo: true);
-
-        _label = new TextBlock
-        {
-            VerticalAlignment = VerticalAlignment.Center,
-            FontFamily = DevToolsTheme.UiFont,
-            FontSize = DevToolsTheme.FontBase,
-            Foreground = new SolidColorBrush(DevToolsTheme.TextPrimaryColor),
-        };
-        Grid.SetColumn(_label, 2);
-
-        grid.Children.Add(_indent);
-        grid.Children.Add(_expanderHit);
-        grid.Children.Add(_label);
-
-        _content = grid;
-        Content = grid;
-    }
-
+    public InspectorRowContainer() => ExpansionChanged += OnExpansionChanged;
     public void Bind(InspectorRow row, Action<InspectorRow> onToggle)
     {
-        Row = row;
-        _onToggle = onToggle;
-        _indent.Width = row.Depth * IndentSize;
-        _label.Text = row.DisplayName;
-        _arrow.Visibility = row.HasChildren ? Visibility.Visible : Visibility.Hidden;
-        SetChevronAngle(row.ChevronAngle);
-        // The reveal progress is applied by PrepareContainerForItem right after Bind: 1.0 outside
-        // an animation (normalizes a recycled container's stale transform), or the row's current
-        // staggered progress while a reveal is active — an unconditional 1.0 here is exactly the
-        // first-frame flash of rows realized mid-animation.
+        _binding = true;
+        try
+        {
+            Row = row;
+            _onToggle = onToggle;
+            SetCurrentValue(LevelProperty, row.Depth);
+            SetCurrentValue(ContentProperty, row.DisplayName);
+            SetCurrentValue(HasChildrenProperty, row.HasChildren);
+            SetCurrentValue(IsExpandedProperty, row.IsExpanded);
+            SetCurrentValue(ChevronAngleProperty, row.ChevronAngle);
+        }
+        finally { _binding = false; }
     }
-
-    /// <summary>
-    /// Drops the bound row model and toggle callback before the container is pooled, so a pooled
-    /// container never pins the previous generation's row objects or the DevToolsWindow closure.
-    /// </summary>
     internal void Unbind()
     {
-        Row = null;
-        _onToggle = null;
-    }
-
-    /// <summary>
-    /// Render-only reveal: slides the row content down into its full-height, clipped slot.
-    /// <paramref name="revealed"/> 0 = fully hidden (content translated up out of the clip), 1 =
-    /// fully shown. Uses a translate (cheap matrix) + ClipToBounds (scissor), and deliberately NO
-    /// opacity — animating per-row opacity forces offscreen alpha layers that on a large expand
-    /// exhaust the render target (content goes black) and thrash (flicker). Never touches layout,
-    /// so virtualization is unaffected.
-    /// </summary>
-    internal void SetRevealProgress(double revealed)
-    {
-        if (revealed >= 1.0)
+        _binding = true;
+        try
         {
-            if (_content.RenderTransform != null)
-            {
-                _content.RenderTransform = null;
-                _lastRevealY = double.NaN;
-                InvalidateComposition();
-            }
-
-            return;
+            Row = null;
+            _onToggle = null;
+            ClearValue(ContentProperty);
+            ClearValue(LevelProperty);
+            ClearValue(HasChildrenProperty);
+            ClearValue(IsExpandedProperty);
+            ClearValue(ChevronAngleProperty);
+            ClearValue(RevealProgressProperty);
         }
-
-        // Fall back to an estimate before the row's first arrange (ActualHeight==0 then), so the
-        // reveal isn't a silent no-op on frame 0.
-        double h = ActualHeight > 0 ? ActualHeight : (DesiredSize.Height > 0 ? DesiredSize.Height : 28.0);
-        double y = -(1.0 - revealed) * h;
-        if (y == _lastRevealY && ReferenceEquals(_content.RenderTransform, _revealTranslate))
-            return; // unchanged frame: no invalidation, no GPU submission
-
-        var translate = _revealTranslate ??= new TranslateTransform();
-        translate.Y = y;
-        _lastRevealY = y;
-        if (!ReferenceEquals(_content.RenderTransform, translate))
-            _content.RenderTransform = translate;
-
-        // Composition-only invalidation: the parent child-loop reads RenderTransform live each
-        // frame, so the row's recorded content (and its retained layer) stays valid — only the
-        // composite moves. InvalidateVisual here would re-record every animated row every frame.
-        InvalidateComposition();
+        finally { _binding = false; }
     }
-
-    /// <summary>Re-applies the bound row's chevron angle (animated for the toggled row).</summary>
+    internal void SetRevealProgress(double progress) => SetCurrentValue(RevealProgressProperty, progress);
     internal void ApplyChevron()
     {
-        if (Row != null) SetChevronAngle(Row.ChevronAngle);
-    }
-
-    private void OnExpanderMouseDown(object sender, MouseButtonEventArgs e)
-    {
-        if (Row is { HasChildren: true } row)
+        if (Row is not { } row) return;
+        _binding = true;
+        try
         {
-            _onToggle?.Invoke(row);
-            e.Handled = true; // toggle expansion without also selecting the row
+            SetCurrentValue(IsExpandedProperty, row.IsExpanded);
+            SetCurrentValue(ChevronAngleProperty, row.ChevronAngle);
         }
+        finally { _binding = false; }
     }
-
-    private void SetChevronAngle(double angle)
+    private void OnExpansionChanged(object sender, RoutedEventArgs e)
     {
-        var rotate = _arrow.RenderTransform as RotateTransform ?? new RotateTransform();
-        rotate.CenterX = 4;
-        rotate.CenterY = 4;
-        rotate.Angle = angle;
-        _arrow.RenderTransform = rotate;
-        _arrow.InvalidateVisual();
+        if (!_binding && Row is { HasChildren: true } row && row.IsExpanded != IsExpanded)
+            _onToggle?.Invoke(row);
     }
 }
 
@@ -247,6 +142,68 @@ internal sealed class InspectorTreeList : ListBox
     public InspectorTreeList()
     {
         SetCurrentValue(TransitionPropertyProperty, TransitionPropertyCollection.None());
+    }
+
+    protected override void OnItemsChanged(NotifyCollectionChangedEventArgs e)
+    {
+        // A flattened-tree rebuild retires every container, including the one
+        // handling Left/Right. Recover focus by the inspected visual's identity
+        // once the virtualizing panel has realized its replacement.
+        var previousFocus = Keyboard.FocusedElement;
+        Visual? target = null;
+        for (var current = previousFocus as Visual; current != null; current = current.VisualParent)
+        {
+            if (current is InspectorRowContainer { Row: { } row }) { target = row.Visual; break; }
+            if (ReferenceEquals(current, this)) break;
+        }
+        base.OnItemsChanged(e);
+        if (target == null) return;
+        Dispatcher.BeginInvoke(DispatcherPriority.ContextIdle, () =>
+        {
+            if (!IsLoaded) return;
+            var focus = Keyboard.FocusedElement;
+            if (focus != null && !ReferenceEquals(focus, previousFocus) && !ReferenceEquals(focus, this) && focus is not Window)
+            {
+                bool within = false;
+                for (var current = focus as Visual; current != null; current = current.VisualParent)
+                    if (ReferenceEquals(current, this)) { within = true; break; }
+                if (!within) return;
+            }
+            for (int i = 0; i < Items.Count; i++)
+            {
+                if (Items[i] is not InspectorRow row || !ReferenceEquals(row.Visual, target)) continue;
+                BringRowIntoView(i);
+                UpdateLayout();
+                (ItemContainerGenerator.ContainerFromIndex(i) as InspectorRowContainer)?.Focus();
+                break;
+            }
+        });
+    }
+
+    protected override AutomationPeer OnCreateAutomationPeer() => new InspectorListPeer(this);
+    private sealed class InspectorListPeer(InspectorTreeList owner) : ListBoxAutomationPeer(owner)
+    {
+        protected override string GetClassNameCore() => nameof(InspectorTreeList);
+        protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.Tree;
+        protected override ItemAutomationPeer CreateItemAutomationPeer(object item) => item is InspectorRow row
+            ? new InspectorItemPeer(row, this, owner) : base.CreateItemAutomationPeer(item);
+    }
+    private sealed class InspectorItemPeer(InspectorRow row, InspectorListPeer peer, InspectorTreeList list)
+        : ListBoxItemAutomationPeer(row, peer), IExpandCollapseProvider
+    {
+        protected override string GetNameCore() => row.DisplayName;
+        protected override string GetClassNameCore() => nameof(DevToolsTreeItem);
+        protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.TreeItem;
+        protected override object? GetPatternCore(PatternInterface pattern) => pattern == PatternInterface.ExpandCollapse ? this : base.GetPatternCore(pattern);
+        public ExpandCollapseState ExpandCollapseState => !row.HasChildren ? ExpandCollapseState.LeafNode : row.IsExpanded ? ExpandCollapseState.Expanded : ExpandCollapseState.Collapsed;
+        public void Expand() => ChangeExpansion(true);
+        public void Collapse() => ChangeExpansion(false);
+        private void ChangeExpansion(bool expanded)
+        {
+            ThrowIfRetired();
+            if (!list.IsEnabled || !row.HasChildren) throw new InvalidOperationException("The Inspector row cannot change expansion.");
+            if (row.IsExpanded != expanded) list.ToggleExpand?.Invoke(row);
+        }
     }
 
     /// <summary>Publishes the reveal range and per-index progress function for the in-flight
@@ -287,43 +244,18 @@ internal sealed class InspectorTreeList : ListBox
     /// <inheritdoc />
     protected override void PrepareContainerForItem(FrameworkElement element, object item)
     {
-        // Do NOT call base for our row container: the base would set Content = the InspectorRow
-        // data item (clobbering the container's own row visual). Replicate only the bits ListBox
-        // needs — owner back-reference + selection state — and bind our visual.
+        base.PrepareContainerForItem(element, item);
         if (element is InspectorRowContainer container && item is InspectorRow row)
         {
-            container.ParentListBox = this;
-            container.IsSelected = ReferenceEquals(item, SelectedItem);
             container.Bind(row, _onToggleRow ??= r => ToggleExpand?.Invoke(r));
-            // Inside the active reveal range the row enters at its current staggered progress
-            // (kills the first-frame flash and mid-animation scroll pop-in); outside it, 1.0
-            // normalizes whatever stale reveal transform a recycled container may carry.
             container.SetRevealProgress(RevealProgressForIndex(row.Index));
-            return;
         }
-
-        base.PrepareContainerForItem(element, item);
     }
 
     /// <inheritdoc />
     protected override void ClearContainerForItem(FrameworkElement element, object item)
     {
-        // Mirror PrepareContainerForItem's base skip: the row visual is the container's OWN
-        // Content (not the data item), and its reveal clip is a constructor-set local
-        // ClipToBounds — the base ContentControl branch would ClearValue the Content away
-        // (every container popped from the recycle pool would come back blank) and the
-        // visual-state hygiene would ClearValue the clip. Undo only what Prepare and the
-        // reveal animation set.
-        if (element is InspectorRowContainer container)
-        {
-            container.ParentListBox = null;
-            container.ClearValue(ListBoxItem.IsSelectedProperty);
-            container.SetRevealProgress(1.0);
-            container.ApplyChevron();
-            container.Unbind();
-            return;
-        }
-
+        if (element is InspectorRowContainer container) container.Unbind();
         base.ClearContainerForItem(element, item);
     }
 

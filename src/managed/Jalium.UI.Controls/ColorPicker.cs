@@ -1,860 +1,386 @@
-using Jalium.UI.Controls.Primitives;
-using Jalium.UI.Controls.Themes;
 using Jalium.UI.Input;
-using Jalium.UI.Interop;
 using Jalium.UI.Media;
-using Jalium.UI.Media.Imaging;
-using Jalium.UI.Styling;
 
 namespace Jalium.UI.Controls;
-
 /// <summary>
 /// Represents a control that allows the user to select a color.
 /// </summary>
+[TemplatePart(Name = "PART_Spectrum", Type = typeof(ColorSpectrum))]
+[TemplatePart(Name = "PART_HueSlider", Type = typeof(ColorRamp))]
+[TemplatePart(Name = "PART_AlphaSlider", Type = typeof(ColorRamp))]
+[TemplatePart(Name = "PART_HexTextBox", Type = typeof(TextBox))]
+[TemplateVisualState(Name = "Expanded", GroupName = "LayoutStates")]
+[TemplateVisualState(Name = "Compact", GroupName = "LayoutStates")]
+[TemplateVisualState(Name = "Valid", GroupName = "ValidationStates")]
+[TemplateVisualState(Name = "Invalid", GroupName = "ValidationStates")]
 public class ColorPicker : Control
 {
-    /// <inheritdoc />
+    /// <inheritdoc/>
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
         return new Jalium.UI.Automation.Peers.ColorPickerAutomationPeer(this);
     }
 
-    // Cached brushes and pens for OnRender
-    private static readonly SolidColorBrush s_whiteBrush = new(Color.White);
-    private static readonly SolidColorBrush s_grayBorderBrush = new(ThemeColors.ControlBorder);
-    private static readonly SolidColorBrush s_checkerLightBrush = new(Color.FromRgb(200, 200, 200));
-    private static readonly SolidColorBrush s_checkerDarkBrush = new(Color.FromRgb(150, 150, 150));
-    private static readonly object s_checkerBitmapLock = new();
-    private static readonly Dictionary<(int Width, int Height), BitmapImage> s_checkerBitmaps = new();
-
-    #region Dependency Properties
-
+#region Dependency Properties
     /// <summary>
     /// Identifies the Color dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
-    public static readonly DependencyProperty ColorProperty =
-        DependencyProperty.Register(nameof(Color), typeof(Color), typeof(ColorPicker),
-            new PropertyMetadata(Color.White, OnColorChanged));
-
+    public static readonly DependencyProperty ColorProperty = DependencyProperty.Register(nameof(Color), typeof(Color), typeof(ColorPicker), new PropertyMetadata(Color.White, OnColorChanged));
     /// <summary>
     /// Identifies the IsAlphaEnabled dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public static readonly DependencyProperty IsAlphaEnabledProperty =
-        DependencyProperty.Register(nameof(IsAlphaEnabled), typeof(bool), typeof(ColorPicker),
-            new PropertyMetadata(true, OnLayoutPropertyChanged));
-
+    public static readonly DependencyProperty IsAlphaEnabledProperty = DependencyProperty.Register(nameof(IsAlphaEnabled), typeof(bool), typeof(ColorPicker), new PropertyMetadata(true, OnLayoutPropertyChanged));
     /// <summary>
     /// Identifies the IsColorSpectrumVisible dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public static readonly DependencyProperty IsColorSpectrumVisibleProperty =
-        DependencyProperty.Register(nameof(IsColorSpectrumVisible), typeof(bool), typeof(ColorPicker),
-            new PropertyMetadata(true, OnLayoutPropertyChanged));
-
+    public static readonly DependencyProperty IsColorSpectrumVisibleProperty = DependencyProperty.Register(nameof(IsColorSpectrumVisible), typeof(bool), typeof(ColorPicker), new PropertyMetadata(true, OnLayoutPropertyChanged));
     /// <summary>
     /// Identifies the IsColorSliderVisible dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public static readonly DependencyProperty IsColorSliderVisibleProperty =
-        DependencyProperty.Register(nameof(IsColorSliderVisible), typeof(bool), typeof(ColorPicker),
-            new PropertyMetadata(true, OnLayoutPropertyChanged));
-
+    public static readonly DependencyProperty IsColorSliderVisibleProperty = DependencyProperty.Register(nameof(IsColorSliderVisible), typeof(bool), typeof(ColorPicker), new PropertyMetadata(true, OnLayoutPropertyChanged));
     /// <summary>
     /// Identifies the IsColorPreviewVisible dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public static readonly DependencyProperty IsColorPreviewVisibleProperty =
-        DependencyProperty.Register(nameof(IsColorPreviewVisible), typeof(bool), typeof(ColorPicker),
-            new PropertyMetadata(true, OnLayoutPropertyChanged));
-
+    public static readonly DependencyProperty IsColorPreviewVisibleProperty = DependencyProperty.Register(nameof(IsColorPreviewVisible), typeof(bool), typeof(ColorPicker), new PropertyMetadata(true, OnLayoutPropertyChanged));
     /// <summary>
     /// Identifies the IsHexInputVisible dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public static readonly DependencyProperty IsHexInputVisibleProperty =
-        DependencyProperty.Register(nameof(IsHexInputVisible), typeof(bool), typeof(ColorPicker),
-            new PropertyMetadata(true, OnLayoutPropertyChanged));
-
+    public static readonly DependencyProperty IsHexInputVisibleProperty = DependencyProperty.Register(nameof(IsHexInputVisible), typeof(bool), typeof(ColorPicker), new PropertyMetadata(true, OnLayoutPropertyChanged));
     /// <summary>
     /// Identifies the ColorSpectrumShape dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
-    public static readonly DependencyProperty ColorSpectrumShapeProperty =
-        DependencyProperty.Register(nameof(ColorSpectrumShape), typeof(ColorSpectrumShape), typeof(ColorPicker),
-            new PropertyMetadata(ColorSpectrumShape.Box, OnLayoutPropertyChanged));
-
+    public static readonly DependencyProperty ColorSpectrumShapeProperty = DependencyProperty.Register(nameof(ColorSpectrumShape), typeof(ColorSpectrumShape), typeof(ColorPicker), new PropertyMetadata(ColorSpectrumShape.Box, OnLayoutPropertyChanged));
     /// <summary>
     /// Identifies the IsCompact dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public static readonly DependencyProperty IsCompactProperty =
-        DependencyProperty.Register(nameof(IsCompact), typeof(bool), typeof(ColorPicker),
-            new PropertyMetadata(false, OnLayoutPropertyChanged));
-
-    #endregion
-
-    #region Routed Events
-
+    public static readonly DependencyProperty IsCompactProperty = DependencyProperty.Register(nameof(IsCompact), typeof(bool), typeof(ColorPicker), new PropertyMetadata(false, OnLayoutPropertyChanged));
+#endregion
+#region Routed Events
     /// <summary>
     /// Identifies the ColorChanged routed event.
     /// </summary>
-    public static readonly RoutedEvent ColorChangedEvent =
-        EventManager.RegisterRoutedEvent(nameof(ColorChanged), RoutingStrategy.Bubble,
-            typeof(EventHandler<ColorChangedEventArgs>), typeof(ColorPicker));
-
+    public static readonly RoutedEvent ColorChangedEvent = EventManager.RegisterRoutedEvent(nameof(ColorChanged), RoutingStrategy.Bubble, typeof(EventHandler<ColorChangedEventArgs>), typeof(ColorPicker));
     /// <summary>
     /// Occurs when the color changes.
     /// </summary>
-    public event EventHandler<ColorChangedEventArgs> ColorChanged
-    {
-        add => AddHandler(ColorChangedEvent, value);
-        remove => RemoveHandler(ColorChangedEvent, value);
-    }
+    public event EventHandler<ColorChangedEventArgs> ColorChanged { add => AddHandler(ColorChangedEvent, value); remove => RemoveHandler(ColorChangedEvent, value); }
 
-    #endregion
-
-    #region CLR Properties
-
+#endregion
+#region CLR Properties
     /// <summary>
     /// Gets or sets the selected color.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
-    public Color Color
-    {
-        get => (Color)GetValue(ColorProperty)!;
-        set => SetValue(ColorProperty, value);
-    }
+    public Color Color { get => (Color)GetValue(ColorProperty)!; set => SetValue(ColorProperty, value); }
 
     /// <summary>
     /// Gets or sets whether the alpha channel can be edited.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public bool IsAlphaEnabled
-    {
-        get => (bool)GetValue(IsAlphaEnabledProperty)!;
-        set => SetValue(IsAlphaEnabledProperty, value);
-    }
+    public bool IsAlphaEnabled { get => (bool)GetValue(IsAlphaEnabledProperty)!; set => SetValue(IsAlphaEnabledProperty, value); }
 
     /// <summary>
     /// Gets or sets whether the color spectrum is visible.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public bool IsColorSpectrumVisible
-    {
-        get => (bool)GetValue(IsColorSpectrumVisibleProperty)!;
-        set => SetValue(IsColorSpectrumVisibleProperty, value);
-    }
+    public bool IsColorSpectrumVisible { get => (bool)GetValue(IsColorSpectrumVisibleProperty)!; set => SetValue(IsColorSpectrumVisibleProperty, value); }
 
     /// <summary>
     /// Gets or sets whether the color slider is visible.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public bool IsColorSliderVisible
-    {
-        get => (bool)GetValue(IsColorSliderVisibleProperty)!;
-        set => SetValue(IsColorSliderVisibleProperty, value);
-    }
+    public bool IsColorSliderVisible { get => (bool)GetValue(IsColorSliderVisibleProperty)!; set => SetValue(IsColorSliderVisibleProperty, value); }
 
     /// <summary>
     /// Gets or sets whether the color preview is visible.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public bool IsColorPreviewVisible
-    {
-        get => (bool)GetValue(IsColorPreviewVisibleProperty)!;
-        set => SetValue(IsColorPreviewVisibleProperty, value);
-    }
+    public bool IsColorPreviewVisible { get => (bool)GetValue(IsColorPreviewVisibleProperty)!; set => SetValue(IsColorPreviewVisibleProperty, value); }
 
     /// <summary>
     /// Gets or sets whether the hex input is visible.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public bool IsHexInputVisible
-    {
-        get => (bool)GetValue(IsHexInputVisibleProperty)!;
-        set => SetValue(IsHexInputVisibleProperty, value);
-    }
+    public bool IsHexInputVisible { get => (bool)GetValue(IsHexInputVisibleProperty)!; set => SetValue(IsHexInputVisibleProperty, value); }
 
     /// <summary>
     /// Gets or sets the shape of the color spectrum.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
-    public ColorSpectrumShape ColorSpectrumShape
-    {
-        get => (ColorSpectrumShape)(GetValue(ColorSpectrumShapeProperty) ?? ColorSpectrumShape.Box);
-        set => SetValue(ColorSpectrumShapeProperty, value);
-    }
+    public ColorSpectrumShape ColorSpectrumShape { get => (ColorSpectrumShape)(GetValue(ColorSpectrumShapeProperty) ?? ColorSpectrumShape.Box); set => SetValue(ColorSpectrumShapeProperty, value); }
 
     /// <summary>
     /// Gets or sets whether the color picker is displayed in compact mode.
     /// In compact mode, the spectrum is smaller and the preview/hex input are hidden.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public bool IsCompact
-    {
-        get => (bool)GetValue(IsCompactProperty)!;
-        set => SetValue(IsCompactProperty, value);
-    }
+    public bool IsCompact { get => (bool)GetValue(IsCompactProperty)!; set => SetValue(IsCompactProperty, value); }
 
-    #endregion
+#endregion
+    public static readonly DependencyProperty HueProperty = DependencyProperty.Register(nameof(Hue), typeof(double), typeof(ColorPicker), new PropertyMetadata(0.0, OnComponentChanged, CoerceHue));
+    public static readonly DependencyProperty SaturationProperty = DependencyProperty.Register(nameof(Saturation), typeof(double), typeof(ColorPicker), new PropertyMetadata(0.0, OnComponentChanged, CoerceUnit));
+    public static readonly DependencyProperty ValueProperty = DependencyProperty.Register(nameof(Value), typeof(double), typeof(ColorPicker), new PropertyMetadata(1.0, OnComponentChanged, CoerceUnit));
+    public static readonly DependencyProperty AlphaProperty = DependencyProperty.Register(nameof(Alpha), typeof(double), typeof(ColorPicker), new PropertyMetadata(255.0, OnComponentChanged, CoerceAlpha));
+    public static readonly DependencyProperty HexTextProperty = DependencyProperty.Register(nameof(HexText), typeof(string), typeof(ColorPicker), new PropertyMetadata(string.Empty, OnHexTextChanged));
+    public static readonly DependencyProperty ErrorForegroundProperty = DependencyProperty.Register(nameof(ErrorForeground), typeof(Brush), typeof(ColorPicker), new PropertyMetadata(null));
+    /// <summary>Gets or sets the brush used for inline hex validation messages.</summary>
+    public Brush? ErrorForeground { get => (Brush? )GetValue(ErrorForegroundProperty); set => SetValue(ErrorForegroundProperty, value); }
+    public double Hue { get => (double)GetValue(HueProperty)!; set => SetValue(HueProperty, value); }
+    public double Saturation { get => (double)GetValue(SaturationProperty)!; set => SetValue(SaturationProperty, value); }
+    public double Value { get => (double)GetValue(ValueProperty)!; set => SetValue(ValueProperty, value); }
+    public double Alpha { get => (double)GetValue(AlphaProperty)!; set => SetValue(AlphaProperty, value); }
+    public string HexText { get => (string)GetValue(HexTextProperty)!; set => SetValue(HexTextProperty, value); }
 
-    #region Private Fields
+    private static readonly DependencyPropertyKey HasHexErrorPropertyKey = DependencyProperty.RegisterReadOnly(nameof(HasHexError), typeof(bool), typeof(ColorPicker), new PropertyMetadata(false));
+    public static readonly DependencyProperty HasHexErrorProperty = HasHexErrorPropertyKey.DependencyProperty;
+    public bool HasHexError => (bool)GetValue(HasHexErrorProperty)!;
 
-    private const double SpectrumSize = 200;
-    private const double CompactSpectrumSize = 120;
-    private const double SliderHeight = 20;
-    private const double CompactSliderHeight = 14;
-    private const double PreviewSize = 40;
-    private const double Spacing = 8;
-    private const double CompactSpacing = 4;
+    private static readonly DependencyPropertyKey HexErrorTextPropertyKey = DependencyProperty.RegisterReadOnly(nameof(HexErrorText), typeof(string), typeof(ColorPicker), new PropertyMetadata(string.Empty));
+    public static readonly DependencyProperty HexErrorTextProperty = HexErrorTextPropertyKey.DependencyProperty;
+    public string HexErrorText => (string)GetValue(HexErrorTextProperty)!;
 
-    private double _hue;
-    private double _saturation = 1;
-    private double _value = 1;
-    private byte _alpha = 255;
+    private static readonly DependencyPropertyKey ShowPreviewPropertyKey = DependencyProperty.RegisterReadOnly(nameof(ShowPreview), typeof(bool), typeof(ColorPicker), new PropertyMetadata(true));
+    public static readonly DependencyProperty ShowPreviewProperty = ShowPreviewPropertyKey.DependencyProperty;
+    public bool ShowPreview => (bool)GetValue(ShowPreviewProperty)!;
 
-    private Rect _spectrumRect;
-    private Rect _hueSliderRect;
-    private Rect _alphaSliderRect;
-    private Rect _previewRect;
-    private Border? _cssBorderPainter;
+    private static readonly DependencyPropertyKey ShowHexInputPropertyKey = DependencyProperty.RegisterReadOnly(nameof(ShowHexInput), typeof(bool), typeof(ColorPicker), new PropertyMetadata(true));
+    public static readonly DependencyProperty ShowHexInputProperty = ShowHexInputPropertyKey.DependencyProperty;
+    public bool ShowHexInput => (bool)GetValue(ShowHexInputProperty)!;
 
-    private bool _isDraggingSpectrum;
-    private bool _isDraggingHue;
-    private bool _isDraggingAlpha;
-    private bool _isUpdatingColor;
+    private static readonly DependencyPropertyKey ShowAlphaSliderPropertyKey = DependencyProperty.RegisterReadOnly(nameof(ShowAlphaSlider), typeof(bool), typeof(ColorPicker), new PropertyMetadata(true));
+    public static readonly DependencyProperty ShowAlphaSliderProperty = ShowAlphaSliderPropertyKey.DependencyProperty;
+    public bool ShowAlphaSlider => (bool)GetValue(ShowAlphaSliderProperty)!;
 
-    // Cached hue gradient brushes
-    private LinearGradientBrush[]? _hueGradientBrushes;
-    private Size _hueGradientSize;
+    private static readonly DependencyPropertyKey EffectiveSpectrumSizePropertyKey = DependencyProperty.RegisterReadOnly(nameof(EffectiveSpectrumSize), typeof(double), typeof(ColorPicker), new PropertyMetadata(200.0));
+    public static readonly DependencyProperty EffectiveSpectrumSizeProperty = EffectiveSpectrumSizePropertyKey.DependencyProperty;
+    public double EffectiveSpectrumSize => (double)GetValue(EffectiveSpectrumSizeProperty)!;
 
-    // 拖动时每一次指针移动都要整块重绘本控件。下面这些画刷/画笔过去是每次 OnRender
-    // 新建的，于是渲染后端按实例身份缓存的原生画刷每帧全部落空并重建，同时把别的控件
-    // 的有效条目挤出那张有上限的缓存。改为复用实例、只改颜色：后端按内容哈希发现变化
-    // 后重建自己的那份，缓存的键集合保持稳定。
-    private readonly SolidColorBrush _spectrumHueBrush = new(Color.Red);
-    private readonly SolidColorBrush _previewBrush = new(Color.Transparent);
-    private LinearGradientBrush? _alphaGradientBrush;
-    private Pen? _borderPen;
-    private Brush? _borderPenBrush;
-    private double _borderPenThickness;
-    private Pen? _selectorPen;
-    private Brush? _selectorPenBrush;
+    private static readonly DependencyPropertyKey EffectiveSliderHeightPropertyKey = DependencyProperty.RegisterReadOnly(nameof(EffectiveSliderHeight), typeof(double), typeof(ColorPicker), new PropertyMetadata(20.0));
+    public static readonly DependencyProperty EffectiveSliderHeightProperty = EffectiveSliderHeightPropertyKey.DependencyProperty;
+    public double EffectiveSliderHeight => (double)GetValue(EffectiveSliderHeightProperty)!;
 
-    // 饱和度 / 明度两层叠加是常量渐变，全实例共享一份即可。
-    private static readonly LinearGradientBrush s_saturationGradient =
-        new(Color.White, Color.Transparent, 0);
-    private static readonly LinearGradientBrush s_valueGradient =
-        new(Color.Transparent, Color.Black, 90);
+    private static readonly DependencyPropertyKey EffectiveSpacingPropertyKey = DependencyProperty.RegisterReadOnly(nameof(EffectiveSpacing), typeof(double), typeof(ColorPicker), new PropertyMetadata(8.0));
+    public static readonly DependencyProperty EffectiveSpacingProperty = EffectiveSpacingPropertyKey.DependencyProperty;
+    public double EffectiveSpacing => (double)GetValue(EffectiveSpacingProperty)!;
 
-    #endregion
-
-    #region Constructor
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="ColorPicker"/> class.
-    /// </summary>
+    private TextBox? _hexTextBox;
+    private bool _synchronizingComponents, _isUpdatingColor, _updatingHex, _hasHexDraft;
     public ColorPicker()
     {
         Focusable = true;
-        SetCurrentValue(UIElement.TransitionPropertyProperty, TransitionPropertyCollection.None());
-
-        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
-        AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler));
-        AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler));
-
+        SetCurrentValue(TransitionPropertyProperty, TransitionPropertyCollection.None());
         UpdateFromColor(Color);
+        RefreshHex();
+        UpdatePresentation();
     }
 
-    #endregion
-
-    protected override bool ShouldSuppressAutomaticTransition(DependencyProperty dp)
+    public override void OnApplyTemplate()
     {
-        if (ReferenceEquals(dp, ColorProperty) &&
-            (_isUpdatingColor || _isDraggingSpectrum || _isDraggingHue || _isDraggingAlpha))
+        base.OnApplyTemplate();
+        DetachHexInput();
+        _hexTextBox = GetTemplateChild("PART_HexTextBox") as TextBox;
+        if (_hexTextBox != null)
         {
-            return true;
+            _hexTextBox.AddHandler(KeyDownEvent, new KeyEventHandler(OnHexKeyDown));
+            _hexTextBox.LostKeyboardFocus += OnHexLostFocus;
         }
 
-        return base.ShouldSuppressAutomaticTransition(dp);
+        UpdatePresentation();
     }
 
-    #region Color Conversion
+    internal override void OnTemplateContentClearing()
+    {
+        DetachHexInput();
+        base.OnTemplateContentClearing();
+    }
 
+    private void DetachHexInput()
+    {
+        if (_hexTextBox == null)
+            return;
+        _hexTextBox.RemoveHandler(KeyDownEvent, new KeyEventHandler(OnHexKeyDown));
+        _hexTextBox.LostKeyboardFocus -= OnHexLostFocus;
+        Jalium.UI.Data.BindingOperations.ClearBinding(_hexTextBox, TextBox.TextProperty);
+        _hexTextBox = null;
+    }
+
+    protected override bool ShouldSuppressAutomaticTransition(DependencyProperty dp) => ReferenceEquals(dp, ColorProperty) && _isUpdatingColor || base.ShouldSuppressAutomaticTransition(dp);
     private void UpdateFromColor(Color color)
     {
-        _alpha = color.A;
-        RgbToHsv(color.R, color.G, color.B, out _hue, out _saturation, out _value);
-    }
-
-    private Color GetCurrentColor()
-    {
-        HsvToRgb(_hue, _saturation, _value, out var r, out var g, out var b);
-        return Color.FromArgb(_alpha, r, g, b);
-    }
-
-    private static void RgbToHsv(byte r, byte g, byte b, out double h, out double s, out double v)
-    {
-        double rd = r / 255.0;
-        double gd = g / 255.0;
-        double bd = b / 255.0;
-
-        double max = Math.Max(rd, Math.Max(gd, bd));
-        double min = Math.Min(rd, Math.Min(gd, bd));
-        double delta = max - min;
-
-        v = max;
-        s = max == 0 ? 0 : delta / max;
-
-        if (delta == 0)
+        _synchronizingComponents = true;
+        try
         {
-            h = 0;
+            var state = ColorPickerColorMath.ToHsv(color, Hue);
+            SetCurrentValue(HueProperty, state.Hue);
+            SetCurrentValue(SaturationProperty, state.Saturation);
+            SetCurrentValue(ValueProperty, state.Value);
+            SetCurrentValue(AlphaProperty, (double)color.A);
         }
-        else if (max == rd)
+        finally
         {
-            h = 60 * (((gd - bd) / delta) % 6);
+            _synchronizingComponents = false;
         }
-        else if (max == gd)
-        {
-            h = 60 * (((bd - rd) / delta) + 2);
-        }
-        else
-        {
-            h = 60 * (((rd - gd) / delta) + 4);
-        }
-
-        if (h < 0) h += 360;
-        if (h >= 360) h -= 360;
-    }
-
-    private static void HsvToRgb(double h, double s, double v, out byte r, out byte g, out byte b)
-    {
-        double c = v * s;
-        double x = c * (1 - Math.Abs((h / 60) % 2 - 1));
-        double m = v - c;
-
-        double rd, gd, bd;
-
-        if (h < 60) { rd = c; gd = x; bd = 0; }
-        else if (h < 120) { rd = x; gd = c; bd = 0; }
-        else if (h < 180) { rd = 0; gd = c; bd = x; }
-        else if (h < 240) { rd = 0; gd = x; bd = c; }
-        else if (h < 300) { rd = x; gd = 0; bd = c; }
-        else { rd = c; gd = 0; bd = x; }
-
-        r = (byte)Math.Round((rd + m) * 255);
-        g = (byte)Math.Round((gd + m) * 255);
-        b = (byte)Math.Round((bd + m) * 255);
-    }
-
-    #endregion
-
-    #region Input Handling
-
-    private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
-    {
-        if (!IsEnabled) return;
-
-        if (e.ChangedButton == MouseButton.Left)
-        {
-            Focus();
-            CaptureMouse();
-            var position = e.GetPosition(this);
-
-            if (_spectrumRect.Contains(position))
-            {
-                _isDraggingSpectrum = true;
-                UpdateSpectrumFromPosition(position);
-            }
-            else if (_hueSliderRect.Contains(position))
-            {
-                _isDraggingHue = true;
-                UpdateHueFromPosition(position);
-            }
-            else if (_alphaSliderRect.Contains(position) && IsAlphaEnabled)
-            {
-                _isDraggingAlpha = true;
-                UpdateAlphaFromPosition(position);
-            }
-
-            e.Handled = true;
-        }
-    }
-
-    private void OnMouseUpHandler(object sender, MouseButtonEventArgs e)
-    {
-        if (e.ChangedButton == MouseButton.Left)
-        {
-            ReleaseMouseCapture();
-            _isDraggingSpectrum = false;
-            _isDraggingHue = false;
-            _isDraggingAlpha = false;
-            e.Handled = true;
-        }
-    }
-
-    private void OnMouseMoveHandler(object sender, MouseEventArgs e)
-    {
-        var position = e.GetPosition(this);
-
-        if (_isDraggingSpectrum)
-        {
-            UpdateSpectrumFromPosition(position);
-        }
-        else if (_isDraggingHue)
-        {
-            UpdateHueFromPosition(position);
-        }
-        else if (_isDraggingAlpha)
-        {
-            UpdateAlphaFromPosition(position);
-        }
-    }
-
-    private void UpdateSpectrumFromPosition(Point position)
-    {
-        if (_spectrumRect.Width <= 0 || _spectrumRect.Height <= 0) return;
-        _saturation = Math.Clamp((position.X - _spectrumRect.X) / _spectrumRect.Width, 0, 1);
-        _value = Math.Clamp(1 - (position.Y - _spectrumRect.Y) / _spectrumRect.Height, 0, 1);
-        UpdateColor();
-    }
-
-    private void UpdateHueFromPosition(Point position)
-    {
-        if (_hueSliderRect.Width <= 0) return;
-        _hue = Math.Clamp((position.X - _hueSliderRect.X) / _hueSliderRect.Width, 0, 1) * 360;
-        UpdateColor();
-    }
-
-    private void UpdateAlphaFromPosition(Point position)
-    {
-        if (_alphaSliderRect.Width <= 0) return;
-        var alpha = Math.Clamp((position.X - _alphaSliderRect.X) / _alphaSliderRect.Width, 0, 1);
-        _alpha = (byte)Math.Round(alpha * 255);
-        UpdateColor();
     }
 
     private void UpdateColor()
     {
-        var newColor = GetCurrentColor();
         _isUpdatingColor = true;
         try
         {
-            Color = newColor;
+            SetCurrentValue(ColorProperty, ColorPickerColorMath.FromHsv(Hue, Saturation, Value, (byte)Alpha));
         }
         finally
         {
             _isUpdatingColor = false;
         }
-        InvalidateVisual();
+
+        RefreshHex();
     }
 
-    #endregion
-
-    #region Layout
-
-    /// <inheritdoc />
-    protected override Size MeasureOverride(Size availableSize)
+    /// <summary>Parses #RRGGBB or #AARRGGBB and updates the current color without replacing its binding.</summary>
+    public bool TrySetColor(string text)
     {
-        var padding = Padding;
-        var compact = IsCompact;
-        var cssEdges = UsesCssBoxGeometry();
-        var specSize = compact ? CompactSpectrumSize : SpectrumSize;
-        var sliderH = compact ? CompactSliderHeight : SliderHeight;
-        var spacing = compact ? CompactSpacing : Spacing;
-
-        var width = specSize + padding.TotalWidth +
-            (cssEdges ? BorderThickness.TotalWidth : 0);
-        var height = padding.Top;
-
-        if (IsColorSpectrumVisible)
+        if (!ColorPickerColorMath.TryParseHex(text, IsAlphaEnabled ? (byte)255 : Color.A, out var color))
+            return false;
+        if (!IsAlphaEnabled)
+            color = Color.FromArgb(Color.A, color.R, color.G, color.B);
+        _hasHexDraft = false;
+        SetHexError(false);
+        UpdateFromColor(color);
+        _isUpdatingColor = true;
+        try
         {
-            height += specSize + spacing;
+            SetCurrentValue(ColorProperty, color);
+        }
+        finally
+        {
+            _isUpdatingColor = false;
         }
 
-        if (IsColorSliderVisible)
-        {
-            height += sliderH + spacing;
-        }
-
-        if (IsAlphaEnabled && IsColorSliderVisible)
-        {
-            height += sliderH + spacing;
-        }
-
-        if (!compact && IsColorPreviewVisible)
-        {
-            height += PreviewSize;
-        }
-
-        height += padding.Bottom + (cssEdges ? BorderThickness.TotalHeight : 0);
-
-        return new Size(width, height);
+        RefreshHex();
+        return true;
     }
 
-    #endregion
-
-    #region Rendering
-
-    /// <inheritdoc />
-    protected override void OnRender(DrawingContext drawingContext)
+    public bool CommitHexValue()
     {
-        var dc = drawingContext;
-
-        var rect = new Rect(RenderSize);
-        var padding = Padding;
-        var border = BorderThickness;
-        var cssEdges = UsesCssBoxGeometry();
-        var compact = IsCompact;
-        var specSize = compact ? CompactSpectrumSize : SpectrumSize;
-        var sliderH = compact ? CompactSliderHeight : SliderHeight;
-        var spacing = compact ? CompactSpacing : Spacing;
-
-        // Draw background
-        if (Background is { } background)
-        {
-            if (cssEdges)
-            {
-                var radii = CssBorderRadiusProperties.Get(this)?.Resolve(RenderSize) ??
-                    CssBackgroundPainter.CircularRadii(CornerRadius).Normalize(RenderSize);
-                var shape = new CssRoundedRectangleGeometry(rect, radii);
-                if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty,
-                        background, dc, rect, radii, border, padding,
-                        brush => dc.DrawGeometry(brush, null, shape)))
-                    dc.DrawGeometry(background, null, shape);
-            }
-            else
-                dc.DrawRectangle(background, null, rect);
-        }
-
-        var contentLeft = padding.Left + (cssEdges ? border.Left : 0);
-        var currentY = padding.Top + (cssEdges ? border.Top : 0);
-
-        // Draw color spectrum
-        if (IsColorSpectrumVisible)
-        {
-            _spectrumRect = new Rect(contentLeft, currentY, specSize, specSize);
-            DrawColorSpectrum(dc, _spectrumRect);
-            currentY += specSize + spacing;
-        }
-
-        // Draw hue slider
-        if (IsColorSliderVisible)
-        {
-            _hueSliderRect = new Rect(contentLeft, currentY, specSize, sliderH);
-            DrawHueSlider(dc, _hueSliderRect);
-            currentY += sliderH + spacing;
-        }
-
-        // Draw alpha slider
-        if (IsAlphaEnabled && IsColorSliderVisible)
-        {
-            _alphaSliderRect = new Rect(contentLeft, currentY, specSize, sliderH);
-            DrawAlphaSlider(dc, _alphaSliderRect);
-            currentY += sliderH + spacing;
-        }
-
-        // Draw preview (hidden in compact mode)
-        if (!compact && IsColorPreviewVisible)
-        {
-            _previewRect = new Rect(contentLeft, currentY, PreviewSize, PreviewSize);
-            DrawPreview(dc, _previewRect);
-
-            // Draw hex value
-            if (IsHexInputVisible && FontSize > 0)
-            {
-                var hexText = $"#{_alpha:X2}{Color.R:X2}{Color.G:X2}{Color.B:X2}";
-                var formattedText = new FormattedText(hexText, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
-                {
-                    Foreground = ResolveForegroundBrush()
-                };
-                TextMeasurement.MeasureText(formattedText);
-
-                dc.DrawText(formattedText, new Point(_previewRect.Right + spacing, currentY + (PreviewSize - formattedText.Height) / 2));
-            }
-        }
+        if (!_hasHexDraft)
+            return true;
+        if (TrySetColor(HexText))
+            return true;
+        SetHexError(true);
+        return false;
     }
 
-    protected override void OnPostRender(DrawingContext drawingContext)
+    public void CancelHexEdit()
     {
-        base.OnPostRender(drawingContext);
-        CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter);
+        _hasHexDraft = false;
+        SetHexError(false);
+        RefreshHex();
     }
 
-    private bool UsesCssBoxGeometry()
-        => GetEffectiveValueLayer(BorderThicknessProperty) is
-               DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState ||
-           GetEffectiveValueLayer(PaddingProperty) is
-               DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState ||
-           GetEffectiveValueLayer(BackgroundProperty) is
-               DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState ||
-           CssBorderRadiusProperties.Get(this) is not null;
-
-    private void DrawColorSpectrum(DrawingContext dc, Rect rect)
+    private void OnHexKeyDown(object sender, KeyEventArgs e)
     {
-        // Draw spectrum background (simplified - in a real implementation this would be a shader or bitmap)
-        // For now, draw a solid color at the current hue
-        HsvToRgb(_hue, 1, 1, out var r, out var g, out var b);
-        var hueColor = Color.FromRgb(r, g, b);
-
-        // Draw base color
-        _spectrumHueBrush.Color = hueColor;
-        dc.DrawRectangle(_spectrumHueBrush, null, rect);
-
-        // Draw white-to-transparent gradient (saturation)
-        dc.DrawRectangle(s_saturationGradient, null, rect);
-
-        // Draw black-to-transparent gradient (value)
-        dc.DrawRectangle(s_valueGradient, null, rect);
-
-        // Draw border
-        dc.DrawRectangle(null, GetBorderPen(), rect);
-
-        // Draw selector
-        var selectorX = rect.X + _saturation * rect.Width;
-        var selectorY = rect.Y + (1 - _value) * rect.Height;
-        dc.DrawEllipse(null, GetSelectorPen(), new Point(selectorX, selectorY), 6, 6);
-    }
-
-    private void DrawHueSlider(DrawingContext dc, Rect rect)
-    {
-        // Draw hue gradient (cached – colors are deterministic, only rebuild when size changes)
-        var currentSize = new Size(rect.Width, rect.Height);
-        if (_hueGradientBrushes == null || _hueGradientSize != currentSize)
-        {
-            _hueGradientSize = currentSize;
-            _hueGradientBrushes = new LinearGradientBrush[6];
-            for (int j = 0; j < 6; j++)
-            {
-                HsvToRgb(j * 60, 1, 1, out var sr, out var sg, out var sb);
-                HsvToRgb((j + 1) * 60, 1, 1, out var er, out var eg, out var eb);
-                _hueGradientBrushes[j] = new LinearGradientBrush(
-                    Color.FromRgb(sr, sg, sb),
-                    Color.FromRgb(er, eg, eb), 0);
-            }
-        }
-        for (int i = 0; i < 6; i++)
-        {
-            var segmentRect = new Rect(
-                rect.X + rect.Width * i / 6,
-                rect.Y,
-                rect.Width / 6 + 1,
-                rect.Height);
-            dc.DrawRectangle(_hueGradientBrushes[i], null, segmentRect);
-        }
-
-        // Draw border
-        dc.DrawRoundedRectangle(null, GetBorderPen(), rect, 2, 2);
-
-        // Draw selector
-        var selectorX = rect.X + (_hue / 360) * rect.Width;
-        var selectorRect = new Rect(selectorX - 2, rect.Y - 2, 4, rect.Height + 4);
-        dc.DrawRoundedRectangle(ResolveForegroundBrush(), null, selectorRect, 2, 2);
-    }
-
-    private void DrawAlphaSlider(DrawingContext dc, Rect rect)
-    {
-        // Draw checkerboard pattern for transparency
-        DrawCheckerboard(dc, rect);
-
-        // Draw alpha gradient
-        HsvToRgb(_hue, _saturation, _value, out var r, out var g, out var b);
-        var transparent = Color.FromArgb(0, r, g, b);
-        var opaque = Color.FromArgb(255, r, g, b);
-        if (_alphaGradientBrush is { } alphaBrush && alphaBrush.GradientStops.Count == 2)
-        {
-            var stops = alphaBrush.GradientStops;
-            stops[0].Color = transparent;
-            stops[1].Color = opaque;
-        }
-        else
-        {
-            _alphaGradientBrush = new LinearGradientBrush(transparent, opaque, 0);
-        }
-
-        dc.DrawRectangle(_alphaGradientBrush, null, rect);
-
-        // Draw border
-        dc.DrawRoundedRectangle(null, GetBorderPen(), rect, 2, 2);
-
-        // Draw selector
-        var selectorX = rect.X + (_alpha / 255.0) * rect.Width;
-        var selectorRect = new Rect(selectorX - 2, rect.Y - 2, 4, rect.Height + 4);
-        dc.DrawRoundedRectangle(ResolveForegroundBrush(), null, selectorRect, 2, 2);
-    }
-
-    /// <summary>
-    /// 画透明度用的棋盘底。先铺一整块浅色，再只画深色格子——绘制调用数减半。
-    /// </summary>
-    /// <remarks>
-    /// 200x20 的透明度条按 4px 格子原本要 250 次矩形绘制，加上 40x40 的预览块共 350 次，
-    /// 而拖动期间每次指针移动都要重来一遍。
-    /// </remarks>
-    private void DrawCheckerboard(DrawingContext dc, Rect rect)
-    {
-        const double CellSize = 4;
-
-        int pixelWidth = (int)Math.Round(rect.Width);
-        int pixelHeight = (int)Math.Round(rect.Height);
-        bool pixelAligned = pixelWidth > 0 && pixelHeight > 0 &&
-            Math.Abs(rect.X - Math.Round(rect.X)) < 0.0001 &&
-            Math.Abs(rect.Y - Math.Round(rect.Y)) < 0.0001 &&
-            Math.Abs(rect.Width - pixelWidth) < 0.0001 &&
-            Math.Abs(rect.Height - pixelHeight) < 0.0001;
-        if (pixelAligned)
-        {
-            dc.DrawImage(GetCheckerboardBitmap(pixelWidth, pixelHeight), rect);
+        if (!IsEnabled || e.Handled || !ReferenceEquals(sender, _hexTextBox) || _hexTextBox!.IsImeComposing)
             return;
-        }
-
-        dc.DrawRectangle(s_checkerLightBrush, null, rect);
-
-        var row = 0;
-        for (double y = rect.Y; y < rect.Bottom; y += CellSize, row++)
+        if (e.Key == Key.Enter)
         {
-            var height = Math.Min(CellSize, rect.Bottom - y);
-            // 深色格子在每一行里交错起步，所以按行给出起始偏移，再每隔一格画一个。
-            var startOffset = (row % 2 == 0) ? CellSize : 0;
-            for (double x = rect.X + startOffset; x < rect.Right; x += CellSize * 2)
-            {
-                dc.DrawRectangle(
-                    s_checkerDarkBrush,
-                    null,
-                    new Rect(x, y, Math.Min(CellSize, rect.Right - x), height));
-            }
+            CommitHexValue();
+            e.Handled = true;
         }
-    }
-
-    private static BitmapImage GetCheckerboardBitmap(int width, int height)
-    {
-        lock (s_checkerBitmapLock)
+        else if (e.Key == Key.Escape)
         {
-            if (s_checkerBitmaps.TryGetValue((width, height), out var cached))
-            {
-                return cached;
-            }
-
-            const int cellSize = 4;
-            var pixels = new byte[checked(width * height * 4)];
-            for (int y = 0; y < height; y++)
-            {
-                int cellY = y / cellSize;
-                for (int x = 0; x < width; x++)
-                {
-                    int cellX = x / cellSize;
-                    byte value = ((cellX + cellY) & 1) != 0 ? (byte)150 : (byte)200;
-                    int offset = (y * width + x) * 4;
-                    pixels[offset] = value;
-                    pixels[offset + 1] = value;
-                    pixels[offset + 2] = value;
-                    pixels[offset + 3] = 255;
-                }
-            }
-
-            var bitmap = BitmapImage.FromPixels(pixels, width, height, width * 4);
-            s_checkerBitmaps[(width, height)] = bitmap;
-            return bitmap;
+            CancelHexEdit();
+            e.Handled = true;
         }
     }
 
-    private void DrawPreview(DrawingContext dc, Rect rect)
+    private void OnHexLostFocus(object sender, KeyboardFocusChangedEventArgs e)
     {
-        // Draw checkerboard for transparency
-        DrawCheckerboard(dc, rect);
-
-        // Draw current color
-        _previewBrush.Color = Color;
-        dc.DrawRectangle(_previewBrush, null, rect);
-
-        // Draw border
-        dc.DrawRectangle(null, GetBorderPen(), rect);
+        if (IsEnabled && ReferenceEquals(sender, _hexTextBox))
+            CommitHexValue();
     }
 
-    private Pen GetBorderPen()
+    private void RefreshHex()
     {
-        var borderBrush = ResolveBorderBrush();
-        var thickness = BorderThickness.Left > 0 ? BorderThickness.Left : 1;
-        if (_borderPen == null ||
-            !ReferenceEquals(_borderPenBrush, borderBrush) ||
-            _borderPenThickness != thickness)
+        if (_hasHexDraft)
+            return;
+        _updatingHex = true;
+        try
         {
-            _borderPen = new Pen(borderBrush, thickness);
-            _borderPenBrush = borderBrush;
-            _borderPenThickness = thickness;
+            SetCurrentValue(HexTextProperty, IsAlphaEnabled ? $"#{Color.A:X2}{Color.R:X2}{Color.G:X2}{Color.B:X2}" : $"#{Color.R:X2}{Color.G:X2}{Color.B:X2}");
         }
-
-        return _borderPen;
-    }
-
-    private Pen GetSelectorPen()
-    {
-        var foreground = ResolveForegroundBrush();
-        if (_selectorPen == null || !ReferenceEquals(_selectorPenBrush, foreground))
+        finally
         {
-            _selectorPen = new Pen(foreground, 2);
-            _selectorPenBrush = foreground;
+            _updatingHex = false;
         }
-
-        return _selectorPen;
     }
 
-    private Brush ResolveForegroundBrush()
+    private void SetHexError(bool error)
     {
-        if (HasLocalValue(Control.ForegroundProperty) && Foreground != null)
-        {
-            return Foreground;
-        }
-
-        return TryFindResource("TextPrimary") as Brush
-            ?? Foreground
-            ?? s_whiteBrush;
+        SetValue(HasHexErrorPropertyKey, error);
+        SetValue(HexErrorTextPropertyKey, error ? "Use #RRGGBB or #AARRGGBB" : string.Empty);
+        VisualStateManager.GoToState(this, error ? "Invalid" : "Valid", false);
     }
 
-    private Brush ResolveBorderBrush()
+    private void UpdatePresentation()
     {
-        if (HasLocalValue(Control.BorderBrushProperty) && BorderBrush != null)
-        {
-            return BorderBrush;
-        }
-
-        return TryFindResource("ControlBorder") as Brush
-            ?? BorderBrush
-            ?? s_grayBorderBrush;
+        SetValue(ShowPreviewPropertyKey, !IsCompact && IsColorPreviewVisible);
+        SetValue(ShowHexInputPropertyKey, !IsCompact && IsHexInputVisible);
+        SetValue(ShowAlphaSliderPropertyKey, IsAlphaEnabled && IsColorSliderVisible);
+        SetValue(EffectiveSpectrumSizePropertyKey, IsCompact ? 120.0 : 200.0);
+        SetValue(EffectiveSliderHeightPropertyKey, IsCompact ? 14.0 : 20.0);
+        SetValue(EffectiveSpacingPropertyKey, IsCompact ? 4.0 : 8.0);
+        VisualStateManager.GoToState(this, IsCompact ? "Compact" : "Expanded", false);
+        VisualStateManager.GoToState(this, HasHexError ? "Invalid" : "Valid", false);
     }
 
-    #endregion
+    private static object? CoerceHue(DependencyObject d, object? value) => ColorPickerColorMath.Hue((double)value!);
+    private static object? CoerceUnit(DependencyObject d, object? value) => ColorPickerColorMath.Unit((double)value!);
+    private static object? CoerceAlpha(DependencyObject d, object? value) => double.IsFinite((double)value!) ? Math.Round(Math.Clamp((double)value!, 0, 255)) : 0.0;
+    private static void OnComponentChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        var picker = (ColorPicker)d;
+        if (picker._synchronizingComponents)
+            return;
+        picker._hasHexDraft = false;
+        picker.SetHexError(false);
+        picker.UpdateColor();
+    }
 
-    #region Property Changed Callbacks
+    private static void OnHexTextChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        var picker = (ColorPicker)d;
+        if (picker._updatingHex)
+            return;
+        picker._hasHexDraft = true;
+        if (picker.HasHexError && ColorPickerColorMath.TryParseHex(picker.HexText, 255, out _))
+            picker.SetHexError(false);
+    }
 
     private static void OnColorChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is ColorPicker colorPicker)
-        {
-            // Only update internal HSV state when the Color is set externally.
-            // When set internally (via spectrum/hue/alpha drag), the HSV state is already correct
-            // and RGB閳墲SV conversion would lose hue information at low saturation/value.
-            if (!colorPicker._isUpdatingColor)
-            {
-                colorPicker.UpdateFromColor((Color)e.NewValue!);
-            }
-            colorPicker.InvalidateVisual();
-
-            var args = new ColorChangedEventArgs(ColorChangedEvent, (Color)e.OldValue!, (Color)e.NewValue!);
-            colorPicker.RaiseEvent(args);
-        }
+        var picker = (ColorPicker)d;
+        if (!picker._isUpdatingColor)
+            picker.UpdateFromColor((Color)e.NewValue!);
+        picker.RefreshHex();
+        picker.RaiseEvent(new ColorChangedEventArgs(ColorChangedEvent, (Color)e.OldValue!, (Color)e.NewValue!));
     }
 
     private static void OnLayoutPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is ColorPicker colorPicker)
-        {
-            colorPicker.InvalidateMeasure();
-        }
+        var picker = (ColorPicker)d;
+        picker.UpdatePresentation();
+        picker.RefreshHex();
+        picker.InvalidateMeasure();
     }
-
-    #endregion
 }
 
 /// <summary>
@@ -866,7 +392,6 @@ public enum ColorSpectrumShape
     /// Box-shaped spectrum.
     /// </summary>
     Box,
-
     /// <summary>
     /// Ring-shaped spectrum.
     /// </summary>
@@ -882,14 +407,13 @@ public sealed class ColorChangedEventArgs : RoutedEventArgs
     /// Gets the old color.
     /// </summary>
     public Color OldColor { get; }
-
     /// <summary>
     /// Gets the new color.
     /// </summary>
     public Color NewColor { get; }
 
     /// <summary>
-    /// Initializes a new instance of the <see cref="ColorChangedEventArgs"/> class.
+    /// Initializes a new instance of the <see cref = "ColorChangedEventArgs"/> class.
     /// </summary>
     public ColorChangedEventArgs(RoutedEvent routedEvent, Color oldColor, Color newColor)
     {

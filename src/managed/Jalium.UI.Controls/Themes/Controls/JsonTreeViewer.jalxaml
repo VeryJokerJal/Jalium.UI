@@ -1,12 +1,112 @@
 <ResourceDictionary
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:automation="clr-namespace:Jalium.UI.Automation;assembly=Jalium.UI.Controls">
+
+
+    <DataTemplate x:Key="JsonTreeViewer.NodeTemplate">
+        <JsonTreeNodePresenter Node="{Binding}"
+            Viewer="{Binding RelativeSource={RelativeSource AncestorType=JsonTreeViewer}}"
+            IsEditable="{Binding IsEditable, RelativeSource={RelativeSource AncestorType=JsonTreeViewer}}"
+            ShowTypeIndicators="{Binding ShowTypeIndicators, RelativeSource={RelativeSource AncestorType=JsonTreeViewer}}"
+            ShowItemCount="{Binding ShowItemCount, RelativeSource={RelativeSource AncestorType=JsonTreeViewer}}"
+            ObjectBrush="{Binding ObjectBrush, RelativeSource={RelativeSource AncestorType=JsonTreeViewer}}"
+            ArrayBrush="{Binding ArrayBrush, RelativeSource={RelativeSource AncestorType=JsonTreeViewer}}"
+            StringBrush="{Binding StringBrush, RelativeSource={RelativeSource AncestorType=JsonTreeViewer}}"
+            NumberBrush="{Binding NumberBrush, RelativeSource={RelativeSource AncestorType=JsonTreeViewer}}"
+            BooleanBrush="{Binding BooleanBrush, RelativeSource={RelativeSource AncestorType=JsonTreeViewer}}"
+            NullBrush="{Binding NullBrush, RelativeSource={RelativeSource AncestorType=JsonTreeViewer}}"
+            KeyBrush="{Binding KeyBrush, RelativeSource={RelativeSource AncestorType=JsonTreeViewer}}"
+            BracketBrush="{Binding BracketBrush, RelativeSource={RelativeSource AncestorType=JsonTreeViewer}}"
+            SearchHighlightBrush="{Binding SearchHighlightBrush, RelativeSource={RelativeSource AncestorType=JsonTreeViewer}}"
+            />
+    </DataTemplate>
+
+    <Style TargetType="JsonTreeNodePresenter">
+        <Setter Property="Focusable" Value="False" />
+        <Setter Property="IsTabStop" Value="False" />
+        <Setter Property="FontFamily" Value="{ThemeResource MonoFontFamily}" />
+        <Setter Property="KeyBrush" Value="{ThemeResource EditorSyntaxField}" />
+        <Setter Property="BracketBrush" Value="{ThemeResource EditorSyntaxPunctuation}" />
+        <Setter Property="SearchHighlightBrush" Value="{ThemeResource HighlightBackground}" />
+        <Setter Property="Template"><ControlTemplate TargetType="JsonTreeNodePresenter">
+            <Border x:Name="PART_Root" Background="{TemplateBinding SearchHighlightBrush}" CornerRadius="3" Padding="1,2">
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup x:Name="EditingStates">
+                        <VisualState x:Name="Display"><VisualState.Setters>
+                            <Setter TargetName="PART_ValueEditor" Property="Visibility" Value="Collapsed" />
+                        </VisualState.Setters></VisualState>
+                        <VisualState x:Name="Editing"><VisualState.Setters>
+                            <Setter TargetName="PART_DisplayPanel" Property="Visibility" Value="Collapsed" />
+                        </VisualState.Setters></VisualState>
+                    </VisualStateGroup>
+                    <VisualStateGroup x:Name="ValidationStates">
+                        <VisualState x:Name="Valid"><VisualState.Setters>
+                            <Setter TargetName="PART_ValidationMessage" Property="Visibility" Value="Collapsed" />
+                        </VisualState.Setters></VisualState>
+                        <VisualState x:Name="Invalid" />
+                    </VisualStateGroup>
+                    <VisualStateGroup x:Name="MatchStates">
+                        <VisualState x:Name="Matched" />
+                        <VisualState x:Name="Unmatched"><VisualState.Setters>
+                            <Setter TargetName="PART_Root" Property="Background" Value="Transparent" />
+                        </VisualState.Setters></VisualState>
+                    </VisualStateGroup>
+                    <VisualStateGroup x:Name="CommonStates">
+                        <VisualState x:Name="Normal" />
+                        <VisualState x:Name="Disabled"><VisualState.Setters>
+                            <Setter TargetName="PART_Root" Property="Opacity" Value="0.55" />
+                        </VisualState.Setters></VisualState>
+                    </VisualStateGroup>
+                    <VisualStateGroup x:Name="IndicatorStates">
+                        <VisualState x:Name="IndicatorVisible" />
+                        <VisualState x:Name="IndicatorHidden"><VisualState.Setters>
+                            <Setter TargetName="PART_Indicator" Property="Visibility" Value="Collapsed" />
+                        </VisualState.Setters></VisualState>
+                    </VisualStateGroup>
+                    <VisualStateGroup x:Name="CountStates">
+                        <VisualState x:Name="CountVisible" />
+                        <VisualState x:Name="CountHidden"><VisualState.Setters>
+                            <Setter TargetName="PART_Count" Property="Visibility" Value="Collapsed" />
+                        </VisualState.Setters></VisualState>
+                    </VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock x:Name="PART_Indicator" Text="{TemplateBinding IndicatorText}" Foreground="{TemplateBinding TypeBrush}" Margin="0,0,6,0" VerticalAlignment="Center" />
+                        <TextBlock x:Name="PART_Key" Text="{TemplateBinding KeyText}" Foreground="{TemplateBinding KeyBrush}" VerticalAlignment="Center" />
+                        <TextBlock Text="{TemplateBinding KeySeparator}" Foreground="{TemplateBinding BracketBrush}" VerticalAlignment="Center" />
+                        <StackPanel x:Name="PART_DisplayPanel" Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBlock x:Name="PART_Value" Text="{TemplateBinding ValueText}" Foreground="{TemplateBinding TypeBrush}" />
+                            <TextBlock x:Name="PART_Count" Text="{TemplateBinding CountText}" Foreground="{TemplateBinding TypeBrush}" FontSize="11" VerticalAlignment="Center" />
+                            <TextBlock Text="{TemplateBinding ClosingText}" Foreground="{TemplateBinding BracketBrush}" />
+                        </StackPanel>
+                        <TextBox x:Name="PART_ValueEditor" MinWidth="100" MinHeight="28" Padding="4,2" VerticalAlignment="Center"
+                            Text="{Binding EditText, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                            automation:AutomationProperties.Name="JSON value"
+                            automation:AutomationProperties.HelpText="{TemplateBinding ErrorText}" />
+                    </StackPanel>
+                    <TextBlock x:Name="PART_ValidationMessage" Text="{TemplateBinding ErrorText}" FontSize="11" Margin="0,2,0,0"
+                        TextWrapping="Wrap" Foreground="{ThemeResource SystemControlErrorTextForegroundBrush}" />
+                </StackPanel>
+            </Border>
+        </ControlTemplate></Setter>
+    </Style>
 
     <!-- ============================================== -->
     <!-- JsonTreeViewer Style                            -->
     <!-- ============================================== -->
     <!-- A tree-based JSON data viewer with search, expand/collapse,
          and path display functionality. -->
+    <!-- A neutral selection surface preserves syntax and validation contrast.
+         The outline carries selection without replacing semantic text colors. -->
+    <Style x:Key="JsonTreeViewer.NodeContainerStyle" TargetType="TreeViewItem">
+        <Setter Property="SelectionBrush" Value="{ThemeResource HighlightBackground}" />
+        <Setter Property="SelectionPointerOverBrush" Value="{ThemeResource HighlightBackground}" />
+        <Setter Property="SelectionBorderBrush" Value="{ThemeResource AccentBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+    </Style>
+
     <Style TargetType="JsonTreeViewer">
         <Setter Property="Background" Value="{ThemeResource LayerFillColorDefaultBrush}" />
         <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
@@ -17,6 +117,17 @@
         <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
         <Setter Property="MinWidth" Value="200" />
         <Setter Property="MinHeight" Value="150" />
+        <Setter Property="NodeTemplate" Value="{StaticResource JsonTreeViewer.NodeTemplate}" />
+        <Setter Property="NodeContainerStyle" Value="{StaticResource JsonTreeViewer.NodeContainerStyle}" />
+        <Setter Property="ObjectBrush" Value="{ThemeResource EditorSyntaxTypeName}" />
+        <Setter Property="ArrayBrush" Value="{ThemeResource EditorSyntaxTypeName}" />
+        <Setter Property="StringBrush" Value="{ThemeResource EditorSyntaxString}" />
+        <Setter Property="NumberBrush" Value="{ThemeResource EditorSyntaxNumber}" />
+        <Setter Property="BooleanBrush" Value="{ThemeResource EditorSyntaxKeyword}" />
+        <Setter Property="NullBrush" Value="{ThemeResource EditorSyntaxComment}" />
+        <Setter Property="KeyBrush" Value="{ThemeResource EditorSyntaxField}" />
+        <Setter Property="BracketBrush" Value="{ThemeResource EditorSyntaxPunctuation}" />
+        <Setter Property="SearchHighlightBrush" Value="{ThemeResource HighlightBackground}" />
         <Setter Property="Template">
             <ControlTemplate TargetType="JsonTreeViewer">
                 <Border Name="RootBorder"
@@ -26,7 +137,34 @@
                         BorderThickness="{TemplateBinding BorderThickness}"
                         CornerRadius="{TemplateBinding CornerRadius}"
                         ClipToBounds="True">
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="DataStates">
+                                <VisualState x:Name="Empty"><VisualState.Setters>
+                                    <Setter TargetName="PART_TreeView" Property="Visibility" Value="Collapsed" />
+                                    <Setter TargetName="PART_ErrorMessage" Property="Visibility" Value="Collapsed" />
+                                </VisualState.Setters></VisualState>
+                                <VisualState x:Name="Ready"><VisualState.Setters>
+                                    <Setter TargetName="PART_EmptyMessage" Property="Visibility" Value="Collapsed" />
+                                    <Setter TargetName="PART_ErrorMessage" Property="Visibility" Value="Collapsed" />
+                                </VisualState.Setters></VisualState>
+                                <VisualState x:Name="Error"><VisualState.Setters>
+                                    <Setter TargetName="PART_TreeView" Property="Visibility" Value="Collapsed" />
+                                    <Setter TargetName="PART_EmptyMessage" Property="Visibility" Value="Collapsed" />
+                                </VisualState.Setters></VisualState>
+                            </VisualStateGroup>
+                            <VisualStateGroup x:Name="FilterStates">
+                                <VisualState x:Name="Filtered" />
+                                <VisualState x:Name="Unfiltered" />
+                            </VisualStateGroup>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled"><VisualState.Setters>
+                                    <Setter TargetName="RootBorder" Property="Opacity" Value="0.65" />
+                                </VisualState.Setters></VisualState>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
                     <Grid>
+
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
@@ -37,27 +175,29 @@
                         <!-- Toolbar -->
                         <Grid Grid.Row="0"
                               Background="{ThemeResource LayerFillColorAltBrush}">
-                            <StackPanel Name="PART_ToolBar"
+                            <WrapPanel Name="PART_ToolBar"
                                         Orientation="Horizontal"
-                                        Margin="4,2,4,2">
+                                        Margin="4,4,4,0">
                                 <Button Name="PART_ExpandAllButton"
                                         Content="Expand All"
-                                        Margin="0,0,4,0"
+                                        Margin="0,0,4,4"
                                         Padding="8,4,8,4"
                                         MinWidth="0"
                                         MinHeight="0" />
                                 <Button Name="PART_CollapseAllButton"
                                         Content="Collapse All"
-                                        Margin="0,0,4,0"
+                                        Margin="0,0,4,4"
                                         Padding="8,4,8,4"
                                         MinWidth="0"
                                         MinHeight="0" />
                                 <Button Name="PART_CopyPathButton"
                                         Content="Copy Path"
+                                        Margin="0,0,4,4"
+                                        IsEnabled="{TemplateBinding HasSelection}"
                                         Padding="8,4,8,4"
                                         MinWidth="0"
                                         MinHeight="0" />
-                            </StackPanel>
+                            </WrapPanel>
                             <Rectangle Height="1"
                                        VerticalAlignment="Bottom"
                                        Fill="{ThemeResource DividerStrokeColorDefaultBrush}"
@@ -70,6 +210,8 @@
                             <TextBox Name="PART_SearchBox"
                                      Margin="4"
                                      PlaceholderText="Search..."
+                                     Text="{Binding SearchText, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                     automation:AutomationProperties.Name="Search JSON"
                                      BorderThickness="1" />
                             <Rectangle Height="1"
                                        VerticalAlignment="Bottom"
@@ -84,6 +226,12 @@
                                   BorderThickness="0"
                                   Padding="0" />
 
+                        <TextBlock Name="PART_EmptyMessage" Grid.Row="2" Text="No JSON loaded" Margin="16" VerticalAlignment="Center" HorizontalAlignment="Center"
+                                   Foreground="{ThemeResource TextSecondary}" />
+                        <ScrollViewer Name="PART_ErrorMessage" Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                            <TextBlock Text="{TemplateBinding ParseError}" Margin="16" TextWrapping="Wrap" Foreground="{ThemeResource SystemControlErrorTextForegroundBrush}" />
+                        </ScrollViewer>
+
                         <!-- Status Bar -->
                         <Grid Grid.Row="3"
                               Background="{ThemeResource LayerFillColorAltBrush}">
@@ -92,6 +240,9 @@
                                        Fill="{ThemeResource DividerStrokeColorDefaultBrush}"
                                        IsHitTestVisible="False" />
                             <TextBlock Name="PART_StatusText"
+                                       Text="{TemplateBinding StatusText}"
+                                       TextTrimming="CharacterEllipsis"
+                                       ToolTip="{TemplateBinding StatusText}"
                                        Margin="8,4,8,4"
                                        Foreground="{ThemeResource TextSecondary}"
                                        FontSize="11" />
@@ -101,12 +252,7 @@
             </ControlTemplate>
         </Setter>
 
-        <Style.Triggers>
-            <Trigger Property="IsEnabled" Value="False">
-                <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
-                <Setter Property="Opacity" Value="0.65" />
-            </Trigger>
-        </Style.Triggers>
+
     </Style>
 
 </ResourceDictionary>

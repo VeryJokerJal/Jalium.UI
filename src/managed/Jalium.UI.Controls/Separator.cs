@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Media;
+using Jalium.UI.Media;
 using Jalium.UI.Styling;
 
 namespace Jalium.UI.Controls;
@@ -6,6 +6,12 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Represents a control used to separate items in a list or menu.
 /// </summary>
+[TemplatePart(Name = "PART_HorizontalLine", Type = typeof(Border))]
+[TemplatePart(Name = "PART_VerticalLine", Type = typeof(Border))]
+[TemplateVisualState(Name = "Horizontal", GroupName = "OrientationStates")]
+[TemplateVisualState(Name = "Vertical", GroupName = "OrientationStates")]
+[TemplateVisualState(Name = "Normal", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Disabled", GroupName = "CommonStates")]
 public class Separator : Control
 {
     /// <inheritdoc />
@@ -54,6 +60,16 @@ public class Separator : Control
 
     #endregion
 
+    private static readonly DependencyPropertyKey ResolvedStrokeBrushPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(ResolvedStrokeBrush), typeof(Brush), typeof(Separator),
+            new PropertyMetadata(null));
+
+    /// <summary>Identifies the resolved stroke brush used by default and custom templates.</summary>
+    public static readonly DependencyProperty ResolvedStrokeBrushProperty = ResolvedStrokeBrushPropertyKey.DependencyProperty;
+
+    /// <summary>Gets the stroke brush after native, CSS and inherited values are resolved.</summary>
+    public Brush? ResolvedStrokeBrush => (Brush?)GetValue(ResolvedStrokeBrushProperty);
+
     #region CLR Properties
 
     /// <summary>
@@ -95,6 +111,7 @@ public class Separator : Control
     /// </summary>
     public Separator()
     {
+        DefaultStyleKey = typeof(Separator);
         // Separators are not focusable
         Focusable = false;
         IsHitTestVisible = false;
@@ -104,20 +121,36 @@ public class Separator : Control
 
     #region Template Parts
 
-    private Border? _separatorBorder;
     private Border? _cssBorderPainter;
 
     /// <inheritdoc />
     public override void OnApplyTemplate()
     {
         base.OnApplyTemplate();
-        _separatorBorder = GetTemplateChild("SeparatorBorder") as Border;
+        UpdatePresentation();
     }
 
-    internal override void OnTemplateContentClearing()
+    /// <inheritdoc />
+    protected override void OnIsEnabledChanged(bool oldValue, bool newValue)
     {
-        base.OnTemplateContentClearing();
-        _separatorBorder = null;
+        base.OnIsEnabledChanged(oldValue, newValue);
+        UpdatePresentation();
+    }
+
+    /// <inheritdoc />
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        if (e.Property == StrokeBrushProperty || e.Property == ForegroundProperty || e.Property == BorderBrushProperty)
+            SetValue(ResolvedStrokeBrushPropertyKey, ResolveStrokeBrush());
+    }
+
+    private void UpdatePresentation()
+    {
+        SetValue(ResolvedStrokeBrushPropertyKey, ResolveStrokeBrush());
+        if (TemplateRootInternal is null) return;
+        VisualStateManager.GoToState(this, Orientation == Orientation.Vertical ? "Vertical" : "Horizontal", false);
+        VisualStateManager.GoToState(this, IsEnabled ? "Normal" : "Disabled", false);
     }
 
     #endregion
@@ -127,6 +160,8 @@ public class Separator : Control
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
+        UpdateDefaultStyle();
+        if (Template is not null) return base.MeasureOverride(availableSize);
         var thickness = StrokeThickness;
         var insets = CssBoxMetrics.ContentInsets(this,
             CssLayout?.ContainingWidthCache ?? availableSize.Width);
@@ -156,9 +191,9 @@ public class Separator : Control
     /// <inheritdoc />
     protected override void OnRender(DrawingContext drawingContext)
     {
-        // If using template, let the template handle rendering
-        if (_separatorBorder != null)
+        if (Template is not null)
         {
+            base.OnRender(drawingContext);
             return;
         }
 
@@ -217,7 +252,7 @@ public class Separator : Control
     protected override void OnPostRender(DrawingContext drawingContext)
     {
         base.OnPostRender(drawingContext);
-        if (_separatorBorder is null)
+        if (Template is null)
             CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter, drawNative: true);
     }
 
@@ -249,6 +284,7 @@ public class Separator : Control
     {
         if (d is Separator separator)
         {
+            separator.UpdatePresentation();
             separator.InvalidateMeasure();
         }
     }

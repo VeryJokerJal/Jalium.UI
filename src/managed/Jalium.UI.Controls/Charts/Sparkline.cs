@@ -7,7 +7,7 @@ namespace Jalium.UI.Controls.Charts;
 /// A lightweight inline chart control that renders a compact visualization (line, area, bar, or win/loss)
 /// without axes, titles, or legends. Designed for embedding in grids, lists, and dashboards.
 /// </summary>
-public class Sparkline : Control
+public partial class Sparkline : Control
 {
     #region Static Defaults
 
@@ -315,6 +315,7 @@ public class Sparkline : Control
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
+        base.MeasureOverride(availableSize);
         double w = double.IsInfinity(availableSize.Width) ? 80 : availableSize.Width;
         double h = double.IsInfinity(availableSize.Height) ? 20 : availableSize.Height;
         return new Size(w, h);
@@ -327,8 +328,11 @@ public class Sparkline : Control
     /// <inheritdoc />
     protected override void OnRender(DrawingContext drawingContext)
     {
-        var dc = drawingContext;
-
+        RefreshSparklinePresentation();base.OnRender(drawingContext);if(TemplateRootInternal is null)RenderSparkline(drawingContext);
+    }
+    protected override Size ArrangeOverride(Size finalSize){base.ArrangeOverride(finalSize);return finalSize;}
+    internal void RenderSparkline(DrawingContext dc)
+    {
         var values = Values;
         if (values == null || values.Count == 0)
             return;
@@ -336,12 +340,6 @@ public class Sparkline : Control
         var bounds = new Rect(0, 0, RenderSize.Width, RenderSize.Height);
         if (bounds.Width <= 0 || bounds.Height <= 0)
             return;
-
-        // Draw background if set
-        if (Background != null)
-        {
-            dc.DrawRectangle(Background, null, bounds);
-        }
 
         switch (SparklineType)
         {

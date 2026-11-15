@@ -28,7 +28,7 @@ public sealed class NavigatedToChangeEventArgs : RoutedEventArgs
 /// Displays a side-by-side or unified diff between two text documents with
 /// line-level and word-level highlighting, virtual scrolling, and keyboard navigation.
 /// </summary>
-public class DiffViewer : Control
+public partial class DiffViewer : Control
 {
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
@@ -515,14 +515,18 @@ public class DiffViewer : Control
     /// <inheritdoc />
     protected override void OnRender(DrawingContext drawingContext)
     {
-        var dc = drawingContext;
+        RefreshDiffPresentation();
+        base.OnRender(drawingContext);
+        if (TemplateRootInternal is null)
+        {
+            drawingContext.DrawRectangle(Background ?? ResolveThemeBrush("ControlBackground", s_defaultGutterBackground), null, new Rect(RenderSize));
+            RenderDiffContent(drawingContext);
+        }
+    }
 
-        var bounds = new Rect(0, 0, RenderSize.Width, RenderSize.Height);
-
-        // Draw background
-        var bgBrush = Background ?? ResolveThemeBrush("ControlBackground", s_defaultGutterBackground);
-        dc.DrawRectangle(bgBrush, null, bounds);
-
+    internal void RenderDiffContent(DrawingContext dc)
+    {
+        var bounds = new Rect(RenderSize);
         if (_diffLines.Count == 0) return;
 
         UpdateLayoutMetrics(RenderSize);
@@ -806,7 +810,7 @@ public class DiffViewer : Control
                 TextMeasurement.MeasureText(measureFt);
 
                 var highlightBrush = wd.Type == DiffLineType.Added ? addedBrush : removedBrush;
-                dc.DrawRectangle(highlightBrush, null, new Rect(x, y, measureFt.Width, _lineHeight));
+                dc.DrawRectangle(highlightBrush, null, new Rect(x, y, measureFt.WidthIncludingTrailingWhitespace, _lineHeight));
             }
 
             var ft = new FormattedText(wd.Text, fontFamily, fontSize)
@@ -815,7 +819,7 @@ public class DiffViewer : Control
             };
             TextMeasurement.MeasureText(ft);
             dc.DrawText(ft, new Point(x, y));
-            x += ft.Width;
+            x += ft.WidthIncludingTrailingWhitespace;
         }
     }
 
@@ -826,11 +830,12 @@ public class DiffViewer : Control
         double minimapX = bounds.Width - MinimapWidth;
         double minimapHeight = bounds.Height;
 
-        // Minimap background
-        dc.DrawRectangle(s_defaultGutterBackground, null, new Rect(minimapX, 0, MinimapWidth, minimapHeight));
-
-        // Draw separator line
-        dc.DrawRectangle(s_defaultSeparatorBrush, null, new Rect(minimapX, 0, 1, minimapHeight));
+        // Missing templates retain the intrinsic fallback; default templates own the frame.
+        if (TemplateRootInternal is null)
+        {
+            dc.DrawRectangle(s_defaultGutterBackground, null, new Rect(minimapX, 0, MinimapWidth, minimapHeight));
+            dc.DrawRectangle(s_defaultSeparatorBrush, null, new Rect(minimapX, 0, 1, minimapHeight));
+        }
 
         // Scale factor: map all lines into the minimap height
         double lineScale = minimapHeight / Math.Max(1, _diffLines.Count);
@@ -855,7 +860,7 @@ public class DiffViewer : Control
         }
 
         // Draw viewport indicator
-        if (_totalContentHeight > 0)
+        if (TemplateRootInternal is null && _totalContentHeight > 0)
         {
             double viewportTop = (_scrollOffsetY / _totalContentHeight) * minimapHeight;
             double viewportH = (bounds.Height / Math.Max(1, _totalContentHeight)) * minimapHeight;
@@ -962,7 +967,7 @@ public class DiffViewer : Control
                     UpdateScrollFromMinimap(position.Y);
                 }
 
-                InvalidateVisual();
+                InvalidateDiffView();
                 e.Handled = true;
                 return;
             }
@@ -973,7 +978,7 @@ public class DiffViewer : Control
             _selectionEndLine = _selectionStartLine;
             _selectionStartPoint = position;
 
-            InvalidateVisual();
+            InvalidateDiffView();
             e.Handled = true;
         }
     }
@@ -1003,7 +1008,7 @@ public class DiffViewer : Control
 
         _scrollOffsetY = ratio * Math.Max(0, _totalContentHeight - RenderSize.Height);
         ClampScrollOffset();
-        InvalidateVisual();
+        InvalidateDiffView();
     }
 
     private void OnMouseMoveHandler(object sender, MouseEventArgs e)
@@ -1032,7 +1037,7 @@ public class DiffViewer : Control
                 ClampScrollOffset();
             }
 
-            InvalidateVisual();
+            InvalidateDiffView();
         }
     }
 
@@ -1053,7 +1058,7 @@ public class DiffViewer : Control
         ClampScrollOffset();
         bool horizontalMoved = _scrollOffsetX != oldX;
         bool verticalMoved = _scrollOffsetY != oldY;
-        if (horizontalMoved || verticalMoved) InvalidateVisual();
+        if (horizontalMoved || verticalMoved) InvalidateDiffView();
         input.MarkHandled(e, horizontalMoved, verticalMoved);
     }
 
@@ -1074,52 +1079,52 @@ public class DiffViewer : Control
             case Key.Down:
                 _scrollOffsetY += _lineHeight;
                 ClampScrollOffset();
-                InvalidateVisual();
+                InvalidateDiffView();
                 e.Handled = true;
                 break;
 
             case Key.Up:
                 _scrollOffsetY -= _lineHeight;
                 ClampScrollOffset();
-                InvalidateVisual();
+                InvalidateDiffView();
                 e.Handled = true;
                 break;
 
             case Key.PageDown:
                 _scrollOffsetY += RenderSize.Height;
                 ClampScrollOffset();
-                InvalidateVisual();
+                InvalidateDiffView();
                 e.Handled = true;
                 break;
 
             case Key.PageUp:
                 _scrollOffsetY -= RenderSize.Height;
                 ClampScrollOffset();
-                InvalidateVisual();
+                InvalidateDiffView();
                 e.Handled = true;
                 break;
 
             case Key.Home when e.KeyboardModifiers.HasFlag(ModifierKeys.Control):
                 _scrollOffsetY = 0;
-                InvalidateVisual();
+                InvalidateDiffView();
                 e.Handled = true;
                 break;
 
             case Key.End when e.KeyboardModifiers.HasFlag(ModifierKeys.Control):
                 _scrollOffsetY = Math.Max(0, _totalContentHeight - RenderSize.Height);
-                InvalidateVisual();
+                InvalidateDiffView();
                 e.Handled = true;
                 break;
 
             case Key.Left:
                 _scrollOffsetX = Math.Max(0, _scrollOffsetX - _charWidth * 3);
-                InvalidateVisual();
+                InvalidateDiffView();
                 e.Handled = true;
                 break;
 
             case Key.Right:
                 _scrollOffsetX += _charWidth * 3;
-                InvalidateVisual();
+                InvalidateDiffView();
                 e.Handled = true;
                 break;
         }
@@ -1166,7 +1171,7 @@ public class DiffViewer : Control
         _selectionEndLine = -1;
 
         InvalidateMeasure();
-        InvalidateVisual();
+        InvalidateDiffView();
 
         RaiseEvent(new RoutedEventArgs(DiffComputedEvent));
     }
@@ -1183,7 +1188,7 @@ public class DiffViewer : Control
         _scrollOffsetY = Math.Max(0, targetY);
         ClampScrollOffset();
 
-        InvalidateVisual();
+        InvalidateDiffView();
 
         RaiseEvent(new NavigatedToChangeEventArgs(
             NavigatedToChangeEvent, changeIndex, diffLine.LineType));
@@ -1205,7 +1210,7 @@ public class DiffViewer : Control
     {
         if (d is DiffViewer viewer)
         {
-            viewer.InvalidateVisual();
+            viewer.InvalidateDiffView();
         }
     }
 
@@ -1214,7 +1219,7 @@ public class DiffViewer : Control
         if (d is DiffViewer viewer)
         {
             viewer.InvalidateMeasure();
-            viewer.InvalidateVisual();
+            viewer.InvalidateDiffView();
         }
     }
 

@@ -1,35 +1,39 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Data;
+using Jalium.UI.Input;
 using Jalium.UI.Media;
-using Jalium.UI.Styling;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI.Controls;
 
-/// <summary>
-/// Represents a specialized command bar that provides layout for AppBarButton and related command elements.
-/// </summary>
+/// <summary>A templated toolbar with primary commands and a keyboard-accessible overflow.</summary>
+[TemplatePart(Name = "PART_PrimaryItemsControl", Type = typeof(ItemsControl))]
+[TemplatePart(Name = "PART_SecondaryItemsControl", Type = typeof(ItemsControl))]
+[TemplatePart(Name = "PART_MoreButton", Type = typeof(ButtonBase))]
+[TemplatePart(Name = "PART_OverflowPopup", Type = typeof(Popup))]
+[TemplateVisualState(Name = "Open", GroupName = "OpenStates")]
+[TemplateVisualState(Name = "Closed", GroupName = "OpenStates")]
+[TemplateVisualState(Name = "Expanded", GroupName = "DisplayStates")]
+[TemplateVisualState(Name = "Compact", GroupName = "DisplayStates")]
+[TemplateVisualState(Name = "Minimal", GroupName = "DisplayStates")]
+[TemplateVisualState(Name = "Hidden", GroupName = "DisplayStates")]
+[TemplateVisualState(Name = "OverflowButtonVisible", GroupName = "OverflowButtonStates")]
+[TemplateVisualState(Name = "OverflowButtonHidden", GroupName = "OverflowButtonStates")]
+[TemplateVisualState(Name = "Normal", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Disabled", GroupName = "CommonStates")]
 public class CommandBar : Control
 {
-    /// <inheritdoc />
+    static CommandBar()
+    {
+        DefaultStyleKeyProperty.OverrideMetadata(typeof(CommandBar), new PropertyMetadata(typeof(CommandBar)));
+        FocusableProperty.OverrideMetadata(typeof(CommandBar), new PropertyMetadata(true));
+        IsTabStopProperty.OverrideMetadata(typeof(CommandBar), new PropertyMetadata(false));
+    }
+
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
         => new Jalium.UI.Automation.Peers.CommandBarAutomationPeer(this);
-
-    private const double MoreButtonWidth = 40;
-    private const double OverflowMinWidth = 200;
-    private const double OverflowCornerRadius = 8;
-    private const double OverflowPadding = 4;
-
-    private static readonly SolidColorBrush s_fallbackBackgroundBrush = new(Color.FromRgb(45, 45, 45));
-    private static readonly SolidColorBrush s_fallbackBorderBrush = new(Color.FromRgb(61, 61, 61));
-
-    private StackPanel? _primaryItemsPanel;
-    private StackPanel? _secondaryItemsPanel;
-    private Button? _moreButton;
-    private Popup? _overflowPopup;
-    private Border? _overflowBorder;
-    private Border? _cssBorderPainter;
-    private bool _isSyncingPopupState;
 
     #region Dependency Properties
 
@@ -39,7 +43,7 @@ public class CommandBar : Control
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsOpenProperty =
         DependencyProperty.Register(nameof(IsOpen), typeof(bool), typeof(CommandBar),
-            new PropertyMetadata(false, OnIsOpenChanged));
+            new FrameworkPropertyMetadata(false, FrameworkPropertyMetadataOptions.BindsTwoWayByDefault, OnIsOpenChanged));
 
     /// <summary>
     /// Identifies the ClosedDisplayMode dependency property.
@@ -47,7 +51,7 @@ public class CommandBar : Control
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ClosedDisplayModeProperty =
         DependencyProperty.Register(nameof(ClosedDisplayMode), typeof(CommandBarClosedDisplayMode), typeof(CommandBar),
-            new PropertyMetadata(CommandBarClosedDisplayMode.Compact));
+            new PropertyMetadata(CommandBarClosedDisplayMode.Compact, OnOptionsChanged));
 
     /// <summary>
     /// Identifies the DefaultLabelPosition dependency property.
@@ -55,7 +59,7 @@ public class CommandBar : Control
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DefaultLabelPositionProperty =
         DependencyProperty.Register(nameof(DefaultLabelPosition), typeof(CommandBarDefaultLabelPosition), typeof(CommandBar),
-            new PropertyMetadata(CommandBarDefaultLabelPosition.Bottom));
+            new PropertyMetadata(CommandBarDefaultLabelPosition.Bottom, OnOptionsChanged));
 
     /// <summary>
     /// Identifies the OverflowButtonVisibility dependency property.
@@ -63,7 +67,7 @@ public class CommandBar : Control
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty OverflowButtonVisibilityProperty =
         DependencyProperty.Register(nameof(OverflowButtonVisibility), typeof(CommandBarOverflowButtonVisibility), typeof(CommandBar),
-            new PropertyMetadata(CommandBarOverflowButtonVisibility.Auto));
+            new PropertyMetadata(CommandBarOverflowButtonVisibility.Auto, OnOptionsChanged));
 
     /// <summary>
     /// Identifies the IsSticky dependency property.
@@ -75,17 +79,59 @@ public class CommandBar : Control
 
     #endregion
 
+
+    private static readonly DependencyPropertyKey PrimaryCommandsPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(PrimaryCommands), typeof(ObservableCollection<ICommandBarElement>), typeof(CommandBar), new PropertyMetadata(null));
+    public static readonly DependencyProperty PrimaryCommandsProperty = PrimaryCommandsPropertyKey.DependencyProperty;
+    private static readonly DependencyPropertyKey SecondaryCommandsPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(SecondaryCommands), typeof(ObservableCollection<ICommandBarElement>), typeof(CommandBar), new PropertyMetadata(null));
+    public static readonly DependencyProperty SecondaryCommandsProperty = SecondaryCommandsPropertyKey.DependencyProperty;
+
+    /// <summary>Identifies the label layout inherited by stock AppBar command templates.</summary>
+    public static readonly DependencyProperty LabelPositionProperty = DependencyProperty.RegisterAttached(
+        "LabelPosition", typeof(CommandBarDefaultLabelPosition), typeof(CommandBar),
+        new FrameworkPropertyMetadata(CommandBarDefaultLabelPosition.Bottom, FrameworkPropertyMetadataOptions.Inherits));
+    public static CommandBarDefaultLabelPosition GetLabelPosition(DependencyObject element)
+        => (CommandBarDefaultLabelPosition)element.GetValue(LabelPositionProperty)!;
+    public static void SetLabelPosition(DependencyObject element, CommandBarDefaultLabelPosition value)
+        => element.SetValue(LabelPositionProperty, value);
+
+    /// <summary>Overrides the overflow surface; null follows the toolbar background.</summary>
+    public static readonly DependencyProperty OverflowBackgroundProperty = DependencyProperty.Register(
+        nameof(OverflowBackground), typeof(Brush), typeof(CommandBar), new PropertyMetadata(null, OnOptionsChanged));
+    public Brush? OverflowBackground { get => (Brush?)GetValue(OverflowBackgroundProperty); set => SetValue(OverflowBackgroundProperty, value); }
+    private static readonly DependencyPropertyKey IsOverflowButtonVisiblePropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(IsOverflowButtonVisible), typeof(bool), typeof(CommandBar), new PropertyMetadata(false));
+    public static readonly DependencyProperty IsOverflowButtonVisibleProperty = IsOverflowButtonVisiblePropertyKey.DependencyProperty;
+    public bool IsOverflowButtonVisible => (bool)GetValue(IsOverflowButtonVisibleProperty)!;
+    private static readonly DependencyPropertyKey IsOverflowOpenPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(IsOverflowOpen), typeof(bool), typeof(CommandBar), new PropertyMetadata(false));
+    public static readonly DependencyProperty IsOverflowOpenProperty = IsOverflowOpenPropertyKey.DependencyProperty;
+    public bool IsOverflowOpen => (bool)GetValue(IsOverflowOpenProperty)!;
+    private static readonly DependencyPropertyKey HasPrimaryCommandsPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(HasPrimaryCommands), typeof(bool), typeof(CommandBar), new PropertyMetadata(false));
+    public static readonly DependencyProperty HasPrimaryCommandsProperty = HasPrimaryCommandsPropertyKey.DependencyProperty;
+    public bool HasPrimaryCommands => (bool)GetValue(HasPrimaryCommandsProperty)!;
+    private static readonly DependencyPropertyKey HasSecondaryCommandsPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(HasSecondaryCommands), typeof(bool), typeof(CommandBar), new PropertyMetadata(false));
+    public static readonly DependencyProperty HasSecondaryCommandsProperty = HasSecondaryCommandsPropertyKey.DependencyProperty;
+    public bool HasSecondaryCommands => (bool)GetValue(HasSecondaryCommandsProperty)!;
+    private static readonly DependencyPropertyKey EffectiveOverflowBackgroundPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(EffectiveOverflowBackground), typeof(Brush), typeof(CommandBar), new PropertyMetadata(null));
+    public static readonly DependencyProperty EffectiveOverflowBackgroundProperty = EffectiveOverflowBackgroundPropertyKey.DependencyProperty;
+    public Brush? EffectiveOverflowBackground => (Brush?)GetValue(EffectiveOverflowBackgroundProperty)!;
+
     #region CLR Properties
 
     /// <summary>
     /// Gets the collection of primary command elements for the CommandBar.
     /// </summary>
-    public ObservableCollection<ICommandBarElement> PrimaryCommands { get; } = new();
+    public ObservableCollection<ICommandBarElement> PrimaryCommands => (ObservableCollection<ICommandBarElement>)GetValue(PrimaryCommandsProperty)!;
 
     /// <summary>
     /// Gets the collection of secondary command elements for the CommandBar.
     /// </summary>
-    public ObservableCollection<ICommandBarElement> SecondaryCommands { get; } = new();
+    public ObservableCollection<ICommandBarElement> SecondaryCommands => (ObservableCollection<ICommandBarElement>)GetValue(SecondaryCommandsProperty)!;
 
     /// <summary>
     /// Gets or sets a value indicating whether the CommandBar is open.
@@ -163,347 +209,250 @@ public class CommandBar : Control
 
     #endregion
 
-    /// <summary>
-    /// Initializes a new instance of the CommandBar class.
-    /// </summary>
+    private ItemsControl? _primaryItemsControl;
+    private ItemsControl? _secondaryItemsControl;
+    private ButtonBase? _moreButton;
+    private Popup? _overflowPopup;
+    private UIElement? _overflowRoot;
+    private bool _hasTemplate;
+    private bool _syncingPopup;
+    private DispatcherOperation? _pendingFocus;
+
     public CommandBar()
     {
-        Focusable = true;
-        PrimaryCommands.CollectionChanged += OnPrimaryCommandsChanged;
-        SecondaryCommands.CollectionChanged += OnSecondaryCommandsChanged;
+        SetValue(PrimaryCommandsPropertyKey, new ObservableCollection<ICommandBarElement>());
+        SetValue(SecondaryCommandsPropertyKey, new ObservableCollection<ICommandBarElement>());
+        PrimaryCommands.CollectionChanged += OnCommandsChanged;
+        SecondaryCommands.CollectionChanged += OnCommandsChanged;
+        AddHandler(KeyDownEvent, new KeyEventHandler(OnBarKeyDown));
+        Loaded += OnLoaded;
+        Unloaded += OnUnloaded;
+        UpdatePresentation();
     }
 
-    /// <inheritdoc />
-    protected override Size MeasureOverride(Size availableSize)
+    public override void OnApplyTemplate()
     {
-        EnsureVisualTree();
-        UpdateMoreButtonVisibility();
-        var insets = CssBoxMetrics.ContentInsets(this,
-            CssLayout?.ContainingWidthCache ?? availableSize.Width);
-        var contentAvailable = CssBoxMetrics.InnerSize(availableSize, insets);
-
-        if (_primaryItemsPanel != null)
+        base.OnApplyTemplate();
+        _hasTemplate = true;
+        _primaryItemsControl = GetTemplateChild("PART_PrimaryItemsControl") as ItemsControl;
+        _secondaryItemsControl = GetTemplateChild("PART_SecondaryItemsControl") as ItemsControl;
+        _moreButton = GetTemplateChild("PART_MoreButton") as ButtonBase;
+        _overflowPopup = GetTemplateChild("PART_OverflowPopup") as Popup;
+        _overflowRoot = _overflowPopup?.Child;
+        if (_moreButton != null) _moreButton.Click += OnMoreButtonClick;
+        if (_overflowPopup != null) _overflowPopup.Closed += OnPopupClosed;
+        if (_overflowRoot != null)
         {
-            // Update compact state based on DefaultLabelPosition
-            foreach (var cmd in PrimaryCommands)
-            {
-                if (cmd is AppBarButton btn)
-                    btn.IsCompact = DefaultLabelPosition == CommandBarDefaultLabelPosition.Collapsed;
-                else if (cmd is AppBarToggleButton toggle)
-                    toggle.IsCompact = DefaultLabelPosition == CommandBarDefaultLabelPosition.Collapsed;
-            }
-
-            _primaryItemsPanel.Measure(contentAvailable);
+            _overflowRoot.AddHandler(PreviewKeyDownEvent, new KeyEventHandler(OnOverflowKeyDown));
+            _overflowRoot.AddHandler(ButtonBase.ClickEvent, new RoutedEventHandler(OnOverflowCommandClick), true);
         }
-
-        if (_moreButton != null)
-        {
-            _moreButton.Measure(new Size(MoreButtonWidth, contentAvailable.Height));
-        }
-
-        var width = (_primaryItemsPanel?.DesiredSize.Width ?? 0) +
-                    (_moreButton?.Visibility == Visibility.Visible ? _moreButton.DesiredSize.Width : 0);
-        var height = Math.Max(_primaryItemsPanel?.DesiredSize.Height ?? 0,
-                              _moreButton?.DesiredSize.Height ?? 0);
-
-        var desiredHeight = Math.Max(height, 48);
-        return new Size(
-            ControlRenderGeometry.GetAvailableLength(width + insets.Left + insets.Right, availableSize.Width),
-            ControlRenderGeometry.GetAvailableLength(desiredHeight + insets.Top + insets.Bottom, availableSize.Height));
+        UpdatePresentation();
+        if (IsOpen) QueueFocus(opening: true);
     }
 
-    /// <inheritdoc />
-    protected override Size ArrangeOverride(Size finalSize)
+    protected override void OnTemplateChanging()
     {
-        var insets = CssBoxMetrics.ContentInsets(this,
-            CssLayout?.ContainingWidthCache ?? finalSize.Width);
-        var bounds = ControlRenderGeometry.GetContentRect(new Rect(finalSize), insets);
-        var hasMoreButton = _moreButton?.Visibility == Visibility.Visible;
-        var moreButtonRect = hasMoreButton ? ControlRenderGeometry.GetTrailingRect(bounds, MoreButtonWidth) : Rect.Empty;
-        var primaryRect = new Rect(bounds.X, bounds.Y, bounds.Width - moreButtonRect.Width, bounds.Height);
-
-        _primaryItemsPanel?.Arrange(primaryRect);
-
-        if (hasMoreButton)
+        _hasTemplate = false;
+        CancelFocus();
+        if (_moreButton != null) _moreButton.Click -= OnMoreButtonClick;
+        if (_overflowRoot != null)
         {
-            _moreButton!.Arrange(moreButtonRect);
+            _overflowRoot.RemoveHandler(PreviewKeyDownEvent, new KeyEventHandler(OnOverflowKeyDown));
+            _overflowRoot.RemoveHandler(ButtonBase.ClickEvent, new RoutedEventHandler(OnOverflowCommandClick));
         }
-
-        return finalSize;
+        if (_overflowPopup != null)
+        {
+            _overflowPopup.Closed -= OnPopupClosed;
+            _syncingPopup = true;
+            try { _overflowPopup.SetCurrentValue(Popup.IsOpenProperty, false); }
+            finally { _syncingPopup = false; }
+        }
+        RetireHost(_primaryItemsControl);
+        RetireHost(_secondaryItemsControl);
+        _primaryItemsControl = _secondaryItemsControl = null;
+        _moreButton = null;
+        _overflowPopup = null;
+        _overflowRoot = null;
+        base.OnTemplateChanging();
     }
 
-    /// <inheritdoc />
-    protected override void OnRender(DrawingContext drawingContext)
+    private static void RetireHost(ItemsControl? host)
     {
-        var dc = drawingContext;
-        base.OnRender(drawingContext);
-
-        var backgroundLayer = GetEffectiveValueLayer(BackgroundProperty);
-        var bg = Background;
-        if (bg is null && backgroundLayer is not
-                (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState))
-            bg = ResolveBackgroundBrush();
-        if (bg is not null)
-        {
-            var outer = new Rect(RenderSize);
-            var cssRadius = CssBorderRadiusProperties.Get(this);
-            if (cssRadius is null && backgroundLayer is not
-                    (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState))
-                dc.DrawRoundedRectangle(bg, null, outer, CornerRadius);
-            else
-            {
-                var radii = cssRadius?.Resolve(RenderSize) ??
-                    CssBackgroundPainter.CircularRadii(CornerRadius).Normalize(RenderSize);
-                var shape = new CssRoundedRectangleGeometry(outer, radii);
-                var (border, padding) = CssBoxMetrics.BackgroundInsets(this,
-                    CssLayout?.ContainingWidthCache ?? RenderSize.Width);
-                if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty, bg, dc,
-                        outer, radii, border, padding,
-                        brush => dc.DrawGeometry(brush, null, shape)))
-                    dc.DrawGeometry(bg, null, shape);
-            }
-        }
-
-        // The built-in separator is chrome, not an authored border side.
-        if (GetEffectiveValueLayer(BorderThicknessProperty) is null)
-        {
-            var pen = new Pen(ResolveBorderBrush(), 1);
-            dc.DrawLine(pen, new Point(0, RenderSize.Height),
-                new Point(RenderSize.Width, RenderSize.Height));
-        }
+        if (host == null) return;
+        BindingOperations.ClearBinding(host, ItemsControl.ItemsSourceProperty);
+        host.SetCurrentValue(ItemsControl.ItemsSourceProperty, null);
     }
 
-    /// <inheritdoc />
-    protected override void OnPostRender(DrawingContext drawingContext)
-    {
-        base.OnPostRender(drawingContext);
-        CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter, drawNative: true);
-    }
-
-    /// <inheritdoc />
     protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
     {
         base.OnPropertyChanged(e);
-
-        if (e.Property == BackgroundProperty || e.Property == BorderBrushProperty)
+        if (e.Property == BackgroundProperty || e.Property == IsEnabledProperty)
         {
-            UpdateOverflowChrome();
+            if (!IsEnabled && IsOpen) SetCurrentValue(IsOpenProperty, false);
+            UpdatePresentation();
         }
     }
 
-    private void EnsureVisualTree()
+    private bool ShouldShowMoreButton() => OverflowButtonVisibility switch
     {
-        if (_primaryItemsPanel != null) return;
+        CommandBarOverflowButtonVisibility.Visible => true,
+        CommandBarOverflowButtonVisibility.Collapsed => false,
+        _ => SecondaryCommands.Count > 0 || ClosedDisplayMode == CommandBarClosedDisplayMode.Minimal && PrimaryCommands.Count > 0,
+    };
 
-        _primaryItemsPanel = new StackPanel { Orientation = Orientation.Horizontal };
-        AddVisualChild(_primaryItemsPanel);
-
-        foreach (var cmd in PrimaryCommands)
+    private void UpdatePresentation()
+    {
+        SetValue(IsOverflowButtonVisiblePropertyKey, ShouldShowMoreButton());
+        SetValue(HasPrimaryCommandsPropertyKey, PrimaryCommands.Count > 0);
+        SetValue(HasSecondaryCommandsPropertyKey, SecondaryCommands.Count > 0);
+        SetValue(EffectiveOverflowBackgroundPropertyKey, OverflowBackground ?? Background);
+        _syncingPopup = true;
+        try
         {
-            if (cmd is FrameworkElement element)
-                _primaryItemsPanel.Children.Add(element);
+            SetValue(IsOverflowOpenPropertyKey, IsOpen && SecondaryCommands.Count > 0);
+            if (_overflowPopup != null)
+            {
+                _overflowPopup.SetCurrentValue(Popup.IsOpenProperty, IsOverflowOpen);
+                if (IsOverflowOpen) _overflowPopup.EnsureOpen();
+            }
         }
-
-        // More button ("...")
-        _moreButton = new Button
-        {
-            Content = "\u22EF", // 閳?horizontal ellipsis
-            Width = MoreButtonWidth,
-            Focusable = true,
-            Background = Jalium.UI.Media.Brushes.Transparent,
-            BorderThickness = new Thickness(0),
-            Padding = new Thickness(0)
-        };
-        _moreButton.Click += OnMoreButtonClick;
-        AddVisualChild(_moreButton);
-
-        // Overflow popup
-        _overflowPopup = new Popup
-        {
-            Placement = PlacementMode.Bottom,
-            PlacementTarget = _moreButton,
-            StaysOpen = false
-        };
-        _overflowPopup.Closed += OnOverflowPopupClosed;
-
-        _secondaryItemsPanel = new StackPanel { Orientation = Orientation.Vertical };
-        foreach (var cmd in SecondaryCommands)
-        {
-            if (cmd is FrameworkElement element)
-                _secondaryItemsPanel.Children.Add(element);
-        }
-
-        _overflowBorder = new Border
-        {
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(OverflowCornerRadius),
-            Padding = new Thickness(OverflowPadding),
-            Child = _secondaryItemsPanel,
-            MinWidth = OverflowMinWidth
-        };
-        UpdateOverflowChrome();
-        _overflowPopup.Child = _overflowBorder;
-        AddVisualChild(_overflowPopup);
+        finally { _syncingPopup = false; }
+        if (!_hasTemplate) return;
+        VisualStateManager.GoToState(this, IsOpen ? "Open" : "Closed", false);
+        VisualStateManager.GoToState(this, IsOpen ? "Expanded" : ClosedDisplayMode.ToString(), false);
+        VisualStateManager.GoToState(this, IsOverflowButtonVisible ? "OverflowButtonVisible" : "OverflowButtonHidden", false);
+        VisualStateManager.GoToState(this, IsEnabled ? "Normal" : "Disabled", false);
     }
 
-    /// <inheritdoc />
-    protected override int VisualChildrenCount
+    private void OnCommandsChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
-        get
-        {
-            var count = 0;
-            if (_primaryItemsPanel != null) count++;
-            if (_moreButton != null) count++;
-            if (_overflowPopup != null) count++;
-            return count;
-        }
+        bool canShow = ShouldShowMoreButton();
+        if (IsOpen && (!canShow || SecondaryCommands.Count == 0 && ClosedDisplayMode != CommandBarClosedDisplayMode.Minimal))
+            SetCurrentValue(IsOpenProperty, false);
+        UpdatePresentation();
     }
 
-    /// <inheritdoc />
-    protected override Visual? GetVisualChild(int index)
+    private static void OnOptionsChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (index == 0) return _primaryItemsPanel;
-        if (index == 1) return _moreButton;
-        if (index == 2) return _overflowPopup;
-        throw new ArgumentOutOfRangeException(nameof(index));
-    }
-
-    private bool ShouldShowMoreButton()
-    {
-        return OverflowButtonVisibility switch
-        {
-            CommandBarOverflowButtonVisibility.Visible => true,
-            CommandBarOverflowButtonVisibility.Collapsed => false,
-            _ => SecondaryCommands.Count > 0 // Auto
-        };
-    }
-
-    private void OnMoreButtonClick(object? sender, EventArgs e)
-    {
-        if (!ShouldShowMoreButton())
-            return;
-
-        IsOpen = !IsOpen;
-    }
-
-    private void OnOverflowPopupClosed(object? sender, EventArgs e)
-    {
-        if (_isSyncingPopupState || !IsOpen)
-            return;
-
-        IsOpen = false;
-    }
-
-    private void UpdateMoreButtonVisibility()
-    {
-        if (_moreButton == null)
-            return;
-
-        _moreButton.Visibility = ShouldShowMoreButton() ? Visibility.Visible : Visibility.Collapsed;
-    }
-
-    private void UpdateOverflowChrome()
-    {
-        if (_overflowBorder == null)
-            return;
-
-        _overflowBorder.Background = ResolveOverflowBackgroundBrush();
-        _overflowBorder.BorderBrush = ResolveBorderBrush();
-    }
-
-    private Brush ResolveBackgroundBrush()
-    {
-        return Background
-            ?? TryFindResource("CommandBarBackground") as Brush
-            ?? TryFindResource("SurfaceBackground") as Brush
-            ?? s_fallbackBackgroundBrush;
-    }
-
-    private Brush ResolveOverflowBackgroundBrush()
-    {
-        return Background
-            ?? TryFindResource("CommandBarOverflowBackground") as Brush
-            ?? TryFindResource("CommandBarBackground") as Brush
-            ?? TryFindResource("SurfaceBackground") as Brush
-            ?? s_fallbackBackgroundBrush;
-    }
-
-    private Brush ResolveBorderBrush()
-    {
-        return BorderBrush
-            ?? TryFindResource("CommandBarBorderBrush") as Brush
-            ?? TryFindResource("ControlBorder") as Brush
-            ?? s_fallbackBorderBrush;
+        var bar = (CommandBar)d;
+        if (bar.IsOpen && !bar.ShouldShowMoreButton()) bar.SetCurrentValue(IsOpenProperty, false);
+        bar.UpdatePresentation();
     }
 
     private static void OnIsOpenChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is CommandBar bar)
+        var bar = (CommandBar)d;
+        bool opening = (bool)e.NewValue!;
+        bar.CancelFocus();
+        if (opening && (!bar.IsEnabled || !bar.ShouldShowMoreButton()))
         {
-            var isOpen = (bool)(e.NewValue ?? false);
-            bar._isSyncingPopupState = true;
-            try
-            {
-                if (isOpen)
-                {
-                    if (!bar.ShouldShowMoreButton())
-                    {
-                        if (bar._overflowPopup != null)
-                            bar._overflowPopup.IsOpen = false;
-                        return;
-                    }
-
-                    bar.Opening?.Invoke(bar, EventArgs.Empty);
-                    if (bar._overflowPopup != null)
-                        bar._overflowPopup.IsOpen = true;
-                    bar.Opened?.Invoke(bar, EventArgs.Empty);
-                }
-                else
-                {
-                    bar.Closing?.Invoke(bar, EventArgs.Empty);
-                    if (bar._overflowPopup != null)
-                        bar._overflowPopup.IsOpen = false;
-                    bar.Closed?.Invoke(bar, EventArgs.Empty);
-                }
-            }
-            finally
-            {
-                bar._isSyncingPopupState = false;
-            }
+            bar.SetCurrentValue(IsOpenProperty, false);
+            return;
         }
+        if (opening) bar.Opening?.Invoke(bar, EventArgs.Empty);
+        else bar.Closing?.Invoke(bar, EventArgs.Empty);
+        if (bar.IsOpen != opening) return;
+        bar.UpdatePresentation();
+        if (opening)
+        {
+            bar.QueueFocus(opening: true);
+            bar.Opened?.Invoke(bar, EventArgs.Empty);
+        }
+        else bar.Closed?.Invoke(bar, EventArgs.Empty);
     }
 
-    private void OnPrimaryCommandsChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    private void OnMoreButtonClick(object sender, RoutedEventArgs e) => SetCurrentValue(IsOpenProperty, !IsOpen);
+    private void OnPopupClosed(object? sender, EventArgs e)
     {
-        if (_primaryItemsPanel == null) return;
-
-        _primaryItemsPanel.Children.Clear();
-        foreach (var cmd in PrimaryCommands)
-        {
-            if (cmd is FrameworkElement element)
-                _primaryItemsPanel.Children.Add(element);
-        }
-        InvalidateMeasure();
+        if (!_syncingPopup && IsOpen) SetCurrentValue(IsOpenProperty, false);
+    }
+    private void OnUnloaded(object sender, RoutedEventArgs e)
+    {
+        if (!ReferenceEquals(e.OriginalSource, this)) return;
+        CancelFocus();
+        if (IsOpen) SetCurrentValue(IsOpenProperty, false);
+    }
+    private void OnLoaded(object sender, RoutedEventArgs e)
+    {
+        if (!ReferenceEquals(e.OriginalSource, this)) return;
+        UpdatePresentation();
+        if (IsOpen) QueueFocus(opening: true);
+    }
+    private void CloseAndRestoreFocus()
+    {
+        SetCurrentValue(IsOpenProperty, false);
+        QueueFocus(opening: false);
+    }
+    private void OnOverflowCommandClick(object sender, RoutedEventArgs e)
+    {
+        if (IsOpen && !IsSticky && CommandIndex(SecondaryCommands, e.OriginalSource) >= 0) CloseAndRestoreFocus();
     }
 
-    private void OnSecondaryCommandsChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    private void OnBarKeyDown(object sender, KeyEventArgs e)
     {
-        if (_secondaryItemsPanel != null)
+        if (e.Handled || !IsEnabled) return;
+        if (e.Key == Key.Escape && IsOpen) { CloseAndRestoreFocus(); e.Handled = true; return; }
+        if ((e.Key is Key.F4 or Key.Down) && (ReferenceEquals(e.OriginalSource, _moreButton) || ReferenceEquals(e.OriginalSource, this)))
         {
-            _secondaryItemsPanel.Children.Clear();
-            foreach (var cmd in SecondaryCommands)
+            SetCurrentValue(IsOpenProperty, true);
+            e.Handled = IsOpen;
+            return;
+        }
+        if (CommandIndex(PrimaryCommands, e.OriginalSource) < 0 && !ReferenceEquals(e.OriginalSource, this)) return;
+        if (e.Key is Key.Left or Key.Right or Key.Home or Key.End)
+            e.Handled = MoveCommandFocus(PrimaryCommands, e.OriginalSource, e.Key);
+    }
+    private void OnOverflowKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Handled || !IsOpen) return;
+        if (e.Key == Key.Escape) { CloseAndRestoreFocus(); e.Handled = true; }
+        else if (e.Key is Key.Up or Key.Down or Key.Home or Key.End)
+            e.Handled = MoveCommandFocus(SecondaryCommands, e.OriginalSource, e.Key);
+    }
+    private static int CommandIndex(IList<ICommandBarElement> commands, object? source)
+    {
+        for (var node = source as DependencyObject; node != null; node = VisualTreeHelper.GetParent(node))
+            if (node is ICommandBarElement command) return commands.IndexOf(command);
+        return -1;
+    }
+    private static bool MoveCommandFocus(IList<ICommandBarElement> commands, object? source, Key key)
+    {
+        var targets = commands.OfType<Control>().Where(control => control.Focusable && control.IsEnabled && control.IsVisible).ToArray();
+        if (targets.Length == 0) return false;
+        var index = CommandIndex(commands, source);
+        var current = index >= 0 ? Array.IndexOf(targets, commands[index] as Control) : -1;
+        int target = key switch
+        {
+            Key.Home => 0,
+            Key.End => targets.Length - 1,
+            Key.Left or Key.Up => current < 0 ? targets.Length - 1 : (current - 1 + targets.Length) % targets.Length,
+            _ => (current + 1) % targets.Length,
+        };
+        if (!targets[target].Focus()) return false;
+        targets[target].BringIntoView();
+        return true;
+    }
+    private void CancelFocus() { _pendingFocus?.Abort(); _pendingFocus = null; }
+    private void QueueFocus(bool opening)
+    {
+        CancelFocus();
+        if (!_hasTemplate) return;
+        var expectedMore = _moreButton;
+        _pendingFocus = Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () =>
+        {
+            _pendingFocus = null;
+            if (!_hasTemplate || IsOpen != opening || !IsEnabled || !IsVisible) return;
+            if (opening)
             {
-                if (cmd is FrameworkElement element)
-                    _secondaryItemsPanel.Children.Add(element);
+                if (CommandIndex(SecondaryCommands, Keyboard.FocusedElement) < 0)
+                    MoveCommandFocus(SecondaryCommands, null, Key.Home);
             }
-        }
-
-        if (SecondaryCommands.Count == 0 && IsOpen)
-        {
-            IsOpen = false;
-        }
-
-        UpdateMoreButtonVisibility();
-        InvalidateMeasure();
+            else if (ReferenceEquals(_moreButton, expectedMore) && expectedMore?.IsVisible == true)
+            {
+                var focused = Keyboard.FocusedElement;
+                if (focused == null || ReferenceEquals(focused, this) || ReferenceEquals(focused, expectedMore)
+                    || CommandIndex(SecondaryCommands, focused) >= 0) expectedMore.Focus();
+            }
+        });
     }
 }

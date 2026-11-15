@@ -1,5 +1,6 @@
 using System.Collections;
 using Jalium.UI.Controls;
+using Jalium.UI.Interop;
 using Jalium.UI.Markup;
 using Jalium.UI.Media;
 
@@ -1010,16 +1011,49 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
     #region Pagination
 
     private FlowDocumentViewerPaginator? _viewerPaginator;
-    private FlowDocumentPaginator? _documentPaginator;
 
     internal DocumentPaginator ViewerPaginator =>
         _viewerPaginator ??= new FlowDocumentViewerPaginator(this);
 
-    DocumentPaginator IDocumentPaginatorSource.DocumentPaginator =>
-        _documentPaginator ??= new FlowDocumentPaginator(this);
+    DocumentPaginator IDocumentPaginatorSource.DocumentPaginator => ViewerPaginator;
 
     internal event EventHandler? ViewerPaginationChanged;
     internal event EventHandler? ContentChanged;
+
+    internal override void OnEffectiveValueSourceChanged(DependencyProperty property)
+    {
+        base.OnEffectiveValueSourceChanged(property);
+        if (property == TextAlignmentProperty || property == ColumnWidthProperty || property == ColumnGapProperty ||
+            property == ColumnRuleWidthProperty || property == ColumnRuleBrushProperty || property == IsColumnWidthFlexibleProperty || IsRootBoxProperty(property))
+        {
+            Styling.CssEvaluationScheduler.InvalidateSubtree(Styling.CssNode.Get(this));
+            NotifyPaginationStyleChanged();
+        }
+    }
+
+    private static bool IsRootBoxProperty(DependencyProperty property) => property == FrameworkElement.WidthProperty ||
+        property == FrameworkElement.MinWidthProperty || property == FrameworkElement.MaxWidthProperty || property == FrameworkElement.HeightProperty ||
+        property == FrameworkElement.MinHeightProperty || property == FrameworkElement.MaxHeightProperty || property == FrameworkElement.MarginProperty ||
+        property == Control.PaddingProperty || property == Control.BorderThicknessProperty || property == Control.BorderBrushProperty ||
+        property == Styling.CssBorderUsedThicknessProperties.ValueProperty;
+
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs change)
+    {
+        base.OnPropertyChanged(change);
+        if (IsRootBoxProperty(change.Property) ||
+            change.Property == Styling.Css.MediaTypeProperty ||
+            change.Property == Styling.Css.StyleSheetsProperty)
+        {
+            NotifyPaginationStyleChanged();
+        }
+    }
+
+    internal void NotifyPaginationStyleChanged()
+    {
+        _viewerPaginator?.InvalidatePagination();
+        try { ContentChanged?.Invoke(this, EventArgs.Empty); }
+        finally { ViewerPaginationChanged?.Invoke(this, EventArgs.Empty); }
+    }
 
     internal void NotifyTextPresentationChanged()
         => ViewerPaginationChanged?.Invoke(this, EventArgs.Empty);
@@ -1058,10 +1092,15 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
         }
     }
 
-    private sealed class FlowDocumentViewerPaginator : DocumentPaginator, IFlowDocumentPageMetrics
+    private sealed class FlowDocumentViewerPaginator : DocumentPaginator, IFlowDocumentPageMetrics, IFlowDocumentPagePresentation, IDocumentTextSearchProvider
     {
         private readonly FlowDocument _document;
         private Size _pageSize = new(816.0, 1056.0);
+        private FlowDocumentPresentation? _layout;
+        private List<PageSlice>? _pages;
+        private Size _layoutPageSize;
+        private long _layoutFontEpoch = -1;
+        private bool _buildingPages;
 
         public FlowDocumentViewerPaginator(FlowDocument document)
         {
@@ -1070,7 +1109,7 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
 
         public override int PageCount => BuildPages().Count;
 
-        public override bool IsPageCountValid => true;
+        public override bool IsPageCountValid => !_buildingPages;
 
         public override IDocumentPaginatorSource Source => _document;
 
@@ -1088,6 +1127,7 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
                 if (_pageSize != value)
                 {
                     _pageSize = value;
+                    InvalidatePagination();
                     _document.ViewerPaginationChanged?.Invoke(_document, EventArgs.Empty);
                 }
             }
@@ -1102,18 +1142,20 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
             }
 
             var page = pages[pageNumber];
-            var pageSize = ResolvePageSize();
-            var visual = new TextBlock
-            {
-                Text = page.Text,
-                FontFamily = _document.FontFamily,
-                FontSize = Math.Max(1.0, _document.FontSize),
-                Foreground = _document.Foreground ?? new SolidColorBrush(Color.Black),
-                Background = _document.Background,
-                TextWrapping = TextWrapping.Wrap,
-                Padding = _document.PagePadding,
-                IsTextSelectionEnabled = true,
-            };
+            var pageSize = page.PageSize;
+            var visual = new FlowDocumentPresentation();
+            visual.SetDocument(_document);
+            visual.SetPage(
+                pageSize,
+                page.Top,
+                page.Bottom,
+                pageNumber,
+                pages.Count,
+                page.Blank,
+                page.PageStyle,
+                page.RepeatedHeaderHeight,
+                page.RepeatedFooterHeight,
+                page.RepeatTableTop);
             visual.Measure(pageSize);
             visual.Arrange(new Rect(pageSize));
             return new DocumentPage(visual, pageSize, new Rect(pageSize), new Rect(pageSize));
@@ -1128,6 +1170,13 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
             }
 
             var normalized = Math.Max(0, offset);
+            if (_layout is { } layout && (layout.HasTables || layout.HasColumns))
+            {
+                var top = layout.TopForOffset(normalized);
+                for (var index = 0; index < pages.Count; index++)
+                    if (pages[index].Bottom > pages[index].Top && top < pages[index].Bottom - .01) return index + 1;
+                return pages.Count;
+            }
             for (var index = 0; index < pages.Count; index++)
             {
                 if (normalized < pages[index].StartOffset + pages[index].Length || index == pages.Count - 1)
@@ -1137,6 +1186,75 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
             }
 
             return pages.Count;
+        }
+
+        public IEnumerable<TextSearchResult> Find(string text, bool matchCase, bool matchWholeWord)
+        {
+            ArgumentNullException.ThrowIfNull(text);
+            if (text.Length == 0) return [];
+            var source = _document.GetText();
+            var comparison = matchCase ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+            var matches = new List<(int Offset, int Page)>();
+            for (int offset = 0; offset <= source.Length - text.Length;)
+            {
+                int found = source.IndexOf(text, offset, comparison);
+                if (found < 0) break;
+                int end = found + text.Length;
+                if (!matchWholeWord || !WordAt(found - 1) && !WordAt(end))
+                    matches.Add((found, GetPageNumberForOffset(found)));
+                offset = end;
+            }
+
+            var results = new List<TextSearchResult>();
+            foreach (var group in matches.GroupBy(match => match.Page))
+            {
+                if (group.Key <= 0 || GetPage(group.Key - 1).Visual is not FlowDocumentPresentation view) continue;
+                using (view)
+                {
+                    foreach (var match in group)
+                    {
+                        var bounds = Rect.Empty;
+                        foreach (var rectangle in view.TextBounds(match.Offset, text.Length))
+                            bounds = bounds.IsEmpty ? rectangle : Rect.Union(bounds, rectangle);
+                        results.Add(new TextSearchResult(group.Key, bounds, source.Substring(match.Offset, text.Length)));
+                    }
+                }
+            }
+            return results;
+
+            bool WordAt(int index)
+            {
+                if (index < 0 || index >= source.Length) return false;
+                if (char.IsLowSurrogate(source[index]) && index > 0 && char.IsHighSurrogate(source[index - 1])) index--;
+                var category = System.Globalization.CharUnicodeInfo.GetUnicodeCategory(source, index);
+                return char.IsLetterOrDigit(source, index) || category is
+                    System.Globalization.UnicodeCategory.NonSpacingMark or System.Globalization.UnicodeCategory.SpacingCombiningMark or
+                    System.Globalization.UnicodeCategory.EnclosingMark or System.Globalization.UnicodeCategory.ConnectorPunctuation;
+            }
+        }
+
+        public bool TryRefreshPage(int pageNumber, FlowDocumentPresentation visual, out Size size)
+        {
+            var pages = BuildPages();
+            if (!ReferenceEquals(visual.Document, _document) || pageNumber < 0 || pageNumber >= pages.Count)
+            {
+                size = ResolvePageSize();
+                return false;
+            }
+            var page = pages[pageNumber];
+            size = page.PageSize;
+            visual.SetPage(
+                size,
+                page.Top,
+                page.Bottom,
+                pageNumber,
+                pages.Count,
+                page.Blank,
+                page.PageStyle,
+                page.RepeatedHeaderHeight,
+                page.RepeatedFooterHeight,
+                page.RepeatTableTop);
+            return true;
         }
 
         public int GetPageStartOffset(int oneBasedPageNumber)
@@ -1153,55 +1271,125 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
 
         public void InvalidatePagination()
         {
-            // Pagination is computed from the live document on demand. The method intentionally
-            // exists as the invalidation boundary used by viewers and future cached layout.
+            _pages = null;
+            _layout?.DocumentChanged();
+        }
+
+        private Styling.CssLengthContext CreatePageLengthContext(Size referenceSize)
+        {
+            var fontSize = double.IsFinite(_document.FontSize) && _document.FontSize > 0 ? _document.FontSize : 14.0;
+            return new Styling.CssLengthContext(
+                elementFontSize: fontSize,
+                inheritedFontSize: fontSize,
+                rootFontSize: fontSize,
+                viewportWidth: referenceSize.Width > 0 && double.IsFinite(referenceSize.Width) ? referenceSize.Width : 816.0,
+                viewportHeight: referenceSize.Height > 0 && double.IsFinite(referenceSize.Height) ? referenceSize.Height : 1056.0);
+        }
+
+        private Styling.CssComputedPageStyle ResolveCssPageStyle(
+            int pageIndex,
+            int pageCount,
+            string? pageName,
+            bool isBlank,
+            Size defaultSize)
+        {
+            var rtl = _document.FlowDirection == FlowDirection.RightToLeft;
+            var firstRight = !rtl;
+            var isRight = firstRight != ((pageIndex & 1) != 0);
+            var isLeft = !isRight;
+            var lengths = CreatePageLengthContext(defaultSize);
+            return Styling.CssPageRules.ResolvePageStyle(
+                _document,
+                pageIndex,
+                pageCount,
+                pageName,
+                isLeft,
+                isBlank,
+                defaultSize,
+                _document.PagePadding,
+                lengths);
         }
 
         private List<PageSlice> BuildPages()
         {
-            var text = _document.GetText();
-            if (text.Length == 0)
+            // Computed-style publication can synchronously notify viewers. Let
+            // those queries lay out the live document before entering the page
+            // construction guard, rather than handing them a temporary one-page
+            // result that a DocumentPageView could cache as Missing.
+            Jalium.UI.Styling.CssEvaluationScheduler.FlushIfPending(_document.Dispatcher);
+            if (_buildingPages) return _pages ?? [new(0, 0, 0, 0, false, null, ResolveBasePageSize(), null, 0, 0, double.NaN)];
+            _buildingPages = true;
+            try
             {
-                return [new PageSlice(0, 0, string.Empty)];
-            }
-
-            var size = ResolvePageSize();
-            var padding = _document.PagePadding;
-            var contentWidth = Math.Max(1.0, size.Width - Math.Max(0.0, padding.Left) - Math.Max(0.0, padding.Right));
-            var contentHeight = Math.Max(1.0, size.Height - Math.Max(0.0, padding.Top) - Math.Max(0.0, padding.Bottom));
-            var fontSize = Math.Max(1.0, _document.FontSize);
-            var averageCharacterWidth = Math.Max(1.0, fontSize * 0.55);
-            var lineHeight = double.IsFinite(_document.LineHeight) && _document.LineHeight > 0
-                ? _document.LineHeight
-                : fontSize * 1.35;
-            var charactersPerLine = Math.Max(1, (int)Math.Floor(contentWidth / averageCharacterWidth));
-            var linesPerPage = Math.Max(1, (int)Math.Floor(contentHeight / Math.Max(1.0, lineHeight)));
-            var charactersPerPage = Math.Max(1, charactersPerLine * linesPerPage);
-
-            var pages = new List<PageSlice>();
-            var offset = 0;
-            while (offset < text.Length)
-            {
-                var remaining = text.Length - offset;
-                var length = Math.Min(charactersPerPage, remaining);
-                if (length < remaining)
+                var size = ResolvePageSize();
+                var epoch = TextMeasurement.FontCacheEpoch;
+                if (_pages is not null && _layoutPageSize == size && _layoutFontEpoch == epoch) return _pages;
+                _layout ??= new FlowDocumentPresentation(observe: false);
+                _layout.SetDocument(_document);
+                var rootPageName = Styling.CssPageProperties.Page(_document);
+                if (string.IsNullOrEmpty(rootPageName)) rootPageName = null;
+                var firstPageStyle = ResolveCssPageStyle(0, 1, rootPageName, isBlank: false, size);
+                var padding = firstPageStyle.HasMatchedRules ? firstPageStyle.ContentInsets : _document.PagePadding;
+                var width = Math.Max(1, size.Width - padding.Left - padding.Right);
+                var height = Math.Max(1, size.Height - padding.Top - padding.Bottom);
+                _layout.SetPaginationColumnHeight(height);
+                _layout.EnsureDocumentLayout(width);
+                var rawPages = new List<PageSlice>();
+                var textLength = _document.GetText().Length;
+                if (_layout.HasColumns)
                 {
-                    var breakIndex = FindPageBreak(text, offset, length);
-                    if (breakIndex > offset)
+                    foreach (var columnPage in _layout.ColumnPages)
                     {
-                        length = breakIndex - offset;
+                        var offset = columnPage.Blank ? (rawPages.Count > 0 ? rawPages[^1].StartOffset + rawPages[^1].Length : 0)
+                            : _layout.FirstOffsetInPage(columnPage.Top, columnPage.Bottom);
+                        rawPages.Add(new(offset, 0, columnPage.Top, columnPage.Bottom, columnPage.Blank, rootPageName, size, null, 0, 0, double.NaN));
+                    }
+                }
+                else
+                {
+                    foreach (var fragment in FlowDocumentPagination.Build(_layout, height, _document.FlowDirection))
+                    {
+                        if (_layout.UsesVisualPagination)
+                        {
+                            var anchor = fragment.Blank
+                                ? (rawPages.Count > 0 ? rawPages[^1].StartOffset + rawPages[^1].Length : 0)
+                                : _layout.FirstOffsetInPage(fragment.Top, fragment.Bottom);
+                            rawPages.Add(new(anchor, 0, fragment.Top, fragment.Bottom, fragment.Blank, fragment.PageName, size, null,
+                                fragment.RepeatedHeaderHeight, fragment.RepeatedFooterHeight, fragment.RepeatTableTop));
+                            continue;
+                        }
+                        var start = fragment.Blank
+                            ? (rawPages.Count > 0 ? rawPages[^1].StartOffset + rawPages[^1].Length : 0)
+                            : fragment.FirstLine == 0 ? 0 : _layout.Lines[fragment.FirstLine].Start;
+                        var end = fragment.Blank ? start : fragment.EndLine < _layout.Lines.Count ? _layout.Lines[fragment.EndLine].Start : textLength;
+                        rawPages.Add(new(start, Math.Max(0, end - start), fragment.Top, fragment.Bottom, fragment.Blank, fragment.PageName, size, null,
+                            fragment.RepeatedHeaderHeight, fragment.RepeatedFooterHeight, fragment.RepeatTableTop));
                     }
                 }
 
-                length = Math.Max(1, length);
-                pages.Add(new PageSlice(offset, length, text.Substring(offset, length)));
-                offset += length;
-            }
+                var totalCount = Math.Max(1, rawPages.Count);
+                var baseSize = ResolveBasePageSize();
+                var pages = new List<PageSlice>(rawPages.Count);
+                for (var i = 0; i < rawPages.Count; i++)
+                {
+                    var item = rawPages[i];
+                    var style = ResolveCssPageStyle(i, totalCount, item.PageName ?? rootPageName, item.Blank, baseSize);
+                    var pageSize = ResolvePageSizeForStyle(style, baseSize);
+                    pages.Add(item with
+                    {
+                        PageSize = pageSize,
+                        PageStyle = style.HasMatchedRules ? style : null,
+                    });
+                }
 
-            return pages;
+                _layoutPageSize = size;
+                _layoutFontEpoch = epoch;
+                return _pages = pages;
+            }
+            finally { _buildingPages = false; }
         }
 
-        private Size ResolvePageSize()
+        private Size ResolveBasePageSize()
         {
             var width = double.IsFinite(_document.PageWidth) && _document.PageWidth > 0
                 ? _document.PageWidth
@@ -1214,48 +1402,40 @@ public partial class FlowDocument : FrameworkContentElement, IServiceProvider, I
             return new Size(width, height);
         }
 
-        private static int FindPageBreak(string text, int offset, int tentativeLength)
+        private Size ResolvePageSizeForStyle(Styling.CssComputedPageStyle style, Size baseSize)
         {
-            var end = Math.Min(text.Length, offset + tentativeLength);
-            var minimum = offset + Math.Max(1, tentativeLength / 2);
-            for (var index = end; index > minimum; index--)
-            {
-                var character = text[index - 1];
-                if (character is '\n' or '\r' || char.IsWhiteSpace(character) || char.IsPunctuation(character))
-                {
-                    return index;
-                }
-            }
-
-            return end;
+            var width = double.IsFinite(_document.PageWidth) && _document.PageWidth > 0
+                ? _document.PageWidth
+                : style.HasMatchedRules && style.Size.Width > 0 ? style.Size.Width : baseSize.Width;
+            var height = double.IsFinite(_document.PageHeight) && _document.PageHeight > 0
+                ? _document.PageHeight
+                : style.HasMatchedRules && style.Size.Height > 0 ? style.Size.Height : baseSize.Height;
+            width = Math.Max(_document.MinPageWidth, Math.Min(_document.MaxPageWidth, width));
+            height = Math.Max(_document.MinPageHeight, Math.Min(_document.MaxPageHeight, height));
+            return new Size(width, height);
         }
 
-        private readonly record struct PageSlice(int StartOffset, int Length, string Text);
-    }
-
-    private sealed class FlowDocumentPaginator : DocumentPaginator
-    {
-        private readonly FlowDocument _document;
-
-        internal FlowDocumentPaginator(FlowDocument document)
+        private Size ResolvePageSize()
         {
-            _document = document;
+            var baseSize = ResolveBasePageSize();
+            var rootPageName = Styling.CssPageProperties.Page(_document);
+            if (string.IsNullOrEmpty(rootPageName)) rootPageName = null;
+            var style = ResolveCssPageStyle(0, 1, rootPageName, isBlank: false, baseSize);
+            return ResolvePageSizeForStyle(style, baseSize);
         }
 
-        private DocumentPaginator Inner => _document.ViewerPaginator;
-
-        public override bool IsPageCountValid => Inner.IsPageCountValid;
-        public override int PageCount => Inner.PageCount;
-        public override Size PageSize { get => Inner.PageSize; set => Inner.PageSize = value; }
-        public override IDocumentPaginatorSource Source => _document;
-
-        public override DocumentPage GetPage(int pageNumber)
-        {
-            var page = Inner.GetPage(pageNumber);
-            return page.Visual is null || page.Size.IsEmpty
-                ? DocumentPage.Missing
-                : new DocumentPage(page.Visual, page.Size, new Rect(page.Size), new Rect(page.Size));
-        }
+        private readonly record struct PageSlice(
+            int StartOffset,
+            int Length,
+            double Top,
+            double Bottom,
+            bool Blank,
+            string? PageName,
+            Size PageSize,
+            Styling.CssComputedPageStyle? PageStyle,
+            double RepeatedHeaderHeight,
+            double RepeatedFooterHeight,
+            double RepeatTableTop);
     }
 
     #endregion
@@ -1265,4 +1445,9 @@ internal interface IFlowDocumentPageMetrics
 {
     int GetPageNumberForOffset(int offset);
     int GetPageStartOffset(int oneBasedPageNumber);
+}
+
+internal interface IFlowDocumentPagePresentation
+{
+    bool TryRefreshPage(int pageNumber, FlowDocumentPresentation visual, out Size size);
 }

@@ -12,6 +12,9 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class Label : ContentControl
 {
+    protected override bool SupportsSelfDrawnCssContentAdapter => true;
+    internal override Brush? ResolveCssAdapterForeground() => ResolveEffectiveForegroundBrush();
+
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
@@ -625,6 +628,8 @@ public class Label : ContentControl
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
+        EnsureCssContentAdapter();
+
         // Prefer template measurement so the ContentPresenter/TextBlock tree is
         // measured before arrange. Falling back keeps untemplated labels working.
         if (Template != null)
@@ -674,8 +679,11 @@ public class Label : ContentControl
     /// <inheritdoc />
     protected override void OnRender(DrawingContext drawingContext)
     {
+        if (CssInlineBoxPainter.Background(this, BackgroundProperty, Background, drawingContext))
+            return;
+
         // If using template, let the template handle rendering
-        if (_labelBorder != null)
+        if (_labelBorder != null && !UsesCssContentAdapter)
             return;
 
         var dc = drawingContext;
@@ -686,11 +694,16 @@ public class Label : ContentControl
         // Draw background if set
         if (Background != null)
         {
+            var radii = CssBorderRadiusProperties.Get(this)?.Resolve(RenderSize) ?? default;
+            var shape = new CssRoundedRectangleGeometry(rect, radii);
             if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty, Background, dc,
-                    rect, default, BorderThickness, padding,
-                    brush => dc.DrawRectangle(brush, null, rect)))
+                    rect, radii, BorderThickness, padding,
+                    brush => dc.DrawGeometry(brush, null, shape)))
                 dc.DrawRectangle(Background, null, rect);
         }
+
+        if (UsesCssContentAdapter)
+            return;
 
         // Draw content
         if (Content is string text && Foreground != null && FontSize > 0)
@@ -743,7 +756,9 @@ public class Label : ContentControl
     protected override void OnPostRender(DrawingContext drawingContext)
     {
         base.OnPostRender(drawingContext);
-        if (_labelBorder == null)
+        if (CssInlineBoxPainter.Border(this, drawingContext, ref _cssBorderPainter))
+            return;
+        if (_labelBorder == null || UsesCssContentAdapter)
             CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter);
     }
 

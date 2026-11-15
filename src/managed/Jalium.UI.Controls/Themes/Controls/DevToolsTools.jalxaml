@@ -1,0 +1,171 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:dev="clr-namespace:Jalium.UI.Controls.DevTools"
+                    xmlns:automation="clr-namespace:Jalium.UI.Automation">
+    <Style x:Key="DevTools.ToolResultReadout" TargetType="dev:DevToolsReadout">
+        <Setter Property="FontFamily" Value="{ThemeResource MonoFontFamily}" />
+        <Setter Property="FontSize" Value="11" /><Setter Property="Foreground" Value="{DynamicResource DevTools.TextSecondary}" />
+        <Setter Property="ValueBrush" Value="{DynamicResource DevTools.TextPrimary}" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsReadout">
+            <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                <TextBlock Text="{TemplateBinding Label}" Foreground="{TemplateBinding Foreground}" FontSize="{TemplateBinding FontSize}" Margin="0,0,8,0" />
+                <TextBlock Name="PART_Value" Grid.Column="1" Text="{TemplateBinding ValueText}" Foreground="{TemplateBinding ValueBrush}" FontSize="{TemplateBinding FontSize}" FontFamily="{TemplateBinding FontFamily}" TextAlignment="Right" TextTrimming="CharacterEllipsis" ToolTip="{TemplateBinding ValueText}" />
+            </Grid>
+        </ControlTemplate></Setter>
+    </Style>
+    <Style TargetType="dev:DevToolsMeasurementView">
+        <Setter Property="Padding" Value="12" /><Setter Property="BorderThickness" Value="1" />
+        <Setter Property="BorderBrush" Value="{DynamicResource DevTools.BorderStrong}" /><Setter Property="Background" Value="{DynamicResource DevTools.SurfaceAlt}" />
+        <Setter Property="Foreground" Value="{DynamicResource DevTools.TextPrimary}" /><Setter Property="AccentBrush" Value="{DynamicResource DevTools.Info}" />
+        <Setter Property="FontFamily" Value="{ThemeResource MonoFontFamily}" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsMeasurementView">
+            <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}" CornerRadius="4">
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup Name="ResultStates"><VisualState Name="ResultEmpty" /><VisualState Name="ResultAvailable"><VisualState.Setters>
+                        <Setter TargetName="PART_Empty" Property="Visibility" Value="Collapsed" /><Setter TargetName="PART_Result" Property="Visibility" Value="Visible" />
+                    </VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="SnapStates"><VisualState Name="Free" /><VisualState Name="Snapped"><VisualState.Setters><Setter TargetName="PART_Snap" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState></VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <Grid>
+                    <TextBlock Name="PART_Empty" Text="No measurement" Style="{StaticResource DevTools.MutedText}" />
+                    <StackPanel Name="PART_Result" Visibility="Collapsed">
+                        <WrapPanel>
+                            <TextBlock Name="PART_Distance" Text="{Binding Measurement.DistanceText, RelativeSource={RelativeSource TemplatedParent}}" FontSize="28" FontWeight="Bold" FontFamily="{TemplateBinding FontFamily}" Foreground="{TemplateBinding AccentBrush}" />
+                            <TextBlock Text="px" Style="{StaticResource DevTools.MutedText}" Margin="6,0,14,4" VerticalAlignment="Bottom" />
+                            <TextBlock Name="PART_Snap" Text="45° snap" Style="{StaticResource DevTools.MutedText}" Visibility="Collapsed" VerticalAlignment="Center" />
+                        </WrapPanel>
+                        <WrapPanel Margin="0,8,0,0">
+                            <dev:DevToolsReadout Name="PART_DeltaX" Label="Δx" ValueText="{Binding Measurement.DeltaXText, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.ToolResultReadout}" Margin="0,0,12,4" />
+                            <dev:DevToolsReadout Name="PART_DeltaY" Label="Δy" ValueText="{Binding Measurement.DeltaYText, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.ToolResultReadout}" Margin="0,0,12,4" />
+                            <dev:DevToolsReadout Name="PART_Angle" Label="∠" ValueText="{Binding Measurement.AngleText, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.ToolResultReadout}" Margin="0,0,0,4" />
+                        </WrapPanel>
+                        <TextBlock Name="PART_Coordinates" Text="{Binding Measurement.CoordinatesText, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.MutedText}" FontFamily="{TemplateBinding FontFamily}" TextWrapping="Wrap" Margin="0,10,0,0" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </ControlTemplate></Setter>
+    </Style>
+    <Style TargetType="dev:DevToolsColorSampleView">
+        <Setter Property="Padding" Value="12" /><Setter Property="BorderThickness" Value="1" />
+        <Setter Property="BorderBrush" Value="{DynamicResource DevTools.BorderStrong}" /><Setter Property="Background" Value="{DynamicResource DevTools.SurfaceAlt}" />
+        <Setter Property="Foreground" Value="{DynamicResource DevTools.TextPrimary}" />
+        <Setter Property="FontFamily" Value="{ThemeResource MonoFontFamily}" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsColorSampleView">
+            <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}" CornerRadius="4">
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup Name="ResultStates"><VisualState Name="ResultEmpty" /><VisualState Name="ResultAvailable"><VisualState.Setters>
+                        <Setter TargetName="PART_Empty" Property="Visibility" Value="Collapsed" /><Setter TargetName="PART_Result" Property="Visibility" Value="Visible" />
+                    </VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="CopyStates"><VisualState Name="CopyUnavailable" /><VisualState Name="CopyAvailable"><VisualState.Setters><Setter TargetName="PART_Copy" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState></VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <Grid>
+                    <TextBlock Name="PART_Empty" Text="No color sample" Style="{StaticResource DevTools.MutedText}" />
+                    <StackPanel Name="PART_Result" Visibility="Collapsed">
+                        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="64" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                            <Border BorderBrush="{DynamicResource DevTools.BorderStrong}" BorderThickness="1" CornerRadius="4" Width="64" Height="64" ClipToBounds="True">
+                                <Grid Background="{DynamicResource DevTools.Surface}">
+                                    <Path Data="M0,0 H16 V16 H0 Z M32,0 H48 V16 H32 Z M16,16 H32 V32 H16 Z M48,16 H64 V32 H48 Z M0,32 H16 V48 H0 Z M32,32 H48 V48 H32 Z M16,48 H32 V64 H16 Z M48,48 H64 V64 H48 Z" Fill="{DynamicResource DevTools.BorderStrong}" Stretch="Fill" IsHitTestVisible="False" />
+                                    <Border Name="PART_Swatch" Background="{TemplateBinding SwatchBrush}" />
+                                </Grid>
+                            </Border>
+                            <StackPanel Grid.Column="1" Margin="12,0,0,0">
+                                <TextBlock Name="PART_Hex" Text="{Binding Sample.ArgbHex, RelativeSource={RelativeSource TemplatedParent}}" FontFamily="{TemplateBinding FontFamily}" Foreground="{TemplateBinding Foreground}" FontWeight="Bold" FontSize="18" TextTrimming="CharacterEllipsis" />
+                                <TextBlock Text="ARGB" Style="{StaticResource DevTools.MutedText}" Margin="0,3,0,4" />
+                                <dev:DevToolsActionButton Name="PART_Copy" Label="Copy ARGB" Variant="Ghost" Command="{TemplateBinding CopyCommand}" CommandParameter="{Binding Sample.ArgbHex, RelativeSource={RelativeSource TemplatedParent}}" Visibility="Collapsed" HorizontalAlignment="Left" automation:AutomationProperties.Name="Copy ARGB color" />
+                            </StackPanel>
+                        </Grid>
+                        <Grid Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="16" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="10" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                            <StackPanel><dev:DevToolsReadout Label="R" ValueText="{Binding Sample.RedText, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.ToolResultReadout}" /><dev:DevToolsMeter Label="Red" Value="{Binding Sample.RedFraction, RelativeSource={RelativeSource TemplatedParent}}" ProgressBrush="{DynamicResource DevTools.Error}" Margin="0,4,0,0" /></StackPanel>
+                            <StackPanel Grid.Column="2"><dev:DevToolsReadout Label="G" ValueText="{Binding Sample.GreenText, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.ToolResultReadout}" /><dev:DevToolsMeter Label="Green" Value="{Binding Sample.GreenFraction, RelativeSource={RelativeSource TemplatedParent}}" ProgressBrush="{DynamicResource DevTools.Success}" Margin="0,4,0,0" /></StackPanel>
+                            <StackPanel Grid.Row="2"><dev:DevToolsReadout Label="B" ValueText="{Binding Sample.BlueText, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.ToolResultReadout}" /><dev:DevToolsMeter Label="Blue" Value="{Binding Sample.BlueFraction, RelativeSource={RelativeSource TemplatedParent}}" ProgressBrush="{DynamicResource DevTools.Info}" Margin="0,4,0,0" /></StackPanel>
+                            <StackPanel Grid.Row="2" Grid.Column="2"><dev:DevToolsReadout Label="A" ValueText="{Binding Sample.AlphaText, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.ToolResultReadout}" /><dev:DevToolsMeter Label="Alpha" Value="{Binding Sample.AlphaFraction, RelativeSource={RelativeSource TemplatedParent}}" ProgressBrush="{DynamicResource DevTools.TextSecondary}" Margin="0,4,0,0" /></StackPanel>
+                        </Grid>
+                        <TextBlock Name="PART_Hsl" Text="{Binding Sample.HslText, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.MutedText}" FontFamily="{TemplateBinding FontFamily}" TextWrapping="Wrap" Margin="0,10,0,0" />
+                        <TextBlock Name="PART_Coordinates" Text="{Binding Sample.CoordinatesText, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.MutedText}" FontFamily="{TemplateBinding FontFamily}" TextWrapping="Wrap" Margin="0,5,0,0" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </ControlTemplate></Setter>
+    </Style>
+    <Style TargetType="dev:DevToolsToolsView">
+        <Setter Property="Padding" Value="12" /><Setter Property="Background" Value="{DynamicResource DevTools.Surface}" />
+        <Setter Property="Foreground" Value="{DynamicResource DevTools.TextPrimary}" /><Setter Property="ClipToBounds" Value="True" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsToolsView">
+            <Border Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup Name="LayoutStates"><VisualState Name="Wide" /><VisualState Name="Compact"><VisualState.Setters>
+                        <Setter TargetName="PART_GapColumn" Property="Width" Value="0" /><Setter TargetName="PART_RightColumn" Property="Width" Value="0" />
+                        <Setter TargetName="PART_RulerCard" Property="Grid.ColumnSpan" Value="3" />
+                        <Setter TargetName="PART_PickerCard" Property="Grid.Row" Value="1" /><Setter TargetName="PART_PickerCard" Property="Grid.Column" Value="0" /><Setter TargetName="PART_PickerCard" Property="Grid.ColumnSpan" Value="3" />
+                        <Setter TargetName="PART_RenderCard" Property="Grid.ColumnSpan" Value="3" />
+                        <Setter TargetName="PART_FocusCard" Property="Grid.Row" Value="3" /><Setter TargetName="PART_FocusCard" Property="Grid.Column" Value="0" /><Setter TargetName="PART_FocusCard" Property="Grid.ColumnSpan" Value="3" />
+                    </VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="ToolStates"><VisualState Name="NoTool" /><VisualState Name="RulerTool"><VisualState.Setters>
+                        <Setter TargetName="PART_RulerAction" Property="Label" Value="Stop ruler" /><Setter TargetName="PART_RulerAction" Property="Variant" Value="Danger" />
+                        <Setter TargetName="PART_RulerAction" Property="automation:AutomationProperties.ItemStatus" Value="Measuring" />
+                        <Setter TargetName="PART_RulerCard" Property="IndicatorBrush" Value="{DynamicResource DevTools.Info}" />
+                    </VisualState.Setters></VisualState><VisualState Name="ColorPickerTool"><VisualState.Setters>
+                        <Setter TargetName="PART_PickerAction" Property="Label" Value="Stop picker" /><Setter TargetName="PART_PickerAction" Property="Variant" Value="Danger" />
+                        <Setter TargetName="PART_PickerAction" Property="automation:AutomationProperties.ItemStatus" Value="Sampling" />
+                        <Setter TargetName="PART_PickerCard" Property="IndicatorBrush" Value="{DynamicResource DevTools.TokenKeyword}" />
+                    </VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="MeasurementStates"><VisualState Name="MeasurementEmpty" /><VisualState Name="MeasurementAvailable"><VisualState.Setters><Setter TargetName="PART_Measurement" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="ColorStates"><VisualState Name="ColorEmpty" /><VisualState Name="ColorAvailable"><VisualState.Setters><Setter TargetName="PART_ColorSample" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="OverlayStates"><VisualState Name="NoOverlay" /><VisualState Name="OverdrawOverlay"><VisualState.Setters>
+                        <Setter TargetName="PART_OverdrawAction" Property="IsActive" Value="True" /><Setter TargetName="PART_OverdrawAction" Property="automation:AutomationProperties.ItemStatus" Value="On" />
+                    </VisualState.Setters></VisualState><VisualState Name="DirtyRegionsOverlay"><VisualState.Setters>
+                        <Setter TargetName="PART_DirtyAction" Property="IsActive" Value="True" /><Setter TargetName="PART_DirtyAction" Property="automation:AutomationProperties.ItemStatus" Value="On" />
+                    </VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="FocusStates"><VisualState Name="FocusIdle" /><VisualState Name="FocusTracking"><VisualState.Setters>
+                        <Setter TargetName="PART_FocusAction" Property="IsActive" Value="True" /><Setter TargetName="PART_FocusAction" Property="automation:AutomationProperties.ItemStatus" Value="Tracking" />
+                        <Setter TargetName="PART_FocusCard" Property="IndicatorBrush" Value="{DynamicResource DevTools.Success}" />
+                    </VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="RulerStatusStates"><VisualState Name="RulerNormal" /><VisualState Name="RulerError"><VisualState.Setters><Setter TargetName="PART_RulerStatus" Property="Foreground" Value="{DynamicResource DevTools.Error}" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="PickerStatusStates"><VisualState Name="PickerNormal" /><VisualState Name="PickerError"><VisualState.Setters><Setter TargetName="PART_PickerStatus" Property="Foreground" Value="{DynamicResource DevTools.Error}" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="ErrorStates"><VisualState Name="NoError" /><VisualState Name="Error"><VisualState.Setters><Setter TargetName="PART_Error" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="StatusStates"><VisualState Name="StatusEmpty" /><VisualState Name="StatusAvailable"><VisualState.Setters><Setter TargetName="PART_Status" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="ExecutionStates"><VisualState Name="Ready" /><VisualState Name="Busy"><VisualState.Setters><Setter TargetName="PART_Cards" Property="Opacity" Value="0.7" /></VisualState.Setters></VisualState></VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <ScrollViewer Name="PART_ScrollViewer" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Background="Transparent">
+                    <Grid Name="PART_Cards" Margin="0,0,12,0">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Name="PART_GapColumn" Width="12" /><ColumnDefinition Name="PART_RightColumn" Width="*" /></Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                        <dev:DevToolsSurface Name="PART_RulerCard" Heading="Ruler" Margin="0,0,0,12">
+                            <StackPanel>
+                                <dev:DevToolsActionButton Name="PART_RulerAction" Label="Start ruler" Command="{TemplateBinding RulerCommand}" Variant="Primary" HorizontalAlignment="Left" automation:AutomationProperties.ItemStatus="Stopped" />
+                                <TextBlock Name="PART_RulerStatus" Text="{TemplateBinding RulerStatusText}" Style="{StaticResource DevTools.MutedText}" TextWrapping="Wrap" Margin="0,8,0,0" automation:AutomationProperties.LiveSetting="Polite" />
+                                <dev:DevToolsMeasurementView Name="PART_Measurement" Measurement="{TemplateBinding Measurement}" Visibility="Collapsed" Margin="0,12,0,0" />
+                            </StackPanel>
+                        </dev:DevToolsSurface>
+                        <dev:DevToolsSurface Name="PART_PickerCard" Grid.Column="2" Heading="Color picker" Margin="0,0,0,12">
+                            <StackPanel>
+                                <dev:DevToolsActionButton Name="PART_PickerAction" Label="Pick color" Command="{TemplateBinding ColorPickerCommand}" Variant="Primary" HorizontalAlignment="Left" automation:AutomationProperties.ItemStatus="Stopped" />
+                                <TextBlock Name="PART_PickerStatus" Text="{TemplateBinding PickerStatusText}" Style="{StaticResource DevTools.MutedText}" TextWrapping="Wrap" Margin="0,8,0,0" automation:AutomationProperties.LiveSetting="Polite" />
+                                <dev:DevToolsColorSampleView Name="PART_ColorSample" Sample="{TemplateBinding ColorSample}" CopyCommand="{TemplateBinding CopyArgbCommand}" Visibility="Collapsed" Margin="0,12,0,0" />
+                            </StackPanel>
+                        </dev:DevToolsSurface>
+                        <dev:DevToolsSurface Name="PART_RenderCard" Grid.Row="2" Heading="Rendering" Margin="0,0,0,12">
+                            <StackPanel>
+                                <WrapPanel>
+                                    <dev:DevToolsActionButton Name="PART_OverdrawAction" Label="Overdraw" Command="{TemplateBinding OverdrawCommand}" Variant="Ghost" Margin="0,0,8,0" automation:AutomationProperties.ItemStatus="Off" />
+                                    <dev:DevToolsActionButton Name="PART_DirtyAction" Label="Dirty regions" Command="{TemplateBinding DirtyRegionsCommand}" Variant="Ghost" automation:AutomationProperties.ItemStatus="Off" />
+                                </WrapPanel>
+                                <TextBlock Text="Render overlays" Style="{StaticResource DevTools.MutedText}" Margin="0,8,0,0" />
+                            </StackPanel>
+                        </dev:DevToolsSurface>
+                        <dev:DevToolsSurface Name="PART_FocusCard" Grid.Row="2" Grid.Column="2" Heading="Keyboard focus" Margin="0,0,0,12">
+                            <StackPanel>
+                                <dev:DevToolsActionButton Name="PART_FocusAction" Label="Track focus" Command="{TemplateBinding FocusCommand}" Variant="Ghost" HorizontalAlignment="Left" automation:AutomationProperties.ItemStatus="Stopped" />
+                                <TextBlock Text="{TemplateBinding FocusedElementText}" Style="{StaticResource DevTools.MutedText}" TextWrapping="Wrap" Margin="0,8,0,0" />
+                            </StackPanel>
+                        </dev:DevToolsSurface>
+                        <TextBlock Name="PART_Error" Grid.Row="4" Grid.ColumnSpan="3" Text="{TemplateBinding LastError}" Foreground="{DynamicResource DevTools.Error}" TextWrapping="Wrap" Visibility="Collapsed" automation:AutomationProperties.LiveSetting="Polite" Margin="0,0,0,8" />
+                        <TextBlock Name="PART_Status" Grid.Row="5" Grid.ColumnSpan="3" Text="{TemplateBinding StatusText}" Style="{StaticResource DevTools.MutedText}" TextWrapping="Wrap" Visibility="Collapsed" automation:AutomationProperties.LiveSetting="Polite" />
+                    </Grid>
+                </ScrollViewer>
+            </Border>
+        </ControlTemplate></Setter>
+    </Style>
+</ResourceDictionary>

@@ -1,9 +1,11 @@
 using System.Reflection;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Controls.Platform;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Data;
 using Jalium.UI.Input;
+using Jalium.UI.Interop;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Tests;
@@ -62,6 +64,9 @@ public sealed class ComboBoxPopupInputTests
             popupWindow.Measure(popupSize);
             popupWindow.Arrange(new Rect(0, 0, popupSize.Width, popupSize.Height));
             popupWindow.SetVisualBounds(new Rect(0, 0, popupSize.Width, popupSize.Height));
+            if (!OperatingSystem.IsWindows())
+                typeof(PopupWindow).GetField("_platformWindow", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .SetValue(popupWindow, new InputPlatformWindow((int)popupSize.Width, (int)popupSize.Height));
 
             var itemsHost = Assert.IsAssignableFrom<Panel>(
                 typeof(ItemsControl)
@@ -99,6 +104,17 @@ public sealed class ComboBoxPopupInputTests
         Point position,
         MouseButton? button = null)
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            var type = methodName switch
+            {
+                "OnMouseButtonDown" => PlatformEventType.MouseDown,
+                "OnMouseButtonUp" => PlatformEventType.MouseUp,
+                _ => throw new InvalidOperationException($"Unsupported popup mouse method '{methodName}'."),
+            };
+            InvokePlatformMouse(popupWindow, type, position, button ?? MouseButton.Left);
+            return;
+        }
         var parameterTypes = button.HasValue
             ? new[] { typeof(MouseButton), typeof(nint), typeof(nint), typeof(ModifierKeys?), typeof(int) }
             : new[] { typeof(nint), typeof(nint), typeof(ModifierKeys?), typeof(bool) };
@@ -123,6 +139,13 @@ public sealed class ComboBoxPopupInputTests
 
     private static void InvokeMousePointerUpdate(PopupWindow popupWindow, Point position)
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            // Keep the WM_POINTER promotion regression on Windows, and cover
+            // the native platform event route used by Linux/macOS popups.
+            InvokePlatformMouse(popupWindow, PlatformEventType.MouseMove, position);
+            return;
+        }
         var properties = new PointerPointProperties
         {
             IsPrimary = true,
@@ -153,6 +176,19 @@ public sealed class ComboBoxPopupInputTests
         method.Invoke(popupWindow, [data]);
     }
 
+    private static void InvokePlatformMouse(PopupWindow popupWindow, PlatformEventType type, Point position,
+        MouseButton button = MouseButton.Left)
+    {
+        var parent = (Window)typeof(PopupWindow).GetField("_parentWindow", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(popupWindow)!;
+        double scale = parent.DpiScale > 0 ? parent.DpiScale : 1;
+        int nativeButton = button switch { MouseButton.Right => 1, MouseButton.Middle => 2,
+            MouseButton.XButton1 => 3, MouseButton.XButton2 => 4, _ => 0 };
+        typeof(PopupWindow).GetMethod("OnPlatformEvent", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(popupWindow, [new PlatformEvent { Type = type, MouseX = (float)(position.X * scale),
+                MouseY = (float)(position.Y * scale), Button = nativeButton, ClickCount = 1 }]);
+    }
+
     private static nint PackClientPoint(Point position)
     {
         var x = unchecked((ushort)(short)Math.Round(position.X));
@@ -176,6 +212,46 @@ public sealed class ComboBoxPopupInputTests
         }
 
         return null;
+    }
+
+    // The input fixture is arranged without showing a native surface. Supply
+    // the platform lifetime required by OnPlatformEvent, while keeping native
+    // creation and presentation in the separate host/protocol tests.
+    private sealed class InputPlatformWindow(int width, int height) : IPlatformWindow
+    {
+        public nint NativeHandle => 0;
+        public NativeSurfaceDescriptor GetSurface() => default;
+        public void Show() { }
+        public void Hide() { }
+        public void Close() { }
+        public void SetTitle(string title) { }
+        public void Resize(int width, int height) { }
+        public void Move(int x, int y) { }
+        public int GetWidth() => width;
+        public int GetHeight() => height;
+        public void GetPosition(out int x, out int y) { x = y = 0; }
+        public void SetMinMaxSize(int minWidth, int minHeight, int maxWidth, int maxHeight) { }
+        public bool BeginMoveDrag() => false;
+        public bool BeginResizeDrag(int edge) => false;
+        public bool SetIcon(uint[]? pixels, int width, int height) => false;
+        public bool SetTopmost(bool topmost) => false;
+        public bool SetEnabled(bool enabled) => true;
+        public bool SetOpacity(double opacity) => false;
+        public bool SetShowInTaskbar(bool show) => false;
+        public bool SetResizable(bool resizable) => false;
+        public bool SetDecorated(bool decorated) => false;
+        public bool SetOwner(nint owner) => false;
+        public bool Activate() => false;
+        public bool ShowSystemMenu(int x, int y) => false;
+        public void SetState(WindowState state) { }
+        public WindowState GetState() => WindowState.Normal;
+        public void Invalidate() { }
+        public float GetDpiScale() => 1;
+        public int GetMonitorRefreshRate() => 60;
+        public void SetCursor(int shape) { }
+        public void UpdateImeContext(PlatformImeContext context) { }
+        public void SetEventHandler(Action<PlatformEvent>? handler) { }
+        public void Dispose() { }
     }
 
     private static void ResetApplicationState()

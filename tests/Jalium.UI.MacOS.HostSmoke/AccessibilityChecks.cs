@@ -54,7 +54,7 @@ internal static class AccessibilityChecks
     {
         if (!int.TryParse(argument.AsSpan("--accessibility-case=".Length), out int index) || (uint)index >= s_names.Length) return 2;
         JaliumMacApplication.Initialize();
-        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Prohibited;
+        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Accessory;
         RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
         Require(Marshal.SizeOf<MacOSAXRequest>() == 136, "managed AX ABI size differs");
         var button = new Button { Content = "保存中文", Height = 32 };
@@ -111,7 +111,8 @@ internal static class AccessibilityChecks
                     text.AccessibilitySelectedTextRange = new NSRange(99, 2);
                     Require(editor.SelectionStart == 2 && editor.SelectionLength == 2, "invalid selection changed control");
                     text.AccessibilityFocused = true;
-                    Require(editor.IsKeyboardFocused, "AX focus request did not reach managed editor");
+                    Require(AccessibilityFocusChecks.Wait(window, editor),
+                        $"AX focus request did not reach managed editor; nativeKey={view.Window!.IsKeyWindow}; appActive={NSApplication.SharedApplication.Active}; managedActive={window.IsActive}");
                     editor.IsReadOnly = true;
                     Require(!text.IsAccessibilitySelectorAllowed(new Selector("setAccessibilityValue:")), "read-only value advertises a setter");
                     text.AccessibilityValue = new NSString("禁止修改");
@@ -203,18 +204,35 @@ internal static class AccessibilityChecks
                 case 11:
                     var tree = new TreeView { Height = 120 };
                     var item = new TreeViewItem { Header = "父节点" };
-                    item.Items.Add(new TreeViewItem { Header = "子节点" });
+                    var nestedItem = new TreeViewItem { Header = "子节点" };
+                    item.Items.Add(nestedItem);
                     tree.Items.Add(item);
                     AutomationProperties.SetAutomationId(tree, "tree"); AutomationProperties.SetAutomationId(item, "tree-item");
+                    AutomationProperties.SetAutomationId(nestedItem, "tree-child");
                     panel.Children.Add(tree); window.UpdateLayout();
                     var axTree = Find(root, "tree"); var axItem = Find(root, "tree-item");
                     axItem.AccessibilityExpanded = true;
                     Require(item.IsExpanded && axItem.AccessibilityExpanded, "tree expansion did not reach provider");
                     window.UpdateLayout();
                     Require((axTree.AccessibilityRows ?? []).Length == 2 && axItem.AccessibilityLabel == "父节点", "outline rows or realized item name missing");
+                    var axNestedItem = Find(root, "tree-child");
                     Require(axItem.AccessibilityPerformPress() && item.IsSelected && (axTree.AccessibilitySelectedChildren ?? []).Any(child => child.Handle == axItem.Handle), "tree selection missing");
                     axItem.AccessibilityExpanded = false; window.UpdateLayout();
+                    var collapsedRows = axTree.AccessibilityRows ?? [];
+                    Console.WriteLine($"TREE_COLLAPSE_STATE: managedExpanded={item.IsExpanded}, nativeExpanded={axItem.AccessibilityExpanded}, rows={collapsedRows.Length}");
+                    var collapsedLabels = string.Join(";", collapsedRows.OfType<NSAccessibilityElement>().Select(row => row.AccessibilityLabel));
+                    var disclosedLabels = string.Join(";", (axItem.AccessibilityChildren ?? []).OfType<NSAccessibilityElement>().Select(row => row.AccessibilityLabel));
+                    Console.WriteLine("TREE_COLLAPSE_LABELS: rows=" + collapsedLabels + ", itemChildren=" + disclosedLabels);
                     Require(!item.IsExpanded && (axTree.AccessibilityRows ?? []).Length == 1, "collapsed outline kept disclosed rows");
+                    Require(!axNestedItem.AccessibilityElement && !axNestedItem.AccessibilityPerformPress()
+                        && !nestedItem.IsSelected, "collapsed branch accepted a retained child's action");
+                    axItem.AccessibilityExpanded = true; window.UpdateLayout();
+                    var reopenedNestedItem = Find(root, "tree-child");
+                    Require((axTree.AccessibilityRows ?? []).Length == 2 && reopenedNestedItem.AccessibilityElement
+                        && reopenedNestedItem.AccessibilityPerformPress() && nestedItem.IsSelected,
+                        "reopening the branch did not expose its current child's action");
+                    Require(reopenedNestedItem.Handle == axNestedItem.Handle || !axNestedItem.AccessibilityElement,
+                        "reopening the branch revived a retired child's identity");
                     break;
             }
             Console.WriteLine($"PASS: {s_names[index]}");

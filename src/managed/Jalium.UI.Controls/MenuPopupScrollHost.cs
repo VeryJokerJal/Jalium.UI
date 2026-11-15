@@ -1,261 +1,342 @@
+using System.Collections.ObjectModel;
+using System.Collections.Specialized;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
-
-/// <summary>
-/// Hosts popup menu items with optional up/down repeat buttons when content overflows vertically.
-/// </summary>
+/// <summary>Templated scrolling for existing popup menu containers.</summary>
+[TemplatePart(Name = "PART_ScrollViewer", Type = typeof(ScrollViewer))]
+[TemplatePart(Name = "PART_ItemsPanel", Type = typeof(Panel))]
+[TemplatePart(Name = "PART_ScrollUpButton", Type = typeof(RepeatButton))]
+[TemplatePart(Name = "PART_ScrollDownButton", Type = typeof(RepeatButton))]
 internal sealed class MenuPopupScrollHost : Control
 {
-    private const double DefaultScrollButtonHeight = 18.0;
     private const double ScrollStepPerClick = ScrollViewer.LineScrollAmount * 2.0;
-    private const string LineButtonStyleKey = "ScrollBarLineButtonStyle";
-    private static readonly SolidColorBrush s_buttonForegroundFallback = new(Color.FromRgb(220, 220, 220));
-    private static readonly SolidColorBrush s_buttonBackgroundFallback = new(Color.FromRgb(45, 45, 48));
-
-    private readonly StackPanel _itemsPanel;
-    private readonly ScrollViewer _scrollViewer;
-    private readonly RepeatButton _scrollUpButton;
-    private readonly RepeatButton _scrollDownButton;
-
-    private double _lastMeasuredContentHeight;
-    private bool _isOverflowing;
-
+    public static readonly DependencyProperty ScrollButtonHeightProperty = DependencyProperty.Register(nameof(ScrollButtonHeight), typeof(double), typeof(MenuPopupScrollHost), new PropertyMetadata(18.0, (d, _) => ((MenuPopupScrollHost)d).UpdateScrollState()), value => value is double height && double.IsFinite(height) && height >= 0);
+    private static readonly DependencyPropertyKey IsOverflowingPropertyKey = DependencyProperty.RegisterReadOnly(nameof(IsOverflowing), typeof(bool), typeof(MenuPopupScrollHost), new PropertyMetadata(false));
+    public static readonly DependencyProperty IsOverflowingProperty = IsOverflowingPropertyKey.DependencyProperty;
+    private static readonly DependencyPropertyKey CanScrollUpPropertyKey = DependencyProperty.RegisterReadOnly(nameof(CanScrollUp), typeof(bool), typeof(MenuPopupScrollHost), new PropertyMetadata(false));
+    public static readonly DependencyProperty CanScrollUpProperty = CanScrollUpPropertyKey.DependencyProperty;
+    private static readonly DependencyPropertyKey CanScrollDownPropertyKey = DependencyProperty.RegisterReadOnly(nameof(CanScrollDown), typeof(bool), typeof(MenuPopupScrollHost), new PropertyMetadata(false));
+    public static readonly DependencyProperty CanScrollDownProperty = CanScrollDownPropertyKey.DependencyProperty;
+    private static readonly DependencyPropertyKey EffectiveScrollButtonHeightPropertyKey = DependencyProperty.RegisterReadOnly(nameof(EffectiveScrollButtonHeight), typeof(double), typeof(MenuPopupScrollHost), new PropertyMetadata(0.0));
+    public static readonly DependencyProperty EffectiveScrollButtonHeightProperty = EffectiveScrollButtonHeightPropertyKey.DependencyProperty;
+    private static readonly DependencyPropertyKey VerticalOffsetPropertyKey = DependencyProperty.RegisterReadOnly(nameof(VerticalOffset), typeof(double), typeof(MenuPopupScrollHost), new PropertyMetadata(0.0));
+    public static readonly DependencyProperty VerticalOffsetProperty = VerticalOffsetPropertyKey.DependencyProperty;
+    private Panel? _itemsPanel;
+    private ScrollViewer? _scrollViewer;
+    private RepeatButton? _scrollUpButton, _scrollDownButton;
+    private bool _subscribed, _suspended, _updatingState, _pendingRestore;
+    private double _savedOffset;
+    static MenuPopupScrollHost() => DefaultStyleKeyProperty.OverrideMetadata(typeof(MenuPopupScrollHost), new PropertyMetadata(typeof(MenuPopupScrollHost)));
     public MenuPopupScrollHost()
     {
-        _itemsPanel = new StackPanel
-        {
-            Orientation = Orientation.Vertical,
-            PreserveExistingLogicalParents = true,
-        };
-        _scrollViewer = new ScrollViewer
-        {
-            Content = _itemsPanel,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Hidden,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-            IsScrollBarAutoHideEnabled = false,
-            IsScrollInertiaEnabled = false
-        };
-        _scrollViewer.ScrollChanged += OnScrollViewerScrollChanged;
-
-        _scrollUpButton = CreateScrollButton(-1);
-        _scrollDownButton = CreateScrollButton(1);
-        _scrollUpButton.Visibility = Visibility.Collapsed;
-        _scrollDownButton.Visibility = Visibility.Collapsed;
-
-        AddVisualChild(_scrollUpButton);
-        AddVisualChild(_scrollViewer);
-        AddVisualChild(_scrollDownButton);
-
-        // Own native wheel input before the nested viewer can consume it. The bubble
-        // fallback also covers handled wheel events raised over the repeat buttons.
+        Items = new MenuPopupItemCollection();
+        Items.CollectionChanged += OnItemsChanged;
         AddHandler(PreviewMouseWheelEvent, new MouseWheelEventHandler(OnMouseWheelHandler));
         AddHandler(MouseWheelEvent, new MouseWheelEventHandler(OnMouseWheelHandler), true);
+        SizeChanged += (_, _) => UpdateScrollState();
+        LayoutUpdated += (_, _) => UpdateScrollState();
+        Loaded += (_, _) => Resume();
+        Unloaded += (_, _) =>
+        {
+            SaveOffset();
+            _suspended = true;
+            DetachListeners();
+            _itemsPanel?.Children.Clear();
+            UpdateScrollState();
+        };
     }
 
-    /// <summary>
-    /// Gets the panel that stores menu item children.
-    /// </summary>
-    public StackPanel ItemsPanel => _itemsPanel;
+    public MenuPopupItemCollection Items { get; }
 
-    protected override int VisualChildrenCount => 3;
-
-    protected override Visual? GetVisualChild(int index)
+    internal Panel? ItemsHostPanel
     {
-        return index switch
+        get
         {
-            0 => _scrollUpButton,
-            1 => _scrollViewer,
-            2 => _scrollDownButton,
-            _ => throw new ArgumentOutOfRangeException(nameof(index))
-        };
+            UpdateDefaultStyle();
+            ApplyTemplate();
+            return _itemsPanel;
+        }
+    }
+
+    public double ScrollButtonHeight { get => (double)GetValue(ScrollButtonHeightProperty)!; set => SetValue(ScrollButtonHeightProperty, value); }
+    public bool IsOverflowing => (bool)GetValue(IsOverflowingProperty)!;
+    public bool CanScrollUp => (bool)GetValue(CanScrollUpProperty)!;
+    public bool CanScrollDown => (bool)GetValue(CanScrollDownProperty)!;
+    public double EffectiveScrollButtonHeight => (double)GetValue(EffectiveScrollButtonHeightProperty)!;
+    public double VerticalOffset => (double)GetValue(VerticalOffsetProperty)!;
+
+    public override void OnApplyTemplate()
+    {
+        ReleaseParts();
+        base.OnApplyTemplate();
+        _itemsPanel = GetTemplateChild("PART_ItemsPanel") as Panel;
+        _scrollViewer = GetTemplateChild("PART_ScrollViewer") as ScrollViewer;
+        _scrollUpButton = GetTemplateChild("PART_ScrollUpButton") as RepeatButton;
+        _scrollDownButton = GetTemplateChild("PART_ScrollDownButton") as RepeatButton;
+        if (_itemsPanel is not null)
+            _itemsPanel.PreserveExistingLogicalParents = true;
+        _pendingRestore = _savedOffset > 0;
+        if (!_suspended)
+        {
+            AttachListeners();
+            SyncItems();
+        }
+
+        UpdateScrollState();
+    }
+
+    internal override void OnTemplateContentClearing()
+    {
+        ReleaseParts();
+        base.OnTemplateContentClearing();
+    }
+
+    private void ReleaseParts()
+    {
+        SaveOffset();
+        DetachListeners();
+        var panel = _itemsPanel;
+        _itemsPanel = null;
+        _scrollViewer = null;
+        _scrollUpButton = _scrollDownButton = null;
+        panel?.Children.Clear();
+    }
+
+    internal void RestoreVerticalOffset(double offset)
+    {
+        if (!double.IsFinite(offset) || offset < 0)
+            return;
+        _savedOffset = offset;
+        _pendingRestore = true;
+        UpdateScrollState();
+    }
+
+    private void SaveOffset()
+    {
+        if (!_pendingRestore && _scrollViewer is not null)
+            _savedOffset = _scrollViewer.VerticalOffset;
+    }
+
+    private void AttachListeners()
+    {
+        if (_subscribed)
+            return;
+        if (_scrollViewer is not null)
+            _scrollViewer.ScrollChanged += OnScrollChanged;
+        if (_scrollUpButton is not null)
+            _scrollUpButton.Click += OnScrollUp;
+        if (_scrollDownButton is not null)
+            _scrollDownButton.Click += OnScrollDown;
+        _subscribed = true;
+    }
+
+    private void DetachListeners()
+    {
+        if (!_subscribed)
+            return;
+        if (_scrollViewer is not null)
+            _scrollViewer.ScrollChanged -= OnScrollChanged;
+        if (_scrollUpButton is not null)
+            _scrollUpButton.Click -= OnScrollUp;
+        if (_scrollDownButton is not null)
+            _scrollDownButton.Click -= OnScrollDown;
+        _subscribed = false;
+    }
+
+    private void Resume()
+    {
+        _suspended = false;
+        _pendingRestore = _savedOffset > 0;
+        AttachListeners();
+        SyncItems();
+        UpdateScrollState();
+    }
+
+    internal void PrepareForOpen()
+    {
+        UpdateDefaultStyle();
+        ApplyTemplate();
+        Resume();
     }
 
     protected override Size MeasureOverride(Size availableSize)
     {
-        var widthConstraint = availableSize.Width;
-        if (double.IsNaN(widthConstraint) || widthConstraint < 0)
-        {
-            widthConstraint = 0;
-        }
+        // A cached popup measures before its Loaded event. A closed/detached
+        // popup must remain suspended even if an old layout pass reaches it.
+        if (_suspended)
+            for (var ancestor = VisualParent; ancestor is not null; ancestor = (ancestor as Visual)?.VisualParent)
+                if (ancestor is PopupRoot root && root.OwnerPopup.IsOpen)
+                {
+                    Resume();
+                    break;
+                }
 
-        // StackPanel is the viewer's IScrollInfo provider. Measuring it separately
-        // with infinite height overwrites its finite viewport and resets its offset;
-        // a cached viewer measure/arrange will not repair that state on later passes.
-        _scrollViewer.Measure(new Size(widthConstraint, availableSize.Height));
-        _lastMeasuredContentHeight = _scrollViewer.ExtentHeight;
-        _scrollUpButton.Measure(new Size(widthConstraint, DefaultScrollButtonHeight));
-        _scrollDownButton.Measure(new Size(widthConstraint, DefaultScrollButtonHeight));
-
-        return _scrollViewer.DesiredSize;
+        return base.MeasureOverride(availableSize);
     }
 
-    protected override Size ArrangeOverride(Size finalSize)
+    private void OnItemsChanged(object? sender, NotifyCollectionChangedEventArgs args)
     {
-        _isOverflowing = _lastMeasuredContentHeight > finalSize.Height + 0.5;
-        var buttonHeight = _isOverflowing
-            ? Math.Min(DefaultScrollButtonHeight, finalSize.Height * 0.5)
-            : 0;
-
-        if (_isOverflowing && buttonHeight > 0)
+        if (args.Action == NotifyCollectionChangedAction.Reset)
         {
-            var viewportHeight = Math.Max(0, finalSize.Height - (buttonHeight * 2));
-            _scrollUpButton.Arrange(new Rect(0, 0, finalSize.Width, buttonHeight));
-            _scrollViewer.Arrange(new Rect(0, buttonHeight, finalSize.Width, viewportHeight));
-            _scrollDownButton.Arrange(new Rect(0, buttonHeight + viewportHeight, finalSize.Width, buttonHeight));
+            _savedOffset = 0;
+            _pendingRestore = false;
         }
-        else
+
+        if (_suspended || _itemsPanel is null)
+            return;
+        SyncItems();
+        UpdateScrollState();
+    }
+
+    private void SyncItems()
+    {
+        if (_suspended || _itemsPanel is not { } panel)
+            return;
+        var current = Items.ToArray();
+        var retained = new HashSet<UIElement>(current, ReferenceEqualityComparer.Instance);
+        panel.Children.BeginBatchUpdate();
+        try
         {
-            _scrollUpButton.Visibility = Visibility.Collapsed;
-            _scrollDownButton.Visibility = Visibility.Collapsed;
-            _scrollUpButton.Arrange(new Rect(0, 0, 0, 0));
-            _scrollViewer.Arrange(new Rect(0, 0, finalSize.Width, finalSize.Height));
-            _scrollDownButton.Arrange(new Rect(0, 0, 0, 0));
-            if (_scrollViewer.VerticalOffset > 0)
+            for (int index = panel.Children.Count - 1; index >= 0; index--)
+                if (!retained.Contains(panel.Children[index]))
+                    panel.Children.RemoveAt(index);
+            for (int index = 0; index < current.Length; index++)
             {
-                _scrollViewer.ScrollToVerticalOffset(0);
+                var item = current[index];
+                if (index < panel.Children.Count && ReferenceEquals(panel.Children[index], item))
+                    continue;
+                item.DetachFromVisualParent();
+                panel.Children.Insert(index, item);
             }
         }
-
-        UpdateScrollButtonState();
-        return finalSize;
-    }
-
-    private RepeatButton CreateScrollButton(int direction)
-    {
-        var button = new RepeatButton
+        finally
         {
-            Height = DefaultScrollButtonHeight,
-            MinWidth = 0,
-            MinHeight = 0,
-            Focusable = false,
-            Padding = new Thickness(0),
-            BorderThickness = new Thickness(0),
-            HorizontalContentAlignment = HorizontalAlignment.Center,
-            VerticalContentAlignment = VerticalAlignment.Center,
-            Background = ResolveButtonBackgroundBrush(),
-            Foreground = ResolveButtonForegroundBrush(),
-            CornerRadius = new CornerRadius(0)
-        };
-
-        ApplyLineButtonVisual(button, direction);
-        button.Click += (_, _) => ScrollBy(direction * ScrollStepPerClick);
-        return button;
-    }
-
-    private void OnScrollViewerScrollChanged(object sender, ScrollChangedEventArgs e)
-    {
-        UpdateScrollButtonState();
-    }
-
-    private void OnMouseWheelHandler(object sender, Input.MouseWheelEventArgs e)
-    {
-        var input = new MouseWheelScrollInput(e, 0, ScrollStepPerClick, remapShift: false);
-        if (!_isOverflowing || input.Vertical == 0)
-        {
-            return;
+            panel.Children.EndBatchUpdate();
         }
-
-        _scrollViewer.ScrollToVerticalOffset(_scrollViewer.VerticalOffset + input.Vertical);
-        // An overflowing popup owns vertical input at either edge so it cannot move
-        // the page behind the menu. The marker also avoids its preview/bubble double scroll.
-        input.MarkHandled(e, horizontal: false, vertical: true);
     }
 
+    private void UpdateScrollState()
+    {
+        if (_updatingState)
+            return;
+        _updatingState = true;
+        try
+        {
+            var viewer = _scrollViewer;
+            if (!_suspended && _pendingRestore && viewer is { ViewportHeight: > 0 })
+            {
+                var restore = _savedOffset;
+                _pendingRestore = false;
+                viewer.ScrollToVerticalOffset(restore);
+            }
+
+            bool overflow = !_suspended && Items is { Count: > 0 } && viewer is not null && ActualHeight > 0 && viewer.ExtentHeight > ActualHeight + 0.5;
+            if (!overflow && !_suspended && !_pendingRestore && viewer is { VerticalOffset: > 0 } && ActualHeight > 0)
+                viewer.ScrollToVerticalOffset(0);
+            double offset = viewer?.VerticalOffset ?? 0;
+            bool up = overflow && IsEnabled && offset > 0.5;
+            bool down = overflow && IsEnabled && viewer!.ScrollableHeight - offset > 0.5;
+            SetValue(IsOverflowingPropertyKey, overflow);
+            SetValue(CanScrollUpPropertyKey, up);
+            SetValue(CanScrollDownPropertyKey, down);
+            SetValue(EffectiveScrollButtonHeightPropertyKey, overflow ? Math.Min(ScrollButtonHeight, ActualHeight * 0.5) : 0.0);
+            SetValue(VerticalOffsetPropertyKey, offset);
+            if (!_pendingRestore && !_suspended)
+                _savedOffset = offset;
+            VisualStateManager.GoToState(this, !overflow ? "NoOverflow" : !up ? "AtStart" : !down ? "AtEnd" : "Scrolling", false);
+            VisualStateManager.GoToState(this, IsEnabled ? "Normal" : "Disabled", false);
+        }
+        finally
+        {
+            _updatingState = false;
+        }
+    }
+
+    protected override void OnIsEnabledChanged(bool oldValue, bool newValue)
+    {
+        base.OnIsEnabledChanged(oldValue, newValue);
+        UpdateScrollState();
+    }
+
+    private void OnScrollChanged(object sender, ScrollChangedEventArgs args) => UpdateScrollState();
+    private void OnScrollUp(object sender, RoutedEventArgs args) => ScrollBy(-ScrollStepPerClick);
+    private void OnScrollDown(object sender, RoutedEventArgs args) => ScrollBy(ScrollStepPerClick);
     private void ScrollBy(double delta)
     {
-        if (Math.Abs(delta) < double.Epsilon)
-        {
+        if (!_suspended && IsEnabled && IsOverflowing && double.IsFinite(delta))
+            _scrollViewer?.ScrollToVerticalOffset((_scrollViewer?.VerticalOffset ?? 0) + delta);
+    }
+
+    private void OnMouseWheelHandler(object sender, MouseWheelEventArgs args)
+    {
+        var input = new MouseWheelScrollInput(args, 0, ScrollStepPerClick, remapShift: false);
+        if (_suspended || !IsEnabled || !IsOverflowing || input.Vertical == 0 || _scrollViewer is null)
             return;
-        }
+        _scrollViewer.ScrollToVerticalOffset(_scrollViewer.VerticalOffset + input.Vertical);
+        input.MarkHandled(args, horizontal: false, vertical: true);
+    }
+}
 
-        _scrollViewer.ScrollToVerticalOffset(_scrollViewer.VerticalOffset + delta);
+/// <summary>Stable menu containers, with one reset notification for a batch.</summary>
+internal sealed class MenuPopupItemCollection : ObservableCollection<UIElement>
+{
+    private int _batchDepth;
+    private bool _pendingChange;
+    public void BeginBatchUpdate() => _batchDepth++;
+    public void EndBatchUpdate()
+    {
+        if (_batchDepth == 0)
+            throw new InvalidOperationException("No menu item update batch is active.");
+        if (--_batchDepth == 0 && _pendingChange)
+        {
+            _pendingChange = false;
+            base.OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
+        }
     }
 
-    private void UpdateScrollButtonState()
+    protected override void OnCollectionChanged(NotifyCollectionChangedEventArgs args)
     {
-        if (!_isOverflowing || !_scrollViewer.CanScrollVertically)
-        {
-            _scrollUpButton.Visibility = Visibility.Collapsed;
-            _scrollDownButton.Visibility = Visibility.Collapsed;
-            _scrollUpButton.IsEnabled = false;
-            _scrollDownButton.IsEnabled = false;
-            return;
-        }
-
-        var canScrollUp = _scrollViewer.VerticalOffset > 0.5;
-        var canScrollDown = _scrollViewer.VerticalOffset < _scrollViewer.ScrollableHeight - 0.5;
-
-        // Keep both arrow rows visible for stable menu layout. Disabled arrow indicates edge.
-        _scrollUpButton.Visibility = Visibility.Visible;
-        _scrollDownButton.Visibility = Visibility.Visible;
-        _scrollUpButton.IsEnabled = canScrollUp;
-        _scrollDownButton.IsEnabled = canScrollDown;
+        if (_batchDepth > 0)
+            _pendingChange = true;
+        else
+            base.OnCollectionChanged(args);
     }
 
-    private void ApplyLineButtonVisual(RepeatButton button, int direction)
+    protected override void InsertItem(int index, UIElement item)
     {
-        button.Tag = direction < 0 ? "Up" : "Down";
-        if (ResolveStyleResource(LineButtonStyleKey) is Style style)
-        {
-            button.Style = style;
-            button.Content = null;
-            // Let style setters drive visuals.
-            button.Background = null;
-            button.BorderBrush = null;
-            return;
-        }
-
-        button.Content = direction < 0 ? "\uE70E" : "\uE70D";
-        button.FontFamily = new FontFamily("Segoe MDL2 Assets");
-        button.FontSize = 10;
+        Validate(item, -1);
+        base.InsertItem(index, item);
     }
 
-    private Style? ResolveStyleResource(object resourceKey)
+    protected override void SetItem(int index, UIElement item)
     {
-        if (TryFindResource(resourceKey) is Style localStyle)
-            return localStyle;
-
-        var app = Jalium.UI.Application.Current;
-        if (app?.Resources != null &&
-            app.Resources.TryGetValue(resourceKey, out var resource) &&
-            resource is Style appStyle)
-        {
-            return appStyle;
-        }
-
-        return null;
+        Validate(item, index);
+        base.SetItem(index, item);
     }
 
-    private Brush ResolveButtonBackgroundBrush()
+    private void Validate(UIElement item, int ignoreIndex)
     {
-        if (TryFindResource("OnePopupBackground") is Brush popupBackground)
-        {
-            return popupBackground;
-        }
-
-        if (TryFindResource("MenuFlyoutPresenterBackground") is Brush menuBackground)
-        {
-            return menuBackground;
-        }
-
-        return s_buttonBackgroundFallback;
+        ArgumentNullException.ThrowIfNull(item);
+        for (int index = 0; index < Count; index++)
+            if (index != ignoreIndex && ReferenceEquals(this[index], item))
+                throw new ArgumentException("A menu container cannot appear twice in the same popup.", nameof(item));
     }
+}
 
-    private Brush ResolveButtonForegroundBrush()
+/// <summary>Reports natural popup height while keeping an active scrolling viewport finite.</summary>
+internal sealed class MenuPopupScrollViewer : ScrollViewer
+{
+    protected override Size MeasureOverride(Size availableSize)
     {
-        if (TryFindResource("MenuFlyoutItemForeground") is Brush menuFlyoutForeground)
+        if (double.IsPositiveInfinity(availableSize.Height) && ActualHeight > 0)
         {
-            return menuFlyoutForeground;
+            var measured = base.MeasureOverride(new Size(availableSize.Width, ActualHeight));
+            return new Size(measured.Width, Math.Max(0, ExtentHeight));
         }
 
-        if (TryFindResource("MenuItemForeground") is Brush menuItemForeground)
-        {
-            return menuItemForeground;
-        }
-
-        return s_buttonForegroundFallback;
+        return base.MeasureOverride(availableSize);
     }
 }

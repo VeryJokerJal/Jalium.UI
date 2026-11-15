@@ -1,0 +1,53 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:local="clr-namespace:Jalium.UI.LinuxDemo"
+                    x:Class="Jalium.UI.LinuxDemo.Themes.LinuxDemoTheme">
+    <Style x:Key="LinuxDemo.Window" TargetType="Window"><Setter Property="Background" Value="#181A20" /></Style>
+    <Style x:Key="LinuxDemo.Heading" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="12" /><Setter Property="Foreground" Value="#6EA0FF" /><Setter Property="Margin" Value="0,4,0,6" /><Setter Property="TextWrapping" Value="Wrap" /><Setter Property="Focusable" Value="False" />
+    </Style>
+    <Style x:Key="LinuxDemo.Action" TargetType="Button"><Setter Property="MinWidth" Value="80" /><Setter Property="MinHeight" Value="32" /><Setter Property="Margin" Value="0,0,8,6" /></Style>
+    <Style TargetType="local:LinuxDemoSurface">
+        <Setter Property="Foreground" Value="White" />
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="local:LinuxDemoSurface">
+            <Grid>
+                <VisualStateManager.VisualStateGroups><VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Normal" /><VisualState x:Name="Disabled"><VisualState.Setters><Setter Property="Opacity" Value="0.5" /></VisualState.Setters></VisualState></VisualStateGroup></VisualStateManager.VisualStateGroups>
+                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                <Grid.ContextMenu><ContextMenu><MenuItem x:Name="PART_About" Header="关于 Jalium.UI on Linux" /><MenuItem x:Name="PART_Quit" Header="退出" /></ContextMenu></Grid.ContextMenu>
+                <TitleBar x:Name="PART_TitleBar" Title="{TemplateBinding Title}" Height="36" Background="#20232C" Foreground="#C8D0DC" ShowMinimizeButton="False" ShowMaximizeButton="False" IsShowIcon="False" />
+                <ScrollViewer x:Name="PART_ScrollViewer" Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto" CanContentScroll="False" Padding="16,12,0,8">
+                    <WrapPanel>
+                        <StackPanel Width="320" Margin="0,0,16,0">
+                            <TextBlock Text="文本与输入法 (IME)" Style="{StaticResource LinuxDemo.Heading}" />
+                            <TextBlock Text="Hello, Linux 桌面! Grüße, Привет, こんにちは" FontSize="15" Foreground="{TemplateBinding Foreground}" TextWrapping="Wrap" Margin="0,0,0,6" Focusable="False" />
+                            <TextBox x:Name="PART_Text" Text="{Binding Text, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}" Margin="0,0,0,12" MinHeight="30" AutomationProperties.Name="文本与输入法" />
+                            <TextBlock Text="按钮与剪贴板" Style="{StaticResource LinuxDemo.Heading}" />
+                            <WrapPanel Margin="0,0,0,6">
+                                <Button x:Name="PART_Click" Content="Click me" MinWidth="110" Style="{StaticResource LinuxDemo.Action}" ToolTip="一个 ToolTip（overlay 弹窗）" />
+                                <Button x:Name="PART_Copy" Content="复制文本" MinWidth="110" Style="{StaticResource LinuxDemo.Action}" />
+                                <Button x:Name="PART_Paste" Content="粘贴" Style="{StaticResource LinuxDemo.Action}" />
+                            </WrapPanel>
+                            <TextBlock Text="选择控件（弹窗）" Style="{StaticResource LinuxDemo.Heading}" />
+                            <ComboBox x:Name="PART_Backends" ItemsSource="{TemplateBinding Backends}" SelectedIndex="{Binding SelectedBackendIndex, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}" Margin="0,0,0,8" AutomationProperties.Name="窗口系统与渲染后端" />
+                            <WrapPanel Margin="0,0,0,12">
+                                <CheckBox x:Name="PART_Feature" Content="启用特性" IsChecked="{Binding FeatureEnabled, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}" />
+                                <RadioButton Content="A" GroupName="{Binding RadioGroupName, RelativeSource={RelativeSource TemplatedParent}}" IsChecked="True" Margin="16,0,0,0" />
+                                <RadioButton Content="B" GroupName="{Binding RadioGroupName, RelativeSource={RelativeSource TemplatedParent}}" Margin="8,0,0,0" />
+                            </WrapPanel>
+                        </StackPanel>
+                        <StackPanel Width="320" Margin="0,0,16,0">
+                            <TextBlock Text="Slider 与进度" Style="{StaticResource LinuxDemo.Heading}" />
+                            <Slider x:Name="PART_Slider" Minimum="0" Maximum="100" Value="{Binding SliderValue, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}" AutomationProperties.Name="进度" />
+                            <ProgressBar x:Name="PART_Progress" Minimum="0" Maximum="100" Value="{TemplateBinding SliderValue}" MinHeight="8" Margin="0,6,0,12" />
+                            <TextBlock Text="列表" Style="{StaticResource LinuxDemo.Heading}" />
+                            <ListBox x:Name="PART_Integrations" ItemsSource="{TemplateBinding Integrations}" SelectedItem="{Binding SelectedIntegration, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}" MaxHeight="140" Margin="0,0,0,12" AutomationProperties.Name="桌面集成能力" />
+                            <TextBlock Text="桌面集成" Style="{StaticResource LinuxDemo.Heading}" />
+                            <WrapPanel><Button x:Name="PART_OpenFile" Content="打开文件…" MinWidth="110" Style="{StaticResource LinuxDemo.Action}" /><Button x:Name="PART_Message" Content="消息框" MinWidth="90" Style="{StaticResource LinuxDemo.Action}" /></WrapPanel>
+                        </StackPanel>
+                    </WrapPanel>
+                </ScrollViewer>
+                <Border Grid.Row="2" Padding="12,6,12,8"><TextBlock Text="{TemplateBinding StatusText}" FontSize="12" Foreground="#A6ADC8" TextWrapping="Wrap" Focusable="False" /></Border>
+            </Grid>
+        </ControlTemplate></Setter.Value></Setter>
+    </Style>
+</ResourceDictionary>

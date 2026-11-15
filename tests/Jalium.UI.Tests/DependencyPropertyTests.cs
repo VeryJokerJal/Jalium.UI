@@ -17,8 +17,7 @@ public class DependencyPropertyTests
         string[] coldFields =
         {
             "_valueStore",
-            "_bindings",
-            "_animatedValues"
+            "_optionalState"
         };
 
         foreach (var fieldName in coldFields)

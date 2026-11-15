@@ -15,13 +15,19 @@ internal static partial class CssCoreProperties
     {
         RegisterShorthand("all", static (ref CssTokenReader reader, CssCompileContext context, List<CssCompiledDeclaration> output) => false);
         RegisterSizes();
+        CssSizingPresentation.Register();
         RegisterBoxShorthands();
         RegisterVisibility();
         RegisterMisc();
         RegisterBackgroundAndBorders();
+        CssBackgroundProperties.Register();
+        RegisterBorderImage();
+        RegisterMasking();
+        CssCompositingProperties.Register();
         RegisterImageObject();
         RegisterTextAndFonts();
         RegisterTextDecoration();
+        RegisterTextEmphasis();
         RegisterCaretColor();
         RegisterCaretAnimation();
         RegisterCaretShape();
@@ -33,6 +39,19 @@ internal static partial class CssCoreProperties
         RegisterCssLayout();
         RegisterClipPath();
         CssUserSelectProperties.Register();
+        CssFragmentationProperties.Register();
+        CssLineClampProperties.Register();
+        CssTableProperties.Register();
+        RegisterMultiColumns();
+        CssWritingModeProperties.Register();
+        CssAnchorPositioning.Register();
+        CssHighlightRegistry.Register();
+        CssScrollAndViewTimelines.Register();
+        CssMotionPath.Register();
+        CssViewTransitions.Register();
+        CssScrollProperties.Register();
+        CssContainmentProperties.Register();
+        CssNativeUiProperties.Register();
         RegisterUnsupportedPlaceholders();
     }
 
@@ -99,6 +118,13 @@ internal static partial class CssCoreProperties
             Kind = CssPropertyKind.Longhand,
             Parse = (ref CssTokenReader reader, CssCompileContext ctx_) =>
             {
+                var sizingProbe = reader;
+                if (CssSizingValue.TryRead(ref sizingProbe, out var sizing,
+                    allowAuto: field is not (CssLayoutSlotField.MaxWidth or CssLayoutSlotField.MaxHeight)) && sizingProbe.AtEnd)
+                {
+                    reader = sizingProbe;
+                    return new CssSizingLayoutValue(field, sizing!, property, sentinel);
+                }
                 if (reader.TryReadIdent(out var ident))
                 {
                     if (!ident.Equals(keyword, StringComparison.OrdinalIgnoreCase) || !reader.AtEnd)
@@ -111,6 +137,17 @@ internal static partial class CssCoreProperties
                 return ParseLengthValue(ref reader, name, property, field, sentinel);
             },
         });
+    }
+
+    private sealed class CssSizingLayoutValue(CssLayoutSlotField field, CssSizingValue value,
+        DependencyProperty property, object sentinel) : CssCompiledValue
+    {
+        public override bool TryApply(in CssApplyContext context, ICssSetterSink sink)
+        {
+            var computed = value.Compute(context.Lengths);
+            if (!computed.IsSet) return false;
+            context.Slots.SetLayoutLength(field, computed); sink.Set(property, sentinel); return true;
+        }
     }
 
     /// <summary>Absolute lengths convert at compile time; em/rem defer; % becomes layout state + a DP sentinel.</summary>
@@ -694,9 +731,6 @@ internal static partial class CssCoreProperties
             if (ident.Equals("fixed", StringComparison.OrdinalIgnoreCase) ||
                 ident.Equals("sticky", StringComparison.OrdinalIgnoreCase))
             {
-                CssDiagnostics.Report(
-                    "position", CssDiagnosticReason.LossyConversion, null,
-                    $"'{ident.ToString()}' positioning is not supported; treated as static");
                 var computed = ident.Equals("fixed", StringComparison.OrdinalIgnoreCase)
                     ? CssPositionKeyword.Fixed : CssPositionKeyword.Sticky;
                 return new CssSlotActionValue(slots => slots.SetPosition(computed));
@@ -804,6 +838,9 @@ internal static partial class CssCoreProperties
         Unsupported("flex-grow", "see 'flex'");
         Unsupported("flex-shrink", "see 'flex'");
         Unsupported("flex-basis", "see 'flex'");
+        Unsupported("flow-into", "CSS Regions flow routing is isolated in G0 and not mixed with pagination");
+        Unsupported("flow-from", "CSS Regions flow routing is isolated in G0 and not mixed with pagination");
+        Unsupported("region-fragment", "CSS Regions fragmentation is isolated in G0 and not mixed with pagination");
     }
 
     private static void Unsupported(string name, string reason)

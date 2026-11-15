@@ -267,6 +267,49 @@ public sealed unsafe class MacOSCustomElementAccessibilityTests
         Assert.Equal(groupId, Assert.Single(fixture.Children(1)));
     }
 
+    [Fact]
+    public void FocusabilityRevalidationRunsBeforeRepostedRenderWork()
+    {
+        using var fixture = new Fixture();
+        var button = new Button { Content = "后续动作" };
+        var group = new Border { Child = button };
+        fixture.SetContent(group);
+        ulong buttonId = Assert.Single(fixture.Children(1));
+        group.Focusable = true;
+        ulong groupId = Assert.Single(fixture.Children(1));
+        Assert.NotEqual(buttonId, groupId);
+        Assert.True(fixture.Action(groupId, MacOSAXAction.SetFocus));
+        Assert.Equal(groupId, fixture.Request(1, MacOSAXOperation.Focus).ResultId);
+
+        var dispatcher = Dispatcher.CurrentDispatcher;
+        var pending = new List<Jalium.UI.Threading.DispatcherOperation>();
+        var renderPasses = 0;
+        Action render = null!;
+        render = () =>
+        {
+            if (++renderPasses < 32)
+                pending.Add(dispatcher.BeginInvoke(Jalium.UI.Threading.DispatcherPriority.Render, render));
+        };
+        pending.Add(dispatcher.BeginInvoke(Jalium.UI.Threading.DispatcherPriority.Render, render));
+        try
+        {
+            group.Focusable = false;
+            dispatcher.ProcessQueue();
+            Assert.False(group.IsKeyboardFocused);
+            Assert.Equal(buttonId, Assert.Single(fixture.Children(1)));
+            Assert.False(fixture.Action(groupId, MacOSAXAction.SetFocus));
+            Assert.NotEqual(groupId, fixture.Request(1, MacOSAXOperation.Focus).ResultId);
+            group.Focusable = true;
+            Assert.Equal(groupId, Assert.Single(fixture.Children(1)));
+            Assert.Equal(1, renderPasses);
+        }
+        finally
+        {
+            foreach (var operation in pending)
+                operation.Abort();
+        }
+    }
+
     [Theory]
     [InlineData(Visibility.Hidden)]
     [InlineData(Visibility.Collapsed)]
@@ -394,24 +437,8 @@ public sealed unsafe class MacOSCustomElementAccessibilityTests
         }
         internal List<ulong> Children(ulong id)
         {
-            var request = Request(id, MacOSAXOperation.BeginChildren);
-            try
-            {
-                var ids = new ulong[request.ChildCount];
-                fixed (ulong* buffer = ids)
-                {
-                    request.Operation = MacOSAXOperation.ReadChildren;
-                    request.Text = (char*)buffer;
-                    request.TextCapacity = ids.Length;
-                    Assert.True(_tree.Handle(ref request));
-                }
-                return ids.ToList();
-            }
-            finally
-            {
-                request.Operation = MacOSAXOperation.ReleaseChildren;
-                Assert.True(_tree.Handle(ref request));
-            }
+            int count = Request(id, MacOSAXOperation.Info).ChildCount;
+            return Enumerable.Range(0, count).Select(index => Request(id, MacOSAXOperation.Child, index).ResultId).ToList();
         }
         internal string Text(ulong id, MacOSAXString property)
         {
@@ -423,6 +450,6 @@ public sealed unsafe class MacOSCustomElementAccessibilityTests
         {
             var request = new MacOSAXRequest { NodeId = id, Operation = MacOSAXOperation.Action, Index = (int)action }; return _tree.Handle(ref request);
         }
-        public void Dispose() { _tree.Dispose(); Keyboard.Focus(null); Window.Close(); }
+        public void Dispose() { Keyboard.Focus(null); Window.Close(); }
     }
 }

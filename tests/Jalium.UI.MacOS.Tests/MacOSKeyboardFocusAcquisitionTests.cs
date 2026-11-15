@@ -76,12 +76,21 @@ public sealed partial class MacOSAccessibilityFocusHostTests
     public void OrdinaryAcquisitionSuppressesDefaultRestorationOnlyForItsCall(string kind)
     {
         if (!OperatingSystem.IsMacOS()) return;
-        using var f = new FocusPlatformHost(kind); using var foreign = new Host("owner");
-        FocusManager.SetFocusedElement(f.Inner.Owner, f.Inner.Before);
+        using var f = new ResponderHost(kind); using var foreign = new Host("owner");
+        Assert.True(f.Inner.Other.Focus());
+        f.Send(false); Assert.Null(Keyboard.FocusedElement);
+        int callsBeforeRequest = f.Native.Calls;
         f.Native.Acquire = () =>
-        { typeof(Window).GetMethod("RestoreMacOSKeyboardFocus", Private)!.Invoke(f.Inner.Source, null); return true; };
+        {
+            Assert.Equal(1, AcquisitionDepth(f.Inner.Owner));
+            f.Send(true); Assert.Null(Keyboard.FocusedElement);
+            return true;
+        };
         Assert.True(f.Inner.Target.Focus()); Assert.Same(f.Inner.Target, Keyboard.FocusedElement);
-        Assert.Equal(1, f.Native.Calls); Assert.Equal(0, AcquisitionDepth(f.Inner.Owner));
+        Assert.Equal(1, f.Native.Calls - callsBeforeRequest); Assert.Equal(0, AcquisitionDepth(f.Inner.Owner));
+        f.Send(false); Assert.Null(Keyboard.FocusedElement); f.Send(true);
+        Assert.Same(f.Inner.Target, Keyboard.FocusedElement);
+        Assert.Equal(2, f.Native.Calls - callsBeforeRequest); Assert.Equal(0, AcquisitionDepth(f.Inner.Owner));
     }
 
     [Fact]

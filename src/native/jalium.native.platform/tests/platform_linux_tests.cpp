@@ -6,6 +6,7 @@
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <X11/keysym.h>
 #include <poll.h>
 #include <unistd.h>
 #include <dlfcn.h>
@@ -1803,6 +1804,10 @@ int RunWaylandSmoke(bool testVulkan)
 {
     Check(jalium_platform_get_current() == JALIUM_PLATFORM_LINUX_WAYLAND,
           "forced Wayland selects the Wayland backend");
+    Check(jalium_test_keysym_to_virtual_key(XK_Tab) == 0x09 &&
+          jalium_test_keysym_to_virtual_key(XK_ISO_Left_Tab) == 0x09 &&
+          jalium_test_keysym_to_virtual_key(XK_KP_Tab) == 0x09,
+          "normal, reverse and keypad Tab share the navigation virtual key");
     TestDragEventAbi();
     TestExternalTransferPayloadLimit();
     TestImeAndShellProtocolAbi();
@@ -1875,8 +1880,8 @@ int RunWaylandSmoke(bool testVulkan)
     int32_t menuY = 0;
     uint32_t menuSerial = 0;
     Check(jalium_window_show_system_menu(window, 37, 53) ==
-              JALIUM_ERROR_NOT_SUPPORTED,
-          "Wayland system menu rejects requests without a user-input serial");
+              JALIUM_ERROR_INVALID_STATE,
+          "Wayland system menu rejects an unshown window before consuming input");
     Check(jalium_test_wayland_get_last_system_menu(
               window, &menuX, &menuY, &menuSerial) ==
               JALIUM_ERROR_INVALID_STATE,
@@ -2044,6 +2049,8 @@ int RunWaylandSmoke(bool testVulkan)
           "xdg_surface configure is acknowledged and schedules paint");
     Check(jalium_wayland_surface_is_ready(surface.handle1) == 1,
           "Wayland buffer commits become ready only after configure ack");
+    Check(jalium_window_show_system_menu(window, 37, 53) == JALIUM_ERROR_NOT_SUPPORTED,
+          "configured Wayland system menu still requires input belonging to this window");
 
     int32_t logicalWidth = 0;
     int32_t logicalHeight = 0;
@@ -2411,11 +2418,27 @@ int RunWaylandSmoke(bool testVulkan)
     Check(callbacks.resizeCalls.load(std::memory_order_acquire) > 0,
           "Wayland logical resize emits resize event");
     jalium_window_set_state(window, JALIUM_WINDOW_STATE_MAXIMIZED);
+    Check(jalium_window_get_state(window) == JALIUM_WINDOW_STATE_NORMAL,
+          "Wayland maximize request waits for compositor confirmation");
+    for (int attempt = 0; attempt < 500 &&
+         jalium_window_get_state(window) != JALIUM_WINDOW_STATE_MAXIMIZED; ++attempt)
+    {
+        (void)jalium_platform_poll_events();
+        std::this_thread::sleep_for(2ms);
+    }
     Check(jalium_window_get_state(window) == JALIUM_WINDOW_STATE_MAXIMIZED,
-          "Wayland state request is observable immediately");
+          "Wayland compositor confirms maximized state");
     jalium_window_set_state(window, JALIUM_WINDOW_STATE_FULLSCREEN);
+    Check(jalium_window_get_state(window) == JALIUM_WINDOW_STATE_MAXIMIZED,
+          "Wayland fullscreen request preserves the last confirmed state");
+    for (int attempt = 0; attempt < 500 &&
+         jalium_window_get_state(window) != JALIUM_WINDOW_STATE_FULLSCREEN; ++attempt)
+    {
+        (void)jalium_platform_poll_events();
+        std::this_thread::sleep_for(2ms);
+    }
     Check(jalium_window_get_state(window) == JALIUM_WINDOW_STATE_FULLSCREEN,
-          "Wayland fullscreen is preserved instead of downgraded to maximized");
+          "Wayland compositor confirms fullscreen without downgrading it");
     jalium_window_hide(window);
     Check(jalium_wayland_surface_is_ready(surface.handle1) == 0,
           "hidden Wayland surface is not ready for buffer commits");

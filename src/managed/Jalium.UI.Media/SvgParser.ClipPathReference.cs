@@ -30,6 +30,7 @@ internal static partial class SvgParser
                 return empty;
             }
 
+            using var styleScope = t_styles?.Root == root ? null : EnterStyles(new SvgCssStyles(root, viewport));
             var oldWidth = t_viewportWidth;
             var oldHeight = t_viewportHeight;
             t_viewportWidth = objectBoundingBox ? 1 : viewport.Width;
@@ -97,7 +98,7 @@ internal static partial class SvgParser
         var parts = new List<PathGeometry>();
         foreach (var child in parent.Elements())
         {
-            if (child.Name.LocalName is "title" or "desc" or "metadata" or
+            if (child.Name.LocalName is "title" or "desc" or "metadata" or "style" or
                 "animate" or "animateColor" or "animateMotion" or "animateTransform" or
                 "set" or "script") continue;
             if (!TryParseClipNode(child, root, active, out var part)) return false;

@@ -9,11 +9,15 @@ public partial class TextBlock
     private readonly List<WordSpacingGap> _wordSpacingGaps = [];
     private double[] _wordSpacingPrefix = [];
     private bool _hasWordSpacing;
+    private bool _usesWordSpacingShaping;
+    private DependencyObject? _wordSpacingStyleSource;
 
     private void RebuildWordSpacing()
     {
         _wordSpacingGaps.Clear();
         _hasWordSpacing = false;
+        _usesWordSpacingShaping = HasWordSpacingSource(this) ||
+            GetInlineTextRanges().Any(range => HasWordSpacingSource(range.Run));
         var blockValue = (CssLayoutLength)GetValue(CssFlowProperties.WordSpacingProperty)!;
         var blockSpacing = blockValue.Resolve(FontSize, 0);
         var ranges = GetInlineTextRanges();
@@ -95,6 +99,39 @@ public partial class TextBlock
         foreach (var range in GetInlineTextRanges())
             if (HasAuthoredFlowValue(range.Run, CssFlowProperties.WordSpacingProperty))
                 return true;
+        return false;
+    }
+
+    private double ComputedWordSpacingAt(int position)
+    {
+        foreach (var range in GetInlineTextRanges())
+            if (range.Start <= position && position < range.End)
+                return ((CssLayoutLength)range.Run.GetValue(CssFlowProperties.WordSpacingProperty)!)
+                    .Resolve(GetRunFontSize(range.Run), 0);
+        return ((CssLayoutLength)GetValue(CssFlowProperties.WordSpacingProperty)!).Resolve(FontSize, 0);
+    }
+
+    private static bool HasWordSpacingSource(DependencyObject owner)
+    {
+        if (owner is TextBlock { _wordSpacingStyleSource: { } original })
+            return HasWordSpacingSource(original);
+        if (owner is InlineSourceText projected)
+            return HasWordSpacingSource(projected.SourceOwner) || projected.SourceOwner.GetInlineTextRanges()
+                .Any(range => range.Start <= projected.SourceOffset && projected.SourceOffset < range.End && HasWordSpacingSource(range.Run));
+        // Inherited can describe a chain containing only metadata defaults.
+        // Follow that chain to its provider before treating zero as authored;
+        // generated markers and document projections also inherit these defaults.
+        var property = CssFlowProperties.WordSpacingProperty;
+        for (var node = CssNode.Get(owner); node is not null; node = node.FrameworkParent)
+        {
+            // View boxes mirror all computed values, including defaults. Their
+            // original document node supplies the actual authoring provenance.
+            if (node.Target is ICssStyledBox styled && !ReferenceEquals(styled.StyleSource, node.Target))
+                return HasWordSpacingSource(styled.StyleSource);
+            if (node.Target.HasAnimatedValue(property) || node.Target.HasCssAnimatedValue(property)) return true;
+            var source = node.Target.GetUncoercedBaseValueInternal(property).source;
+            if (source != BaseValueSource.Inherited) return source != BaseValueSource.Default;
+        }
         return false;
     }
 

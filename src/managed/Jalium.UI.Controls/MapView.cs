@@ -9,7 +9,7 @@ namespace Jalium.UI.Controls;
 /// A map control that displays slippy-map tiles with support for markers, polylines,
 /// polygons, panning, zooming, and custom tile sources.
 /// </summary>
-public class MapView : Control
+public partial class MapView : Control
 {
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
@@ -22,25 +22,18 @@ public class MapView : Control
     private static readonly SolidColorBrush s_defaultPolylineBrush = new(Color.FromRgb(50, 120, 220));
     private static readonly SolidColorBrush s_defaultPolygonFill = new(Color.FromArgb(80, 50, 120, 220));
     private static readonly SolidColorBrush s_defaultPolygonStroke = new(Color.FromRgb(50, 120, 220));
-    private static readonly SolidColorBrush s_scaleBarBrush = new(Color.FromRgb(40, 40, 40));
     private static readonly SolidColorBrush s_scaleBarBackground = new(Color.FromArgb(180, 255, 255, 255));
-    private static readonly SolidColorBrush s_attributionForeground = new(Color.FromRgb(80, 80, 80));
     private static readonly SolidColorBrush s_attributionBackground = new(Color.FromArgb(180, 255, 255, 255));
-    private static readonly SolidColorBrush s_zoomButtonBackground = new(Color.FromArgb(220, 255, 255, 255));
-    private static readonly SolidColorBrush s_zoomButtonForeground = new(Color.FromRgb(40, 40, 40));
-    private static readonly SolidColorBrush s_mapBackground = new(Color.FromRgb(228, 232, 238));
     private static readonly SolidColorBrush s_markerLabelForeground = new(Color.FromRgb(30, 30, 30));
 
     // 标记描边和缩放按钮描边的画刷与线宽都是编译期常量，而标记那支画笔原本在
     // 逐标记的循环里新建 —— 平移拖动时每次指针移动都要重来一遍整个循环。
     private static readonly Pen s_markerOutlinePen = new(s_scaleBarBackground, 1.5);
-    private static readonly Pen s_zoomButtonBorderPen = new(s_scaleBarBrush, 0.5);
 
     // 折线/多边形的描边画刷来自各自的模型对象，同一帧内多数共用同一支默认画刷，
     // 单槽缓存能吃掉绝大多数分配；画刷真的换了就退回新建。
     private RenderPenCache _polylinePen;
     private RenderPenCache _polygonPen;
-    private RenderPenCache _chromeBorderPen;
 
     #region Dependency Properties
 
@@ -348,9 +341,6 @@ public class MapView : Control
     private GeoPoint _dragStartCenter;
 
     // Hit-test rectangles for the on-rendered zoom buttons. Updated by
-    // DrawZoomControls each frame and read by OnMouseDownHandler.
-    private Rect _zoomInButtonRect;
-    private Rect _zoomOutButtonRect;
 
     #endregion
 
@@ -362,6 +352,7 @@ public class MapView : Control
     public MapView()
     {
         Focusable = true;
+        InitializeMapTemplateBehavior();
         ClipToBounds = true;
 
         Markers = new MapMarkerCollection();
@@ -375,12 +366,6 @@ public class MapView : Control
     }
 
     #endregion
-
-    // MapView is intentionally template-less: every visual element (tiles,
-    // markers, polylines, polygons, scale bar, attribution, zoom buttons)
-    // is drawn directly in OnRender. Visual children would render on top of
-    // OnRender's output and occlude the map surface, so a ControlTemplate
-    // is deliberately omitted from Maps.jalxaml.
 
     #region Public Methods
 
@@ -457,32 +442,12 @@ public class MapView : Control
 
     private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
-        if (!IsEnabled) return;
+        if (!IsEnabled || IsMapOverlaySource(e.OriginalSource)) return;
 
         if (e.ChangedButton == MouseButton.Left)
         {
             Focus();
             var position = e.GetPosition(this);
-
-            // Hit-test the zoom buttons that OnRender draws as part of the
-            // map overlay. They are not real Visual children, so input must
-            // be dispatched manually from the rectangles cached during the
-            // last DrawZoomControls pass.
-            if (ShowZoomControls)
-            {
-                if (_zoomInButtonRect.Contains(position))
-                {
-                    ZoomIn();
-                    e.Handled = true;
-                    return;
-                }
-                if (_zoomOutButtonRect.Contains(position))
-                {
-                    ZoomOut();
-                    e.Handled = true;
-                    return;
-                }
-            }
 
             if (IsPanEnabled)
             {
@@ -490,6 +455,7 @@ public class MapView : Control
                 _isDragging = true;
                 _dragStart = position;
                 _dragStartCenter = Center;
+                RefreshMapPresentation();
             }
 
             e.Handled = true;
@@ -506,8 +472,10 @@ public class MapView : Control
                 ? Math.Sqrt(Math.Pow(position.X - _dragStart.X, 2) + Math.Pow(position.Y - _dragStart.Y, 2))
                 : 0;
 
+            if(IsMapOverlaySource(e.OriginalSource))return;
             _isDragging = false;
             ReleaseMouseCapture();
+            RefreshMapPresentation();
 
             // If the mouse didn't move much, treat it as a click
             if (wasDragging && dragDistance < 3)
@@ -539,13 +507,11 @@ public class MapView : Control
     {
         if (!IsEnabled || !IsZoomEnabled) return;
 
-        if (!double.IsFinite(e.VerticalDelta) || e.VerticalDelta == 0) return;
-
         var position = e.GetPosition(this);
         var geoBefore = ScreenToGeo(position);
 
         // Zoom in or out
-        double delta = e.VerticalDelta > 0 ? 1 : -1;
+        double delta = e.Delta > 0 ? 1 : -1;
         double newZoom = Math.Clamp(ZoomLevel + delta, MinZoomLevel, MaxZoomLevel);
 
         if (Math.Abs(newZoom - ZoomLevel) > 0.001)
@@ -573,6 +539,7 @@ public class MapView : Control
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
+        base.MeasureOverride(availableSize);
         // MapView takes all available space
         double w = double.IsInfinity(availableSize.Width) ? 400 : availableSize.Width;
         double h = double.IsInfinity(availableSize.Height) ? 300 : availableSize.Height;
@@ -581,126 +548,23 @@ public class MapView : Control
 
     #endregion
 
+    protected override Size ArrangeOverride(Size finalSize){base.ArrangeOverride(finalSize);return finalSize;}
+
     #region Rendering
 
     /// <inheritdoc />
     protected override void OnRender(DrawingContext drawingContext)
     {
-        var dc = drawingContext;
-
-        var bounds = new Rect(RenderSize);
-        if (bounds.Width <= 0 || bounds.Height <= 0) return;
-
-        var cornerRadius = CornerRadius;
-        var borderThickness = BorderThickness;
-        var borderBrush = BorderBrush;
-        bool hasCorners = cornerRadius.TopLeft > 0 || cornerRadius.TopRight > 0
-            || cornerRadius.BottomLeft > 0 || cornerRadius.BottomRight > 0;
-
-        // Clip the map surface to the (possibly rounded) control bounds so
-        // tiles/markers don't leak past the styled border.
-        if (hasCorners)
-        {
-            dc.PushClip(CreateRoundedClip(bounds, cornerRadius));
-        }
-        else
-        {
-            dc.PushClip(new RectangleGeometry(bounds));
-        }
-
-        // Draw background — Style sets Background to SurfaceBackground, so
-        // honour it; only fall back to the neutral map colour when nothing
-        // is supplied (e.g. when MapView is used outside any theme).
-        var bgBrush = Background ?? s_mapBackground;
-        dc.DrawRectangle(bgBrush, null, bounds);
-
-        // Draw tiles
-        DrawTiles(dc, bounds);
-
-        // Draw polygons
-        DrawPolygons(dc, bounds);
-
-        // Draw polylines
-        DrawPolylines(dc, bounds);
-
-        // Draw markers
-        DrawMarkers(dc, bounds);
-
-        // Draw scale bar
-        if (ShowScaleBar)
-            DrawScaleBar(dc, bounds);
-
-        // Draw attribution
-        if (ShowAttribution)
-            DrawAttribution(dc, bounds);
-
-        // Draw zoom controls
-        if (ShowZoomControls)
-            DrawZoomControls(dc, bounds);
-
-        dc.Pop(); // clip
-
-        // Draw the styled border on top of the map content so it's not
-        // overwritten by tile pixels along the edges.
-        if (borderBrush != null && (borderThickness.Left > 0 || borderThickness.Top > 0
-            || borderThickness.Right > 0 || borderThickness.Bottom > 0))
-        {
-            DrawBorder(dc, bounds, borderBrush, borderThickness, cornerRadius);
-        }
+        base.OnRender(drawingContext);
+        if(TemplateRootInternal is null)RenderMapSurface(drawingContext);
     }
 
-    private static Geometry CreateRoundedClip(Rect bounds, CornerRadius cornerRadius)
+    internal void RenderMapSurface(DrawingContext dc)
     {
-        if (cornerRadius.TopLeft == cornerRadius.TopRight
-            && cornerRadius.TopLeft == cornerRadius.BottomLeft
-            && cornerRadius.TopLeft == cornerRadius.BottomRight)
-        {
-            return new RectangleGeometry(bounds, cornerRadius.TopLeft, cornerRadius.TopLeft);
-        }
-        // Uneven corners — fall back to a rectangle clip; uneven CornerRadius
-        // on MapView is unusual and the styled border still paints the visual
-        // rounded outline on top.
-        return new RectangleGeometry(bounds);
-    }
-
-    private void DrawBorder(DrawingContext dc, Rect bounds, Brush borderBrush,
-        Thickness borderThickness, CornerRadius cornerRadius)
-    {
-        // Use uniform thickness when all sides are equal — that's the common
-        // theme case (BorderThickness="1") and yields a clean stroke that
-        // sits on the bounds. For non-uniform thickness fall back to the
-        // simplest correct approach: stroke each side as a filled rectangle.
-        if (borderThickness.Left == borderThickness.Top
-            && borderThickness.Left == borderThickness.Right
-            && borderThickness.Left == borderThickness.Bottom)
-        {
-            double t = borderThickness.Left;
-            double half = t / 2.0;
-            var inset = new Rect(bounds.X + half, bounds.Y + half,
-                Math.Max(0, bounds.Width - t), Math.Max(0, bounds.Height - t));
-            var pen = _chromeBorderPen.Get(borderBrush, t);
-            if (cornerRadius.TopLeft > 0)
-            {
-                dc.DrawRoundedRectangle(null, pen, inset, cornerRadius.TopLeft, cornerRadius.TopLeft);
-            }
-            else
-            {
-                dc.DrawRectangle(null, pen, inset);
-            }
-            return;
-        }
-
-        // Non-uniform: paint each edge separately. CornerRadius is ignored in
-        // this rare path — controls rarely combine non-uniform thickness with
-        // rounded corners.
-        if (borderThickness.Top > 0)
-            dc.DrawRectangle(borderBrush, null, new Rect(bounds.X, bounds.Y, bounds.Width, borderThickness.Top));
-        if (borderThickness.Bottom > 0)
-            dc.DrawRectangle(borderBrush, null, new Rect(bounds.X, bounds.Bottom - borderThickness.Bottom, bounds.Width, borderThickness.Bottom));
-        if (borderThickness.Left > 0)
-            dc.DrawRectangle(borderBrush, null, new Rect(bounds.X, bounds.Y, borderThickness.Left, bounds.Height));
-        if (borderThickness.Right > 0)
-            dc.DrawRectangle(borderBrush, null, new Rect(bounds.Right - borderThickness.Right, bounds.Y, borderThickness.Right, bounds.Height));
+        var bounds=new Rect(RenderSize);if(bounds.Width<=0||bounds.Height<=0)return;
+        dc.PushClip(new RectangleGeometry(bounds));
+        try{DrawTiles(dc,bounds);DrawPolygons(dc,bounds);DrawPolylines(dc,bounds);DrawMarkers(dc,bounds);}
+        finally{dc.Pop();}
     }
 
     private void DrawTiles(DrawingContext dc, Rect bounds)
@@ -742,7 +606,7 @@ public class MapView : Control
                 var tileImage = _tileCache.GetOrLoadTile(intZoom, wrappedX, clampedY, tileSource, () =>
                 {
                     // Tile loaded callback - invalidate visual to redraw
-                    InvalidateVisual();
+                    InvalidateMapView();
                 });
 
                 // Calculate screen position for this tile
@@ -872,52 +736,6 @@ public class MapView : Control
         }
     }
 
-    private void DrawScaleBar(DrawingContext dc, Rect bounds)
-    {
-        const double barMaxWidth = 120;
-        const double barHeight = 4;
-        const double margin = 10;
-        const double fontSize = 10;
-
-        // Calculate ground resolution at center latitude
-        double metersPerPixel = MercatorProjection.GroundResolution(Center.Latitude, ZoomLevel);
-
-        // Find a nice round distance for the scale bar
-        double maxDistance = barMaxWidth * metersPerPixel;
-        double niceDistance = GetNiceScaleDistance(maxDistance);
-        double barWidth = niceDistance / metersPerPixel;
-
-        // Format the distance label
-        string label;
-        if (niceDistance >= 1000)
-            label = $"{niceDistance / 1000:F0} km";
-        else
-            label = $"{niceDistance:F0} m";
-
-        double x = margin;
-        double y = bounds.Height - margin - barHeight - fontSize - 4;
-
-        // Draw background
-        var bgRect = new Rect(x - 4, y - 2, barWidth + 8, barHeight + fontSize + 8);
-        dc.DrawRoundedRectangle(s_scaleBarBackground, null, bgRect, 3, 3);
-
-        // Draw label
-        var ft = new FormattedText(label, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, fontSize)
-        {
-            Foreground = s_scaleBarBrush
-        };
-        TextMeasurement.MeasureText(ft);
-        dc.DrawText(ft, new Point(x, y));
-
-        // Draw bar
-        y += fontSize + 2;
-        dc.DrawRectangle(s_scaleBarBrush, null, new Rect(x, y, barWidth, barHeight));
-
-        // Draw end caps
-        dc.DrawRectangle(s_scaleBarBrush, null, new Rect(x, y - 2, 1, barHeight + 4));
-        dc.DrawRectangle(s_scaleBarBrush, null, new Rect(x + barWidth - 1, y - 2, 1, barHeight + 4));
-    }
-
     private static double GetNiceScaleDistance(double maxDistance)
     {
         // Find the closest "nice" distance: 1, 2, 5, 10, 20, 50, 100, 200, 500, ...
@@ -932,79 +750,13 @@ public class MapView : Control
         return nice * magnitude;
     }
 
-    private void DrawAttribution(DrawingContext dc, Rect bounds)
-    {
-        var tileSource = TileSource;
-        if (string.IsNullOrEmpty(tileSource.Attribution)) return;
-
-        const double fontSize = 9;
-        const double margin = 4;
-
-        var ft = new FormattedText(tileSource.Attribution, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, fontSize)
-        {
-            Foreground = s_attributionForeground
-        };
-        TextMeasurement.MeasureText(ft);
-
-        double x = bounds.Width - ft.Width - margin * 2;
-        double y = bounds.Height - ft.Height - margin * 2;
-
-        // Background
-        var bgRect = new Rect(x - margin, y - margin / 2, ft.Width + margin * 2, ft.Height + margin);
-        dc.DrawRectangle(s_attributionBackground, null, bgRect);
-
-        dc.DrawText(ft, new Point(x, y));
-    }
-
-    private void DrawZoomControls(DrawingContext dc, Rect bounds)
-    {
-        const double buttonSize = 28;
-        const double margin = 10;
-        const double spacing = 2;
-        const double fontSize = 16;
-
-        double x = bounds.Width - buttonSize - margin;
-        double y = margin;
-
-        // Zoom in button (+)
-        var zoomInRect = new Rect(x, y, buttonSize, buttonSize);
-        dc.DrawRoundedRectangle(s_zoomButtonBackground, s_zoomButtonBorderPen, zoomInRect, 4, 4);
-
-        var plusText = new FormattedText("+", FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, fontSize)
-        {
-            Foreground = s_zoomButtonForeground
-        };
-        TextMeasurement.MeasureText(plusText);
-        dc.DrawText(plusText, new Point(
-            x + (buttonSize - plusText.Width) / 2,
-            y + (buttonSize - plusText.Height) / 2));
-
-        // Zoom out button (-)
-        y += buttonSize + spacing;
-        var zoomOutRect = new Rect(x, y, buttonSize, buttonSize);
-        dc.DrawRoundedRectangle(s_zoomButtonBackground, s_zoomButtonBorderPen, zoomOutRect, 4, 4);
-
-        var minusText = new FormattedText("\u2212", FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, fontSize)
-        {
-            Foreground = s_zoomButtonForeground
-        };
-        TextMeasurement.MeasureText(minusText);
-        dc.DrawText(minusText, new Point(
-            x + (buttonSize - minusText.Width) / 2,
-            y + (buttonSize - minusText.Height) / 2));
-
-        // Store button rects for hit testing
-        _zoomInButtonRect = zoomInRect;
-        _zoomOutButtonRect = zoomOutRect;
-    }
-
     #endregion
 
     #region Visual State
 
     private void UpdateVisualState()
     {
-        InvalidateVisual();
+        InvalidateMapView();
     }
 
     #endregion
@@ -1015,7 +767,7 @@ public class MapView : Control
     {
         if (d is MapView map)
         {
-            map.InvalidateVisual();
+            map.InvalidateMapView();
             map.RaiseEvent(new MapViewChangedEventArgs(ViewChangedEvent, map.Center, map.ZoomLevel));
         }
     }
@@ -1033,7 +785,7 @@ public class MapView : Control
     {
         if (d is MapView map)
         {
-            map.InvalidateVisual();
+            map.InvalidateMapView();
         }
     }
 

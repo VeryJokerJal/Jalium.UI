@@ -29,7 +29,7 @@ internal static partial class TextAccessibilityStyleChecks
     internal static int RunFontMatchingCase(string argument)
     {
         if (!int.TryParse(argument.AsSpan("--text-font-matching-case=".Length),out int index) || (uint)index >= 12) return 2;
-        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Prohibited;
+        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Accessory;
         RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
         using var resource = CssNativeFontResource.Create(File.ReadAllBytes("/System/Library/Fonts/HelveticaNeue.ttc"));
         Require(resource != null,"private collection fixture unavailable");

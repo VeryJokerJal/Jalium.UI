@@ -4,6 +4,7 @@ JALIUM_PLATFORM_C_ABI_1 {
         jalium_dispatcher_*;
         jalium_drag_*;
         jalium_input_*;
+        jalium_linux_window_*;
         jalium_platform_*;
         jalium_test_*;
         jalium_timer_*;

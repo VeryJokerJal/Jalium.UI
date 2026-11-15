@@ -1,0 +1,66 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:local="clr-namespace:Jalium.UI.AndroidDemo"
+                    xmlns:input="clr-namespace:Jalium.UI.Input.TextInput"
+                    x:Class="Jalium.UI.AndroidDemo.Themes.KeyboardDemoTheme">
+    <Style x:Key="KeyboardDemo.Window" TargetType="Window"><Setter Property="Background" Value="#1E1E2E" /></Style>
+    <Style x:Key="KeyboardDemo.TextBox" TargetType="TextBox">
+        <Setter Property="FontSize" Value="18" />
+        <Setter Property="MinHeight" Value="48" />
+        <Setter Property="Padding" Value="12,10" />
+        <Setter Property="Background" Value="#313244" />
+        <Setter Property="BorderBrush" Value="#585B70" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="8" />
+        <Setter Property="Foreground" Value="White" />
+        <Setter Property="HorizontalAlignment" Value="Stretch" />
+    </Style>
+    <Style x:Key="KeyboardDemo.PasswordBox" TargetType="PasswordBox">
+        <Setter Property="FontSize" Value="18" />
+        <Setter Property="MinHeight" Value="48" />
+        <Setter Property="Padding" Value="12,10" />
+        <Setter Property="Background" Value="#313244" />
+        <Setter Property="BorderBrush" Value="#585B70" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="8" />
+        <Setter Property="Foreground" Value="White" />
+        <Setter Property="HorizontalAlignment" Value="Stretch" />
+    </Style>
+    <Style TargetType="local:KeyboardDemoField">
+        <Setter Property="FontSize" Value="13" />
+        <Setter Property="Foreground" Value="#A6ADC8" />
+        <Setter Property="Margin" Value="0,0,0,16" />
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="local:KeyboardDemoField">
+            <StackPanel>
+                <ContentPresenter ContentSource="Header" Margin="2,0,0,6" />
+                <ContentPresenter ContentSource="Content" />
+            </StackPanel>
+        </ControlTemplate></Setter.Value></Setter>
+    </Style>
+    <Style TargetType="local:KeyboardDemoSurface">
+        <Setter Property="Foreground" Value="White" />
+        <Setter Property="Padding" Value="24,32,24,48" />
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="local:KeyboardDemoSurface">
+            <ScrollViewer x:Name="PART_ScrollViewer" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto" CanContentScroll="False" Padding="{TemplateBinding Padding}">
+                <VisualStateManager.VisualStateGroups><VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Normal" /><VisualState x:Name="Disabled"><VisualState.Setters><Setter Property="Opacity" Value="0.5" /></VisualState.Setters></VisualState></VisualStateGroup></VisualStateManager.VisualStateGroups>
+                <StackPanel>
+                    <TextBlock Text="{TemplateBinding Title}" FontSize="30" Foreground="{TemplateBinding Foreground}" TextWrapping="Wrap" Margin="0,0,0,4" Focusable="False" />
+                    <TextBlock Text="{TemplateBinding Description}" FontSize="14" Foreground="#A6ADC8" TextWrapping="Wrap" Margin="0,0,0,24" Focusable="False" />
+                    <local:KeyboardDemoField Header="普通文本"><TextBox x:Name="PART_Normal" Style="{StaticResource KeyboardDemo.TextBox}" AutomationProperties.Name="普通文本" Text="{Binding NormalText, RelativeSource={RelativeSource AncestorType=local:KeyboardDemoSurface}, Mode=TwoWay}" input:TextInputOptions.ContentType="Normal" input:TextInputOptions.ReturnKeyType="Next" /></local:KeyboardDemoField>
+                    <local:KeyboardDemoField Header="多行文本"><TextBox x:Name="PART_Multiline" Style="{StaticResource KeyboardDemo.TextBox}" AutomationProperties.Name="多行文本" Text="{Binding MultilineText, RelativeSource={RelativeSource AncestorType=local:KeyboardDemoSurface}, Mode=TwoWay}" input:TextInputOptions.ContentType="Normal" input:TextInputOptions.ReturnKeyType="Default" AcceptsReturn="True" MinHeight="96" input:TextInputOptions.Multiline="True" /></local:KeyboardDemoField>
+                    <local:KeyboardDemoField Header="数字 / 数量"><TextBox x:Name="PART_Digits" Style="{StaticResource KeyboardDemo.TextBox}" AutomationProperties.Name="数字 / 数量" Text="{Binding DigitsText, RelativeSource={RelativeSource AncestorType=local:KeyboardDemoSurface}, Mode=TwoWay}" input:TextInputOptions.ContentType="Digits" input:TextInputOptions.ReturnKeyType="Next" /></local:KeyboardDemoField>
+                    <local:KeyboardDemoField Header="金额（含小数点）"><TextBox x:Name="PART_Amount" Style="{StaticResource KeyboardDemo.TextBox}" AutomationProperties.Name="金额（含小数点）" Text="{Binding AmountText, RelativeSource={RelativeSource AncestorType=local:KeyboardDemoSurface}, Mode=TwoWay}" input:TextInputOptions.ContentType="Number" input:TextInputOptions.ReturnKeyType="Next" /></local:KeyboardDemoField>
+                    <local:KeyboardDemoField Header="手机号"><TextBox x:Name="PART_Telephone" Style="{StaticResource KeyboardDemo.TextBox}" AutomationProperties.Name="手机号" Text="{Binding TelephoneText, RelativeSource={RelativeSource AncestorType=local:KeyboardDemoSurface}, Mode=TwoWay}" input:TextInputOptions.ContentType="Telephone" input:TextInputOptions.ReturnKeyType="Next" /></local:KeyboardDemoField>
+                    <local:KeyboardDemoField Header="邮箱"><TextBox x:Name="PART_Email" Style="{StaticResource KeyboardDemo.TextBox}" AutomationProperties.Name="邮箱" Text="{Binding EmailText, RelativeSource={RelativeSource AncestorType=local:KeyboardDemoSurface}, Mode=TwoWay}" input:TextInputOptions.ContentType="Email" input:TextInputOptions.ReturnKeyType="Next" /></local:KeyboardDemoField>
+                    <local:KeyboardDemoField Header="密码"><PasswordBox x:Name="PART_Password" Style="{StaticResource KeyboardDemo.PasswordBox}" AutomationProperties.Name="密码" /></local:KeyboardDemoField>
+                    <local:KeyboardDemoField Header="搜索（回车显示“搜索”）"><TextBox x:Name="PART_Search" Style="{StaticResource KeyboardDemo.TextBox}" AutomationProperties.Name="搜索（回车显示“搜索”）" Text="{Binding SearchText, RelativeSource={RelativeSource AncestorType=local:KeyboardDemoSurface}, Mode=TwoWay}" input:TextInputOptions.ContentType="Search" input:TextInputOptions.ReturnKeyType="Search" /></local:KeyboardDemoField>
+                    <local:KeyboardDemoField Header="姓名（下一项）"><TextBox x:Name="PART_Name" Style="{StaticResource KeyboardDemo.TextBox}" AutomationProperties.Name="姓名（下一项）" Text="{Binding NameText, RelativeSource={RelativeSource AncestorType=local:KeyboardDemoSurface}, Mode=TwoWay}" input:TextInputOptions.ContentType="Name" input:TextInputOptions.ReturnKeyType="Next" /></local:KeyboardDemoField>
+                    <local:KeyboardDemoField Header="备注（完成）"><TextBox x:Name="PART_Note" Style="{StaticResource KeyboardDemo.TextBox}" AutomationProperties.Name="备注（完成）" Text="{Binding NoteText, RelativeSource={RelativeSource AncestorType=local:KeyboardDemoSurface}, Mode=TwoWay}" input:TextInputOptions.ContentType="Normal" input:TextInputOptions.ReturnKeyType="Done" /></local:KeyboardDemoField>
+                    <local:KeyboardDemoField Header="只读"><TextBox x:Name="PART_ReadOnly" Style="{StaticResource KeyboardDemo.TextBox}" AutomationProperties.Name="只读" input:TextInputOptions.ContentType="Normal" input:TextInputOptions.ReturnKeyType="Default" Text="只读文本（不弹键盘）" IsReadOnly="True" /></local:KeyboardDemoField>
+                    <local:KeyboardDemoField Header="禁用"><TextBox x:Name="PART_Disabled" Style="{StaticResource KeyboardDemo.TextBox}" AutomationProperties.Name="禁用" input:TextInputOptions.ContentType="Normal" input:TextInputOptions.ReturnKeyType="Default" Text="禁用文本（不弹键盘）" IsEnabled="False" Foreground="#6C7086" /></local:KeyboardDemoField>
+                    <Button x:Name="PART_Submit" Content="{TemplateBinding SubmitText}" Background="#89B4FA" Foreground="#1E1E2E" FontSize="18" CornerRadius="8" MinHeight="52" Margin="0,16,0,0" HorizontalContentAlignment="Center" />
+                </StackPanel>
+            </ScrollViewer>
+        </ControlTemplate></Setter.Value></Setter>
+    </Style>
+</ResourceDictionary>

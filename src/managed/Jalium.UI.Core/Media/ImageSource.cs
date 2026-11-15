@@ -407,7 +407,11 @@ public abstract class ImageSource : Animation.Animatable, IFormattable
     /// a private, rebuildable artifact, while the source the application holds is the one an idle
     /// element may be about to reclaim.
     /// </remarks>
-    internal void MarkDrawn() => Volatile.Write(ref _lastDrawnTickMs, Environment.TickCount64);
+    internal void MarkDrawn()
+    {
+        Volatile.Write(ref _lastDrawnTickMs, Environment.TickCount64);
+        if (this is DrawingImage { DrawOwner: { } owner } && !ReferenceEquals(owner, this)) owner.MarkDrawn();
+    }
 
     private static long s_reclaimGraceMs = 2000;
 

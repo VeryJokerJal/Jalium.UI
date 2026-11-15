@@ -1,0 +1,145 @@
+{
+  "origin": "Original geometric outlines and OpenType tables generated offline without external packages or fonts.",
+  "files": [
+    {
+      "file": "CombineWidths.ttf",
+      "sha256": "d9d774b8dc6756cb1089e0c4ad0f87f2f2c0fa3abbfc5027874778ba94dccede",
+      "features": [
+        "hwid",
+        "twid",
+        "qwid"
+      ],
+      "partial": false,
+      "empty": false,
+      "narrow": false,
+      "glyphAdvances": [
+        600,
+        1000,
+        1000,
+        500,
+        333,
+        250,
+        250
+      ],
+      "unitsPerEm": 1000,
+      "ascent": 750,
+      "descent": 250,
+      "verticalAdvance": 1200
+    },
+    {
+      "file": "CombineHalf.ttf",
+      "sha256": "c1933d55043d7a181e5b4abf4936265947cda205b700d9cf4796caf56fa3dc17",
+      "features": [
+        "hwid"
+      ],
+      "partial": false,
+      "empty": false,
+      "narrow": false,
+      "glyphAdvances": [
+        600,
+        1000,
+        1000,
+        500,
+        333,
+        250,
+        250
+      ],
+      "unitsPerEm": 1000,
+      "ascent": 750,
+      "descent": 250,
+      "verticalAdvance": 1200
+    },
+    {
+      "file": "CombinePartial.ttf",
+      "sha256": "50980740771caa4d72ed7402f7443a1ec7e4ec37bdc612fffec4d276487fa92e",
+      "features": [
+        "hwid",
+        "twid",
+        "qwid"
+      ],
+      "partial": true,
+      "empty": false,
+      "narrow": false,
+      "glyphAdvances": [
+        600,
+        1000,
+        1000,
+        500,
+        333,
+        250,
+        250
+      ],
+      "unitsPerEm": 1000,
+      "ascent": 750,
+      "descent": 250,
+      "verticalAdvance": 1200
+    },
+    {
+      "file": "CombineNone.ttf",
+      "sha256": "a1d2977f178ee610de009664b5249bd0278fccdbf6f81124f8c269e8eca88acb",
+      "features": [],
+      "partial": false,
+      "empty": false,
+      "narrow": false,
+      "glyphAdvances": [
+        600,
+        1000,
+        1000,
+        500,
+        333,
+        250,
+        250
+      ],
+      "unitsPerEm": 1000,
+      "ascent": 750,
+      "descent": 250,
+      "verticalAdvance": 1200
+    },
+    {
+      "file": "CombineEmpty.ttf",
+      "sha256": "5e9abbe6c25aa904c93c0e9c2863a30caed629e3b3fd5a32af7e96a0851c79bb",
+      "features": [
+        "hwid",
+        "twid",
+        "qwid"
+      ],
+      "partial": false,
+      "empty": true,
+      "narrow": false,
+      "glyphAdvances": [
+        600,
+        1000,
+        1000,
+        500,
+        333,
+        250,
+        250
+      ],
+      "unitsPerEm": 1000,
+      "ascent": 750,
+      "descent": 250,
+      "verticalAdvance": 1200
+    },
+    {
+      "file": "CombineNarrow.ttf",
+      "sha256": "7f13886d07d598052975e9441000b2da2b095ea5777232605ebc96caf48b01e2",
+      "features": [],
+      "partial": false,
+      "empty": false,
+      "narrow": true,
+      "glyphAdvances": [
+        600,
+        400,
+        400,
+        500,
+        333,
+        250,
+        250
+      ],
+      "unitsPerEm": 1000,
+      "ascent": 750,
+      "descent": 250,
+      "verticalAdvance": 1200
+    }
+  ]
+}

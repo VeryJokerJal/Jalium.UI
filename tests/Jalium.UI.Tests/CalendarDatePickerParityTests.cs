@@ -154,10 +154,11 @@ public sealed class CalendarDatePickerParityTests
             FirstDayOfWeek = DayOfWeek.Monday,
             IsTodayHighlighted = false
         };
-        var calendar = (Calendar)typeof(DatePicker)
-            .GetField("_calendar", BindingFlags.Instance | BindingFlags.NonPublic)!
-            .GetValue(picker)!;
-        Assert.Same(calendar.BlackoutDates, picker.BlackoutDates);
+        var stableBlackouts = picker.BlackoutDates;
+        DatePickerTemplateTestHelper.Apply(picker);
+        var calendar = Assert.IsType<Calendar>(picker.FindName("PART_Calendar"));
+        Assert.Equal(stableBlackouts, calendar.BlackoutDates);
+        Assert.Same(stableBlackouts, picker.BlackoutDates);
         Assert.Equal(DayOfWeek.Monday, calendar.FirstDayOfWeek);
         Assert.False(calendar.IsTodayHighlighted);
         Assert.Same(CalendarItem.DayTitleTemplateResourceKey, CalendarItem.DayTitleTemplateResourceKey);
@@ -192,7 +193,7 @@ public sealed class CalendarDatePickerParityTests
     }
 
     [Fact]
-    public void Calendar_DirectRendererConsumesCalendarStyles()
+    public void Calendar_DefaultTemplatesConsumeCalendarStyles()
     {
         var itemBrush = new SolidColorBrush(Color.FromRgb(10, 20, 30));
         var buttonBrush = new SolidColorBrush(Color.FromRgb(40, 50, 60));
@@ -204,8 +205,13 @@ public sealed class CalendarDatePickerParityTests
         var dayStyle = new Style(typeof(CalendarDayButton));
         dayStyle.Setters.Add(new Setter(Control.BackgroundProperty, dayBrush));
 
+        Jalium.UI.Markup.ThemeLoader.Initialize();
+        using var stream = new MemoryStream();
+        var themes = Jalium.UI.Controls.Themes.ThemeManager.XamlLoader!(stream, "Themes/Generic.jalxaml", typeof(Control).Assembly)!;
+        DatePickerTemplateTestHelper.Register(themes);
         var calendar = new Calendar
         {
+            Style = (Style)themes[typeof(Calendar)],
             CalendarItemStyle = itemStyle,
             CalendarButtonStyle = buttonStyle,
             CalendarDayButtonStyle = dayStyle,
@@ -217,8 +223,10 @@ public sealed class CalendarDatePickerParityTests
         calendar.Render(context);
 
         Assert.Contains(context.Brushes, brush => ReferenceEquals(brush, itemBrush));
-        Assert.Contains(context.Brushes, brush => ReferenceEquals(brush, buttonBrush));
         Assert.Contains(context.Brushes, brush => ReferenceEquals(brush, dayBrush));
+        calendar.DisplayMode = CalendarMode.Year;
+        calendar.Measure(new Size(300, 300)); calendar.Arrange(new Rect(0, 0, 300, 300)); calendar.Render(context);
+        Assert.Contains(context.Brushes, brush => ReferenceEquals(brush, buttonBrush));
     }
 
     [Fact]

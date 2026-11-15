@@ -15,6 +15,8 @@ import subprocess
 import tempfile
 import time
 
+from native_payload_proof import capture_payload, verify_software_payload
+
 LIBRARIES = tuple('libjalium.native.' + name + '.dylib' for name in
                   ('core', 'text', 'metal', 'software', 'platform', 'media.core', 'media', 'browser'))
 ASSEMBLIES = ('Jalium.UI.MacOS.HostSmoke.dll', 'Jalium.UI.Managed.dll', 'Jalium.UI.MacOS.dll', 'Jalium.UI.Xaml.dll')
@@ -31,9 +33,11 @@ def stop_owned_app(app):
             except ProcessLookupError: pass
 
 def run_case(work, app, client_binary, index, libraries, diagnostics=False):
+    native_before = capture_payload(libraries)
     output = work / ('case-' + str(index)); output.mkdir(mode=0o700)
     commands, checks, failures = [], [], []
     request_states, failure_diagnostics = [], {}
+    selection_snapshots = []
     launcher = client = None; pid = None; initial = final = {}
     def state():
         try: return json.loads((output / 'state.json').read_text())
@@ -62,6 +66,8 @@ def run_case(work, app, client_binary, index, libraries, diagnostics=False):
                 'startUnixMicros':start_utc,'endUnixMicros':time.time_ns() // 1000,
                 'elapsedNanoseconds':time.monotonic_ns() - start_ns,
                 'before':{k:before.get(k) for k in fields},'after':{k:after.get(k) for k in fields}})
+        if action == 'set_selected' and request.get('id') == 'combo-row-4':
+            require(isinstance(response.get('node'), dict), 'disabled row must still be exposed; response=' + json.dumps(response, ensure_ascii=False))
         require(response['trusted'] and response['clientPID'] != pid and response['targetPID'] == pid,
                 'trusted independent AX client identities match')
         return response
@@ -76,10 +82,18 @@ def run_case(work, app, client_binary, index, libraries, diagnostics=False):
         require(call('set_expanded', id='combo-root', expanded=value)['actionError'] == 0, 'native expanded attribute accepts update')
         wait(lambda: state().get('open') == value, 'model reflects native expanded attribute')
     def selected(id):
-        current = wait(lambda: state() if state().get('selectedId') == id else None, 'logical selection committed')
+        wait(lambda: state() if state().get('selectedId') == id else None, 'logical selection committed')
+        def stable_selection():
+            before = state(); nodes = discover(); after = state(); root = nodes.get('combo-root')
+            fields = ('selectedId', 'selectedIndex', 'text', 'open', 'editable')
+            stable = root is not None and before.get('selectedId') == id and all(before.get(k) == after.get(k) for k in fields) and root.get('expanded') is after.get('open')
+            selection_snapshots.append({'before': {k: before.get(k) for k in fields},
+                'after': {k: after.get(k) for k in fields}, 'nativeExpanded': None if root is None else root.get('expanded'), 'stable': stable})
+            return (after, nodes) if stable else None
+        current, nodes = wait(stable_selection, 'selection model and native expansion are stable')
         require(all(row['selected'] == (row['id'] == id) for row in current['rows'] if row['realized']),
                 'realized row states agree with the selected model')
-        nodes = nodes_ready('combo-root'); root = nodes['combo-root']
+        root = nodes['combo-root']
         expected = current['text'] if current['editable'] or id >= 0 else ''
         require(root['value'] == expected, 'native value agrees with editable text or selected display text')
         if current['open']:
@@ -118,6 +132,7 @@ def run_case(work, app, client_binary, index, libraries, diagnostics=False):
         require(call('set_selected', id='combo-row-3', selected=False)['actionError'] == 0, 'native row setter deselects')
         selected(-1)
         require(call('press', id='combo-row-1')['actionError'] == 0, 'native row press selects'); selected(1)
+        expand(True); rows()
         before = state()['changes']; denied = call('set_selected', id='combo-row-4', selected=True)
         time.sleep(.2)
         require(denied['node']['AXSelectedSettable'] is False and denied['node']['selected'] is False
@@ -150,6 +165,7 @@ def run_case(work, app, client_binary, index, libraries, diagnostics=False):
         require(nodes['combo-root']['size']['width'] >= 350, 'selection control fits the narrow window')
         call('press', token=current); selected(1)
         press('combo-replace'); wait(lambda: state().get('phase') == 1, 'selected logical item replaced')
+        expand(True)
         nodes = nodes_ready('combo-root', 'combo-row-5'); require('combo-row-1' not in nodes, 'removed row is absent from native discovery')
         wait(lambda: call('read', token=current)['node'].get('id') is None, 'removed row reference is retired')
         before = state()['changes']; call('set_selected', token=current, selected=True)
@@ -187,16 +203,16 @@ def run_case(work, app, client_binary, index, libraries, diagnostics=False):
         if diagnostics and (output / 'trace.jsonl').exists():
             timeline = [json.loads(line) for line in (output / 'trace.jsonl').read_text().splitlines() if line]
         log = (output / 'app.err').read_text(errors='replace') if (output / 'app.err').exists() else ''
-        for name, paths in libraries.items():
-            if not any(str(path) in log for path in paths): failures.append('loaded payload not proven: ' + name)
-            else: loaded.append(name)
+        native_proof = verify_software_payload(libraries, native_before, log)
+        failures.extend(native_proof['errors'])
+        loaded = native_proof['loadedNames']
         result = {'index': index, 'passed': not failures, 'checks': checks, 'failures': failures,
                   'diagnosticsEnabled':diagnostics,'requestStates':request_states,
                   'failureDiagnostics':failure_diagnostics,'hostTimeline':timeline,
                   'launcherExitCode':None if launcher is None else launcher.returncode,
                   'diagnosticLogTails':{name:(output / name).read_text(errors='replace')[-6000:] for name in ('app.log','app.err','launch.log') if (output / name).exists()} if diagnostics and failures else {},
-                  'initial': initial, 'final': final, 'failureState': locals().get('failure_state'), 'commands': commands, 'hostPID': pid,
-                  'clientPID': None if client is None else client.pid, 'loadedNative': loaded,
+                  'initial': initial, 'final': final, 'failureState': locals().get('failure_state'), 'commands': commands, 'selectionSnapshots': selection_snapshots, 'hostPID': pid,
+                  'clientPID': None if client is None else client.pid, 'loadedNative': loaded, 'nativePayloadProof': native_proof,
                   'externalAX': True, 'physicalInput': False, 'seconds': round(time.monotonic() - started, 3)}
         (output / 'receipt.json').write_text(json.dumps(result, ensure_ascii=False))
     return result

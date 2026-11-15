@@ -1,0 +1,30 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:dev="clr-namespace:Jalium.UI.Controls.DevTools" xmlns:automation="clr-namespace:Jalium.UI.Automation">
+    <Style x:Key="DevTools.WorkspaceTab" TargetType="TabItem">
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" /><Setter Property="VerticalContentAlignment" Value="Stretch" />
+        <Setter Property="IndicatorBrush" Value="{DynamicResource DevTools.Accent}" /><Setter Property="IndicatorHeight" Value="2" />
+        <Setter Property="SelectedBackground" Value="{DynamicResource DevTools.Surface}" /><Setter Property="HoverBackground" Value="{DynamicResource DevTools.ControlHover}" />
+        <Setter Property="Foreground" Value="{DynamicResource DevTools.TextPrimary}" /><Setter Property="FontSize" Value="11" />
+        <Setter Property="FontFamily" Value="Bahnschrift SemiBold" /><Setter Property="FontWeight" Value="SemiBold" />
+        <Style.Triggers>
+            <Trigger Property="IsSelected" Value="True"><Setter Property="Foreground" Value="{DynamicResource DevTools.TextPrimary}" /></Trigger>
+            <Trigger Property="IsMouseOver" Value="True"><Setter Property="Foreground" Value="{DynamicResource DevTools.TextPrimary}" /></Trigger>
+            <Trigger Property="IsKeyboardFocused" Value="True"><Setter Property="Foreground" Value="{DynamicResource DevTools.TextPrimary}" /><Setter Property="IndicatorBrush" Value="{DynamicResource DevTools.Accent}" /></Trigger>
+        </Style.Triggers>
+    </Style>
+    <Style TargetType="dev:DevToolsWorkspace">
+        <Setter Property="Background" Value="{DynamicResource DevTools.Surface}" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsWorkspace">
+            <TabControl Name="PART_Tabs" automation:AutomationProperties.Name="DevTools pages" Background="{TemplateBinding Background}" TabStripBackground="{DynamicResource DevTools.Chrome}" TabStripBorderBrush="{DynamicResource DevTools.BorderSubtle}" TabStripHeight="38">
+                <TabItem Header="I N S P E C T O R" automation:AutomationProperties.Name="Inspector" Style="{StaticResource DevTools.WorkspaceTab}" Content="{Binding InspectorContent, RelativeSource={RelativeSource AncestorType={x:Type dev:DevToolsWorkspace}}}" />
+                <TabItem Header="L A Y O U T" automation:AutomationProperties.Name="Layout" Style="{StaticResource DevTools.WorkspaceTab}" Content="{Binding LayoutContent, RelativeSource={RelativeSource AncestorType={x:Type dev:DevToolsWorkspace}}}" />
+                <TabItem Header="E V E N T S" automation:AutomationProperties.Name="Events" Style="{StaticResource DevTools.WorkspaceTab}" Content="{Binding EventsContent, RelativeSource={RelativeSource AncestorType={x:Type dev:DevToolsWorkspace}}}" />
+                <TabItem Header="B I N D I N G S" automation:AutomationProperties.Name="Bindings" Style="{StaticResource DevTools.WorkspaceTab}" Content="{Binding BindingsContent, RelativeSource={RelativeSource AncestorType={x:Type dev:DevToolsWorkspace}}}" />
+                <TabItem Header="R E S O U R C E S" automation:AutomationProperties.Name="Resources" Style="{StaticResource DevTools.WorkspaceTab}" Content="{Binding ResourcesContent, RelativeSource={RelativeSource AncestorType={x:Type dev:DevToolsWorkspace}}}" />
+                <TabItem Header="P E R F" automation:AutomationProperties.Name="Perf" Style="{StaticResource DevTools.WorkspaceTab}" Content="{Binding PerformanceContent, RelativeSource={RelativeSource AncestorType={x:Type dev:DevToolsWorkspace}}}" />
+                <TabItem Header="U I A" automation:AutomationProperties.Name="UIA" Style="{StaticResource DevTools.WorkspaceTab}" Content="{Binding AutomationContent, RelativeSource={RelativeSource AncestorType={x:Type dev:DevToolsWorkspace}}}" />
+                <TabItem Header="T O O L S" automation:AutomationProperties.Name="Tools" Style="{StaticResource DevTools.WorkspaceTab}" Content="{Binding ToolsContent, RelativeSource={RelativeSource AncestorType={x:Type dev:DevToolsWorkspace}}}" />
+                <TabItem Header="R E P L" automation:AutomationProperties.Name="REPL" Style="{StaticResource DevTools.WorkspaceTab}" Content="{Binding ReplContent, RelativeSource={RelativeSource AncestorType={x:Type dev:DevToolsWorkspace}}}" />
+            </TabControl>
+        </ControlTemplate></Setter>
+    </Style>
+</ResourceDictionary>

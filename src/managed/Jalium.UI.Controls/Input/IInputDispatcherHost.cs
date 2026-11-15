@@ -112,6 +112,7 @@ internal interface IInputDispatcherHost
     // ── Cursor ──
 
     void SetPlatformCursor(int cursorType);
+    Cursor? GetWindowChromeCursor(Point position) => null;
 
     // ── IME ──
 

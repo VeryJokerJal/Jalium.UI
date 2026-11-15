@@ -8,7 +8,7 @@
     <!-- A terminal emulator control with VT100/ANSI support.
          Chrome (background/border/corner) is provided by a Border, and the
          character grid is hosted inside a ScrollViewer whose content is
-         programmatically set to a TerminalView in OnApplyTemplate. -->
+         provided by the template-owned PART_View character surface. -->
     <Style TargetType="Terminal">
         <Setter Property="Background" Value="{ThemeResource TerminalBackground}" />
         <Setter Property="Foreground" Value="{ThemeResource TerminalForeground}" />
@@ -32,21 +32,21 @@
                         CornerRadius="{TemplateBinding CornerRadius}"
                         Padding="{TemplateBinding Padding}"
                         ClipToBounds="True">
+                    <VisualStateManager.VisualStateGroups>
+                        <VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Normal" /><VisualState x:Name="PointerOver"><VisualState.Setters><Setter TargetName="OuterBorder" Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" /></VisualState.Setters></VisualState><VisualState x:Name="Disabled"><VisualState.Setters><Setter Property="Opacity" Value="0.65" /></VisualState.Setters></VisualState></VisualStateGroup>
+                        <VisualStateGroup x:Name="FocusStates"><VisualState x:Name="Unfocused" /><VisualState x:Name="Focused"><VisualState.Setters><Setter TargetName="OuterBorder" Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    </VisualStateManager.VisualStateGroups>
                     <ScrollViewer Name="PART_ScrollViewer"
+                                  CanContentScroll="True"
                                   HorizontalScrollBarVisibility="Disabled"
                                   VerticalScrollBarVisibility="Auto"
                                   Background="{ThemeResource ControlFillColorTransparentBrush}"
                                   BorderThickness="0"
-                                  Padding="0" />
+                                  Padding="0">
+                        <TerminalView Name="PART_View" Owner="{Binding RelativeSource={RelativeSource TemplatedParent}}" />
+                    </ScrollViewer>
                 </Border>
-                <ControlTemplate.Triggers>
-                    <Trigger Property="IsMouseOver" Value="True">
-                        <Setter TargetName="OuterBorder" Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />
-                    </Trigger>
-                    <Trigger Property="IsFocused" Value="True">
-                        <Setter TargetName="OuterBorder" Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
-                    </Trigger>
-                </ControlTemplate.Triggers>
+
             </ControlTemplate>
         </Setter>
 

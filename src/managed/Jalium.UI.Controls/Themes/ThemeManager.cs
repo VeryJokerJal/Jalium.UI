@@ -56,6 +56,7 @@ public static class ThemeManager
     /// </summary>
     private static readonly object _themeStyleCacheWriteGate = new();
     private static Dictionary<Type, Style?> _themeStyleCache = new();
+    private static ResourceDictionary[] _controlThemeDictionaries = [];
 
     /// <summary>
     /// Default brand primary accent (forest emerald, midpoint of the
@@ -84,22 +85,30 @@ public static class ThemeManager
     }
 
     /// <summary>
-    /// Resolves the theme default style for an exact element type from the generic
-    /// theme dictionary (the base-type walk happens in FrameworkElement).
+    /// Registers default control styles below application and instance resources.
+    /// Registrations remain available when the application theme is initialized.
     /// </summary>
+    public static void RegisterControlThemes(ResourceDictionary resources)
+    {
+        ArgumentNullException.ThrowIfNull(resources);
+        lock (_themeStyleCacheWriteGate)
+        {
+            if (Array.IndexOf(_controlThemeDictionaries, resources) >= 0)
+                return;
+
+            _controlThemeDictionaries = [.. _controlThemeDictionaries, resources];
+            Volatile.Write(ref _themeStyleCache, new Dictionary<Type, Style?>());
+        }
+    }
+
+    /// <summary>Resolves exact-type defaults from control themes, then the generic theme.</summary>
     private static Style? ResolveThemeStyle(Type type)
     {
-        var dictionary = _genericThemeDictionary;
-        if (dictionary == null)
-            return null;
-
         var snapshot = Volatile.Read(ref _themeStyleCache);
         if (snapshot.TryGetValue(type, out var cached))
         {
             return cached;
         }
-
-        var style = dictionary.TryGetValue(type, out var value) ? value as Style : null;
 
         lock (_themeStyleCacheWriteGate)
         {
@@ -109,14 +118,25 @@ public static class ThemeManager
                 return cached;
             }
 
+            Style? style = null;
+            for (var i = _controlThemeDictionaries.Length - 1; i >= 0; i--)
+            {
+                if (_controlThemeDictionaries[i].TryGetValue(type, out var registered) && registered is Style registeredStyle)
+                {
+                    style = registeredStyle;
+                    break;
+                }
+            }
+            if (style == null && _genericThemeDictionary?.TryGetValue(type, out var value) == true)
+                style = value as Style;
+
             var next = new Dictionary<Type, Style?>(snapshot)
             {
                 [type] = style
             };
             Volatile.Write(ref _themeStyleCache, next);
+            return style;
         }
-
-        return style;
     }
 
     /// <summary>
@@ -175,7 +195,9 @@ public static class ThemeManager
     /// <summary>
     /// Gets the current monospace font family.
     /// </summary>
-    public static string CurrentMonospaceFontFamily { get; private set; } = "Cascadia Code";
+    public static string CurrentMonospaceFontFamily { get; private set; } = DefaultMonospaceFontFamily;
+
+    private static string DefaultMonospaceFontFamily => OperatingSystem.IsMacOS() ? "Menlo" : "Cascadia Code";
 
     /// <summary>
     /// Gets the current body font size used by controls.
@@ -383,7 +405,7 @@ public static class ThemeManager
     {
         CurrentDisplayFontFamily = NormalizeFontFamily(display, FrameworkElement.DefaultFontFamilyName);
         CurrentBodyFontFamily = NormalizeFontFamily(body, FrameworkElement.DefaultFontFamilyName);
-        CurrentMonospaceFontFamily = NormalizeFontFamily(mono, "Cascadia Code");
+        CurrentMonospaceFontFamily = NormalizeFontFamily(mono, DefaultMonospaceFontFamily);
         CurrentBodyFontSize = double.IsFinite(bodyFontSize) && bodyFontSize > 0
             ? bodyFontSize
             : FrameworkElement.DefaultFontSize;
@@ -476,6 +498,15 @@ public static class ThemeManager
     /// MergedDictionary lookup.
     /// </para>
     /// </remarks>
+    [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "The bootstrap type and loader methods are preserved by EnsureXamlLoaderRegistered's DynamicDependency; standard hosts register the AOT-safe loader directly.")]
+    internal static ResourceDictionary LoadControlThemeDictionary(string source)
+    {
+        EnsureXamlLoaderRegistered();
+        using var stream = new MemoryStream();
+        return XamlLoader?.Invoke(stream, source, ControlsAssembly)
+            ?? throw new InvalidOperationException($"The built-in control theme '{source}' could not be loaded.");
+    }
+
     private static ResourceDictionary? LoadGenericTheme()
     {
         if (XamlLoader == null)
@@ -579,7 +610,7 @@ public static class ThemeManager
         CurrentAccentColor = DefaultPrimaryAccentColor;
         CurrentDisplayFontFamily = FrameworkElement.DefaultFontFamilyName;
         CurrentBodyFontFamily = FrameworkElement.DefaultFontFamilyName;
-        CurrentMonospaceFontFamily = "Cascadia Code";
+        CurrentMonospaceFontFamily = DefaultMonospaceFontFamily;
         CurrentBodyFontSize = FrameworkElement.DefaultFontSize;
 
         ResourceDictionary.CurrentThemeKey = null;
@@ -755,7 +786,9 @@ public static class ThemeManager
         SetSolidBrushEntry(dictionary, "AccentFillColorSelectedTextBackgroundBrush", accent, null);
         SetSolidBrushEntry(dictionary, "SelectionBackground", selection, null);
         SetSolidBrushEntry(dictionary, "SelectionBackgroundWeak", weakSelection, null);
-        SetSolidBrushEntry(dictionary, "AppBarButtonForeground", accent, null);
+        // Command labels use a theme-specific accent that remains readable on
+        // all stock command surfaces, including hover and press.
+        dictionary.Remove("AppBarButtonForeground");
         SetSolidBrushEntry(dictionary, "ProgressRingForeground", accent, null);
         SetSolidBrushEntry(dictionary, "BrandPrimaryAccentBrush", accent, null);
         SetSolidBrushEntry(dictionary, "BrandSecondaryAccentBrush", DefaultSecondaryAccentColor, null);
@@ -921,6 +954,7 @@ public static class ThemeManager
         SetSolidBrushEntry(variant, "AccentFillColorTertiaryBrush", accentFillTertiary, changedKeys);
         SetSolidBrushEntry(variant, "AccentFillColorDisabledBrush", disabled, changedKeys);
         SetSolidBrushEntry(variant, "SystemFillColorAttentionBrush", systemFillAttention, changedKeys);
+        SetSolidBrushEntry(variant, "AppBarButtonForeground", GetCommandForeground(accent, darkTheme), changedKeys);
         SetSolidBrushEntry(variant, "AppBarButtonForegroundDisabled", disabled, changedKeys);
     }
 
@@ -1185,6 +1219,34 @@ public static class ThemeManager
         }
         catch (Exception)
         {
+        }
+    }
+
+    private static Color GetCommandForeground(Color accent, bool darkTheme)
+    {
+        // The pressed surface is the lowest-contrast stock surface in either
+        // palette; the normal and hovered surfaces then meet the same minimum.
+        var background = darkTheme ? Color.FromRgb(0x48, 0x48, 0x4A) : Color.FromRgb(0xE8, 0xE8, 0xED);
+        var target = darkTheme ? Color.White : Color.Black;
+        var opaqueAccent = Color.FromRgb(accent.R, accent.G, accent.B);
+        var backgroundLuminance = Luminance(background);
+        for (var step = 0; step <= 20; step++)
+        {
+            var candidate = Blend(opaqueAccent, target, step / 20d);
+            var luminance = Luminance(candidate);
+            if ((Math.Max(luminance, backgroundLuminance) + .05)
+                / (Math.Min(luminance, backgroundLuminance) + .05) >= 4.5) return candidate;
+        }
+        return target;
+
+        static double Luminance(Color color)
+        {
+            static double Linear(byte value)
+            {
+                double v = value / 255d;
+                return v <= .04045 ? v / 12.92 : Math.Pow((v + .055) / 1.055, 2.4);
+            }
+            return .2126 * Linear(color.R) + .7152 * Linear(color.G) + .0722 * Linear(color.B);
         }
     }
 

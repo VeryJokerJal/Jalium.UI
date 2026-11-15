@@ -5,7 +5,7 @@ namespace Jalium.UI.Media;
 /// as vector drawings. SVG content is parsed into a <see cref="DrawingGroup"/>
 /// which is rendered at any resolution without quality loss.
 /// </summary>
-public sealed class SvgImage : ImageSource, IDisposable
+public sealed partial class SvgImage : ImageSource, IDisposable
 {
     private Drawing? _drawing;
     private long _contentGeneration;
@@ -34,6 +34,7 @@ public sealed class SvgImage : ImageSource, IDisposable
         set
         {
             if (ReferenceEquals(_drawing, value)) return;
+            ClearViewportDocument();
             if (_drawing is not null) _drawing.Changed -= OnDrawingChanged;
             _drawing = value;
             if (_drawing is not null) _drawing.Changed += OnDrawingChanged;
@@ -41,7 +42,13 @@ public sealed class SvgImage : ImageSource, IDisposable
         }
     }
 
-    private void OnDrawingChanged(object? sender, EventArgs args) => NotifyRasterChanged();
+    private void OnDrawingChanged(object? sender, EventArgs args)
+    {
+        // Explicit drawing edits remain authoritative; do not discard them by
+        // reconstructing the markup on the next size change.
+        ClearViewportDocument();
+        NotifyRasterChanged();
+    }
 
     private void NotifyRasterChanged()
     {
@@ -107,6 +114,20 @@ public sealed class SvgImage : ImageSource, IDisposable
         return image;
     }
 
+    internal static SvgImage FromSvgStringWithTextOutlines(string content)
+    {
+        var image = new SvgImage { UsesCssViewport = true };
+        image.LoadFromString(content, textOutlines: true);
+        return image;
+    }
+
+    internal static SvgImage FromCssSvgString(string content)
+    {
+        var image = new SvgImage { UsesCssViewport = true };
+        image.LoadFromString(content);
+        return image;
+    }
+
     /// <summary>
     /// Creates an SvgImage from a file path.
     /// </summary>
@@ -160,12 +181,14 @@ public sealed class SvgImage : ImageSource, IDisposable
         return System.Text.Encoding.UTF8.GetString(data);
     }
 
-    private void LoadFromString(string svgContent)
+    private void LoadFromString(string svgContent, bool textOutlines = false)
     {
         try
         {
-            var (drawing, width, height) = SvgParser.Parse(svgContent);
-            Drawing = drawing;
+            var (drawing, width, height, intrinsic) = SvgParser.ParseImage(svgContent, textOutlines);
+            if (_drawing is not null) _drawing.Changed -= OnDrawingChanged;
+            _drawing = drawing;
+            drawing.Changed += OnDrawingChanged;
             _width = width;
             _height = height;
 
@@ -180,12 +203,16 @@ public sealed class SvgImage : ImageSource, IDisposable
                 }
             }
 
+            SetViewportDocument(svgContent, textOutlines, intrinsic);
+            NotifyRasterChanged();
+
             ClearLoadFailure();
             OnSvgLoaded?.Invoke(this, EventArgs.Empty);
         }
         catch (Exception ex)
         {
             ReportSvgFailure(DiagnosticSourceName, "SVG parse", ex);
+            if (textOutlines) throw;
         }
     }
 
@@ -399,6 +426,7 @@ public sealed class SvgImage : ImageSource, IDisposable
     /// </summary>
     public void Dispose()
     {
+        ClearViewportDocument();
         _httpCts?.Cancel();
         _httpCts?.Dispose();
         _httpCts = null;

@@ -1,0 +1,192 @@
+{
+  "origin": "Original Jalium MIT geometric contours; gvar programs, metric tables and names generated offline using only Python stdlib.",
+  "files": [
+    {
+      "file": "PhantomEmbedded.ttf",
+      "sha256": "d97e28ec1f6882148ab35d9176785288a294ae1967a8d15de275503ad31a97fe",
+      "source": "FontSizeAdjust/VerticalVariable.ttf",
+      "sourceSha256": "3a5117763cca66779effa671d5aab97cf563883ac709f381ebf4e3334cd1fbc7",
+      "unitsPerEm": 1000,
+      "baseVerticalAdvance": 1200,
+      "axes": 1,
+      "gvarPhantoms": true,
+      "composite": false
+    },
+    {
+      "file": "PhantomShared.ttf",
+      "sha256": "66910c8c027d7b0be0439b18ca8a1f7fd24333c00edd3fc3b5a1c512143d0bbc",
+      "source": "FontSizeAdjust/VerticalVariable.ttf",
+      "sourceSha256": "3a5117763cca66779effa671d5aab97cf563883ac709f381ebf4e3334cd1fbc7",
+      "unitsPerEm": 1000,
+      "baseVerticalAdvance": 1200,
+      "axes": 1,
+      "gvarPhantoms": true,
+      "composite": false
+    },
+    {
+      "file": "PhantomAllPoints.ttf",
+      "sha256": "dd3e4c147dd001fd08f2aa9d257e2ae6eeac9e400c55774240239cefcc51b5ea",
+      "source": "FontSizeAdjust/VerticalVariable.ttf",
+      "sourceSha256": "3a5117763cca66779effa671d5aab97cf563883ac709f381ebf4e3334cd1fbc7",
+      "unitsPerEm": 1000,
+      "baseVerticalAdvance": 1200,
+      "axes": 1,
+      "gvarPhantoms": true,
+      "composite": false
+    },
+    {
+      "file": "PhantomShortOffsets.ttf",
+      "sha256": "074e6f7a2596573a5fb715d274097df49bbb610db88793cdafc9748f1fa9e2a0",
+      "source": "FontSizeAdjust/VerticalVariable.ttf",
+      "sourceSha256": "3a5117763cca66779effa671d5aab97cf563883ac709f381ebf4e3334cd1fbc7",
+      "unitsPerEm": 1000,
+      "baseVerticalAdvance": 1200,
+      "axes": 1,
+      "gvarPhantoms": true,
+      "composite": false
+    },
+    {
+      "file": "PhantomTopOnly.ttf",
+      "sha256": "c2cffbe1618967b16c243471cbea602d8a618e9410ff72c23635c9f9932bbf36",
+      "source": "FontSizeAdjust/VerticalVariable.ttf",
+      "sourceSha256": "3a5117763cca66779effa671d5aab97cf563883ac709f381ebf4e3334cd1fbc7",
+      "unitsPerEm": 1000,
+      "baseVerticalAdvance": 1200,
+      "axes": 1,
+      "gvarPhantoms": true,
+      "composite": false
+    },
+    {
+      "file": "PhantomBottomOnly.ttf",
+      "sha256": "10a31abde32bfc8430d778a313c63bbbb55f1802c8af3b357f4dafc42d015551",
+      "source": "FontSizeAdjust/VerticalVariable.ttf",
+      "sourceSha256": "3a5117763cca66779effa671d5aab97cf563883ac709f381ebf4e3334cd1fbc7",
+      "unitsPerEm": 1000,
+      "baseVerticalAdvance": 1200,
+      "axes": 1,
+      "gvarPhantoms": true,
+      "composite": false
+    },
+    {
+      "file": "PhantomUnreferenced.ttf",
+      "sha256": "39efe561dc5a431041aaf48b81a30914aa3a03d568beee80dfcd845f034ea6a2",
+      "source": "FontSizeAdjust/VerticalVariable.ttf",
+      "sourceSha256": "3a5117763cca66779effa671d5aab97cf563883ac709f381ebf4e3334cd1fbc7",
+      "unitsPerEm": 1000,
+      "baseVerticalAdvance": 1200,
+      "axes": 1,
+      "gvarPhantoms": true,
+      "composite": false
+    },
+    {
+      "file": "PhantomIntermediate.ttf",
+      "sha256": "13715e26f73428f124a1e2dc27876caf37d1d50249f59179f1cb0fb6af5958bf",
+      "source": "FontSizeAdjust/VerticalVariable.ttf",
+      "sourceSha256": "3a5117763cca66779effa671d5aab97cf563883ac709f381ebf4e3334cd1fbc7",
+      "unitsPerEm": 1000,
+      "baseVerticalAdvance": 1200,
+      "axes": 1,
+      "gvarPhantoms": true,
+      "composite": false
+    },
+    {
+      "file": "PhantomComposite.ttf",
+      "sha256": "37e149324c43437c8f6360f25fb66bdad832b5162d39c5652694e9826a3d35a7",
+      "source": "FontSizeAdjust/VerticalVariable.ttf",
+      "sourceSha256": "3a5117763cca66779effa671d5aab97cf563883ac709f381ebf4e3334cd1fbc7",
+      "unitsPerEm": 1000,
+      "baseVerticalAdvance": 1200,
+      "axes": 1,
+      "gvarPhantoms": true,
+      "composite": true
+    },
+    {
+      "file": "PhantomUseMyMetrics.ttf",
+      "sha256": "7e999112e995571a0e9831c8e3f9b57682a0733e139846f36287bde1744f9e1d",
+      "source": "FontSizeAdjust/VerticalVariable.ttf",
+      "sourceSha256": "3a5117763cca66779effa671d5aab97cf563883ac709f381ebf4e3334cd1fbc7",
+      "unitsPerEm": 1000,
+      "baseVerticalAdvance": 1200,
+      "axes": 1,
+      "gvarPhantoms": true,
+      "composite": true
+    },
+    {
+      "file": "PhantomLastMetrics.ttf",
+      "sha256": "58e458d40d4fac0abd7b986a4619615cc93dcbad77d267cf687c6cd5bcf477e0",
+      "source": "FontSizeAdjust/VerticalVariable.ttf",
+      "sourceSha256": "3a5117763cca66779effa671d5aab97cf563883ac709f381ebf4e3334cd1fbc7",
+      "unitsPerEm": 1000,
+      "baseVerticalAdvance": 1200,
+      "axes": 1,
+      "gvarPhantoms": true,
+      "composite": true
+    },
+    {
+      "file": "PhantomAvar.ttf",
+      "sha256": "15508421711ccf673de8866fa121b2052437af26bcbb9ea6af7668b913853512",
+      "source": "FontSizeAdjust/VerticalAvar.ttf",
+      "sourceSha256": "663d05a0eb986ba713d70368d7ea4d804399f043d74132a92bd8a4e38b7f55a9",
+      "unitsPerEm": 1000,
+      "baseVerticalAdvance": 1200,
+      "axes": 1,
+      "gvarPhantoms": true,
+      "composite": false
+    },
+    {
+      "file": "PhantomAvar2.ttf",
+      "sha256": "1ed2ec762f8dd119726c0d50a9e90f2c24ce37bee3ec3d45aa7ba12c31d67aae",
+      "source": "FontSizeAdjust/VerticalAvar2.ttf",
+      "sourceSha256": "dbd77f53de0782d41842193e09d3f838bebce29b04bd7a99c6991b4402782265",
+      "unitsPerEm": 1000,
+      "baseVerticalAdvance": 1200,
+      "axes": 1,
+      "gvarPhantoms": true,
+      "composite": false
+    },
+    {
+      "file": "PhantomMultiAxis.ttf",
+      "sha256": "49197493fcc3efd08f6291ad267ede44541459788fdb0bc4b67946b82c2d83b0",
+      "source": "FontSizeAdjust/VerticalVariable.ttf",
+      "sourceSha256": "3a5117763cca66779effa671d5aab97cf563883ac709f381ebf4e3334cd1fbc7",
+      "unitsPerEm": 1000,
+      "baseVerticalAdvance": 1200,
+      "axes": 2,
+      "gvarPhantoms": true,
+      "composite": false
+    },
+    {
+      "file": "PhantomWithVvar.ttf",
+      "sha256": "0b40f955730723deaa781846de841882cd94de497b83134a844c729421436292",
+      "source": "FontSizeAdjust/VerticalVariable.ttf",
+      "sourceSha256": "3a5117763cca66779effa671d5aab97cf563883ac709f381ebf4e3334cd1fbc7",
+      "unitsPerEm": 1000,
+      "baseVerticalAdvance": 1200,
+      "axes": 1,
+      "gvarPhantoms": true,
+      "composite": false
+    },
+    {
+      "file": "ZeroAdvance.ttf",
+      "sha256": "73aa0a02b9ea3cc74dfbab4942120763d18fba7dcd01dfad275e58ad5cdef8a9",
+      "source": "FontSizeAdjust/VerticalVariable.ttf",
+      "sourceSha256": "3a5117763cca66779effa671d5aab97cf563883ac709f381ebf4e3334cd1fbc7",
+      "unitsPerEm": 1000,
+      "baseVerticalAdvance": 0,
+      "axes": 0,
+      "gvarPhantoms": false,
+      "composite": false
+    },
+    {
+      "file": "MissingVertical.ttf",
+      "sha256": "b70e7ba36b595ee5e6408251ed12bf4a31ccf52bacfd1bdc9dd25d8f262b717c",
+      "source": "FontSizeAdjust/VerticalVariable.ttf",
+      "sourceSha256": "3a5117763cca66779effa671d5aab97cf563883ac709f381ebf4e3334cd1fbc7",
+      "unitsPerEm": 1000,
+      "baseVerticalAdvance": null,
+      "axes": 0,
+      "gvarPhantoms": false,
+      "composite": false
+    }
+  ]
+}

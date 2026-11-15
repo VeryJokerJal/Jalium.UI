@@ -16,6 +16,8 @@ public sealed class ScrollContentPresenter : ContentPresenter, IScrollInfo
             typeof(ScrollContentPresenter),
             new PropertyMetadata(false, OnCanContentScrollChanged));
 
+    internal ScrollViewer? ViewportOwner { get; set; }
+
     private IScrollInfo? _scrollInfo;
     private bool _canHorizontallyScroll;
     private bool _canVerticallyScroll;
@@ -230,6 +232,7 @@ public sealed class ScrollContentPresenter : ContentPresenter, IScrollInfo
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
+        if (ViewportOwner is not null) return base.MeasureOverride(availableSize);
         var content = Content as UIElement;
         if (content == null)
             return default(Size);
@@ -279,6 +282,7 @@ public sealed class ScrollContentPresenter : ContentPresenter, IScrollInfo
     /// <inheritdoc />
     protected override Size ArrangeOverride(Size finalSize)
     {
+        if (ViewportOwner is not null) return base.ArrangeOverride(finalSize);
         var content = Content as UIElement;
         if (content == null)
             return finalSize;

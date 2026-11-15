@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using Jalium.UI.Controls;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Tests;
 
@@ -10,6 +11,9 @@ public sealed class MacOSGeneratedTemplateLifetimeTests
     public void GeneratedTemplateDoesNotRetainItsLastNamedVisualOrData(string kind)
     {
         var owner = new GeneratedTemplateLifetimeView();
+        // CSS may be active before any template is instantiated in the app.
+        // Pending style work must not keep detached instances or their data alive.
+        Css.SetStyle(owner, "opacity:1");
         var template = Assert.IsAssignableFrom<FrameworkTemplate>(owner.Resources[kind]);
         var weak = CreateAndRelease(template);
         GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();

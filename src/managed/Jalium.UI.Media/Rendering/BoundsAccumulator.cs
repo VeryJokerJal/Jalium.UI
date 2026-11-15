@@ -64,6 +64,10 @@ internal sealed class BoundsAccumulator
     /// </summary>
     public Rect? GetBounds() => _unknown ? null : _accumulated;
 
+    internal double RasterScale => Math.Max(1, Math.Max(
+        Math.Sqrt(_currentMatrix.M11 * _currentMatrix.M11 + _currentMatrix.M12 * _currentMatrix.M12),
+        Math.Sqrt(_currentMatrix.M21 * _currentMatrix.M21 + _currentMatrix.M22 * _currentMatrix.M22)));
+
     /// <summary>
     /// Declares that bounds for this recording cannot be computed.
     /// Idempotent; further <see cref="AccumulateRect(Rect)"/> calls become

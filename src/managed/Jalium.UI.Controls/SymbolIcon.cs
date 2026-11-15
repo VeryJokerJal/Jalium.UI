@@ -1,92 +1,88 @@
-﻿using Jalium.UI.Interop;
+using Jalium.UI.Interop;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
-
 /// <summary>
-/// Represents an icon that uses a glyph from the Segoe icon font family as its content.
-/// Mirrors WinUI's Microsoft.UI.Xaml.Controls.SymbolIcon.
+/// Displays a semantic symbol using a replaceable theme template. An installed
+/// Segoe MDL2 font supplies the native glyph; otherwise a scalable outline is used.
 /// </summary>
+[TemplatePart(Name = "PART_Vector", Type = typeof(PathIcon))]
+[TemplatePart(Name = "PART_Glyph", Type = typeof(FontIcon))]
 public class SymbolIcon : IconElement
 {
-    // Segoe MDL2 Assets is available on a wider range of Windows installations.
-    // Our Symbol enum uses MDL2-compatible code points, so this keeps icons visible
-    // even when Segoe Fluent Icons is missing.
-    private static readonly FontFamily SymbolFontFamily = new("Segoe MDL2 Assets");
+    private static readonly Lazy<bool> s_hasSymbolFont = new(IsSymbolFontAvailable);
+    internal static bool HasNativeSymbolFont => s_hasSymbolFont.Value;
 
-    /// <summary>
-    /// Identifies the Symbol dependency property.
-    /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public static readonly DependencyProperty SymbolProperty =
-        DependencyProperty.Register(nameof(Symbol), typeof(Symbol), typeof(SymbolIcon),
-            new PropertyMetadata(Symbol.Cancel, OnSymbolChanged));
-
-    /// <summary>
-    /// Gets or sets the glyph code used as the icon content.
-    /// </summary>
+    public static readonly DependencyProperty SymbolProperty = DependencyProperty.Register(nameof(Symbol), typeof(Symbol), typeof(SymbolIcon), new PropertyMetadata(Symbol.Cancel, OnSymbolChanged));
+    private static readonly DependencyPropertyKey GeometryPropertyKey = DependencyProperty.RegisterReadOnly(nameof(Geometry), typeof(Geometry), typeof(SymbolIcon), new PropertyMetadata(null));
+    public static readonly DependencyProperty GeometryProperty = GeometryPropertyKey.DependencyProperty;
+    private static readonly DependencyPropertyKey GlyphPropertyKey = DependencyProperty.RegisterReadOnly(nameof(Glyph), typeof(string), typeof(SymbolIcon), new PropertyMetadata(string.Empty));
+    public static readonly DependencyProperty GlyphProperty = GlyphPropertyKey.DependencyProperty;
+    private static readonly DependencyPropertyKey UsesGlyphPropertyKey = DependencyProperty.RegisterReadOnly(nameof(UsesGlyph), typeof(bool), typeof(SymbolIcon), new PropertyMetadata(false));
+    public static readonly DependencyProperty UsesGlyphProperty = UsesGlyphPropertyKey.DependencyProperty;
+    /// <summary>Gets or sets the semantic symbol. Existing enum aliases retain their code points.</summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public Symbol Symbol
-    {
-        get => (Symbol)GetValue(SymbolProperty)!;
-        set => SetValue(SymbolProperty, value);
-    }
+    public Symbol Symbol { get => (Symbol)GetValue(SymbolProperty)!; set => SetValue(SymbolProperty, value); }
+    /// <summary>Gets the font-independent outline in a 2048-unit view box, or null for an unknown symbol.</summary>
+    public Geometry? Geometry => (Geometry? )GetValue(GeometryProperty);
+    /// <summary>Gets the valid Unicode glyph for a font-based replacement template.</summary>
+    public string Glyph => (string)GetValue(GlyphProperty)!;
+    /// <summary>Gets whether the installed system icon font can provide this symbol.</summary>
+    public bool UsesGlyph => (bool)GetValue(UsesGlyphProperty)!;
 
-    /// <summary>
-    /// Initializes a new instance of the SymbolIcon class.
-    /// </summary>
     public SymbolIcon()
     {
+        DefaultStyleKey = typeof(SymbolIcon);
+        UpdateSymbol();
     }
 
-    /// <summary>
-    /// Initializes a new instance of the SymbolIcon class using the specified symbol.
-    /// </summary>
-    public SymbolIcon(Symbol symbol)
+    public SymbolIcon(Symbol symbol) : this() => Symbol = symbol;
+    public override void OnApplyTemplate()
     {
-        Symbol = symbol;
+        base.OnApplyTemplate();
+        UpdateVisualStates(false);
     }
 
-    /// <inheritdoc />
-    protected override Size MeasureOverride(Size availableSize)
+    protected override void OnIsEnabledChanged(bool oldValue, bool newValue)
     {
-        // Default icon size: 20x20 (consistent with WinUI)
-        double size = 20;
-        return new Size(
-            Math.Min(size, availableSize.Width),
-            Math.Min(size, availableSize.Height));
+        base.OnIsEnabledChanged(oldValue, newValue);
+        UpdateVisualStates(true);
     }
 
-    /// <inheritdoc />
-    protected override void OnRender(DrawingContext drawingContext)
+    private void UpdateSymbol()
     {
-        var dc = drawingContext;
+        int code = (int)Symbol;
+        string glyph = System.Text.Rune.IsValid(code) ? char.ConvertFromUtf32(code) : string.Empty;
+        SetValue(GlyphPropertyKey, glyph);
+        SetValue(GeometryPropertyKey, SymbolIconGeometry.Get(Symbol));
+        SetValue(UsesGlyphPropertyKey, glyph.Length > 0 && s_hasSymbolFont.Value);
+        UpdateVisualStates(false);
+    }
 
-        if (RenderSize.Width <= 0 || RenderSize.Height <= 0) return;
+    private void UpdateVisualStates(bool transitions)
+    {
+        if (TemplateRootInternal is null)
+            return;
+        VisualStateManager.GoToState(this, IsEnabled ? "Normal" : "Disabled", transitions);
+        VisualStateManager.GoToState(this, UsesGlyph ? "Glyph" : Geometry is not null ? "Vector" : "Empty", transitions);
+    }
 
-        var glyph = char.ConvertFromUtf32((int)Symbol);
-        var foreground = GetEffectiveForeground();
-        double fontSize = Math.Min(RenderSize.Width, RenderSize.Height);
-
-        var ft = new FormattedText(glyph, SymbolFontFamily.Source, fontSize)
+    private static bool IsSymbolFontAvailable()
+    {
+        try
         {
-            Foreground = foreground,
-            MaxTextWidth = RenderSize.Width,
-            MaxTextHeight = RenderSize.Height
-        }.ApplyTextOptionsFrom(this);
-
-        // Measure with DirectWrite to get accurate glyph dimensions
-        TextMeasurement.MeasureText(ft);
-
-        // Center the glyph within the render area
-        double x = (RenderSize.Width - ft.Width) / 2;
-        double y = (RenderSize.Height - ft.Height) / 2;
-        dc.DrawText(ft, new Point(x, y));
+            return NativeMethods.FontFamilyIsAvailable("Segoe MDL2 Assets") != 0;
+        }
+        catch (DllNotFoundException)
+        {
+            return false;
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return false;
+        }
     }
 
-    private static void OnSymbolChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        if (d is SymbolIcon icon)
-            icon.InvalidateVisual();
-    }
+    private static void OnSymbolChanged(DependencyObject source, DependencyPropertyChangedEventArgs args) => ((SymbolIcon)source).UpdateSymbol();
 }

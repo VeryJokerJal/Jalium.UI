@@ -11,6 +11,7 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class Image : FrameworkElement, IUriContext
 {
+    private Border? _cssBorderPainter;
     private sealed class SourceFailureListener
     {
         private readonly WeakReference<Image> _owner;
@@ -102,6 +103,7 @@ public class Image : FrameworkElement, IUriContext
     /// </summary>
     private Size _lastNotifiedSourceSize;
     private bool _hasNotifiedSourceSize;
+    private CssImageIntrinsicSize _lastNotifiedCssIntrinsic;
 
     /// <summary>Identifies the routed event raised when the image DPI changes.</summary>
     public static readonly RoutedEvent DpiChangedEvent =
@@ -374,18 +376,16 @@ public class Image : FrameworkElement, IUriContext
         // never walk back. RequestBitmapDecode is idempotent and only enqueues work when a bigger
         // bucket is actually reachable, so calling it on every measure costs a lock acquisition.
         RequestBitmapDecode(availableSize);
-        if (!TryGetSourceSize(out _, out var imageSize)) return default;
+        var hasSourceSize = TryGetSourceSize(out var source, out var imageSize);
+        if (UsesCssIntrinsicSizing)
+            return CssReplacedImageSizing.Measure(this, hasSourceSize ? CssImageIntrinsicSize.FromSource(source!) : default,
+                hasSourceSize ? imageSize : default, availableSize, defaultObjectSize: hasSourceSize ? CssImageIntrinsicSize.ReplacedDefault : default(Size));
+        if (!hasSourceSize) return default;
         var insets = CssBoxMetrics.ContentInsets(this,
             CssLayout?.ContainingWidthCache ?? availableSize.Width);
         var contentAvailable = new Size(
             Math.Max(0, availableSize.Width - insets.Left - insets.Right),
             Math.Max(0, availableSize.Height - insets.Top - insets.Bottom));
-        if (EffectiveCssObjectFit() is not CssObjectFit.Unspecified)
-        {
-            // object-fit sizes the content, not the replaced element's own box.
-            return new Size(imageSize.Width + insets.Left + insets.Right,
-                imageSize.Height + insets.Top + insets.Bottom);
-        }
         var measured = CalculateStretchSize(imageSize, contentAvailable);
         return new Size(measured.Width + insets.Left + insets.Right,
             measured.Height + insets.Top + insets.Bottom);
@@ -420,11 +420,7 @@ public class Image : FrameworkElement, IUriContext
         if (contentWidth <= 0 || contentHeight <= 0) return;
         var content = new Rect(insets.Left, insets.Top, contentWidth, contentHeight);
         var fit = EffectiveCssObjectFit();
-        var stretchedSize = fit == CssObjectFit.Unspecified
-            ? CalculateStretchSize(imageSize, content.Size)
-            : CssImageObjectProperties.ConcreteSize(imageSize, content.Size, fit);
-        if (stretchedSize.Width <= 0 || stretchedSize.Height <= 0) return;
-        var drawn = CssImageObjectProperties.PositionedRect(this, content, stretchedSize);
+        var drawn = ReplacedContentRect(imageSize, content);
         if (drawn.IsEmpty) return;
         var mode = RenderOptions.GetBitmapScalingMode(this);
         if (mode == BitmapScalingMode.Unspecified)
@@ -432,13 +428,15 @@ public class Image : FrameworkElement, IUriContext
 
         // Replaced content clips to its content box even when overflow:visible
         // or a native ClipToBounds value leaves the element box unclipped.
-        var clipContent = CssImageObjectProperties.NeedsContentClip(this, fit, content, RenderSize);
-        if (clipContent) drawingContext.PushClip(new RectangleGeometry(content));
+        var radius = CssBorderRadiusProperties.Get(this);
+        var clipContent = radius is not null || CssImageObjectProperties.NeedsContentClip(this, fit, content, RenderSize);
+        if (clipContent) drawingContext.PushClip(radius is null ? new RectangleGeometry(content)
+            : new CssRoundedRectangleGeometry(content, radius.Resolve(RenderSize).Inset(insets)));
         long previousDraw = source.LastDrawnTickMs;
         _hasOwnSourceDrawing = ReferenceEquals(Source, source);
         try
         {
-            drawingContext.DrawImage(source, drawn, mode);
+            drawingContext.DrawImage(source is SvgImage svg ? svg.ImageForViewport(new Size(drawn.Width, drawn.Height)) : source, drawn, mode);
         }
         finally
         {
@@ -458,6 +456,19 @@ public class Image : FrameworkElement, IUriContext
         // OnPostRender. Include that draw without changing the render-entry tick.
         if (_hasOwnSourceDrawing && Source is { } source && source.LastDrawnTickMs > LastRenderedTickMs)
             _lastOwnSourceDrawnTickMs = source.LastDrawnTickMs;
+        CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter);
+    }
+
+    internal Rect ReplacedContentRect(Size naturalSize, Rect content, CssImageIntrinsicSize? intrinsic = null)
+    {
+        var fit = EffectiveCssObjectFit();
+        var size = fit == CssObjectFit.Unspecified
+            ? CalculateStretchSize(naturalSize, content.Size)
+            : intrinsic is { } dimensions ? dimensions.ObjectSize(content.Size, fit)
+                : Source is SvgImage svg ? CssImageIntrinsicSize.FromSource(svg).ObjectSize(content.Size, fit)
+                : CssImageObjectProperties.ConcreteSize(naturalSize, content.Size, fit);
+        return size.Width <= 0 || size.Height <= 0 ? Rect.Empty
+            : CssImageObjectProperties.PositionedRect(this, content, size);
     }
 
     #region Property Changed Callbacks
@@ -478,6 +489,7 @@ public class Image : FrameworkElement, IUriContext
             // its FIRST publication owes.
             image._hasNotifiedSourceSize = false;
             image._lastNotifiedSourceSize = default;
+            image._lastNotifiedCssIntrinsic = default;
 
             // Unsubscribe from old source's async load / frame events
             if (e.OldValue is ImageSource oldSource)
@@ -706,6 +718,12 @@ public class Image : FrameworkElement, IUriContext
         try
         {
             ApplySourceBaseUri(source);
+            if (source is SvgImage && UsesCssIntrinsicSizing)
+            {
+                if (!CssImageIntrinsicSize.IsAvailable(source)) return false;
+                imageSize = CssImageIntrinsicSize.FromSource(source).DefaultSize(CssImageIntrinsicSize.ReplacedDefault);
+                return true;
+            }
             var width = source.Width;
             var height = source.Height;
             if (!(width > 0) || !(height > 0))
@@ -727,6 +745,11 @@ public class Image : FrameworkElement, IUriContext
             return false;
         }
     }
+
+    internal bool UsesCssIntrinsicSizing => EffectiveCssObjectFit() != CssObjectFit.Unspecified;
+    internal double CssNaturalRatio => UsesCssIntrinsicSizing && Source is { } source
+        ? CssImageIntrinsicSize.FromSource(source).Ratio
+        : TryGetSourceSize(out _, out var size) && size.Height > 0 ? size.Width / size.Height : 0;
 
     /// <summary>
     /// The intrinsic size of a URI-backed <see cref="BitmapImage"/> that has not published any
@@ -789,11 +812,17 @@ public class Image : FrameworkElement, IUriContext
         // An unknown size counts as changed: that is the state before intrinsics arrive, and
         // skipping measure there would leave a zero-sized element nothing ever re-measures.
         var hasSize = TryGetSourceSize(out _, out var sourceSize);
+        // Equal completed fallback sizes can still carry different CSS natural
+        // axes/ratios (e.g. dimensionless SVG versus a fixed 300x150 SVG).
+        var intrinsic = UsesCssIntrinsicSizing && hasSize
+            ? CssImageIntrinsicSize.FromSource(Source!) : default;
         var layoutInputChanged =
-            !hasSize || !_hasNotifiedSourceSize || !sourceSize.Equals(_lastNotifiedSourceSize);
+            !hasSize || !_hasNotifiedSourceSize || !sourceSize.Equals(_lastNotifiedSourceSize) ||
+            intrinsic != _lastNotifiedCssIntrinsic;
 
         _hasNotifiedSourceSize = hasSize;
         _lastNotifiedSourceSize = hasSize ? sourceSize : default;
+        _lastNotifiedCssIntrinsic = intrinsic;
 
         if (layoutInputChanged)
         {
@@ -924,7 +953,8 @@ public class Image : FrameworkElement, IUriContext
             {
                 var scaleX = double.IsInfinity(maxWidth) ? double.MaxValue : maxWidth / imageSize.Width;
                 var scaleY = double.IsInfinity(maxHeight) ? double.MaxValue : maxHeight / imageSize.Height;
-                var scale = ApplyStretchDirection(Math.Min(scaleX, scaleY), StretchDirection);
+                var scale = double.IsInfinity(maxWidth) && double.IsInfinity(maxHeight)
+                    ? 1 : ApplyStretchDirection(Math.Min(scaleX, scaleY), StretchDirection);
                 width = imageSize.Width * scale;
                 height = imageSize.Height * scale;
                 break;

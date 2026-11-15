@@ -306,6 +306,7 @@ public class PrintDialog
     /// <param name="description">A description used as the print job name.</param>
     private void PrintVisualInternal(Visual visual, string description)
     {
+        using var printMedia = Styling.Css.EnterPrintMedia(visual);
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
         {
             PrintVisualWithPortal(visual, description);
@@ -374,6 +375,9 @@ public class PrintDialog
     /// <param name="description">A description used as the print job name.</param>
     private void PrintDocumentInternal(DocumentPaginator documentPaginator, string description)
     {
+        using var printMedia = documentPaginator.Source is DependencyObject source
+            ? Styling.Css.EnterPrintMedia(source)
+            : default;
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
         {
             PrintDocumentWithPortal(documentPaginator, description);

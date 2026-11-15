@@ -1,0 +1,157 @@
+<ResourceDictionary xmlns="http://schemas.jalium.ui/2024"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Style TargetType="ColorSpectrum">
+        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="ColorSpectrum">
+                <Border x:Name="PART_Root" Background="Transparent" BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="1" CornerRadius="6">
+                    <VisualStateManager.VisualStateGroups>
+                        <VisualStateGroup x:Name="CommonStates">
+                            <VisualState x:Name="Normal" />
+                            <VisualState x:Name="Disabled"><VisualState.Setters><Setter TargetName="PART_Root" Property="Opacity" Value="0.56" /></VisualState.Setters></VisualState>
+                        </VisualStateGroup>
+                        <VisualStateGroup x:Name="FocusStates">
+                            <VisualState x:Name="Unfocused" />
+                            <VisualState x:Name="Focused"><VisualState.Setters><Setter TargetName="PART_Root" Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" /></VisualState.Setters></VisualState>
+                        </VisualStateGroup>
+                        <VisualStateGroup x:Name="ShapeStates"><VisualState x:Name="Box" /><VisualState x:Name="Ring" /></VisualStateGroup>
+                    </VisualStateManager.VisualStateGroups>
+                    <ColorSpectrumSurface x:Name="PART_Surface" Hue="{TemplateBinding Hue}"
+                                          Saturation="{TemplateBinding Saturation}" Value="{TemplateBinding Value}"
+                                          Shape="{TemplateBinding Shape}" SpectrumSize="{TemplateBinding SpectrumSize}"
+                                          BorderBrush="{TemplateBinding BorderBrush}" />
+                </Border>
+            </ControlTemplate>
+        </Setter>
+    </Style>
+    <Style TargetType="ColorRamp">
+        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
+        <Setter Property="Height" Value="20" /><Setter Property="MinHeight" Value="0" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="ColorRamp">
+                <Border x:Name="PART_Root" Background="Transparent" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="0" Padding="0">
+                    <Grid>
+                        <ColorPreviewSurface x:Name="PART_Checker" Margin="8,2,8,2" />
+                        <Border x:Name="PART_Track" Background="{TemplateBinding RampBrush}" CornerRadius="2"
+                                BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" Margin="8,2,8,2" />
+                        <Grid x:Name="PART_Thumb" Width="16" HorizontalAlignment="Left">
+                            <Border x:Name="PART_ThumbIndicator" Background="{TemplateBinding Foreground}" BorderBrush="White" BorderThickness="1"
+                                    CornerRadius="2" Width="4" HorizontalAlignment="Center" />
+                        </Grid>
+                    </Grid>
+                </Border>
+                <ControlTemplate.Triggers>
+                    <Trigger Property="Orientation" Value="{x:Static Orientation.Vertical}">
+                        <Setter TargetName="PART_Checker" Property="Margin" Value="2,8,2,8" />
+                        <Setter TargetName="PART_Track" Property="Margin" Value="2,8,2,8" />
+                        <Setter TargetName="PART_Thumb" Property="Width" Value="Auto" />
+                        <Setter TargetName="PART_Thumb" Property="Height" Value="16" />
+                        <Setter TargetName="PART_Thumb" Property="HorizontalAlignment" Value="Stretch" />
+                        <Setter TargetName="PART_Thumb" Property="VerticalAlignment" Value="Top" />
+                        <Setter TargetName="PART_ThumbIndicator" Property="Width" Value="Auto" />
+                        <Setter TargetName="PART_ThumbIndicator" Property="Height" Value="4" />
+                        <Setter TargetName="PART_ThumbIndicator" Property="HorizontalAlignment" Value="Stretch" />
+                        <Setter TargetName="PART_ThumbIndicator" Property="VerticalAlignment" Value="Center" />
+                    </Trigger>
+                    <Trigger Property="IsEnabled" Value="False"><Setter TargetName="PART_Root" Property="Opacity" Value="0.56" /></Trigger>
+                    <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter TargetName="PART_Track" Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" /></Trigger>
+                </ControlTemplate.Triggers>
+            </ControlTemplate>
+        </Setter>
+        <Style.Triggers>
+            <Trigger Property="Orientation" Value="{x:Static Orientation.Vertical}"><Setter Property="Width" Value="20" /><Setter Property="Height" Value="Auto" /></Trigger>
+        </Style.Triggers>
+    </Style>
+    <Style TargetType="ColorPreview">
+        <Setter Property="Width" Value="40" /><Setter Property="Height" Value="40" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" /><Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="ColorPreview">
+                <Border BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" ClipToBounds="True">
+                    <ColorPreviewSurface x:Name="PART_Surface" Color="{TemplateBinding Color}" />
+                </Border>
+            </ControlTemplate>
+        </Setter>
+    </Style>
+    <Style TargetType="ColorPicker">
+        <Setter Property="HorizontalAlignment" Value="Left" />
+        <Setter Property="ErrorForeground" Value="{ThemeResource ColorPickerErrorTextBrush}" />
+        <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Padding" Value="10,6" />
+        <Setter Property="CornerRadius" Value="10" />
+        <Setter Property="MinHeight" Value="36" />
+        <Setter Property="TransitionProperty" Value="Background, BorderBrush" />
+        <Setter Property="TransitionDuration" Value="0:0:0.12" />
+        <Setter Property="TransitionTimingFunction" Value="Recommended" />
+
+        <Setter Property="Template">
+            <ControlTemplate TargetType="ColorPicker">
+                <Border x:Name="PART_Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}" CornerRadius="{TemplateBinding CornerRadius}">
+                    <VisualStateManager.VisualStateGroups>
+                        <VisualStateGroup x:Name="LayoutStates"><VisualState x:Name="Expanded" /><VisualState x:Name="Compact" /></VisualStateGroup>
+                        <VisualStateGroup x:Name="ValidationStates"><VisualState x:Name="Valid" /><VisualState x:Name="Invalid" /></VisualStateGroup>
+                    </VisualStateManager.VisualStateGroups>
+                    <StackPanel MaxWidth="{TemplateBinding EffectiveSpectrumSize}" Spacing="{TemplateBinding EffectiveSpacing}" HorizontalAlignment="Left">
+                        <ColorSpectrum x:Name="PART_Spectrum" SpectrumSize="{TemplateBinding EffectiveSpectrumSize}" Shape="{TemplateBinding ColorSpectrumShape}"
+                                       Hue="{Binding Hue, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                                       Saturation="{Binding Saturation, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                                       Value="{Binding Value, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                                       BorderBrush="{TemplateBinding BorderBrush}" AutomationProperties.Name="Color spectrum" />
+                        <ColorRamp x:Name="PART_HueSlider" Minimum="0" Maximum="360" SmallChange="1" LargeChange="30"
+                                   Height="{TemplateBinding EffectiveSliderHeight}" MinHeight="0" Mode="Hue"
+                                   Value="{Binding Hue, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                                   Foreground="{TemplateBinding Foreground}" BorderBrush="{TemplateBinding BorderBrush}" AutomationProperties.Name="Hue" />
+                        <ColorRamp x:Name="PART_AlphaSlider" Minimum="0" Maximum="255" SmallChange="1" LargeChange="16"
+                                   Height="{TemplateBinding EffectiveSliderHeight}" MinHeight="0" Mode="Alpha" Color="{TemplateBinding Color}"
+                                   Value="{Binding Alpha, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                                   Foreground="{TemplateBinding Foreground}" BorderBrush="{TemplateBinding BorderBrush}" AutomationProperties.Name="Opacity" />
+                        <Grid x:Name="PART_DetailsRow">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                            <ColorPreview x:Name="PART_Preview" Color="{TemplateBinding Color}" BorderBrush="{TemplateBinding BorderBrush}" Margin="0,0,8,0" />
+                            <TextBox x:Name="PART_HexTextBox" Grid.Column="1" MinWidth="0" MinHeight="28" MaxLength="9" VerticalAlignment="Center"
+                                     Text="{Binding HexText, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                     Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                     Foreground="{TemplateBinding Foreground}" FontFamily="{TemplateBinding FontFamily}"
+                                     FontSize="{TemplateBinding FontSize}" FontWeight="{TemplateBinding FontWeight}"
+                                     AutomationProperties.Name="Hex color" AutomationProperties.HelpText="{TemplateBinding HexErrorText}" />
+                        </Grid>
+                        <TextBlock x:Name="PART_HexError" Visibility="Collapsed" Text="{TemplateBinding HexErrorText}" Foreground="{TemplateBinding ErrorForeground}" TextWrapping="Wrap" FontSize="{TemplateBinding FontSize}" AutomationProperties.LiveSetting="Polite" />
+                    </StackPanel>
+                </Border>
+                <ControlTemplate.Triggers>
+                    <Trigger Property="IsColorSpectrumVisible" Value="False"><Setter TargetName="PART_Spectrum" Property="Visibility" Value="Collapsed" /></Trigger>
+                    <Trigger Property="IsColorSliderVisible" Value="False"><Setter TargetName="PART_HueSlider" Property="Visibility" Value="Collapsed" /></Trigger>
+                    <Trigger Property="ShowAlphaSlider" Value="False"><Setter TargetName="PART_AlphaSlider" Property="Visibility" Value="Collapsed" /></Trigger>
+                    <Trigger Property="ShowPreview" Value="False"><Setter TargetName="PART_Preview" Property="Visibility" Value="Collapsed" /></Trigger>
+                    <Trigger Property="ShowHexInput" Value="False"><Setter TargetName="PART_HexTextBox" Property="Visibility" Value="Collapsed" /></Trigger>
+                    <Trigger Property="IsCompact" Value="True"><Setter TargetName="PART_DetailsRow" Property="Visibility" Value="Collapsed" /></Trigger>
+                    <Trigger Property="HasHexError" Value="True">
+                        <Setter TargetName="PART_HexError" Property="Visibility" Value="Visible" />
+                        <Setter TargetName="PART_HexTextBox" Property="BorderBrush" Value="{ThemeResource SystemFillColorCriticalBrush}" />
+                    </Trigger>
+                </ControlTemplate.Triggers>
+            </ControlTemplate>
+        </Setter>
+
+        <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />
+            </Trigger>
+            <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderDisabled}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+</ResourceDictionary>

@@ -138,30 +138,34 @@ internal static class MacOSFileDialogs
         if (owner.AttachedSheet != null)
             throw new InvalidOperationException("The owner window already has an attached sheet.");
 
+        var application = NSApplication.SharedApplication;
         bool ownerClosed = false;
         using var closing = NSNotificationCenter.DefaultCenter.AddObserver(NSWindow.WillCloseNotification, _ =>
         {
             ownerClosed = true;
             session.Stop();
+            // Closing the owner can detach its sheet without delivering the
+            // completion callback. End our owner loop before cleaning the sheet.
+            if (application.ModalWindow?.Handle == owner.Handle)
+                application.StopModalWithCode((nint)NSModalResponse.Cancel);
             ScheduleCancel(panel);
         }, owner);
         try
         {
-            // Let NSSavePanel establish its own sheet session before entering
-            // AppKit's modal loop. That loop can service sheet completion when
-            // ShowDialog is entered from the main queue; a nested managed
-            // dispatcher wait cannot service that completion reliably.
-            var application = NSApplication.SharedApplication;
+            // The owner runs the event loop; NSSavePanel owns its sheet session.
+            // Running another modal session for the panel itself prevents its
+            // remote browser from enabling confirmation. Keep AppKit processing
+            // sheet completion when ShowDialog starts on the main queue.
             bool completed = false;
             NSModalResponse response = NSModalResponse.Cancel;
             panel.BeginSheet(owner, result =>
             {
                 completed = true;
                 response = (NSModalResponse)(long)result;
-                if (application.ModalWindow?.Handle == panel.Handle)
+                if (application.ModalWindow?.Handle == owner.Handle)
                     application.StopModalWithCode((nint)response);
             });
-            if (!completed) application.RunModalForWindow(panel);
+            if (!completed) application.RunModalForWindow(owner);
             return ownerClosed ? NSModalResponse.Cancel : response;
         }
         finally

@@ -1,3 +1,5 @@
+using Jalium.UI.Styling;
+
 namespace Jalium.UI.Controls;
 
 /// <summary>Main-axis direction of a <see cref="FlexPanel"/>.</summary>
@@ -57,12 +59,12 @@ public enum FlexContentAlign
 /// through grow/shrink factors with min/max freezing, lines wrap, and justify/align
 /// distribute free space. Attached Grow/Shrink/Basis/AlignSelf/Order configure children.
 /// </summary>
-public class FlexPanel : Panel
+public partial class FlexPanel : Panel
 {
-    private readonly Panel? _cssLayoutHost;
+    private readonly FrameworkElement? _cssLayoutHost;
     public FlexPanel() { }
-    internal FlexPanel(Panel cssLayoutHost) => _cssLayoutHost = cssLayoutHost;
-    private UIElementCollection LayoutChildren => _cssLayoutHost?.InternalChildren ?? InternalChildren;
+    internal FlexPanel(FrameworkElement cssLayoutHost) => _cssLayoutHost = cssLayoutHost;
+    private CssPanelChildren LayoutChildren => new(_cssLayoutHost ?? this);
     private object? LayoutValue(DependencyProperty property) => (_cssLayoutHost ?? this).GetValue(property);
     internal Size MeasureCssLayout(Size available) => MeasureOverride(available);
     internal Size ArrangeCssLayout(Size finalSize) => ArrangeOverride(finalSize);
@@ -154,8 +156,12 @@ public class FlexPanel : Panel
             new PropertyMetadata(double.NaN, OnItemPropertyChanged), FrameworkElement.IsWidthHeightValid);
 
     internal static readonly DependencyProperty CssBasisProperty =
-        DependencyProperty.RegisterAttached("CssBasis", typeof(Jalium.UI.Styling.CssLength?), typeof(FlexPanel),
+        DependencyProperty.RegisterAttached("CssBasis", typeof(object), typeof(FlexPanel),
             new PropertyMetadata(null, OnItemPropertyChanged));
+
+    internal static readonly DependencyProperty CssContentBasisProperty =
+        DependencyProperty.RegisterAttached("CssContentBasis", typeof(bool), typeof(FlexPanel),
+            new PropertyMetadata(false, OnItemPropertyChanged));
 
     public static readonly DependencyProperty AlignSelfProperty =
         DependencyProperty.RegisterAttached("AlignSelf", typeof(FlexAlign), typeof(FlexPanel),
@@ -251,10 +257,10 @@ public class FlexPanel : Panel
             return;
         }
 
-        var parent = child.VisualParent as Panel;
+        var parent = child.VisualParent as FrameworkElement;
         if (parent is null && child is FrameworkElement fe)
         {
-            parent = fe.Parent as Panel;
+            parent = fe.Parent as FrameworkElement;
         }
 
         parent?.InvalidateMeasure();
@@ -293,7 +299,8 @@ public class FlexPanel : Panel
         public UIElement Element;
         public double Grow, Shrink;
         public double MinMain, MaxMain;
-        public double BaseMain;    // clamped hypothetical main size (margin box)
+        public double BaseMain;    // hypothetical main size (margin box)
+        public double FlexBaseMain, InnerBaseMain, MainMargin;
         public double TargetMain;  // resolved main size (margin box)
         public double OuterCross;  // desired cross size after the final measure
         public double OriginalCross; // first-round cross size for arrange rewrapping
@@ -303,6 +310,8 @@ public class FlexPanel : Panel
         public FlexAlign Align;
         public bool Frozen;
         public bool AutoBasis;
+        public bool DefiniteHeight;
+        public bool OwnDefiniteHeight;
         public bool Collapsed;
         public bool AutoMainStart, AutoMainEnd;
         public bool AutoCrossStart, AutoCrossEnd;
@@ -329,6 +338,8 @@ public class FlexPanel : Panel
     private FlexLine[]? _lines;
     private int _lineCount;
     private Size _lastLayoutAvailable;
+    private Size _lastContainingBlock;
+    private bool _lastMainWasIndefinite;
 
     private static double SanitizeSpacing(double value)
         => double.IsNaN(value) || double.IsInfinity(value) || value < 0 ? 0 : value;
@@ -573,7 +584,17 @@ public class FlexPanel : Panel
         var contentAvailable = Jalium.UI.Styling.CssBoxMetrics.InnerSize(availableSize, insets);
         var axis = new FlexAxis(Direction, Wrap, owner.FlowDirection);
         var mainAvailable = axis.Main(contentAvailable);
+        var flexAvailable = mainAvailable;
+        if (CalculatedIndefiniteMain(owner, axis))
+            mainAvailable = IndefiniteMainLimit(owner, insets);
         var crossAvailable = axis.Cross(contentAvailable);
+        var intrinsicMain = axis.Horizontal &&
+            (double.IsPositiveInfinity(mainAvailable) || owner.CssIntrinsicMeasure);
+        var minimumMain = intrinsicMain && axis.Horizontal && mainAvailable == 0;
+        var containingBlock = intrinsicMain || CalculatedIndefiniteMain(owner, axis)
+            ? axis.Size(double.PositiveInfinity, crossAvailable) : contentAvailable;
+        containingBlock = ItemContainingBlock(owner, axis, containingBlock);
+        _lastMainWasIndefinite = intrinsicMain || double.IsPositiveInfinity(mainAvailable);
         var rowGap = Jalium.UI.Styling.CssGapProperties.Resolve(owner, true, contentAvailable.Height);
         var columnGap = Jalium.UI.Styling.CssGapProperties.Resolve(owner, false, contentAvailable.Width);
         var mainGap = SanitizeSpacing(axis.MainGap(rowGap, columnGap));
@@ -584,7 +605,10 @@ public class FlexPanel : Panel
             alignItems = FlexAlign.Stretch;
         }
 
-        CollectItems(axis, mainAvailable, crossAvailable, alignItems);
+        CollectItems(axis, containingBlock, crossAvailable, alignItems);
+        var intrinsicMainSize = intrinsicMain
+            ? IntrinsicMainSize(axis, containingBlock, minimumMain, mainGap) : double.NaN;
+        if (intrinsicMain) mainAvailable = flexAvailable = intrinsicMainSize;
         BreakLinesPreservingItems(mainAvailable, mainGap, collapsedRound: false);
 
         var items = _items!;
@@ -592,20 +616,14 @@ public class FlexPanel : Panel
         for (var lineIndex = 0; lineIndex < _lineCount; lineIndex++)
         {
             ref var line = ref lines[lineIndex];
-            ResolveFlexibleLengths(ref line, mainAvailable, mainGap, collapsedRound: false);
+            ResolveFlexibleLengths(ref line, flexAvailable, mainGap, collapsedRound: false);
 
             // Final measure at the resolved main size; the cross constraint is the panel's.
             double usedMain = 0;
             for (var i = line.Start; i < line.Start + line.Count; i++)
             {
                 ref var item = ref items[i];
-                // Auto-basis items that did not flex keep their natural measure; everything
-                // else re-measures at the resolved size (same-constraint calls short-circuit
-                // inside UIElement.Measure).
-                if (!item.AutoBasis || Math.Abs(item.TargetMain - item.BaseMain) > 0.001)
-                {
-                    item.Element.Measure(axis.Size(item.TargetMain, crossAvailable));
-                }
+                MeasureItem(item, axis, crossAvailable, containingBlock, owner.CssIntrinsicMeasure && !axis.Horizontal);
 
                 item.OuterCross = axis.Cross(item.Element.DesiredSize);
                 item.OriginalCross = item.OuterCross;
@@ -635,14 +653,13 @@ public class FlexPanel : Panel
             for (var lineIndex = 0; lineIndex < _lineCount; lineIndex++)
             {
                 ref var line = ref lines[lineIndex];
-                ResolveFlexibleLengths(ref line, mainAvailable, mainGap, collapsedRound: true);
+                ResolveFlexibleLengths(ref line, flexAvailable, mainGap, collapsedRound: true);
                 double usedMain = 0;
                 for (var i = line.Start; i < line.Start + line.Count; i++)
                 {
                     ref var item = ref items[i];
                     if (item.Collapsed) continue;
-                    if (!item.AutoBasis || Math.Abs(item.TargetMain - item.BaseMain) > 0.001)
-                        item.Element.Measure(axis.Size(item.TargetMain, crossAvailable));
+                    MeasureItem(item, axis, crossAvailable, containingBlock, owner.CssIntrinsicMeasure && !axis.Horizontal);
                     item.OuterCross = axis.Cross(item.Element.DesiredSize);
                     if (axis.Horizontal && item.Align is FlexAlign.Baseline or FlexAlign.LastBaseline)
                         item.Baseline = MeasureBaseline(item.Element, item.OuterCross,
@@ -655,25 +672,29 @@ public class FlexPanel : Panel
             }
         }
 
-        // Desired size follows the content-based principle: growth never inflates it,
-        // shrink reports the shrunken size, frozen mins report the true overflow.
+        // Finite layout reports its occupied size; intrinsic sizing reports the
+        // contributions, even when fractional factors leave unused free space.
         double desiredMain = 0;
         double desiredCross = 0;
         for (var lineIndex = 0; lineIndex < _lineCount; lineIndex++)
         {
             ref readonly var line = ref lines[lineIndex];
             desiredMain = Math.Max(desiredMain, Math.Min(line.BaseMain, line.UsedMain));
-            desiredCross += line.CrossSize;
+            if (owner.CssIntrinsicMeasure && !axis.Horizontal && crossAvailable == 0)
+                desiredCross = Math.Max(desiredCross, line.CrossSize);
+            else desiredCross += line.CrossSize;
         }
 
-        if (_lineCount > 1)
+        if (_lineCount > 1 && !(owner.CssIntrinsicMeasure && !axis.Horizontal && crossAvailable == 0))
         {
             desiredCross += crossGap * (_lineCount - 1);
         }
+        if (intrinsicMain) desiredMain = intrinsicMainSize;
 
         owner.MeasureCssLayoutAbsoluteChildren(availableSize);
 
-        _lastLayoutAvailable = contentAvailable;
+        _lastLayoutAvailable = axis.Size(mainAvailable, crossAvailable);
+        _lastContainingBlock = containingBlock;
         var desired = axis.Size(desiredMain, desiredCross);
         return new Size(desired.Width + insets.Left + insets.Right,
             desired.Height + insets.Top + insets.Bottom);
@@ -687,7 +708,15 @@ public class FlexPanel : Panel
         var contentFinal = Jalium.UI.Styling.CssBoxMetrics.InnerSize(finalSize, insets);
         var axis = new FlexAxis(Direction, Wrap, owner.FlowDirection);
         var mainFinal = axis.Main(contentFinal);
+        var layoutMain = CalculatedIndefiniteMain(owner, axis) ? IndefiniteMainLimit(owner, insets) : mainFinal;
         var crossFinal = axis.Cross(contentFinal);
+        var heightBasis = owner.CssParentBox?.ContainingBlock.Height ??
+            owner.CssNativeBox?.ContainingBlock.Height ?? contentFinal.Height;
+        var mainIndefinite = _lastMainWasIndefinite &&
+            (axis.Horizontal || !owner.CssHasDefiniteHeight(heightBasis));
+        var containingBlock = mainIndefinite
+            ? axis.Size(double.PositiveInfinity, crossFinal) : contentFinal;
+        containingBlock = ItemContainingBlock(owner, axis, containingBlock);
         var rowGap = Jalium.UI.Styling.CssGapProperties.Resolve(owner, true, contentFinal.Height);
         var columnGap = Jalium.UI.Styling.CssGapProperties.Resolve(owner, false, contentFinal.Width);
         var mainGap = SanitizeSpacing(axis.MainGap(rowGap, columnGap));
@@ -697,38 +726,31 @@ public class FlexPanel : Panel
         {
             owner.ArrangeCssLayoutAbsoluteChildren(finalSize);
             _lastLayoutAvailable = contentFinal;
+            _lastContainingBlock = containingBlock;
             return finalSize;
         }
 
         // Alignment and track allocation can change the available box after Measure.
         // Re-resolve flex lengths and remeasure at the final constraints: wrapped
         // content and percentage-sized descendants can change their cross size.
-        var mainChanged = Math.Abs(mainFinal - axis.Main(_lastLayoutAvailable)) > 0.001;
+        var previousMain = axis.Main(_lastLayoutAvailable);
+        var mainChanged = layoutMain != previousMain && Math.Abs(layoutMain - previousMain) > 0.001;
         var crossChanged = Math.Abs(crossFinal - axis.Cross(_lastLayoutAvailable)) > 0.001;
-        var constraintChanged = mainChanged || crossChanged;
+        var containingChanged = _lastContainingBlock != containingBlock;
+        var constraintChanged = mainChanged || crossChanged || containingChanged;
         if (_hasCollapsedItems || constraintChanged)
         {
             var crossConstraint = crossFinal;
             if (constraintChanged)
             {
-                // Percentage and math bases use the container's final inner main
-                // size. A basis that becomes indefinite falls back to content.
-                for (var i = 0; i < _itemCount; i++)
-                {
-                    ref var item = ref _items[i];
-                    var basis = ResolveBasis(item.Element, item.Element as FrameworkElement, mainFinal);
-                    item.AutoBasis = double.IsNaN(basis);
-                    if (item.AutoBasis)
-                    {
-                        item.Element.Measure(axis.Size(double.PositiveInfinity, crossConstraint));
-                        basis = axis.Main(item.Element.DesiredSize);
-                    }
-                    item.BaseMain = Math.Clamp(basis, item.MinMain, item.MaxMain);
-                }
+                // Percentages, margins, intrinsic minima and hypothetical sizes
+                // all use the final container, independently of the solved slots.
+                var alignItems = AlignItems == FlexAlign.Auto ? FlexAlign.Stretch : AlignItems;
+                CollectItems(axis, containingBlock, crossConstraint, alignItems);
             }
             if (_hasCollapsedItems)
             {
-                BreakLinesPreservingItems(mainFinal, mainGap, collapsedRound: false);
+                BreakLinesPreservingItems(layoutMain, mainGap, collapsedRound: false);
                 double originalCross = crossGap * Math.Max(0, _lineCount - 1);
                 for (var lineIndex = 0; lineIndex < _lineCount; lineIndex++)
                 {
@@ -738,7 +760,7 @@ public class FlexPanel : Panel
                     {
                         if (constraintChanged)
                         {
-                            _items[i].Element.Measure(axis.Size(_items[i].TargetMain, crossConstraint));
+                            MeasureItem(_items[i], axis, crossConstraint, containingBlock);
                             _items[i].OriginalCross = axis.Cross(_items[i].Element.DesiredSize);
                             if (axis.Horizontal && _items[i].Align is FlexAlign.Baseline or FlexAlign.LastBaseline)
                                 _items[i].OriginalBaseline = MeasureBaseline(
@@ -766,7 +788,7 @@ public class FlexPanel : Panel
                         if (_items[i].Collapsed) _items[i].StrutCross = strut;
                 }
             }
-            BreakLinesPreservingItems(mainFinal, mainGap, collapsedRound: _hasCollapsedItems);
+            BreakLinesPreservingItems(layoutMain, mainGap, collapsedRound: _hasCollapsedItems);
             for (var lineIndex = 0; lineIndex < _lineCount; lineIndex++)
             {
                 ref var line = ref _lines![lineIndex];
@@ -777,7 +799,7 @@ public class FlexPanel : Panel
                     if (_hasCollapsedItems && _items[i].Collapsed) continue;
                     if (constraintChanged)
                     {
-                        _items[i].Element.Measure(axis.Size(_items[i].TargetMain, crossConstraint));
+                        MeasureItem(_items[i], axis, crossConstraint, containingBlock);
                         _items[i].OuterCross = axis.Cross(_items[i].Element.DesiredSize);
                         if (axis.Horizontal && _items[i].Align is FlexAlign.Baseline or FlexAlign.LastBaseline)
                             _items[i].Baseline = MeasureBaseline(_items[i].Element, _items[i].OuterCross,
@@ -965,10 +987,16 @@ public class FlexPanel : Panel
                     !item.AutoCrossStart && !item.AutoCrossEnd
                         ? Jalium.UI.Styling.CssBoxAlignment.Stretch
                         : Jalium.UI.Styling.CssBoxAlignment.Start;
-                Jalium.UI.Styling.CssLayoutBox.ArrangeWithAlignment(item.Element,
-                    new Rect(slot.X + insets.Left, slot.Y + insets.Top, slot.Width, slot.Height),
+                if (alignment == Jalium.UI.Styling.CssBoxAlignment.Stretch && !owner.CssIntrinsicMeasure)
+                    CssFlexItemSizing.Measure(item.Element, slot.Size, containingBlock,
+                        new(axis.Horizontal, false, false, Math.Max(0, item.TargetMain - item.MainMargin),
+                            DefiniteHeight: item.DefiniteHeight));
+                CssFlexItemSizing.Arrange(item.Element,
+                    new Rect(slot.X + insets.Left, slot.Y + insets.Top, slot.Width, slot.Height), containingBlock,
+                    axis.Horizontal, Math.Max(0, item.TargetMain - item.MainMargin),
                     axis.Horizontal ? Jalium.UI.Styling.CssBoxAlignment.Stretch : alignment,
-                    axis.Horizontal ? alignment : Jalium.UI.Styling.CssBoxAlignment.Stretch);
+                    axis.Horizontal ? alignment : Jalium.UI.Styling.CssBoxAlignment.Stretch,
+                    item.DefiniteHeight);
 
                 arranged++;
                 cursor += outerMain + (item.AutoMainEnd ? autoMainShare : 0) +
@@ -977,7 +1005,8 @@ public class FlexPanel : Panel
         }
 
         owner.ArrangeCssLayoutAbsoluteChildren(finalSize);
-        _lastLayoutAvailable = contentFinal;
+        _lastLayoutAvailable = axis.Size(layoutMain, crossFinal);
+        _lastContainingBlock = containingBlock;
         return finalSize;
     }
 
@@ -1004,7 +1033,39 @@ public class FlexPanel : Panel
         };
     }
 
-    private void CollectItems(FlexAxis axis, double mainAvailable, double crossAvailable, FlexAlign alignItems)
+    private static Size ItemContainingBlock(FrameworkElement owner, FlexAxis axis, Size available)
+    {
+        // A used cross size does not make an auto block size definite. Keep the
+        // percentage basis separate from the finite slot used to measure items.
+        var heightBasis = owner.CssParentBox?.ContainingBlock.Height ??
+            owner.CssNativeBox?.ContainingBlock.Height ?? available.Height;
+        return axis.Horizontal && !owner.CssHasDefiniteHeight(heightBasis)
+            ? new Size(available.Width, double.PositiveInfinity) : available;
+    }
+
+    private static bool CalculatedIndefiniteMain(FrameworkElement owner, FlexAxis axis)
+    {
+        if (axis.Horizontal || owner.HasLocalOrAnimatedValue(FrameworkElement.HeightProperty) ||
+            owner.CssPresentedSize(Jalium.UI.Styling.CssLayoutSlotField.Height).Calculation is not { } calculation)
+            return false;
+        var basis = owner.CssParentBox?.ContainingBlock.Height ??
+            owner.CssNativeBox?.ContainingBlock.Height ?? double.PositiveInfinity;
+        var behavior = calculation.SizingBasis;
+        // The used calc-size result does not turn an auto/intrinsic height into
+        // a definite available main size (Flexbox §9.2, Values 5 §11).
+        if (!behavior.IsAuto && !behavior.IsSizing && double.IsFinite(behavior.Resolve(basis, double.NaN)))
+            return false;
+        return !owner.CssHasDefiniteHeight(basis);
+    }
+
+    private static double IndefiniteMainLimit(FrameworkElement owner, Thickness insets)
+    {
+        var basis = owner.CssParentBox?.ContainingBlock.Height ??
+            owner.CssNativeBox?.ContainingBlock.Height ?? double.PositiveInfinity;
+        return Math.Max(0, owner.CssHeightBounds(basis).Max - insets.Top - insets.Bottom);
+    }
+
+    private void CollectItems(FlexAxis axis, Size containingBlock, double crossAvailable, FlexAlign alignItems)
     {
         var childCount = LayoutChildren.Count;
         if (_items is null || _items.Length < childCount)
@@ -1024,49 +1085,7 @@ public class FlexPanel : Panel
                 continue;
             }
 
-            var fe = child as FrameworkElement;
-            var basis = ResolveBasis(child, fe, mainAvailable);
-            var autoBasis = double.IsNaN(basis);
-            var minMain = fe is null ? 0 : axis.MinMain(fe);
-            var maxMain = fe is null ? double.PositiveInfinity : axis.MaxMain(fe);
-
-            double baseMain;
-            if (autoBasis)
-            {
-                // Natural size: measure with an unconstrained main axis (WrapPanel model).
-                child.Measure(axis.Size(double.PositiveInfinity, crossAvailable));
-                baseMain = axis.Main(child.DesiredSize);
-            }
-            else
-            {
-                baseMain = basis;
-            }
-
-            var align = GetAlignSelf(child);
-            if (align == FlexAlign.Auto)
-            {
-                align = alignItems;
-            }
-
-            var (autoMainStart, autoMainEnd, autoCrossStart, autoCrossEnd) =
-                AutoMargins(fe, axis);
-
-            _items[_itemCount] = new FlexItem
-            {
-                Element = child,
-                Grow = GetGrow(child),
-                Shrink = GetShrink(child),
-                MinMain = minMain,
-                MaxMain = maxMain,
-                BaseMain = Math.Clamp(baseMain, minMain, maxMain),
-                Align = align,
-                AutoBasis = autoBasis,
-                Collapsed = Jalium.UI.Styling.CssDisplayProperties.IsCollapsedFlexItem(child),
-                AutoMainStart = autoMainStart,
-                AutoMainEnd = autoMainEnd,
-                AutoCrossStart = autoCrossStart,
-                AutoCrossEnd = autoCrossEnd,
-            };
+            _items[_itemCount] = SizeItem(child, axis, containingBlock, crossAvailable, alignItems);
             _hasCollapsedItems |= _items[_itemCount].Collapsed;
             _orderKeys![_itemCount] = ((long)GetOrder(child) << 32) | (uint)(index - 1);
             _itemCount++;
@@ -1076,13 +1095,18 @@ public class FlexPanel : Panel
         Array.Sort(_orderKeys!, _items, 0, _itemCount);
     }
 
-    private static double ResolveBasis(UIElement child, FrameworkElement? fe, double mainAvailable)
+    private static double ResolveBasis(UIElement child, FrameworkElement? fe, double mainAvailable,
+        bool horizontal, Size containingBlock)
     {
         var basis = GetBasis(child);
-        if (child.HasLocalValue(BasisProperty) ||
-            child.GetValue(CssBasisProperty) is not Jalium.UI.Styling.CssLength cssBasis ||
-            fe is null)
+        if (child.HasLocalOrAnimatedValue(BasisProperty) || fe is null)
             return basis;
+
+        if (Jalium.UI.Styling.CssSizingPresentation.FlexBasis(child) is CssLayoutLength { IsSizing: true } intrinsic)
+            return fe.CssResolveSizing(intrinsic, horizontal, mainAvailable, double.NaN, containingBlock, flexBasis: true);
+        if (Jalium.UI.Styling.CssSizingPresentation.FlexBasis(child) is CssLayoutLength animated)
+            return animated.IsAuto ? double.NaN : animated.Resolve(mainAvailable, double.NaN);
+        if (Jalium.UI.Styling.CssSizingPresentation.FlexBasis(child) is not Jalium.UI.Styling.CssLength cssBasis) return basis;
 
         var context = Jalium.UI.Styling.CssEngine.BuildLengthContext(fe);
         if (cssBasis.UsesPercent && !double.IsFinite(mainAvailable)) return double.NaN;
@@ -1163,29 +1187,30 @@ public class FlexPanel : Panel
         }
 
         var lineAvailable = mainAvailable - mainGap * Math.Max(0, line.ActiveCount - 1);
-        double sumBase = 0;
+        double sumHypothetical = 0;
         for (var i = start; i < end; i++)
         {
             if (collapsedRound && items[i].Collapsed) continue;
-            sumBase += items[i].BaseMain;
+            sumHypothetical += items[i].BaseMain;
         }
 
-        var growing = sumBase < lineAvailable;
+        var growing = sumHypothetical < lineAvailable;
 
         double initialFree = lineAvailable;
         for (var i = start; i < end; i++)
         {
             ref var item = ref items[i];
             if (collapsedRound && item.Collapsed) continue;
-            item.Frozen = growing ? item.Grow <= 0 : item.Shrink <= 0;
-            item.TargetMain = item.BaseMain;
+            item.Frozen = growing ? item.Grow <= 0 || item.FlexBaseMain > item.BaseMain
+                : item.Shrink <= 0 || item.FlexBaseMain < item.BaseMain;
+            item.TargetMain = item.Frozen ? item.BaseMain : item.FlexBaseMain;
             if (item.Frozen)
             {
                 initialFree -= item.TargetMain;
             }
             else
             {
-                initialFree -= item.BaseMain;
+                initialFree -= item.FlexBaseMain;
             }
         }
 
@@ -1207,9 +1232,9 @@ public class FlexPanel : Panel
                 else
                 {
                     anyUnfrozen = true;
-                    unfrozenBase += item.BaseMain;
+                    unfrozenBase += item.FlexBaseMain;
                     sumFactors += growing ? item.Grow : item.Shrink;
-                    sumScaled += item.Shrink * item.BaseMain;
+                    sumScaled += item.Shrink * item.InnerBaseMain;
                 }
             }
 
@@ -1237,7 +1262,7 @@ public class FlexPanel : Panel
                     if (collapsedRound && item.Collapsed) continue;
                     if (!item.Frozen)
                     {
-                        item.TargetMain = item.BaseMain + remainingFree * item.Grow / sumFactors;
+                        item.TargetMain = item.FlexBaseMain + remainingFree * item.Grow / sumFactors;
                     }
                 }
             }
@@ -1254,7 +1279,7 @@ public class FlexPanel : Panel
                     if (collapsedRound && item.Collapsed) continue;
                     if (!item.Frozen)
                     {
-                        item.TargetMain = item.BaseMain + remainingFree * (item.Shrink * item.BaseMain) / sumScaled;
+                        item.TargetMain = item.FlexBaseMain + remainingFree * (item.Shrink * item.InnerBaseMain) / sumScaled;
                     }
                 }
             }

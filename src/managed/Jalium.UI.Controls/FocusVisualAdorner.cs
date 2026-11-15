@@ -93,7 +93,7 @@ public sealed class FocusVisualAdorner : Adorner
 
     internal override Geometry? GetLayoutClip()
     {
-        var visible = new LayoutClipStack();
+        Rect? visible = null;
         // The layer is outside the adorned element's subtree. Reapply its ancestor
         // clips without clipping the focus style's intentional outward border.
         Visual child = AdornedElement;
@@ -101,25 +101,34 @@ public sealed class FocusVisualAdorner : Adorner
         {
             if (current is UIElement ancestor)
             {
-                IntersectClip(ancestor, ancestor.GetLayoutClip(), visible);
-                IntersectClip(ancestor, ancestor.GetChildLayoutClip(), visible);
-                IntersectClip(ancestor, ancestor.GetAdditionalChildLayoutClip(child), visible);
+                IntersectClip(ancestor, ancestor.GetLayoutClip(), ref visible);
+                IntersectClip(ancestor, ancestor.GetChildLayoutClip(), ref visible);
+                IntersectClip(ancestor, ancestor.GetAdditionalChildLayoutClip(child), ref visible);
             }
             child = current;
         }
-        return visible.Clips.Count > 0 ? visible : base.GetLayoutClip();
+        return visible is Rect bounds ? new RectangleGeometry(bounds.IsEmpty ? new Rect(0, 0, 0, 0) : bounds) : base.GetLayoutClip();
     }
 
-    private void IntersectClip(UIElement ancestor, Geometry? geometry, LayoutClipStack visible)
+    private void IntersectClip(UIElement ancestor, Geometry? geometry, ref Rect? visible)
     {
         if (geometry == null) return;
-        if (!GetRenderMatrixTo(null).TryInvert(out var inverse))
+        var bounds = geometry.Bounds;
+        if (bounds.IsEmpty || bounds.Width <= 0 || bounds.Height <= 0)
         {
-            visible.Clips.Add((Geometry.Empty, Matrix.Identity));
+            visible = new Rect(0, 0, 0, 0);
             return;
         }
-        var mapping = Matrix.Multiply(ancestor.GetRenderMatrixTo(null), inverse);
-        visible.Clips.Add((geometry, mapping));
+        var topLeft = ancestor.TranslatePoint(new Point(bounds.Left, bounds.Top), this);
+        var topRight = ancestor.TranslatePoint(new Point(bounds.Right, bounds.Top), this);
+        var bottomLeft = ancestor.TranslatePoint(new Point(bounds.Left, bounds.Bottom), this);
+        var bottomRight = ancestor.TranslatePoint(new Point(bounds.Right, bounds.Bottom), this);
+        double left = Math.Min(Math.Min(topLeft.X, topRight.X), Math.Min(bottomLeft.X, bottomRight.X));
+        double top = Math.Min(Math.Min(topLeft.Y, topRight.Y), Math.Min(bottomLeft.Y, bottomRight.Y));
+        double right = Math.Max(Math.Max(topLeft.X, topRight.X), Math.Max(bottomLeft.X, bottomRight.X));
+        double bottom = Math.Max(Math.Max(topLeft.Y, topRight.Y), Math.Max(bottomLeft.Y, bottomRight.Y));
+        var clip = new Rect(left, top, right - left, bottom - top);
+        visible = visible is Rect previous ? Rect.Intersect(previous, clip) : clip;
     }
 
     /// <summary>

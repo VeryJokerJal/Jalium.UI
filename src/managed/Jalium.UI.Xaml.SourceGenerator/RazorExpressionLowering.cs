@@ -98,7 +98,7 @@ internal static class RazorExpressionLowering
     /// will interpret. The `@@` escape is recognised so that purely-escaped strings
     /// (e.g. demo text "@@ItemCount") do NOT trigger lowering.
     /// </summary>
-    private static bool ContainsRazor(string value)
+    internal static bool ContainsRazor(string value)
     {
         for (var i = 0; i < value.Length; i++)
         {

@@ -39,7 +39,7 @@ internal static class CssImageRenderingProperties
             IsTransientPaintCopy = true,
             ImageSource = imageBrush.ImageSource,
             CssBackgroundLayout = imageBrush.CssBackgroundLayout,
-            CssGradientLayout = imageBrush.CssGradientLayout,
+            CssImageLayout = imageBrush.CssImageLayout,
             ScalingMode = scaling,
             Opacity = imageBrush.Opacity,
             Transform = imageBrush.Transform,

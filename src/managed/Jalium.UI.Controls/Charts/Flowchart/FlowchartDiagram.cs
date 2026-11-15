@@ -13,6 +13,20 @@ namespace Jalium.UI.Controls.Charts;
 /// </summary>
 public class FlowchartDiagram : ChartBase
 {
+    /// <summary>Identifies the edge-label background brush.</summary>
+    public static readonly DependencyProperty EdgeLabelBackgroundProperty = DependencyProperty.Register(
+        nameof(EdgeLabelBackground), typeof(Brush), typeof(FlowchartDiagram), new PropertyMetadata(null, OnVisualPropertyChanged));
+
+    /// <summary>Identifies the edge-label text brush.</summary>
+    public static readonly DependencyProperty EdgeLabelForegroundProperty = DependencyProperty.Register(
+        nameof(EdgeLabelForeground), typeof(Brush), typeof(FlowchartDiagram), new PropertyMetadata(null, OnVisualPropertyChanged));
+
+    /// <summary>Gets or sets the background of edge labels.</summary>
+    public Brush? EdgeLabelBackground { get => (Brush?)GetValue(EdgeLabelBackgroundProperty); set => SetValue(EdgeLabelBackgroundProperty, value); }
+
+    /// <summary>Gets or sets the foreground of edge labels.</summary>
+    public Brush? EdgeLabelForeground { get => (Brush?)GetValue(EdgeLabelForegroundProperty); set => SetValue(EdgeLabelForegroundProperty, value); }
+
     #region Defaults
 
     private static readonly SolidColorBrush s_defaultNodeFill = new(Color.FromRgb(0xEC, 0xEC, 0xFF));
@@ -202,6 +216,7 @@ public class FlowchartDiagram : ChartBase
     /// <summary>Initializes a new instance of the <see cref="FlowchartDiagram"/> class.</summary>
     public FlowchartDiagram()
     {
+        DefaultStyleKey = typeof(FlowchartDiagram);
         IsLegendVisible = false;
         IsTooltipEnabled = false;
         PlotAreaMargin = new Thickness(10);
@@ -828,7 +843,7 @@ public class FlowchartDiagram : ChartBase
     {
         var ft = new FormattedText(label, fontFamily, Math.Max(9, 12 * scale))
         {
-            Foreground = NodeForeground ?? Foreground ?? s_defaultNodeForeground
+            Foreground = EdgeLabelForeground ?? NodeForeground ?? Foreground ?? s_defaultNodeForeground
         };
         TextMeasurement.MeasureText(ft);
 
@@ -840,7 +855,7 @@ public class FlowchartDiagram : ChartBase
             ft.Width + padX * 2,
             ft.Height + padY * 2);
 
-        dc.DrawRoundedRectangle(s_defaultEdgeLabelBackground, null, rect, 3, 3);
+        dc.DrawRoundedRectangle(EdgeLabelBackground ?? s_defaultEdgeLabelBackground, null, rect, 3, 3);
         dc.DrawText(ft, new Point(center.X - ft.Width / 2.0, center.Y - ft.Height / 2.0));
     }
 

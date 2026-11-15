@@ -1,0 +1,11 @@
+<ResourceDictionary xmlns="http://schemas.jalium.ui/2024"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:qualified="clr-namespace:Jalium.UI.Controls;assembly=Jalium.UI.Controls"
+                    x:Class="Jalium.UI.Tests.GeneratedCssAttributeThemes">
+    <ControlTemplate x:Key="AttributeTemplate" TargetType="Control">
+        <StackPanel Css.StyleSheet="@namespace controls 'clr-namespace:Jalium.UI.Controls;assembly=Jalium.UI.Controls'; [controls|Tag=highlight] {outline:2px solid #fbbf24}">
+            <TextBox x:Name="Source" Text="highlight" />
+            <qualified:Border x:Name="Qualified" Height="40" qualified:Tag="{Binding Text, ElementName=Source}" />
+        </StackPanel>
+    </ControlTemplate>
+</ResourceDictionary>

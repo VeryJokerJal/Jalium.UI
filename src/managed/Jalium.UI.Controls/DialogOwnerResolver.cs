@@ -11,7 +11,7 @@ internal static class DialogOwnerResolver
             return explicitOwner;
         }
 
-        if (OperatingSystem.IsMacOS() && Window.TryGetActiveWindowForDialog() is { } activeWindow)
+        if ((OperatingSystem.IsMacOS() || OperatingSystem.IsLinux()) && Window.TryGetActiveWindowForDialog() is { } activeWindow)
         {
             return activeWindow.Handle;
         }
@@ -41,7 +41,7 @@ internal static class DialogOwnerResolver
             return explicitOwner;
         }
 
-        if (OperatingSystem.IsMacOS() && Window.TryGetActiveWindowForDialog() is { } activeWindow)
+        if ((OperatingSystem.IsMacOS() || OperatingSystem.IsLinux()) && Window.TryGetActiveWindowForDialog() is { } activeWindow)
         {
             return activeWindow;
         }

@@ -63,7 +63,7 @@ public class TreeDataGridThemeTests
         try
         {
             var accentBrush = Assert.IsAssignableFrom<Brush>(app.Resources["AccentBrush"]);
-            var accentText = Assert.IsAssignableFrom<Brush>(app.Resources["TextOnAccent"]);
+            var textPrimary = Assert.IsAssignableFrom<Brush>(app.Resources["TextPrimary"]);
 
             var row = new TreeDataGridRow { IsSelected = true };
             var host = new StackPanel { Width = 400, Height = 60 };
@@ -72,9 +72,11 @@ public class TreeDataGridThemeTests
             host.Measure(new Size(400, 60));
             host.Arrange(new Rect(0, 0, 400, 60));
 
-            var rowBorder = Assert.IsType<Border>(row.FindName("PART_RowBorder"));
-            AssertBrushMatches(accentBrush, rowBorder.Background);
-            AssertBrushMatches(accentText, row.Foreground);
+            var selectionTint = Assert.IsType<Grid>(row.FindName("PART_SelectionTint"));
+            AssertBrushMatches(accentBrush, selectionTint.Background);
+            Assert.Equal(0.12, selectionTint.Opacity);
+            Assert.Equal(Visibility.Visible, selectionTint.Visibility);
+            AssertBrushMatches(textPrimary, row.Foreground);
         }
         finally
         {

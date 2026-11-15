@@ -84,6 +84,10 @@ typedef enum JaliumEventType {
     JALIUM_EVENT_MONITORS_CHANGED = 10,
     JALIUM_EVENT_POINTING_DEVICES_CHANGED = 11,
     JALIUM_EVENT_SCROLLBAR_SETTINGS_CHANGED = 12,
+    JALIUM_EVENT_DECORATIONS_CHANGED = 13,
+    JALIUM_EVENT_CAPABILITIES_CHANGED = 14,
+    JALIUM_EVENT_RENDERING_AVAILABILITY_CHANGED = 15,
+    JALIUM_EVENT_RESIZE_CONSTRAINTS_CHANGED = 16,
 
     // Focus
     JALIUM_EVENT_FOCUS_GAINED     = 20,
@@ -99,6 +103,7 @@ typedef enum JaliumEventType {
     JALIUM_EVENT_MOUSE_WHEEL      = 33,
     JALIUM_EVENT_MOUSE_ENTER      = 34,
     JALIUM_EVENT_MOUSE_LEAVE      = 35,
+    JALIUM_EVENT_MOUSE_CANCEL     = 36,
 
     // Keyboard
     JALIUM_EVENT_KEY_DOWN         = 40,
@@ -538,6 +543,67 @@ JALIUM_PLATFORM_API JaliumResult jalium_platform_text_word_range(
 // ============================================================================
 // Apple host bridge
 // ============================================================================
+
+#if defined(__linux__) && !defined(__ANDROID__)
+/// Shows a Linux window with an initial activation preference. The window
+/// manager/compositor retains final authority over focus.
+JALIUM_PLATFORM_API void jalium_linux_window_show(
+    JaliumPlatformWindow* window, int32_t activate);
+/// Applies Linux decoration, resize and caption-button capabilities.
+JALIUM_PLATFORM_API int32_t jalium_linux_window_set_style(
+    JaliumPlatformWindow* window, uint32_t style);
+/// Returns the negotiated decoration provider: 0 = unavailable, 1 = client,
+/// 2 = server. Wayland defaults to client until server decorations are acknowledged.
+JALIUM_PLATFORM_API int32_t jalium_linux_window_get_decoration_mode(JaliumPlatformWindow* window);
+/// Applies a desktop file identity to Wayland app_id or X11 WM_CLASS. IDs are
+/// 1-255 ASCII letters/digits/dots/underscores/hyphens. X11 changes require an
+/// withdrawn window, as required by ICCCM; Wayland caches the value across roles.
+JALIUM_PLATFORM_API int32_t jalium_linux_window_set_application_id(JaliumPlatformWindow* window, const char* applicationId);
+typedef enum JaliumWindowCapabilities {
+    JALIUM_WINDOW_CAPABILITY_WINDOW_MENU = 1 << 0,
+    JALIUM_WINDOW_CAPABILITY_MAXIMIZE = 1 << 1,
+    JALIUM_WINDOW_CAPABILITY_FULLSCREEN = 1 << 2,
+    JALIUM_WINDOW_CAPABILITY_MINIMIZE = 1 << 3,
+    JALIUM_WINDOW_CAPABILITY_MOVE = 1 << 4,
+    JALIUM_WINDOW_CAPABILITY_RESIZE = 1 << 5,
+    JALIUM_WINDOW_CAPABILITY_CLOSE = 1 << 6,
+    JALIUM_WINDOW_CAPABILITY_ALL = 127,
+} JaliumWindowCapabilities;
+/// Set when a negotiated Wayland capability list constrains state requests.
+/// X11 allowed-actions hints constrain user affordances, not programmatic state requests.
+#define JALIUM_WINDOW_CAPABILITY_STATE_REQUESTS_RESTRICTED (UINT32_C(1) << 31)
+JALIUM_PLATFORM_API uint32_t jalium_linux_window_get_capabilities(JaliumPlatformWindow* window);
+typedef enum JaliumWindowKeyboardOperations {
+    JALIUM_WINDOW_KEYBOARD_MOVE = 1,
+    JALIUM_WINDOW_KEYBOARD_RESIZE = 2,
+} JaliumWindowKeyboardOperations;
+/// Available WM keyboard move/resize commands (JaliumWindowKeyboardOperations).
+/// X11 requires _NET_WM_MOVERESIZE support; Wayland currently returns zero.
+JALIUM_PLATFORM_API uint32_t jalium_linux_window_get_keyboard_operations(JaliumPlatformWindow* window);
+/// Starts a WM keyboard move (resize=0) or resize (resize=1). Close popup grabs
+/// before calling. Arrow/confirm/cancel handling remains with the WM. Success
+/// means the request was sent, not that the WM has acknowledged it.
+JALIUM_PLATFORM_API int32_t jalium_linux_window_begin_keyboard_move_resize(
+    JaliumPlatformWindow* window, int32_t resize);
+/// Returns whether the compositor has suspended repainting, independently of
+/// logical visibility or minimized state. X11 and older xdg-shell return false.
+JALIUM_PLATFORM_API int32_t jalium_linux_window_is_rendering_suspended(JaliumPlatformWindow* window);
+/// Bit mask of the edges the compositor currently allows resizing from. The
+/// bits match JaliumResizeEdge: top=1, bottom=2, left=4, right=8. X11 uses
+/// _GTK_EDGE_CONSTRAINTS when present. Missing hints and older xdg-shell allow
+/// all edges; style and overall capabilities apply separately.
+JALIUM_PLATFORM_API uint32_t jalium_linux_window_get_resizable_edges(JaliumPlatformWindow* window);
+/// Returns the last acknowledged xdg-shell tiled state, or the current X11
+/// _GTK_EDGE_CONSTRAINTS tiled state. Without GTK hints, X11 single-axis
+/// maximization also protects WM-managed geometry from automatic sizing.
+/// Unmapped windows and window systems without either hint return false.
+JALIUM_PLATFORM_API int32_t jalium_linux_window_is_tiled(JaliumPlatformWindow* window);
+/// Returns saved normal client geometry in physical pixels. Wayland toplevel
+/// origins are local metadata because xdg-shell exposes no global position.
+JALIUM_PLATFORM_API int32_t jalium_linux_window_get_restore_bounds(
+    JaliumPlatformWindow* window, int32_t* x, int32_t* y, int32_t* width, int32_t* height);
+
+#endif
 
 #ifdef __APPLE__
 typedef enum JaliumEditingCommand {
@@ -1131,6 +1197,25 @@ JALIUM_PLATFORM_API JaliumResult jalium_drag_begin_with_image(
     uint32_t* performedEffect);
 
 #ifdef JALIUM_PLATFORM_TEST_HOOKS
+JALIUM_PLATFORM_API int32_t jalium_test_keysym_to_virtual_key(uint32_t keysym);
+JALIUM_PLATFORM_API uint32_t jalium_test_wayland_get_seat_capabilities(void);
+JALIUM_PLATFORM_API int32_t jalium_test_wayland_inject_seat_capabilities(uint32_t capabilities);
+JALIUM_PLATFORM_API int32_t jalium_test_wayland_inject_preedit(JaliumPlatformWindow* window, const char* utf8Text);
+JALIUM_PLATFORM_API int32_t jalium_test_wayland_inject_commit(JaliumPlatformWindow* window, const char* utf8Text);
+JALIUM_PLATFORM_API int32_t jalium_test_wayland_inject_text_input_leave(JaliumPlatformWindow* window);
+JALIUM_PLATFORM_API int32_t jalium_test_wayland_inject_text_input_batch(
+    JaliumPlatformWindow* window, uint32_t beforeBytes, uint32_t afterBytes,
+    const char* commit, const char* preedit, int32_t sendDone);
+JALIUM_PLATFORM_API int32_t jalium_test_wayland_inject_keyboard(
+    JaliumPlatformWindow* window, JaliumEventType type, uint32_t evdevKey, uint32_t modifiers);
+JALIUM_PLATFORM_API int32_t jalium_test_wayland_inject_mouse(
+    JaliumPlatformWindow* window, JaliumEventType type, int32_t button, float x, float y);
+JALIUM_PLATFORM_API int32_t jalium_test_wayland_inject_suspended_configure(JaliumPlatformWindow* window, int32_t suspended);
+JALIUM_PLATFORM_API int32_t jalium_test_wayland_inject_toplevel_configure(
+    JaliumPlatformWindow* window, int32_t width, int32_t height, const uint32_t* states, uint32_t count);
+JALIUM_PLATFORM_API int32_t jalium_test_wayland_inject_configure_bounds(
+    JaliumPlatformWindow* window, int32_t width, int32_t height);
+JALIUM_PLATFORM_API int32_t jalium_test_wayland_apply_surface_configuration(JaliumPlatformWindow* window);
 /// Test-only protocol callback injection. These entry points are compiled only
 /// in explicit native-test builds and exercise the same listeners used by a
 /// real Wayland compositor/device.
@@ -1176,6 +1261,11 @@ JALIUM_PLATFORM_API int32_t jalium_test_wayland_inject_decoration_configure(
     uint32_t mode);
 JALIUM_PLATFORM_API uint32_t jalium_test_wayland_get_decoration_mode(
     JaliumPlatformWindow* window);
+JALIUM_PLATFORM_API int32_t jalium_test_wayland_apply_pending_decoration(JaliumPlatformWindow* window);
+/// Drives the production preferred_scale callback, with a real compositor viewport.
+JALIUM_PLATFORM_API int32_t jalium_test_wayland_inject_fractional_scale(JaliumPlatformWindow* window, uint32_t scale120);
+JALIUM_PLATFORM_API int32_t jalium_test_wayland_inject_wm_capabilities(JaliumPlatformWindow* window, const uint32_t* capabilities, uint32_t count);
+JALIUM_PLATFORM_API int32_t jalium_test_wayland_apply_pending_capabilities(JaliumPlatformWindow* window);
 /// Replaces or removes one synthetic output in a Wayland window's entered
 /// output set. This drives the same max-scale recomputation as wl_surface
 /// enter/leave and wl_output.scale callbacks.

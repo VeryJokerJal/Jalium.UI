@@ -30,13 +30,17 @@ internal sealed class ImageBrushSampler
             var source = brush.ImageSource;
             var intrinsicWidth = source?.Width > 0 ? source.Width : pixels.CanonicalWidth;
             var intrinsicHeight = source?.Height > 0 ? source.Height : pixels.CanonicalHeight;
-            _cssPattern = cssBackground.TilePattern(bounds, intrinsicWidth, intrinsicHeight);
+            _cssPattern = source is null ? cssBackground.TilePattern(bounds, intrinsicWidth, intrinsicHeight)
+                : cssBackground.TilePattern(bounds, source);
             _image = _cssPattern.Value.ImageRect;
             _tileMode = TileMode.None;
             return;
         }
         _viewport = TileBrushHelper.ComputeViewport(brush, bounds);
-        var width = pixels.CanonicalWidth; var height = pixels.CanonicalHeight;
+        // Raster buckets have integer dimensions; SVG viewboxes retain their
+        // fractional user units when selecting a cropped part of the source.
+        var width = brush.ImageSource is SvgImage { Width: > 0 } svgWidth ? svgWidth.Width : pixels.CanonicalWidth;
+        var height = brush.ImageSource is SvgImage { Height: > 0 } svgHeight ? svgHeight.Height : pixels.CanonicalHeight;
         var viewbox = TileBrushHelper.ComputeViewbox(brush, width, height);
         _image = TileBrushHelper.ComputeFullImageRect(TileBrushHelper.ComputeContentRect(brush, _viewport, viewbox), viewbox, width, height);
         _tileMode = brush.TileMode;
@@ -49,18 +53,39 @@ internal sealed class ImageBrushSampler
         if (!transform.TryInvert(out var inverse)) return null;
         var requestWidth = bounds.Width;
         var requestHeight = bounds.Height;
-        if (brush.CssBackgroundLayout is { } layout && source.Width > 0 && source.Height > 0)
+        var svgViewportSize = VectorViewportSize(brush, bounds);
+        if (svgViewportSize is { } imageSize)
         {
-            var image = layout.ImageRect(bounds, source.Width, source.Height);
-            if (!image.IsEmpty)
-            {
-                requestWidth = Math.Max(requestWidth, image.Width);
-                requestHeight = Math.Max(requestHeight, image.Height);
-            }
+            requestWidth = Math.Max(requestWidth, imageSize.Width);
+            requestHeight = Math.Max(requestHeight, imageSize.Height);
+        }
+        else if (brush.CssBackgroundLayout is { } layout && source.Width > 0 && source.Height > 0)
+        {
+            var image = layout.ImageRect(bounds, source);
+            requestWidth = Math.Max(requestWidth, image.Width);
+            requestHeight = Math.Max(requestHeight, image.Height);
         }
         var pixels = GetPixels(source, Hint(requestWidth * deviceScale), Hint(requestHeight * deviceScale),
-            brush.Stretch == Stretch.UniformToFill);
+            brush.Stretch == Stretch.UniformToFill, svgViewportSize);
         return pixels is null ? null : new(brush, bounds, pixels, inverse, opacity, deviceScale);
+    }
+
+    internal static Size? VectorViewportSize(ImageBrush brush, Rect bounds)
+    {
+        if (brush.ImageSource is not SvgImage source) return null;
+        Rect image;
+        if (brush.CssBackgroundLayout is { } layout) image = layout.ImageRect(bounds, source);
+        else
+        {
+            var width = source.Width > 0 ? source.Width : bounds.Width;
+            var height = source.Height > 0 ? source.Height : bounds.Height;
+            if (!(width > 0 && height > 0)) return null;
+            var viewport = TileBrushHelper.ComputeViewport(brush, bounds);
+            var viewbox = TileBrushHelper.ComputeViewbox(brush, width, height);
+            image = TileBrushHelper.ComputeFullImageRect(TileBrushHelper.ComputeContentRect(brush, viewport, viewbox),
+                viewbox, width, height);
+        }
+        return image.Width > 0 && image.Height > 0 ? new Size(image.Width, image.Height) : null;
     }
 
     internal static ImageBrushSampler? Create(ImageBrush brush, Rect bounds, Point offset,
@@ -73,11 +98,11 @@ internal sealed class ImageBrushSampler
 
     private static int Hint(double value) => double.IsFinite(value) ? (int)Math.Clamp(Math.Ceiling(value), 1, 16384) : 1;
 
-    internal static BitmapPixelSnapshot? GetPixels(ImageSource source, int widthHint, int heightHint, bool cover)
+    internal static BitmapPixelSnapshot? GetPixels(ImageSource source, int widthHint, int heightHint, bool cover, Size? svgViewportSize = null)
     {
         source.MarkDrawn();
         if (source is AnimatedBitmap animation)
-            return animation.CurrentFrame is { } frame ? GetPixels(frame, widthHint, heightHint, cover) : null;
+            return animation.CurrentFrame is { } frame ? GetPixels(frame, widthHint, heightHint, cover, svgViewportSize) : null;
         if (source is BitmapImage image)
         {
             image.RequestDecode(widthHint, heightHint, cover);
@@ -100,16 +125,25 @@ internal sealed class ImageBrushSampler
             return RasterizeVector(drawing, drawing.Bounds, widthHint, heightHint);
         if (source is SvgImage { Drawing: { } svgDrawing } svg)
         {
+            if (svg.UsesCssViewport && svgViewportSize is { } concrete && svg.ImageForViewport(concrete) is DrawingImage viewportImage)
+            {
+                var pixels = GetPixels(viewportImage, widthHint, heightHint, cover);
+                return pixels is null ? null : pixels with
+                {
+                    CanonicalWidth = Hint(svg.Width > 0 ? svg.Width : concrete.Width),
+                    CanonicalHeight = Hint(svg.Height > 0 ? svg.Height : concrete.Height)
+                };
+            }
             var viewport = svg.Width > 0 && svg.Height > 0
                 ? new Rect(0, 0, svg.Width, svg.Height)
                 : svgDrawing.Bounds;
-            return RasterizeVector(svgDrawing, viewport, widthHint, heightHint);
+            return RasterizeVector(svgDrawing, viewport, widthHint, heightHint, svgViewportSize);
         }
         return null;
     }
 
     private static BitmapPixelSnapshot? RasterizeVector(Drawing drawing, Rect viewport,
-        int widthHint, int heightHint)
+        int widthHint, int heightHint, Size? svgViewportSize = null)
     {
         if (viewport.IsEmpty || viewport.Width <= 0 || viewport.Height <= 0 || s_vectorRasterDepth >= 8)
             return null;
@@ -121,6 +155,7 @@ internal sealed class ImageBrushSampler
         {
             var target = new RenderTargetBitmap(width, height, 96, 96, PixelFormat.Bgra32);
             var context = new SoftwareDrawingContext(target);
+            using var svgViewport = SvgStrokeSpace.Viewport(svgViewportSize, viewport);
             var transform = new Matrix(
                 width / viewport.Width, 0, 0, height / viewport.Height,
                 -viewport.X * width / viewport.Width,

@@ -247,6 +247,7 @@ public class XpsDocumentWriter : SerializerWriter
 
     private void WriteVisualCore(Visual visual, PrintTicket? printTicket, object? state)
     {
+        using var printMedia = Styling.Css.EnterPrintMedia(visual);
         _platformWriter.Write(visual, ResolvePrintTicket(printTicket));
         OnWritingProgressChanged(
             WritingProgressChangeLevel.FixedPageWritingProgress,
@@ -260,6 +261,9 @@ public class XpsDocumentWriter : SerializerWriter
         PrintTicket? printTicket,
         object? state)
     {
+        using var printMedia = documentPaginator.Source is DependencyObject source
+            ? Styling.Css.EnterPrintMedia(source)
+            : default;
         _platformWriter.Write(documentPaginator, ResolvePrintTicket(printTicket));
         var pageCount = documentPaginator.IsPageCountValid ? documentPaginator.PageCount : 0;
         if (pageCount == 0)

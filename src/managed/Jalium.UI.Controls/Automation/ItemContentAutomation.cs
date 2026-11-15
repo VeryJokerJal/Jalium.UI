@@ -6,7 +6,7 @@ namespace Jalium.UI.Automation.Peers;
 /// <summary>Semantic item content, independent of generated child-row hosts.</summary>
 internal static class ItemContentAutomation
 {
-    internal static List<AutomationPeer> Children(UIElement owner, object? content)
+    internal static List<AutomationPeer> Children(UIElement owner, object? content, bool includeDefaultText = false)
     {
         List<AutomationPeer> result = [];
         if (content is UIElement element && (!owner.IsArrangeValid || IsWithin(element, owner)))
@@ -23,12 +23,12 @@ internal static class ItemContentAutomation
         HashSet<UIElement> visited = [];
         while (pending.TryPop(out var current))
         {
-            if (!visited.Add(current) || current is ItemsPresenter) continue;
+            if (!visited.Add(current) || current is ItemsPresenter or Panel { IsItemsHost: true }) continue;
             if (current is ContentPresenter presenter && ReferenceEquals(presenter.Content, content))
             {
                 found = true;
                 // Default string presentation already supplies the row's Name.
-                if (presenter.ContentTemplate != null || presenter.ContentTemplateSelector != null
+                if (includeDefaultText || presenter.ContentTemplate != null || presenter.ContentTemplateSelector != null
                     || presenter.GetType() != typeof(ContentPresenter))
                     CollectChildren(presenter, result);
                 continue;
@@ -64,7 +64,7 @@ internal static class ItemContentAutomation
         HashSet<AutomationPeer> peers = new(result);
         while (pending.TryPop(out var current))
         {
-            if (!visited.Add(current) || current is ItemsPresenter) continue;
+            if (!visited.Add(current) || current is ItemsPresenter or Panel { IsItemsHost: true }) continue;
             if (current.GetAutomationPeer() is { } peer && peer.IsControlElement())
             {
                 if (peers.Add(peer)) result.Add(peer);

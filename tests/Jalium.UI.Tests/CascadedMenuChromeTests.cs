@@ -19,6 +19,8 @@ namespace Jalium.UI.Tests;
 [Collection("Application")]
 public class CascadedMenuChromeTests
 {
+    public CascadedMenuChromeTests() => LegacyMenuTemplateTestHelper.Register();
+
     // 刻意用非主题值：命中说明确实跟着宿主走，而不是碰巧两边都取了主题默认。
     private static readonly CornerRadius HostCornerRadius = new(11);
     private static readonly Thickness HostPadding = new(7);
@@ -106,7 +108,9 @@ public class CascadedMenuChromeTests
     public void NestedMenuFlyoutSubMenus_ShouldShareOneFrame()
     {
         var outer = new MenuFlyoutSubItem { Text = "布局容器" };
+        MenuFlyoutTemplateTestHelper.Apply(outer);
         var inner = new MenuFlyoutSubItem { Text = "网格定义" };
+        MenuFlyoutTemplateTestHelper.Apply(inner);
         inner.Items.Add(new MenuFlyoutItem { Text = "RowDefinition" });
         outer.Items.Add(inner);
 

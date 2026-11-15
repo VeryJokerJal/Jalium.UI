@@ -1,0 +1,7 @@
+{
+  "unicode_version": "17.0.0",
+  "source": "https://www.unicode.org/Public/17.0.0/ucd/extracted/DerivedBidiClass.txt",
+  "sha256": "4867b4b7f0731ed1bfcd34cc6251211ff1542541fce0734b6fbda139ee80b3a4",
+  "license": "Unicode-3.0",
+  "scope": "Only strong L/R/AL classes for CSS plaintext line base direction; full native bidi shaping remains in the native engines."
+}

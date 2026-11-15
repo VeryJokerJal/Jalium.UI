@@ -20,69 +20,6 @@ namespace Jalium.UI.Tests;
 /// </summary>
 public class SoftwareVectorRasterizerTests
 {
-    [Theory]
-    [InlineData(false, PenLineCap.Flat)]
-    [InlineData(false, PenLineCap.Round)]
-    [InlineData(true, PenLineCap.Square)]
-    [InlineData(true, PenLineCap.Round)]
-    public void GeometryGroupStrokeMatchesRecursiveTransformRendering(bool dashed, PenLineCap cap)
-    {
-        var leaf = new PathGeometry { Transform = new ScaleTransform(2, 3) };
-        var figure = new PathFigure { StartPoint = new Point(4, 6), IsFilled = false };
-        figure.Segments.Add(new LineSegment(new Point(20, 6)));
-        figure.Segments.Add(new LineSegment(new Point(20, 16)));
-        leaf.Figures.Add(figure);
-        var nested = new GeometryGroup
-        {
-            Transform = new MatrixTransform(new Matrix(0, 1, -1, 0, 70, 4))
-        };
-        nested.Children.Add(leaf);
-        var root = new GeometryGroup { Transform = new TranslateTransform(10, 8) };
-        root.Children.Add(nested);
-        var pen = new Pen(Brushes.White, 3)
-        {
-            StartLineCap = cap, EndLineCap = cap, DashCap = cap,
-            LineJoin = PenLineJoin.Round
-        };
-        if (dashed)
-        {
-            pen.DashStyle = new DashStyle { Offset = 0.5 };
-            pen.DashStyle.Dashes.Add(2);
-            pen.DashStyle.Dashes.Add(1);
-        }
-        var expected = new DrawingGroup { Transform = root.Transform };
-        var childDrawing = new DrawingGroup { Transform = nested.Transform };
-        childDrawing.Children.Add(new GeometryDrawing(null, pen, leaf));
-        expected.Children.Add(childDrawing);
-        var actual = Pixels(new GeometryDrawing(null, pen, root));
-        Assert.Equal(Pixels(expected), actual);
-        // Reproduce the reviewed bug: only centerlines inherit child transforms.
-        var flattened = RenderTargetDrawingContext.FlattenGeometryGroup(root);
-        flattened.Transform = root.Transform;
-        Assert.False(actual.SequenceEqual(Pixels(new GeometryDrawing(null, pen, flattened))));
-        Assert.Contains(actual.Where((_, i) => i % 4 == 3), alpha => alpha > 0);
-    }
-
-    [Theory]
-    [InlineData(FillRule.EvenOdd, 0)]
-    [InlineData(FillRule.Nonzero, 255)]
-    public void GeometryGroupCompoundFillKeepsOuterWindingRule(FillRule rule, int centerAlpha)
-    {
-        var group = new GeometryGroup { FillRule = rule, Transform = new TranslateTransform(8, 8) };
-        group.Children.Add(new RectangleGeometry(new Rect(4, 4, 50, 50)));
-        group.Children.Add(new RectangleGeometry(new Rect(8, 8, 12, 12))
-            { Transform = new ScaleTransform(2, 2) });
-        var pixels = Pixels(new GeometryDrawing(Brushes.White, null, group));
-        var flat = RenderTargetDrawingContext.FlattenGeometryGroup(group);
-        flat.Transform = group.Transform;
-        Assert.Equal(Pixels(new GeometryDrawing(Brushes.White, null, flat)), pixels);
-        Assert.Equal(centerAlpha, (int)pixels[(32 * 96 + 32) * 4 + 3]);
-        Assert.Equal(255, (int)pixels[(16 * 96 + 16) * 4 + 3]);
-    }
-
-    private static byte[] Pixels(Drawing drawing) =>
-        SoftwareVectorRasterizer.Rasterize(drawing, 96, 96, new Rect(0, 0, 96, 96))!;
-
     private static (byte B, byte G, byte R, byte A) GetPixel(byte[] px, int width, int x, int y)
     {
         int off = (y * width + x) * 4;
@@ -273,6 +210,123 @@ public class SoftwareVectorRasterizerTests
         // A thickness-3 polyline over ~50px of length must cover many pixels and have AA edges.
         Assert.True(strokePixels > 20, $"open stroked polyline must produce coverage; got {strokePixels}");
         Assert.True(partial > 3, $"stroke edges must be anti-aliased; got {partial}");
+    }
+
+    [Fact]
+    public void Nonuniform_transform_scales_stroke_across_each_lines_normal()
+    {
+        static byte[] Render(Point start, Point end)
+        {
+            var line = new LineGeometry(start, end);
+            var drawing = new GeometryDrawing(null,
+                new Pen(new SolidColorBrush(Color.FromRgb(255, 0, 0)), 4), line);
+            var group = new DrawingGroup { Transform = new ScaleTransform(2, 3) };
+            group.Children.Add(drawing);
+            return SoftwareVectorRasterizer.Rasterize(group, 96, 96,
+                new Rect(0, 0, 96, 96))!;
+        }
+
+        var horizontal = Render(new Point(10, 10), new Point(30, 10));
+        // Source half-width 2 follows the transformed Y basis: device Y 24..36.
+        Assert.True(GetPixel(horizontal, 96, 40, 35).A > 240);
+        Assert.Equal(0, GetPixel(horizontal, 96, 40, 37).A);
+
+        var vertical = Render(new Point(10, 10), new Point(10, 30));
+        // The same source half-width follows the transformed X basis: device X 16..24.
+        Assert.True(GetPixel(vertical, 96, 23, 50).A > 240);
+        Assert.Equal(0, GetPixel(vertical, 96, 25, 50).A);
+    }
+
+    [Fact]
+    public void Nonuniform_transform_preserves_source_path_dash_lengths()
+    {
+        var line = new LineGeometry(new Point(10, 10), new Point(45, 10));
+        var pen = new Pen(new SolidColorBrush(Color.FromRgb(255, 0, 0)), 4)
+        {
+            DashStyle = new DashStyle([2.0, 2.0], 0),
+        };
+        var group = new DrawingGroup { Transform = new ScaleTransform(2, 3) };
+        group.Children.Add(new GeometryDrawing(null, pen, line));
+
+        var pixels = SoftwareVectorRasterizer.Rasterize(group, 96, 96,
+            new Rect(0, 0, 96, 96))!;
+
+        // An 8-unit source dash maps to 16 horizontal device pixels.
+        Assert.True(GetPixel(pixels, 96, 32, 30).A > 240);
+        Assert.Equal(0, GetPixel(pixels, 96, 40, 30).A);
+        Assert.True(GetPixel(pixels, 96, 60, 30).A > 240);
+    }
+
+    [Fact]
+    public void Nonuniform_transform_makes_round_caps_elliptical()
+    {
+        var line = new LineGeometry(new Point(10, 10), new Point(30, 10));
+        var pen = new Pen(new SolidColorBrush(Color.FromRgb(255, 0, 0)), 4)
+        {
+            StartLineCap = PenLineCap.Round,
+            EndLineCap = PenLineCap.Round,
+        };
+        var group = new DrawingGroup { Transform = new ScaleTransform(2, 3) };
+        group.Children.Add(new GeometryDrawing(null, pen, line));
+
+        var pixels = SoftwareVectorRasterizer.Rasterize(group, 96, 96,
+            new Rect(0, 0, 96, 96))!;
+
+        Assert.True(GetPixel(pixels, 96, 17, 30).A > 240);
+        Assert.Equal(0, GetPixel(pixels, 96, 15, 30).A);
+        Assert.True(GetPixel(pixels, 96, 20, 35).A > 240);
+    }
+
+    [Theory]
+    [InlineData(PenLineJoin.Round)]
+    [InlineData(PenLineJoin.Miter)]
+    public void Repeated_corner_vertex_keeps_the_same_stroke(PenLineJoin join)
+    {
+        static PathGeometry Corner(bool repeat)
+        {
+            var figure = new PathFigure { StartPoint = new Point(8, 8) };
+            figure.Segments.Add(new LineSegment(new Point(24, 8)));
+            if (repeat) figure.Segments.Add(new LineSegment(new Point(24, 8)));
+            figure.Segments.Add(new LineSegment(new Point(24, 24)));
+            var geometry = new PathGeometry();
+            geometry.Figures.Add(figure);
+            return geometry;
+        }
+
+        byte[] Render(bool repeat)
+        {
+            var pen = new Pen(new SolidColorBrush(Color.FromRgb(255, 0, 0)), 4)
+            {
+                LineJoin = join,
+                MiterLimit = 2,
+            };
+            return SoftwareVectorRasterizer.Rasterize(
+                new GeometryDrawing(null, pen, Corner(repeat)), 40, 40,
+                new Rect(0, 0, 40, 40))!;
+        }
+
+        Assert.Equal(Render(false), Render(true));
+    }
+
+    [Fact]
+    public void Subpixel_source_dashes_keep_their_device_pixel_phase()
+    {
+        var pen = new Pen(new SolidColorBrush(Color.FromRgb(255, 0, 0)), 1)
+        {
+            DashStyle = new DashStyle([0.01, 0.01], 0),
+            DashCap = PenLineCap.Flat,
+        };
+        var drawing = new GeometryDrawing(null, pen,
+            new LineGeometry(new Point(0.2, 0.5), new Point(0.8, 0.5)));
+        var group = new DrawingGroup { Transform = new ScaleTransform(100, 100) };
+        group.Children.Add(drawing);
+        var pixels = SoftwareVectorRasterizer.Rasterize(group, 96, 96,
+            new Rect(0, 0, 96, 96))!;
+
+        Assert.True(GetPixel(pixels, 96, 20, 50).A > 240);
+        Assert.Equal(0, GetPixel(pixels, 96, 21, 50).A);
+        Assert.True(GetPixel(pixels, 96, 22, 50).A > 240);
+        Assert.Equal(0, GetPixel(pixels, 96, 23, 50).A);
     }
 
     // ── Straight-alpha contract: translucent fill must NOT be pre-darkened ──

@@ -118,24 +118,26 @@ public class Canvas : Panel
     {
         // Canvas measures children with infinite space but returns Size(0,0) like WPF —
         // it relies on parent layout to determine its actual size.
-        foreach (UIElement child in Children.EnumerateStruct())
+        foreach (UIElement child in CssLayoutChildren.EnumerateStruct())
         {
-            if (child is not FrameworkElement fe) continue;
+            if (IsCssAbsolute(child) || child is not FrameworkElement fe) continue;
             fe.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         }
 
+        MeasureCssAbsoluteChildren(availableSize);
         return new Size();
     }
 
     /// <inheritdoc />
     protected override Size ArrangeOverride(Size finalSize)
     {
-        foreach (UIElement child in Children.EnumerateStruct())
+        foreach (UIElement child in CssLayoutChildren.EnumerateStruct())
         {
-            if (child is not FrameworkElement fe) continue;
+            if (IsCssAbsolute(child) || child is not FrameworkElement fe) continue;
             ArrangeChild(fe, finalSize);
         }
 
+        ArrangeCssAbsoluteChildren(finalSize);
         return finalSize;
     }
 
@@ -148,8 +150,14 @@ public class Canvas : Panel
     {
         // CSS position:absolute children use the inset protocol (adds % support and
         // both-edges sizing); the classic attached-property path stays untouched.
-        if (child.CssLayout is { Position: Jalium.UI.Styling.CssPositionMode.Absolute } cssLayout)
+        if (child.CssLayout is { IsOutOfFlow: true } cssLayout)
         {
+            if (cssLayout.Position == Jalium.UI.Styling.CssPositionMode.Fixed)
+            {
+                Jalium.UI.Styling.CssPositionedLayout.ArrangeFixed(child, finalSize);
+                return;
+            }
+
             var effectiveWidth = child.Width;
             if (double.IsNaN(effectiveWidth) && cssLayout.Width.IsSet)
             {

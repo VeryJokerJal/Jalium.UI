@@ -80,6 +80,11 @@ public sealed partial class BitmapImage : BitmapSource, IDisposable, IReclaimabl
     // Serializes TryRestorePixelData so concurrent renderers don't each pay a
     // decode for the same reclaimed image.
     private readonly object _pixelRestoreLock = new();
+    // Guarded by _deferredDecodeLock; callers share an eager cache restore
+    // without ever waiting for the synchronous decoder on the UI thread.
+    private Task? _eagerPixelPreloadTask;
+    private long _eagerPixelPreloadVersion;
+    private static readonly SemaphoreSlim s_eagerPixelRestoreGate = new(BitmapDecodeScheduler.MaxWorkers);
 
     /// <summary>
     /// Occurs when the image has been loaded from a remote source.
@@ -665,6 +670,14 @@ public sealed partial class BitmapImage : BitmapSource, IDisposable, IReclaimabl
         return image;
     }
 
+    /// <summary>Shares CSS-fetched encoded bytes with the normal deferred decode and animation pipeline.</summary>
+    internal static BitmapImage FromDeferredBytes(byte[] data)
+    {
+        var image = new BitmapImage();
+        image.ConfigureDeferredSource(() => data, data);
+        return image;
+    }
+
     private void LoadFromBytes(byte[] data)
     {
         ArgumentNullException.ThrowIfNull(data);
@@ -1022,6 +1035,8 @@ public sealed partial class BitmapImage : BitmapSource, IDisposable, IReclaimabl
         int height;
         bool cover;
         BitmapDecodeOptions options;
+        byte[]? encoded;
+        long version;
         lock (_deferredDecodeLock)
         {
             deferred = _isDeferredSource;
@@ -1036,6 +1051,8 @@ public sealed partial class BitmapImage : BitmapSource, IDisposable, IReclaimabl
             // Latched with the pair above so a SetDecodeOptions racing this restore cannot pair one
             // source's bytes with another's transform.
             options = _decodeOptions;
+            encoded = _imageData;
+            version = _deferredSourceVersion;
         }
 
         if (deferred)
@@ -1044,7 +1061,6 @@ public sealed partial class BitmapImage : BitmapSource, IDisposable, IReclaimabl
             return false;
         }
 
-        var encoded = _imageData;
         if (encoded == null || encoded.Length == 0)
         {
             return false;
@@ -1076,7 +1092,12 @@ public sealed partial class BitmapImage : BitmapSource, IDisposable, IReclaimabl
                 var copy = new byte[span.Length];
                 span.CopyTo(copy);
 
-                PublishLegacyPixels(copy, decoded.Width, decoded.Height, decoded.Stride, decoded.Format);
+                lock (_deferredDecodeLock)
+                {
+                    if (version != _deferredSourceVersion || !ReferenceEquals(encoded, _imageData))
+                        return false;
+                    PublishLegacyPixels(copy, decoded.Width, decoded.Height, decoded.Stride, decoded.Format);
+                }
                 return true;
             }
             catch (Exception ex)

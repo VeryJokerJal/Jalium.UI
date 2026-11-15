@@ -10,7 +10,7 @@ using WriteableBitmap = Jalium.UI.Media.Imaging.WriteableBitmap;
 
 namespace Jalium.UI;
 
-internal static class MacOSWritingToolsPresentation
+internal static partial class MacOSWritingToolsPresentation
 {
     // Match the native render-target budget. Keep excess requests registered
     // for balanced Finish calls; they remain ordinary text until a slot frees.
@@ -35,6 +35,7 @@ internal static class MacOSWritingToolsPresentation
         internal readonly int Kind = kind;
         internal ImageSource? Inactive;
         internal Rect InactiveFrame;
+        internal double InactiveDpi;
     }
     private sealed class State(IAutomationTextProviderSource source, Func<bool> current)
     {
@@ -60,6 +61,7 @@ internal static class MacOSWritingToolsPresentation
     {
         owner.InvalidateVisual();
         if (owner is TextBoxBase box) box.InvalidateWritingToolsText();
+        if (owner is RichTextBox rich) rich.InvalidateCssWritingToolsText();
     }
     internal static void ObserveText(UIElement owner, string text)
     {
@@ -169,6 +171,31 @@ internal static class MacOSWritingToolsPresentation
         text.GlyphRanges = ranges.ToArray();
     }
 
+    // CSS leaves retain source indices through whitespace collapse, text
+    // transformation and anonymous inline boxes. Project the exposed service
+    // ranges at the final paint boundary instead of clipping the whole box.
+    internal static bool TryGetGlyphRanges(UIElement owner, out bool preview,
+        out (int Start, int Length)[] ranges)
+    {
+        preview = _previewDepth != 0 && ReferenceEquals(owner, _previewOwner);
+        if (preview) { ranges = [(_previewStart, _previewLength)]; return true; }
+        ranges = [];
+        if (_previewDepth != 0 || !States.TryGetValue(owner, out var state) || !state.Current()) return false;
+        ranges = state.Animations.Values.SelectMany(list => list).ToArray()
+            .Where(animation => animation.Kind != 8 || EnsureInactive(owner, state, animation))
+            .Select(animation => (animation.Start, animation.Length)).ToArray();
+        return state.Current() && ranges.Length != 0;
+    }
+
+    internal static void PrepareInactive(UIElement owner)
+    {
+        if (_previewDepth != 0 || !States.TryGetValue(owner, out var state) || !state.Current()) return;
+        // Capture before entering a CSS text leaf's reentrancy guard. A capture
+        // requested while that leaf paints would omit its own glyphs.
+        foreach (var animation in state.Animations.Values.SelectMany(list => list).ToArray())
+            if (animation.Kind == 8 && state.Current()) EnsureInactive(owner, state, animation);
+    }
+
     internal readonly struct ClipScope(DrawingContext? context) : IDisposable
     {
         public void Dispose() => context?.Pop();
@@ -238,9 +265,12 @@ internal static class MacOSWritingToolsPresentation
 
     private static bool EnsureInactive(UIElement owner, State state, Animation animation)
     {
-        if (animation.Inactive is not null) return true;
+        var dpi = VisualTreeHelper.GetDpi(owner).DpiScaleY;
+        if (!double.IsFinite(dpi) || dpi <= 0) dpi = 1;
+        if (animation.Inactive is not null && animation.InactiveDpi == dpi) return true;
+        animation.Inactive = null;
         var bitmap = RenderRange(owner, state.Source, animation.Start, animation.Length,
-            Matrix.Identity, 1, null, state.Current);
+            Matrix.Identity, dpi, null, state.Current);
         if (bitmap is null) return false;
         var image = bitmap.Value.Bitmap;
         int stride = checked(image.PixelWidth * 4);
@@ -248,9 +278,10 @@ internal static class MacOSWritingToolsPresentation
         image.CopyPixels(pixels, stride, 0);
         for (int i = 0; i < pixels.Length; i += 4)
             pixels[i] = pixels[i + 1] = pixels[i + 2] = 128;
-        var tinted = new WriteableBitmap(image.PixelWidth, image.PixelHeight, 96, 96, PixelFormats.Bgra32, null);
+        var tinted = new WriteableBitmap(image.PixelWidth, image.PixelHeight, 96 * dpi, 96 * dpi, PixelFormats.Bgra32, null);
         tinted.WritePixels(new Int32Rect(0, 0, image.PixelWidth, image.PixelHeight), pixels, stride, 0);
         animation.Inactive = tinted; animation.InactiveFrame = bitmap.Value.Frame;
+        animation.InactiveDpi = dpi;
         return state.Current();
     }
 

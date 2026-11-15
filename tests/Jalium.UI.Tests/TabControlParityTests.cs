@@ -7,6 +7,12 @@ namespace Jalium.UI.Tests;
 
 public sealed class TabControlParityTests
 {
+    public TabControlParityTests()
+    {
+        Jalium.UI.Markup.ThemeLoader.Initialize();
+        _ = Application.Current ?? new Application();
+    }
+
     [Fact]
     public void TabControlAndTabItemExposeTheWpfDependencyPropertySurface()
     {
@@ -89,7 +95,7 @@ public sealed class TabControlParityTests
         Assert.Null(tabControl.SelectedContentTemplate);
         Assert.Null(tabControl.SelectedContentTemplateSelector);
         Assert.Null(tabControl.SelectedContentStringFormat);
-        Assert.Null(tabControl.TryGetSelectedPresenter());
+        Assert.Null(tabControl.SelectedPresenter.Content);
     }
 
     [Fact]
@@ -240,15 +246,9 @@ public sealed class TabControlParityTests
 
         public ContentPresenter? TryGetSelectedPresenter()
         {
-            for (var i = 0; i < VisualChildrenCount; i++)
-            {
-                if (GetVisualChild(i) is ContentPresenter presenter)
-                {
-                    return presenter;
-                }
-            }
-
-            return null;
+            Measure(new Size(640, 480));
+            Arrange(new Rect(0, 0, 640, 480));
+            return GetTemplateChild("PART_SelectedContentHost") as ContentPresenter;
         }
 
         public TabItem CreateAndPrepareContainer(object item)

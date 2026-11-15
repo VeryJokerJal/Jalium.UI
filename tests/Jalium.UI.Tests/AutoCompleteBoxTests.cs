@@ -75,6 +75,8 @@ public class AutoCompleteBoxTests
                 Height = 120,
                 Content = autoComplete
             };
+            if (OperatingSystem.IsMacOS()) typeof(Window).GetMethod("SetMacOSVisibilityForDisplay", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(window, new object[] { Visibility.Visible });
             app.MainWindow = window;
 
             window.Measure(new Size(320, 120));

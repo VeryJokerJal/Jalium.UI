@@ -436,7 +436,7 @@ public abstract class AxisChartBase : ChartBase
     {
         var axisBrush = AxisBrush ?? s_defaultAxisBrush;
         var axisPen = new Pen(axisBrush, AxisThickness);
-        var labelBrush = s_defaultLabelBrush;
+        var labelBrush = Foreground ?? s_defaultLabelBrush;
         var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
 
         // Draw the X axis line (bottom)
@@ -450,7 +450,8 @@ public abstract class AxisChartBase : ChartBase
         {
             var xLabelBrush = xAxis.LabelForeground ?? labelBrush;
             var xTicks = xAxis.GenerateTicks(xMin, xMax, plotArea.Width);
-            foreach (var tick in xTicks)
+            double lastLabelRight = double.NegativeInfinity;
+            foreach (var tick in xTicks.OrderBy(t => xAxis.ValueToPixel(t, xMin, xMax, plotArea.Width)))
             {
                 var px = plotArea.Left + xAxis.ValueToPixel(tick, xMin, xMax, plotArea.Width);
                 if (px < plotArea.Left || px > plotArea.Right)
@@ -471,7 +472,11 @@ public abstract class AxisChartBase : ChartBase
 
                 var labelX = px - ft.Width / 2.0;
                 var labelY = plotArea.Bottom + xAxis.MajorTickLength + 2;
-                dc.DrawText(ft, new Point(labelX, labelY));
+                if (labelX >= lastLabelRight + 4)
+                {
+                    dc.DrawText(ft, new Point(labelX, labelY));
+                    lastLabelRight = labelX + ft.Width;
+                }
             }
 
             // Draw X axis title
@@ -544,11 +549,6 @@ public abstract class AxisChartBase : ChartBase
         if (!IsZoomEnabled)
             return;
 
-        // Phase-only packets must still be routed for gesture lifecycle tracking.
-        // Use the original delta so sub-unit movement retains its direction.
-        if (!double.IsFinite(e.VerticalDelta) || e.VerticalDelta == 0)
-            return;
-
         var plotArea = GetPlotArea();
         var pos = e.GetPosition(this);
 
@@ -565,7 +565,7 @@ public abstract class AxisChartBase : ChartBase
                 out _viewportMinY, out _viewportMaxY);
         }
 
-        var zoomFactor = e.VerticalDelta > 0 ? 0.85 : 1.15;
+        var zoomFactor = e.Delta > 0 ? 0.85 : 1.15;
 
         // Compute the mouse position as a fraction of the plot area
         var xFraction = (pos.X - plotArea.Left) / plotArea.Width;

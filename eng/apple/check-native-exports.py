@@ -60,7 +60,9 @@ def declared_symbols(directory: Path, macro: str) -> set[str]:
     for header in headers:
         symbols.update(pattern.findall(COMMENT_RE.sub(" ", header.read_text(encoding="utf-8"))))
     # Test hooks include Linux-only helpers and are not part of the runtime ABI.
-    return {symbol for symbol in symbols if not symbol.startswith("jalium_test_")}
+    # Linux-only Window entry points share the platform header, but are not
+    # implementations required from an Apple payload.
+    return {symbol for symbol in symbols if not symbol.startswith(("jalium_test_", "jalium_linux_"))}
 
 
 def main() -> int:

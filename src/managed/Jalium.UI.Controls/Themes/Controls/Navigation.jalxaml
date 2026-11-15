@@ -18,12 +18,22 @@
         <Setter Property="Template">
             <ControlTemplate TargetType="NavigationView">
                 <Grid Name="PART_RootGrid">
+                    <VisualStateManager.VisualStateGroups>
+                        <VisualStateGroup x:Name="PaneStates">
+                            <VisualState x:Name="PaneOpen" />
+                            <VisualState x:Name="PaneCompact" />
+                            <VisualState x:Name="PaneHidden"><VisualState.Setters>
+                                <Setter TargetName="PART_PaneContainer" Property="Visibility" Value="Collapsed" />
+                            </VisualState.Setters></VisualState>
+                        </VisualStateGroup>
+                    </VisualStateManager.VisualStateGroups>
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="268" />
+                        <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
 
                     <Grid Name="PART_PaneContainer"
+                          Width="{TemplateBinding PaneWidth}"
                           Grid.Column="0"
                           Background="{TemplateBinding PaneBackground}"
                           ClipToBounds="True">
@@ -204,6 +214,14 @@
         <Setter Property="Foreground" Value="{ThemeResource TextSecondary}" />
         <Setter Property="Height" Value="32" />
         <Setter Property="Margin" Value="16,14,16,5" />
+        <Setter Property="FontSize" Value="14" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="NavigationViewItemHeader">
+            <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}" CornerRadius="{TemplateBinding CornerRadius}">
+                <ContentPresenter Content="{TemplateBinding Content}" ContentTemplate="{TemplateBinding ContentTemplate}" HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
+            </Border>
+        </ControlTemplate></Setter.Value></Setter>
     </Style>
 
     <!-- ============================================== -->
@@ -214,6 +232,7 @@
         <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
         <Setter Property="Height" Value="1" />
         <Setter Property="Margin" Value="20,7,20,7" />
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="NavigationViewItemSeparator"><Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" /></ControlTemplate></Setter.Value></Setter>
     </Style>
 
 </ResourceDictionary>

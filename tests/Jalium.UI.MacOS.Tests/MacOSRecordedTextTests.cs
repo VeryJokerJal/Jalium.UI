@@ -7,6 +7,35 @@ namespace Jalium.UI.Tests;
 public sealed class MacOSRecordedTextTests : MacOSGeometryTestBase
 {
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Recording_EqualTextRetainsEveryNativeAlignmentAndWrapIntent(bool wholeFrame)
+    {
+        DrawingObjectPool.Clear();
+        try
+        {
+            var recorder = new DrawingRecorder();
+            if (wholeFrame) recorder.BindWholeFrame(); else recorder.Bind(new object());
+            var expected = new List<(TextAlignment? Alignment, bool NoWrap)>();
+            foreach (var alignment in new TextAlignment?[] { null, TextAlignment.Left, TextAlignment.Center, TextAlignment.Right, TextAlignment.Justify })
+            foreach (var noWrap in new[] { false, true })
+            {
+                recorder.DrawText(new FormattedText("same retained source", "Helvetica", 20)
+                {
+                    Foreground = Brushes.Black, MaxTextWidth = 300, MaxTextHeight = 90,
+                    NativeTextAlignment = alignment, NativeNoWrap = noWrap,
+                }, new Point(10, 10));
+                expected.Add((alignment, noWrap));
+            }
+            var drawing = recorder.Commit();
+            var observed = drawing.Commands.Select(command => (FormattedText)command.A!).Select(text =>
+                (text.NativeTextAlignment, text.NativeNoWrap)).ToArray();
+            Assert.Equal(expected, observed);
+        }
+        finally { DrawingObjectPool.Clear(); }
+    }
+
+    [Theory]
     [InlineData(false, false)]
     [InlineData(false, true)]
     [InlineData(true, false)]

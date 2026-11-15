@@ -137,6 +137,9 @@ public abstract class FrameworkTemplate : DispatcherObject, Jalium.UI.Markup.INa
     /// <summary>Returns the parser supplied by the concrete template type.</summary>
     protected virtual Func<string, Assembly?, FrameworkElement?>? DeferredXamlParser => null;
 
+    /// <summary>Per-preview parser context; keeps project type resolution out of global callbacks.</summary>
+    internal Func<string, Assembly?, FrameworkElement?>? XamlParserOverride { get; set; }
+
     /// <summary>
     /// Creates a new instance of the template content. Factory, deferred-content, and
     /// captured-XAML paths all flow through this method so derived templates receive the
@@ -175,7 +178,7 @@ public abstract class FrameworkTemplate : DispatcherObject, Jalium.UI.Markup.INa
 
     private FrameworkElement? LoadDeferredXamlContent()
     {
-        var parser = DeferredXamlParser;
+        var parser = XamlParserOverride ?? DeferredXamlParser;
         if (parser is null || string.IsNullOrEmpty(_visualTreeXaml))
         {
             return null;

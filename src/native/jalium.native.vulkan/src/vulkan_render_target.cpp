@@ -1,4 +1,9 @@
+#include "jalium_alpha_mask.h"
 #include "vulkan_render_target.h"
+#include "vulkan_text_run_cache.h"
+#if defined(_WIN32)
+#include <share.h>
+#endif
 #include "jalium_internal.h"
 #include "jalium_path_stats.h"
 #include "jalium_text_options.h"  // JALIUM_TEXT_AA_* enum (TextRenderingMode mapping)
@@ -9,6 +14,7 @@
 #include "jalium_triangulate.h"  // FlattenPathToContours / TriangulateCompoundPath / DispatchPathCommand
 #include "jalium_path_clip.h"
 #include "jalium_gradient_sample.h"  // SampleBrushGradient / FlattenGradientStops — in-order gradient squircle fill
+#include "jalium_radial_raster.h"
 
 #include "vulkan_backend.h"
 #include "vulkan_shader_compiler.h"  // runtime HLSL→SPIR-V for DrawShaderEffectFromSource (user shaders only)
@@ -25,6 +31,9 @@
 #include "vulkan_minimal.h"
 #include "vulkan_resources.h"
 #include "vulkan_runtime.h"
+#include "vulkan_capabilities.h"
+#include "vulkan_graphics_constants.h"
+#include "vulkan_video_shaders.h"
 
 #include "jalium_bitmap_stats.h"
 
@@ -115,6 +124,7 @@ static FILE* VkDamageTraceFile()
 #else
 #include "text_engine.h"
 #include "text_layout.h"
+#include "shared_text_paragraph.h"
 #include "glyph_atlas.h"
 #endif
 
@@ -230,13 +240,11 @@ T LoadDeviceProc(PFN_vkGetDeviceProcAddr getProc, VkDevice device, const char* n
 }
 
 // Keep the backend usable on Android 7/8 era loaders that only implement
-// Vulkan 1.0. We use 1.1 when the loader exposes it, but never request a
-// version newer than the renderer needs.
+// Vulkan 1.0. Prefer 1.2 for core scalar block layout when available, and
+// retain the extension paths on older loaders.
 constexpr uint32_t NegotiateInstanceApiVersion(uint32_t loaderApiVersion) noexcept
 {
-    return loaderApiVersion >= VK_API_VERSION_1_1
-        ? VK_API_VERSION_1_1
-        : VK_API_VERSION_1_0;
+    return jalium::vulkan_capabilities::NegotiateInstanceApiVersion(loaderApiVersion);
 }
 
 constexpr bool CanQueryPhysicalDeviceFeatures2(
@@ -258,7 +266,7 @@ constexpr bool SupportsSwapchainUsage(
 // the 1.0 fallback and the independent TRANSFER_SRC / TRANSFER_DST gates.
 static_assert(NegotiateInstanceApiVersion(VK_API_VERSION_1_0) == VK_API_VERSION_1_0);
 static_assert(NegotiateInstanceApiVersion(VK_API_VERSION_1_1) == VK_API_VERSION_1_1);
-static_assert(NegotiateInstanceApiVersion(VK_API_VERSION_1_2) == VK_API_VERSION_1_1);
+static_assert(NegotiateInstanceApiVersion(VK_API_VERSION_1_2) == VK_API_VERSION_1_2);
 static_assert(!CanQueryPhysicalDeviceFeatures2(VK_API_VERSION_1_0, false));
 static_assert(CanQueryPhysicalDeviceFeatures2(VK_API_VERSION_1_0, true));
 static_assert(CanQueryPhysicalDeviceFeatures2(VK_API_VERSION_1_1, false));
@@ -649,9 +657,9 @@ static_assert(sizeof(BlurPushConstants) == 160, "BlurPushConstants must stay in 
 
 // LiquidGlass push constant — BYTE-MATCHES the HLSL PushConstants block in
 // liquid_glass_quad.{vert,frag}.hlsl (each float2 → float[2], float4 → float[4],
-// same order). 240 bytes: exceeds the 128-byte Vulkan minimum but every desktop
-// GPU exposes maxPushConstantsSize >= 256 (BackdropPushConstants already runs at
-// 160 B). The full D3D12 LiquidGlassConstants set is carried here; the neighbour
+// same order). Devices with fewer than 240 push-constant bytes bind these
+// blocks through a dynamic uniform buffer. The full D3D12 constants are
+// carried here; the neighbour
 // fusion tail (n0..3 + radii) is only consumed when neighborCount > 0.
 struct LiquidGlassPushConstants {
     float rect[4];            // x, y, w, h
@@ -689,8 +697,7 @@ struct BackdropPushConstants {
     float padding2[2];
     // Material colour pipeline, mirrored in backdrop_quad.{vert,frag}.hlsl
     // (the push range spans both stages). 176 B total: above the 128 B
-    // Vulkan minimum, like the 144 B block before it — every desktop GPU
-    // exposes maxPushConstantsSize >= 256.
+    // Vulkan minimum; smaller devices use the dynamic uniform-buffer path.
     float materialInfo0[4];   // brightness, contrast, hueRotation, opacity
     float materialInfo1[4];   // grayscale, sepia, invert, frost jitter (texels)
 };
@@ -754,6 +761,15 @@ struct EngineBatchPushConstants {
     float clipFlags[4];
 };
 static_assert(sizeof(EngineBatchPushConstants) == 112, "EngineBatchPushConstants must stay in lockstep with impeller_solid_fill.{vert,frag}.hlsl (112 bytes)");
+static_assert(std::max({sizeof(SolidRectPushConstants), sizeof(BitmapQuadPushConstants),
+    sizeof(TriangleFillPushConstants), sizeof(TriangleFillVcPushConstants),
+    sizeof(TransitionPushConstants), sizeof(BlurPushConstants), sizeof(LiquidGlassPushConstants),
+    sizeof(BackdropPushConstants), sizeof(GlowPushConstants), sizeof(CustomShaderGeomPushConstants),
+    sizeof(TextPushConstants), sizeof(EngineBatchPushConstants)}) ==
+        vulkan_graphics_constants::kRequiredPushConstantBytes,
+    "Update the graphics constant capability threshold when a shader block grows");
+static_assert(vulkan_graphics_constants::kRequiredPushConstantBytes <=
+    vulkan_graphics_constants::kUniformRangeBytes);
 
 } // namespace
 
@@ -778,130 +794,9 @@ static bool VulkanBitmapResidencyEnabled();
 // by the draw.
 namespace {
 
-struct SelfHostedTextRunKey {
-    uint64_t formatInstanceId = 0;
-    uint32_t formatStyleGeneration = 0;
-    uint32_t textLength = 0;
-    uint64_t textHash = 0;
-    float    maxWidth = 0.0f;
-    float    maxHeight = 0.0f;
-    float    renderScale = 1.0f;
-    int32_t  aaMode = 0;
-    uint8_t  r = 0, g = 0, b = 0, a8 = 0;
-
-    bool operator==(const SelfHostedTextRunKey& o) const noexcept
-    {
-        return formatInstanceId == o.formatInstanceId &&
-               formatStyleGeneration == o.formatStyleGeneration &&
-               textLength == o.textLength && textHash == o.textHash &&
-               maxWidth == o.maxWidth && maxHeight == o.maxHeight &&
-               renderScale == o.renderScale && aaMode == o.aaMode &&
-               r == o.r && g == o.g && b == o.b && a8 == o.a8;
-    }
-};
-
-struct SelfHostedTextRunKeyHash {
-    size_t operator()(const SelfHostedTextRunKey& k) const noexcept
-    {
-        uint64_t h = k.textHash;
-        h ^= k.formatInstanceId * 0x9E3779B97F4A7C15ULL;
-        h ^= (static_cast<uint64_t>(k.formatStyleGeneration) << 32) ^ k.textLength;
-        uint32_t wBits = 0, hBits = 0, sBits = 0;
-        std::memcpy(&wBits, &k.maxWidth, sizeof(wBits));
-        std::memcpy(&hBits, &k.maxHeight, sizeof(hBits));
-        std::memcpy(&sBits, &k.renderScale, sizeof(sBits));
-        h ^= (static_cast<uint64_t>(wBits) << 32) ^ hBits;
-        h *= 0x100000001B3ULL;
-        h ^= (static_cast<uint64_t>(sBits) << 32) ^ static_cast<uint32_t>(k.aaMode);
-        h *= 0x100000001B3ULL;
-        h ^= (static_cast<uint64_t>(k.r) << 24) | (static_cast<uint64_t>(k.g) << 16) |
-             (static_cast<uint64_t>(k.b) << 8) | k.a8;
-        return static_cast<size_t>(h ^ (h >> 29));
-    }
-};
-
-struct SelfHostedTextRunEntry {
-    // Exact text kept for equality (the 64-bit hash alone is not proof).
-    std::wstring text;
-    // Finished bitmaps (either may be null when that plane has no pixels).
-    std::shared_ptr<std::vector<uint8_t>> pixels;
-    std::shared_ptr<std::vector<uint8_t>> lcdPixels;
-    int32_t bitmapWidth = 0;
-    int32_t bitmapHeight = 0;
-    float   bitmapOffsetX = 0.0f;   // in the run's scaled (physical) space
-    float   bitmapOffsetY = 0.0f;
-    size_t  bytes = 0;
-    // The run produces nothing to draw (no quads / degenerate box); cached so
-    // the shaping is not repeated every frame either.
-    bool    empty = true;
-    std::list<SelfHostedTextRunKey>::iterator lruIt;
-};
-
-class SelfHostedTextRunCache {
-public:
-    static constexpr size_t kMaxEntries = 2048;
-    static constexpr size_t kMaxBytes = 48u * 1024u * 1024u;
-
-    SelfHostedTextRunEntry* Find(const SelfHostedTextRunKey& key, const wchar_t* text)
-    {
-        auto it = map_.find(key);
-        if (it == map_.end()) return nullptr;
-        SelfHostedTextRunEntry& e = it->second;
-        if (e.text.size() != key.textLength ||
-            (key.textLength > 0 && std::wmemcmp(e.text.data(), text, key.textLength) != 0)) {
-            return nullptr;   // hash collision: treat as a miss (the insert replaces it)
-        }
-        lru_.splice(lru_.begin(), lru_, e.lruIt);   // most-recently-used first
-        return &e;
-    }
-
-    SelfHostedTextRunEntry* Insert(const SelfHostedTextRunKey& key, const wchar_t* text,
-                                   SelfHostedTextRunEntry&& entry)
-    {
-        auto existing = map_.find(key);
-        if (existing != map_.end()) {
-            bytes_ -= existing->second.bytes;
-            lru_.erase(existing->second.lruIt);
-            map_.erase(existing);
-        }
-        entry.text.assign(text, text + key.textLength);
-        entry.bytes = (entry.pixels ? entry.pixels->size() : 0) +
-                      (entry.lcdPixels ? entry.lcdPixels->size() : 0) +
-                      entry.text.size() * sizeof(wchar_t) + sizeof(SelfHostedTextRunEntry);
-        lru_.push_front(key);
-        entry.lruIt = lru_.begin();
-        bytes_ += entry.bytes;
-        auto [it, inserted] = map_.emplace(key, std::move(entry));
-        (void)inserted;
-        Trim();
-        return &it->second;
-    }
-
-    void Clear()
-    {
-        map_.clear();
-        lru_.clear();
-        bytes_ = 0;
-    }
-
-private:
-    void Trim()
-    {
-        while (!lru_.empty() && (map_.size() > kMaxEntries || bytes_ > kMaxBytes)) {
-            const SelfHostedTextRunKey& victim = lru_.back();
-            auto it = map_.find(victim);
-            if (it != map_.end()) {
-                bytes_ -= it->second.bytes;
-                map_.erase(it);
-            }
-            lru_.pop_back();
-        }
-    }
-
-    std::unordered_map<SelfHostedTextRunKey, SelfHostedTextRunEntry, SelfHostedTextRunKeyHash> map_;
-    std::list<SelfHostedTextRunKey> lru_;
-    size_t bytes_ = 0;
-};
+using vulkan_text_cache::SelfHostedTextRunKey;
+using vulkan_text_cache::SelfHostedTextRunEntry;
+using vulkan_text_cache::SelfHostedTextRunCache;
 
 } // namespace
 #endif // !_WIN32
@@ -1151,7 +1046,7 @@ public:
     VkResult QueuePresentSynchronized(const VkPresentInfoKHR* presentInfo,
                                       const char* where)
     {
-        if (queue == VK_NULL_HANDLE || !queuePresent) {
+        if (presentQueue == VK_NULL_HANDLE || !queuePresent) {
             return VK_ERROR_INITIALIZATION_FAILED;
         }
         if (deviceGeneration && deviceGeneration->IsAbandoned()) {
@@ -1164,9 +1059,9 @@ public:
                     ? NoteVk(VK_ERROR_DEVICE_LOST, where)
                     : VK_ERROR_INITIALIZATION_FAILED;
             }
-            return NoteVk(queuePresent(queue, presentInfo), where);
+            return NoteVk(queuePresent(presentQueue, presentInfo), where);
         }
-        return NoteVk(queuePresent(queue, presentInfo), where);
+        return NoteVk(queuePresent(presentQueue, presentInfo), where);
     }
 
     // A successfully acquired image must eventually be consumed by a queue
@@ -1219,6 +1114,7 @@ public:
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
     VkQueue queue = VK_NULL_HANDLE;
+    VkQueue presentQueue = VK_NULL_HANDLE;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
     VkCommandPool commandPool = VK_NULL_HANDLE;
@@ -1254,6 +1150,7 @@ public:
     // instead of being smoothed by the linear/aniso frameSampler. Created and
     // destroyed in lockstep with frameSampler.
     VkSampler framePointSampler = VK_NULL_HANDLE;
+    VkSampler frameBilinearSampler = VK_NULL_HANDLE;
     bool anisotropySupported = false;
     float deviceMaxAnisotropy = 1.0f;
     // dualSrcBlend feature. Gates the ClearType text pipeline's dual-source
@@ -1270,6 +1167,9 @@ public:
     // path is unavailable and the Vello engine falls back to the CPU tessellation
     // path (the Impeller-equivalent encoder).
     bool scalarBlockLayoutSupported = false;
+    VkQueueFlags graphicsQueueFlags = 0;
+    bool uniformGraphicsConstants = false;
+    VkDeviceSize graphicsConstantAlignment = 16;
     VkDescriptorSetLayout frameDescriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool frameDescriptorPool = VK_NULL_HANDLE;
     VkDescriptorSet frameDescriptorSet = VK_NULL_HANDLE;
@@ -1280,6 +1180,7 @@ public:
     // pre-written set is the minimal-invasion design. Per-frame-slot like
     // frameDescriptorSet (aliased via BeginFrame/CommitCurrentFrame).
     VkDescriptorSet frameDescriptorSetNearest = VK_NULL_HANDLE;
+    VkDescriptorSet frameDescriptorSetBilinear = VK_NULL_HANDLE;
     VkPipelineLayout framePipelineLayout = VK_NULL_HANDLE;
     VkRenderPass frameRenderPass = VK_NULL_HANDLE;
     // loadOp=CLEAR twin of frameRenderPass (same attachment format/samples/
@@ -1303,6 +1204,13 @@ public:
     VkPipeline clearRectPipeline = VK_NULL_HANDLE;
     VkPipelineLayout bitmapPipelineLayout = VK_NULL_HANDLE;
     VkPipeline bitmapPipeline = VK_NULL_HANDLE;
+    struct VideoPipeline {
+        std::shared_ptr<VulkanVideoSamplingResources> sampling;
+        VkPipelineLayout layout = VK_NULL_HANDLE;
+        VkPipeline pipeline = VK_NULL_HANDLE;
+    };
+    std::unordered_map<VulkanVideoSamplingResources*, VideoPipeline> videoPipelines;
+    VideoPipeline* EnsureVideoPipeline(const std::shared_ptr<VulkanVideoSamplingResources>& sampling);
     // Dedicated ink-layer composite pipeline. Same layout/descriptors/vertex
     // shader as bitmapPipeline but with PREMULTIPLIED-SrcOver blend
     // (srcColorBlendFactor = ONE) + the premultiplied FS (kInkCompositeFragSpv),
@@ -1516,6 +1424,7 @@ public:
     VkDeviceSize mappedPixelCapacity = 0;
 
     uint32_t queueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    uint32_t presentQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     VkExtent2D extent {};
     VkFormat format = VK_FORMAT_B8G8R8A8_UNORM;
     std::vector<VkImage> images;
@@ -1914,6 +1823,7 @@ public:
         uint32_t uploadHeight = 0;
         VkDescriptorSet frameDescriptorSet = VK_NULL_HANDLE;
         VkDescriptorSet frameDescriptorSetNearest = VK_NULL_HANDLE;
+        VkDescriptorSet frameDescriptorSetBilinear = VK_NULL_HANDLE;
         VkImage blurTempImage = VK_NULL_HANDLE;
         VkDeviceMemory blurTempMemory = VK_NULL_HANDLE;
         VkImageView blurTempView = VK_NULL_HANDLE;
@@ -1982,6 +1892,27 @@ public:
     VkDescriptorSetLayout ellipticalEmptySetLayout_ = VK_NULL_HANDLE;
     std::unordered_map<const void*, VkDescriptorSet> ellipticalSets_;
     const void* currentEllipticalKey_ = nullptr;
+    struct GraphicsConstantChunk {
+        VkBuffer buffer = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        void* mapped = nullptr;
+        VkDescriptorPool pool = VK_NULL_HANDLE;
+        VkDescriptorSet set = VK_NULL_HANDLE;
+        VkDeviceSize cursor = 0;
+    };
+    struct GraphicsConstantFrame {
+        std::vector<GraphicsConstantChunk> chunks;
+        size_t currentChunk = 0;
+        bool failed = false;
+    } graphicsConstantFrames_[MAX_FRAMES_IN_FLIGHT];
+    VkDescriptorSetLayout graphicsConstantSetLayout_ = VK_NULL_HANDLE;
+    static constexpr VkDeviceSize kGraphicsConstantChunkBytes = 64 * 1024;
+    bool EnsureGraphicsConstantLayout();
+    bool CreateGraphicsConstantChunk(GraphicsConstantChunk& chunk);
+    bool PrepareGraphicsConstantFrame();
+    void DestroyGraphicsConstantChunk(GraphicsConstantChunk& chunk);
+    void DestroyGraphicsConstants();
+    VkResult CreateGraphicsShaderModule(const VkShaderModuleCreateInfo* info, VkShaderModule* output);
     bool EnsureEllipticalLayouts();
     VkResult CreateEllipticalPipelineLayout(const VkPipelineLayoutCreateInfo& info, VkPipelineLayout* output);
     bool PrepareEllipticalFrame(const std::vector<GpuReplayCommand>& commands, const std::vector<VkImpellerDrawBatch>* batches);
@@ -2341,6 +2272,7 @@ public:
         VkDescriptorPool descPool = VK_NULL_HANDLE;
         VkDescriptorSet descSetLinear = VK_NULL_HANDLE;   // frameSampler
         VkDescriptorSet descSetNearest = VK_NULL_HANDLE;  // framePointSampler
+        VkDescriptorSet descSetBilinear = VK_NULL_HANDLE;  // frameBilinearSampler
         uint32_t w = 0;
         uint32_t h = 0;
         VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -3044,10 +2976,12 @@ bool VulkanRenderTarget::EnsureVelloEngine()
         return false;
     }
     // Bring up the real Vello GPU compute pipeline when the device supports
-    // scalarBlockLayout (its dx-layout SPIR-V requires it). On success the
+    // scalarBlockLayout (its dx-layout SPIR-V requires it) and the selected
+    // graphics queue supports compute commands. On success the
     // engine switches to producing the GPU scene; otherwise it keeps the CPU
     // tessellation batch path (the Impeller-equivalent graceful fallback).
-    if (impl_->scalarBlockLayoutSupported) {
+    if (vulkan_capabilities::SupportsVelloCompute(
+            impl_->graphicsQueueFlags, impl_->scalarBlockLayoutSupported)) {
         if (!impl_->velloCompute_ && impl_->getPhysicalDeviceMemoryProperties) {
             VkPhysicalDeviceMemoryProperties memProps{};
             impl_->getPhysicalDeviceMemoryProperties(impl_->physicalDevice, &memProps);
@@ -3058,6 +2992,8 @@ bool VulkanRenderTarget::EnsureVelloEngine()
             }
         }
         velloEngine_->SetComputeMode(impl_->velloCompute_ != nullptr);
+    } else if ((impl_->graphicsQueueFlags & VK_QUEUE_COMPUTE_BIT) == 0) {
+        VK_LOG("[Vulkan] Vello: graphics-only queue; using tessellation fallback");
     }
     // E4: inherit the current analytic-only knob state (see EnsureImpellerEngine).
     velloEngine_->SetPathAnalyticOnly(pathAnalyticOnly_);
@@ -3936,15 +3872,10 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
         getInstanceProcAddr, VK_NULL_HANDLE, "vkEnumerateInstanceExtensionProperties");
     std::vector<VkExtensionProperties> availableInstanceExtensions;
     if (enumInstExts) {
-        uint32_t count = 0;
-        if (enumInstExts(nullptr, &count, nullptr) == VK_SUCCESS && count > 0) {
-            availableInstanceExtensions.resize(count);
-            if (enumInstExts(nullptr, &count, availableInstanceExtensions.data()) != VK_SUCCESS) {
-                availableInstanceExtensions.clear();
-            } else {
-                availableInstanceExtensions.resize(count);
-            }
-        }
+        (void)vulkan_capabilities::Enumerate(availableInstanceExtensions,
+            [&](uint32_t* count, VkExtensionProperties* values) {
+                return enumInstExts(nullptr, count, values);
+            });
     }
     const auto hasInstanceExtension = [&](const char* name) {
         return std::any_of(
@@ -3989,36 +3920,17 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
 
         bool layerAvailable = false;
         if (enumInstLayers) {
-            uint32_t count = 0;
-            if (enumInstLayers(&count, nullptr) == VK_SUCCESS && count > 0) {
-                std::vector<VkLayerProperties> props(count);
-                if (enumInstLayers(&count, props.data()) == VK_SUCCESS) {
-                    for (const auto& lp : props) {
-                        if (std::strcmp(lp.layerName, "VK_LAYER_KHRONOS_validation") == 0) {
-                            layerAvailable = true;
-                            break;
-                        }
+            std::vector<VkLayerProperties> props;
+            if (vulkan_capabilities::Enumerate(props, enumInstLayers) == VK_SUCCESS) {
+                for (const auto& lp : props) {
+                    if (std::strcmp(lp.layerName, "VK_LAYER_KHRONOS_validation") == 0) {
+                        layerAvailable = true;
+                        break;
                     }
                 }
             }
         }
-        if (enumInstExts) {
-            // Query the debug-utils extension against the loader (null layer) —
-            // the validation layer also exposes it, but the instance-level
-            // messenger only needs the loader/ICD to advertise it.
-            uint32_t count = 0;
-            if (enumInstExts(nullptr, &count, nullptr) == VK_SUCCESS && count > 0) {
-                std::vector<VkExtensionProperties> props(count);
-                if (enumInstExts(nullptr, &count, props.data()) == VK_SUCCESS) {
-                    for (const auto& ep : props) {
-                        if (std::strcmp(ep.extensionName, VK_EXT_DEBUG_UTILS_EXTENSION_NAME) == 0) {
-                            debugUtilsAvailable = true;
-                            break;
-                        }
-                    }
-                }
-            }
-        }
+        debugUtilsAvailable = hasInstanceExtension(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 
         if (layerAvailable && debugUtilsAvailable) {
             layers.push_back("VK_LAYER_KHRONOS_validation");
@@ -4036,8 +3948,8 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     appInfo.pApplicationName = "Jalium.UI";
     appInfo.pEngineName = "Jalium";
-    // Prefer 1.1 for core Features2, but keep Vulkan 1.0 loaders viable via the
-    // KHR properties2 extension (or disable only the optional Vello compute path).
+    // Prefer 1.2 for core scalar block layout. Vulkan 1.0 loaders use KHR
+    // properties2 and device extensions, or disable optional Vello compute.
     appInfo.apiVersion = instanceApiVersion;
     VK_LOG("[Vulkan] Loader API %u.%u; requesting instance API %u.%u%s",
            VK_VERSION_MAJOR(loaderApiVersion), VK_VERSION_MINOR(loaderApiVersion),
@@ -4156,14 +4068,11 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     }
 #endif
 
-    uint32_t physicalDeviceCount = 0;
-    if (enumeratePhysicalDevices(instance, &physicalDeviceCount, nullptr) != VK_SUCCESS || physicalDeviceCount == 0) {
-        VK_LOG("[Vulkan] Initialize failed: no physical devices found\n");
-        return false;
-    }
-
-    std::vector<VkPhysicalDevice> physicalDevices(physicalDeviceCount);
-    if (enumeratePhysicalDevices(instance, &physicalDeviceCount, physicalDevices.data()) != VK_SUCCESS) {
+    std::vector<VkPhysicalDevice> physicalDevices;
+    if (vulkan_capabilities::Enumerate(physicalDevices,
+            [&](uint32_t* count, VkPhysicalDevice* values) {
+                return enumeratePhysicalDevices(instance, count, values);
+            }) != VK_SUCCESS || physicalDevices.empty()) {
         VK_LOG("[Vulkan] Initialize failed: could not enumerate physical devices\n");
         return false;
     }
@@ -4233,6 +4142,8 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     struct DeviceCandidate {
         VkPhysicalDevice device = VK_NULL_HANDLE;
         uint32_t queueFamily = 0;
+        uint32_t presentFamily = 0;
+        VkQueueFlags queueFlags = 0;
         VkPhysicalDeviceProperties props {};
     };
     std::vector<DeviceCandidate> deviceCandidates;
@@ -4248,23 +4159,21 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
 
             std::vector<VkQueueFamilyProperties> queueFamilies(queueCount);
             getPhysicalDeviceQueueFamilyProperties(candidate, &queueCount, queueFamilies.data());
-
-            for (uint32_t index = 0; index < queueCount; ++index) {
-                VkBool32 presentSupported = VK_FALSE;
-                if (getPhysicalDeviceSurfaceSupport(candidate, index, surface, &presentSupported) != VK_SUCCESS) {
-                    continue;
-                }
-
-                if ((queueFamilies[index].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0 && presentSupported == VK_TRUE) {
-                    DeviceCandidate c;
-                    c.device = candidate;
-                    c.queueFamily = index;
-                    if (getCandidateProps) {
-                        getCandidateProps(candidate, &c.props);
-                    }
-                    deviceCandidates.push_back(c);
-                    break;
-                }
+            queueFamilies.resize(queueCount);
+            const auto selectedQueues = vulkan_capabilities::SelectQueueFamilies(queueFamilies,
+                [&](uint32_t index) {
+                    VkBool32 supported = VK_FALSE;
+                    return getPhysicalDeviceSurfaceSupport(candidate, index, surface, &supported) == VK_SUCCESS &&
+                        supported == VK_TRUE;
+                });
+            if (selectedQueues.Complete()) {
+                DeviceCandidate c;
+                c.device = candidate;
+                c.queueFamily = selectedQueues.graphics;
+                c.presentFamily = selectedQueues.present;
+                c.queueFlags = selectedQueues.graphicsFlags;
+                if (getCandidateProps) getCandidateProps(candidate, &c.props);
+                deviceCandidates.push_back(c);
             }
         }
     }
@@ -4289,16 +4198,20 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
                          });
         physicalDevice = deviceCandidates.front().device;
         queueFamilyIndex = deviceCandidates.front().queueFamily;
+        presentQueueFamilyIndex = deviceCandidates.front().presentFamily;
+        graphicsQueueFlags = deviceCandidates.front().queueFlags;
         VK_LOG("[Vulkan] Selected physical device '%s' (type %d, rank of %u candidate(s), pref=%d, forceSoftware=%d)\n",
                deviceCandidates.front().props.deviceName,
                static_cast<int>(deviceCandidates.front().props.deviceType),
                static_cast<unsigned>(deviceCandidates.size()), gpuPref, forceSoftware ? 1 : 0);
     }
 
-    if (physicalDevice == VK_NULL_HANDLE || queueFamilyIndex == VK_QUEUE_FAMILY_IGNORED) {
-        VK_LOG("[Vulkan] Initialize failed: no suitable GPU with graphics+present queue found\n");
+    if (physicalDevice == VK_NULL_HANDLE || queueFamilyIndex == VK_QUEUE_FAMILY_IGNORED ||
+        presentQueueFamilyIndex == VK_QUEUE_FAMILY_IGNORED) {
+        VK_LOG("[Vulkan] Initialize failed: no suitable graphics/presentation queues found\n");
         return false;
     }
+    VK_LOG("[Vulkan] Queue families: graphics=%u present=%u", queueFamilyIndex, presentQueueFamilyIndex);
 
     // Probe device capabilities so we can opt the bitmap sampler into
     // anisotropic filtering when the GPU supports it. Without this opt-in
@@ -4314,6 +4227,17 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     if (getPhysicalDeviceProperties) {
         getPhysicalDeviceProperties(physicalDevice, &physProps);
     }
+    // A newer physical device does not raise the application's API contract.
+    // Promoted functionality still needs its extension below that contract.
+    const uint32_t deviceApiVersion = vulkan_capabilities::EffectiveDeviceApiVersion(
+        instanceApiVersion, physProps.apiVersion);
+    uniformGraphicsConstants = vulkan_graphics_constants::NeedsUniformBuffer(
+        physProps.limits.maxPushConstantsSize);
+    graphicsConstantAlignment = std::max<VkDeviceSize>(
+        16, physProps.limits.minUniformBufferOffsetAlignment);
+    VK_LOG("[Vulkan] Graphics constants: %s (maxPushConstantsSize=%u)",
+           uniformGraphicsConstants ? "dynamic uniform buffer" : "push constants",
+           physProps.limits.maxPushConstantsSize);
     anisotropySupported = supportedFeatures.samplerAnisotropy == VK_TRUE;
     deviceMaxAnisotropy = anisotropySupported ? physProps.limits.maxSamplerAnisotropy : 1.0f;
     // dualSrcBlend gates true ClearType sub-pixel text via a dual-source colour
@@ -4332,6 +4256,14 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     bool dmaBufExternalFdAdvertised = false;
     bool dmaBufHandleAdvertised = false;
     bool drmModifierAdvertised = false;
+    bool imageFormatListAdvertised = false;
+    bool syncFdAdvertised = false;
+    bool foreignQueueAdvertised = false;
+    bool samplerYcbcrSupported = false;
+    bool win32ExternalMemoryAdvertised = false;
+    bool androidHardwareBufferAdvertised = false;
+    bool maintenance6Advertised = false;
+    uint32_t externalFormatDescriptorCount = 3;
     {
         PFN_vkGetPhysicalDeviceFeatures2 getFeatures2 = nullptr;
         if (CanQueryPhysicalDeviceFeatures2(instanceApiVersion, properties2ExtensionEnabled)) {
@@ -4345,10 +4277,11 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
             getInstanceProcAddr, instance, "vkEnumerateDeviceExtensionProperties");
         bool scalarExtAdvertised = false;
         if (enumDeviceExt) {
-            uint32_t extCount = 0;
-            enumDeviceExt(physicalDevice, nullptr, &extCount, nullptr);
-            std::vector<VkExtensionProperties> exts(extCount);
-            if (extCount) enumDeviceExt(physicalDevice, nullptr, &extCount, exts.data());
+            std::vector<VkExtensionProperties> exts;
+            (void)vulkan_capabilities::Enumerate(exts,
+                [&](uint32_t* count, VkExtensionProperties* values) {
+                    return enumDeviceExt(physicalDevice, nullptr, count, values);
+                });
             for (const auto& e : exts) {
                 if (std::strcmp(e.extensionName, "VK_EXT_scalar_block_layout") == 0) {
                     scalarExtAdvertised = true;
@@ -4374,12 +4307,33 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
                                 VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME) == 0) {
                     drmModifierAdvertised = true;
                 }
+                if (std::strcmp(e.extensionName, VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME) == 0)
+                    imageFormatListAdvertised = true;
+                if (std::strcmp(e.extensionName, VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME) == 0)
+                    syncFdAdvertised = true;
+                if (std::strcmp(e.extensionName, VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME) == 0)
+                    foreignQueueAdvertised = true;
+#endif
+#if defined(_WIN32)
+                if (std::strcmp(e.extensionName, VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME) == 0)
+                    win32ExternalMemoryAdvertised = true;
+#elif defined(__ANDROID__)
+                if (std::strcmp(e.extensionName, VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME) == 0)
+                    androidHardwareBufferAdvertised = true;
+                if (std::strcmp(e.extensionName, VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME) == 0)
+                    syncFdAdvertised = true;
+                if (std::strcmp(e.extensionName, VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME) == 0)
+                    foreignQueueAdvertised = true;
+#ifdef VK_KHR_maintenance6
+                if (std::strcmp(e.extensionName, VK_KHR_MAINTENANCE_6_EXTENSION_NAME) == 0)
+                    maintenance6Advertised = true;
+#endif
 #endif
             }
         }
         // scalarBlockLayout is available either via the EXT extension (pre-1.2) or
         // as core in Vulkan 1.2+. Only query the feature when one of those holds.
-        if (getFeatures2 && (scalarExtAdvertised || physProps.apiVersion >= VK_API_VERSION_1_2)) {
+        if (getFeatures2 && (scalarExtAdvertised || deviceApiVersion >= VK_API_VERSION_1_2)) {
             VkPhysicalDeviceScalarBlockLayoutFeatures scalarFeat{};
             scalarFeat.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES;
             VkPhysicalDeviceFeatures2 feat2{};
@@ -4391,19 +4345,28 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
         if (!getFeatures2) {
             VK_LOG("[Vulkan] Features2 unavailable on this Vulkan 1.0 loader; disabling scalar-block-layout/Vello compute");
         }
+        if (getFeatures2 && deviceApiVersion >= VK_API_VERSION_1_1) {
+            VkPhysicalDeviceSamplerYcbcrConversionFeatures ycbcr{};
+            ycbcr.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES;
+            VkPhysicalDeviceFeatures2 features{};
+            features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+            features.pNext = &ycbcr;
+            getFeatures2(physicalDevice, &features);
+            samplerYcbcrSupported = ycbcr.samplerYcbcrConversion == VK_TRUE;
+        }
         // Remember whether the extension STRING must be enabled at device create
         // (pre-1.2 only; 1.2+ exposes the promoted struct without the extension).
         scalarBlockLayoutExtNeeded = scalarBlockLayoutSupported &&
                                      scalarExtAdvertised &&
-                                     physProps.apiVersion < VK_API_VERSION_1_2;
+                                     deviceApiVersion < VK_API_VERSION_1_2;
     }
 
     // Every graphics path uses a negative viewport height so Jalium's top-left
     // coordinate system maps directly to Vulkan. That behavior is core in 1.1,
-    // but a Vulkan 1.0 device must explicitly advertise and enable maintenance1.
+    // but a Vulkan 1.0 application/device must explicitly enable maintenance1.
     // Refuse this GPU cleanly so RenderBackend.Auto can fall back to Software
     // instead of submitting invalid commands on older Android drivers.
-    const bool maintenance1ExtNeeded = physProps.apiVersion < VK_API_VERSION_1_1;
+    const bool maintenance1ExtNeeded = deviceApiVersion < VK_API_VERSION_1_1;
     if (maintenance1ExtNeeded && !maintenance1ExtAdvertised) {
         VK_LOG("[Vulkan] Initialize failed: Vulkan 1.0 device does not advertise VK_KHR_maintenance1 (required for negative viewport height)\n");
         return false;
@@ -4453,11 +4416,13 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     enabledFeatures.dualSrcBlend      = dualSrcBlendSupported ? VK_TRUE : VK_FALSE;
 
     const float queuePriority = 1.0f;
-    VkDeviceQueueCreateInfo queueInfo {};
-    queueInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    queueInfo.queueFamilyIndex = queueFamilyIndex;
-    queueInfo.queueCount = 1;
-    queueInfo.pQueuePriorities = &queuePriority;
+    VkDeviceQueueCreateInfo queueInfos[2] {};
+    queueInfos[0].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+    queueInfos[0].queueFamilyIndex = queueFamilyIndex;
+    queueInfos[0].queueCount = 1;
+    queueInfos[0].pQueuePriorities = &queuePriority;
+    queueInfos[1] = queueInfos[0];
+    queueInfos[1].queueFamilyIndex = presentQueueFamilyIndex;
 
     std::vector<const char*> deviceExtensions = { "VK_KHR_swapchain" };
     if (scalarBlockLayoutExtNeeded) {
@@ -4471,18 +4436,68 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     if (incrementalPresentSupported_) {
         deviceExtensions.push_back(VK_KHR_INCREMENTAL_PRESENT_EXTENSION_NAME);
     }
+#if defined(__linux__)
+    if (syncFdAdvertised && deviceApiVersion >= VK_API_VERSION_1_1) {
+        auto querySemaphore = LoadInstanceProc<PFN_vkGetPhysicalDeviceExternalSemaphoreProperties>(
+            getInstanceProcAddr, instance, "vkGetPhysicalDeviceExternalSemaphoreProperties");
+        VkPhysicalDeviceExternalSemaphoreInfo info{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_INFO};
+        info.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+        VkExternalSemaphoreProperties properties{VK_STRUCTURE_TYPE_EXTERNAL_SEMAPHORE_PROPERTIES};
+        if (querySemaphore) querySemaphore(physicalDevice, &info, &properties);
+        syncFdAdvertised = (properties.externalSemaphoreFeatures & VK_EXTERNAL_SEMAPHORE_FEATURE_IMPORTABLE_BIT) != 0;
+    }
+#endif
+    const bool win32ImportEnabled = deviceApiVersion >= VK_API_VERSION_1_1 && win32ExternalMemoryAdvertised;
+    const bool androidHardwareBufferEnabled = deviceApiVersion >= VK_API_VERSION_1_1 &&
+        androidHardwareBufferAdvertised && foreignQueueAdvertised && samplerYcbcrSupported;
+#if defined(_WIN32)
+    if (win32ImportEnabled) deviceExtensions.push_back(VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME);
+#elif defined(__ANDROID__)
+    if (androidHardwareBufferEnabled) {
+        deviceExtensions.push_back(VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME);
+        deviceExtensions.push_back(VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME);
+        if (syncFdAdvertised) deviceExtensions.push_back(VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME);
+#ifdef VK_KHR_maintenance6
+        // The older Android contract is bounded by three plane descriptors.
+        // Newer implementations can expose the exact external-format maximum.
+        if (maintenance6Advertised) {
+            auto getProperties2 = LoadInstanceProc<PFN_vkGetPhysicalDeviceProperties2>(
+                getInstanceProcAddr, instance, "vkGetPhysicalDeviceProperties2");
+            if (getProperties2) {
+                VkPhysicalDeviceMaintenance6PropertiesKHR maintenance{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_6_PROPERTIES_KHR};
+                VkPhysicalDeviceProperties2 properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+                properties.pNext = &maintenance;
+                getProperties2(physicalDevice, &properties);
+                externalFormatDescriptorCount = maintenance.maxCombinedImageSamplerDescriptorCount;
+            }
+        }
+#endif
+    }
+#endif
 #if defined(__linux__) && !defined(__ANDROID__)
     const bool dmaBufImportEnabled =
-        physProps.apiVersion >= VK_API_VERSION_1_1 &&
-        dmaBufExternalFdAdvertised && dmaBufHandleAdvertised &&
-        drmModifierAdvertised;
+        deviceApiVersion >= VK_API_VERSION_1_1 &&
+        dmaBufExternalFdAdvertised && dmaBufHandleAdvertised;
+    const bool drmModifierEnabled = dmaBufImportEnabled &&
+        vulkan_capabilities::SupportsDrmFormatModifiers(deviceApiVersion,
+            drmModifierAdvertised, imageFormatListAdvertised);
+
     if (dmaBufImportEnabled) {
         deviceExtensions.push_back(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
         deviceExtensions.push_back(VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
-        deviceExtensions.push_back(VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME);
+        if (drmModifierEnabled) {
+            deviceExtensions.push_back(VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME);
+            if (deviceApiVersion < VK_API_VERSION_1_2)
+                deviceExtensions.push_back(VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME);
+        }
+        if (syncFdAdvertised)
+            deviceExtensions.push_back(VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME);
+        if (foreignQueueAdvertised)
+            deviceExtensions.push_back(VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME);
     }
 #else
     const bool dmaBufImportEnabled = false;
+    const bool drmModifierEnabled = false;
 #endif
     // E1: latch the per-bitmap resident-texture kill switch once (default ON).
     bitmapResidencyEnabled_ = VulkanBitmapResidencyEnabled();
@@ -4493,16 +4508,23 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     VkPhysicalDeviceScalarBlockLayoutFeatures scalarBlockFeature{};
     scalarBlockFeature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES;
     scalarBlockFeature.scalarBlockLayout = VK_TRUE;
+    VkPhysicalDeviceSamplerYcbcrConversionFeatures ycbcrFeature{};
+    ycbcrFeature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES;
+    ycbcrFeature.samplerYcbcrConversion = samplerYcbcrSupported ? VK_TRUE : VK_FALSE;
 
     VkDeviceCreateInfo deviceInfo {};
     deviceInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    deviceInfo.queueCreateInfoCount = 1;
-    deviceInfo.pQueueCreateInfos = &queueInfo;
+    deviceInfo.queueCreateInfoCount = queueFamilyIndex == presentQueueFamilyIndex ? 1 : 2;
+    deviceInfo.pQueueCreateInfos = queueInfos;
     deviceInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
     deviceInfo.ppEnabledExtensionNames = deviceExtensions.data();
     deviceInfo.pEnabledFeatures = &enabledFeatures;
     if (scalarBlockLayoutSupported) {
         deviceInfo.pNext = &scalarBlockFeature;
+    }
+    if (samplerYcbcrSupported) {
+        ycbcrFeature.pNext = const_cast<void*>(deviceInfo.pNext);
+        deviceInfo.pNext = &ycbcrFeature;
     }
     if (createDevice(physicalDevice, &deviceInfo, nullptr, &device) != VK_SUCCESS || device == VK_NULL_HANDLE) {
         VK_LOG("[Vulkan] Initialize failed: vkCreateDevice returned failure\n");
@@ -4610,7 +4632,9 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     }
 
     getDeviceQueue(device, queueFamilyIndex, 0, &queue);
-    if (queue == VK_NULL_HANDLE) {
+    if (queueFamilyIndex == presentQueueFamilyIndex) presentQueue = queue;
+    else getDeviceQueue(device, presentQueueFamilyIndex, 0, &presentQueue);
+    if (queue == VK_NULL_HANDLE || presentQueue == VK_NULL_HANDLE) {
         VK_LOG("[Vulkan] Initialize failed: vkGetDeviceQueue returned null queue\n");
         return false;
     }
@@ -4629,7 +4653,14 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     deviceGeneration->ctx.graphicsQueueFamily = queueFamilyIndex;
     deviceGeneration->ctx.getInstanceProcAddr = getInstanceProcAddr;
     deviceGeneration->ctx.getDeviceProcAddr   = getDeviceProcAddr;
+    deviceGeneration->ctx.win32ImportEnabled = win32ImportEnabled;
+    deviceGeneration->ctx.androidHardwareBufferEnabled = androidHardwareBufferEnabled;
+    deviceGeneration->ctx.externalFormatDescriptorCount = externalFormatDescriptorCount;
     deviceGeneration->ctx.dmaBufImportEnabled = dmaBufImportEnabled;
+    deviceGeneration->ctx.drmModifierEnabled = drmModifierEnabled;
+    deviceGeneration->ctx.samplerYcbcrEnabled = samplerYcbcrSupported;
+    deviceGeneration->ctx.syncFdImportEnabled = (dmaBufImportEnabled || androidHardwareBufferEnabled) && syncFdAdvertised;
+    deviceGeneration->ctx.foreignQueueEnabled = (dmaBufImportEnabled || androidHardwareBufferEnabled) && foreignQueueAdvertised;
     deviceGeneration->ctx.valid               = true;
     deviceGeneration->deviceWaitIdle          = deviceWaitIdle;
     deviceGeneration->destroyDevice           = destroyDevice;
@@ -4730,7 +4761,7 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
         // after VkDevice creation let an ink/video caller enter the device
         // while command resources and the initial swapchain were still being
         // built, defeating the generation-wide driver-call barrier.
-        ownerBackend = backend;
+        this->ownerBackend = backend;
         backend->RegisterDeviceContext(deviceGeneration);
     }
     return initialized;
@@ -4791,15 +4822,11 @@ bool VulkanRenderTarget::Impl::RecreateSwapchain(int32_t width, int32_t height, 
         return false;
     }
 
-    uint32_t formatCount = 0;
-    if (NoteVk(getSurfaceFormats(physicalDevice, surface, &formatCount, nullptr),
-               "RecreateSwapchain.getSurfaceFormats") != VK_SUCCESS || formatCount == 0) {
-        return false;
-    }
-
-    std::vector<VkSurfaceFormatKHR> formats(formatCount);
-    if (NoteVk(getSurfaceFormats(physicalDevice, surface, &formatCount, formats.data()),
-               "RecreateSwapchain.getSurfaceFormats2") != VK_SUCCESS) {
+    std::vector<VkSurfaceFormatKHR> formats;
+    if (NoteVk(vulkan_capabilities::Enumerate(formats,
+            [&](uint32_t* count, VkSurfaceFormatKHR* values) {
+                return getSurfaceFormats(physicalDevice, surface, count, values);
+            }), "RecreateSwapchain.getSurfaceFormats") != VK_SUCCESS || formats.empty()) {
         return false;
     }
 
@@ -4825,15 +4852,11 @@ bool VulkanRenderTarget::Impl::RecreateSwapchain(int32_t width, int32_t height, 
             }
         }
     }
-    uint32_t presentModeCount = 0;
-    if (NoteVk(getSurfacePresentModes(physicalDevice, surface, &presentModeCount, nullptr),
-               "RecreateSwapchain.getSurfacePresentModes") != VK_SUCCESS || presentModeCount == 0) {
-        return false;
-    }
-
-    std::vector<VkPresentModeKHR> presentModes(presentModeCount);
-    if (NoteVk(getSurfacePresentModes(physicalDevice, surface, &presentModeCount, presentModes.data()),
-               "RecreateSwapchain.getSurfacePresentModes2") != VK_SUCCESS) {
+    std::vector<VkPresentModeKHR> presentModes;
+    if (NoteVk(vulkan_capabilities::Enumerate(presentModes,
+            [&](uint32_t* count, VkPresentModeKHR* values) {
+                return getSurfacePresentModes(physicalDevice, surface, count, values);
+            }), "RecreateSwapchain.getSurfacePresentModes") != VK_SUCCESS || presentModes.empty()) {
         return false;
     }
 
@@ -5178,6 +5201,7 @@ bool VulkanRenderTarget::Impl::RecreateSwapchain(int32_t width, int32_t height, 
             // be copied back into an alias by the next BeginFrame.
             slot.frameDescriptorSet = VK_NULL_HANDLE;
             slot.frameDescriptorSetNearest = VK_NULL_HANDLE;
+            slot.frameDescriptorSetBilinear = VK_NULL_HANDLE;
 #ifdef _WIN32
             slot.textDescriptorSet = VK_NULL_HANDLE;
             slot.textDescriptorSetSmooth = VK_NULL_HANDLE;
@@ -5207,6 +5231,12 @@ bool VulkanRenderTarget::Impl::RecreateSwapchain(int32_t width, int32_t height, 
     swapchainInfo.imageArrayLayers = 1;
     swapchainInfo.imageUsage = imageUsage;
     swapchainInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    const uint32_t sharingFamilies[] { queueFamilyIndex, presentQueueFamilyIndex };
+    if (queueFamilyIndex != presentQueueFamilyIndex) {
+        swapchainInfo.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
+        swapchainInfo.queueFamilyIndexCount = 2;
+        swapchainInfo.pQueueFamilyIndices = sharingFamilies;
+    }
     swapchainInfo.preTransform = chosenPreTransform;
     swapchainInfo.compositeAlpha = compositeAlpha;
     swapchainInfo.presentMode = selectedPresentMode;
@@ -5233,21 +5263,14 @@ bool VulkanRenderTarget::Impl::RecreateSwapchain(int32_t width, int32_t height, 
         return false;
     }
 
-    uint32_t actualImageCount = 0;
-    if (NoteVk(getSwapchainImages(device, newSwapchain, &actualImageCount, nullptr),
-               "RecreateSwapchain.getSwapchainImages") != VK_SUCCESS || actualImageCount == 0) {
+    std::vector<VkImage> newImages;
+    if (NoteVk(vulkan_capabilities::Enumerate(newImages,
+            [&](uint32_t* count, VkImage* values) {
+                return getSwapchainImages(device, newSwapchain, count, values);
+            }), "RecreateSwapchain.getSwapchainImages") != VK_SUCCESS || newImages.empty()) {
         destroySwapchain(device, newSwapchain, nullptr);
         return false;
     }
-
-    std::vector<VkImage> newImages(actualImageCount);
-    if (NoteVk(getSwapchainImages(device, newSwapchain, &actualImageCount, newImages.data()),
-               "RecreateSwapchain.getSwapchainImages2") != VK_SUCCESS ||
-        actualImageCount == 0) {
-        destroySwapchain(device, newSwapchain, nullptr);
-        return false;
-    }
-    newImages.resize(actualImageCount);
 
     // Build all per-image synchronization before publishing the swapchain.
     // A partial semaphore set must never become observable by DrawFrame.
@@ -5979,6 +6002,22 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         }
     }
 
+    if (frameBilinearSampler == VK_NULL_HANDLE) {
+        VkSamplerCreateInfo linearInfo {};
+        linearInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        linearInfo.magFilter = VK_FILTER_LINEAR;
+        linearInfo.minFilter = VK_FILTER_LINEAR;
+        linearInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        linearInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        linearInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        linearInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        linearInfo.maxLod = 0;
+        linearInfo.anisotropyEnable = VK_FALSE;
+        linearInfo.maxAnisotropy = 1;
+        if (createSampler(device, &linearInfo, nullptr, &frameBilinearSampler) != VK_SUCCESS || frameBilinearSampler == VK_NULL_HANDLE)
+            return false;
+    }
+
     if (frameDescriptorSetLayout == VK_NULL_HANDLE) {
         VkDescriptorSetLayoutBinding bindings[2] {};
         bindings[0].binding = 0;
@@ -6005,13 +6044,13 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         // lazily created separable-blur scratch descriptor.
         VkDescriptorPoolSize poolSizes[2] {};
         poolSizes[0].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-        poolSizes[0].descriptorCount = MAX_FRAMES_IN_FLIGHT * 3;
+        poolSizes[0].descriptorCount = MAX_FRAMES_IN_FLIGHT * 4;
         poolSizes[1].type = VK_DESCRIPTOR_TYPE_SAMPLER;
-        poolSizes[1].descriptorCount = MAX_FRAMES_IN_FLIGHT * 3;
+        poolSizes[1].descriptorCount = MAX_FRAMES_IN_FLIGHT * 4;
 
         VkDescriptorPoolCreateInfo poolInfo {};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        poolInfo.maxSets = MAX_FRAMES_IN_FLIGHT * 3;
+        poolInfo.maxSets = MAX_FRAMES_IN_FLIGHT * 4;
         poolInfo.poolSizeCount = 2;
         poolInfo.pPoolSizes = poolSizes;
         if (createDescriptorPool(device, &poolInfo, nullptr, &frameDescriptorPool) != VK_SUCCESS || frameDescriptorPool == VK_NULL_HANDLE) {
@@ -6039,6 +6078,16 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         if (allocateDescriptorSets(device, &allocateInfo, &frameDescriptorSetNearest) != VK_SUCCESS || frameDescriptorSetNearest == VK_NULL_HANDLE) {
             return false;
         }
+    }
+
+    if (frameDescriptorSetBilinear == VK_NULL_HANDLE) {
+        VkDescriptorSetAllocateInfo allocateInfo {};
+        allocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocateInfo.descriptorPool = frameDescriptorPool;
+        allocateInfo.descriptorSetCount = 1;
+        allocateInfo.pSetLayouts = &frameDescriptorSetLayout;
+        if (allocateDescriptorSets(device, &allocateInfo, &frameDescriptorSetBilinear) != VK_SUCCESS || frameDescriptorSetBilinear == VK_NULL_HANDLE)
+            return false;
     }
 
     if (framePipelineLayout == VK_NULL_HANDLE) {
@@ -6169,7 +6218,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         vertexShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         vertexShaderInfo.codeSize = kFrameCompositeVertexShaderSpvSize;
         vertexShaderInfo.pCode = kFrameCompositeVertexShaderSpv;
-        if (createShaderModule(device, &vertexShaderInfo, nullptr, &vertexShader) != VK_SUCCESS || vertexShader == VK_NULL_HANDLE) {
+        if (CreateGraphicsShaderModule(&vertexShaderInfo, &vertexShader) != VK_SUCCESS || vertexShader == VK_NULL_HANDLE) {
             return false;
         }
 
@@ -6177,7 +6226,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         fragmentShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         fragmentShaderInfo.codeSize = kFrameCompositeFragmentShaderSpvSize;
         fragmentShaderInfo.pCode = kFrameCompositeFragmentShaderSpv;
-        if (createShaderModule(device, &fragmentShaderInfo, nullptr, &fragmentShader) != VK_SUCCESS || fragmentShader == VK_NULL_HANDLE) {
+        if (CreateGraphicsShaderModule(&fragmentShaderInfo, &fragmentShader) != VK_SUCCESS || fragmentShader == VK_NULL_HANDLE) {
             destroyShaderModule(device, vertexShader, nullptr);
             return false;
         }
@@ -6278,7 +6327,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         vertexShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         vertexShaderInfo.codeSize = kSolidRectVertexShaderSpvSize;
         vertexShaderInfo.pCode = kSolidRectVertexShaderSpv;
-        if (createShaderModule(device, &vertexShaderInfo, nullptr, &vertexShader) != VK_SUCCESS || vertexShader == VK_NULL_HANDLE) {
+        if (CreateGraphicsShaderModule(&vertexShaderInfo, &vertexShader) != VK_SUCCESS || vertexShader == VK_NULL_HANDLE) {
             return false;
         }
 
@@ -6286,7 +6335,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         fragmentShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         fragmentShaderInfo.codeSize = kSolidRectFragmentShaderSpvSize;
         fragmentShaderInfo.pCode = kSolidRectFragmentShaderSpv;
-        if (createShaderModule(device, &fragmentShaderInfo, nullptr, &fragmentShader) != VK_SUCCESS || fragmentShader == VK_NULL_HANDLE) {
+        if (CreateGraphicsShaderModule(&fragmentShaderInfo, &fragmentShader) != VK_SUCCESS || fragmentShader == VK_NULL_HANDLE) {
             destroyShaderModule(device, vertexShader, nullptr);
             return false;
         }
@@ -6380,7 +6429,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         vertexShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         vertexShaderInfo.codeSize = kSolidRectVertexShaderSpvSize;
         vertexShaderInfo.pCode = kSolidRectVertexShaderSpv;
-        if (createShaderModule(device, &vertexShaderInfo, nullptr, &vertexShader) != VK_SUCCESS || vertexShader == VK_NULL_HANDLE) {
+        if (CreateGraphicsShaderModule(&vertexShaderInfo, &vertexShader) != VK_SUCCESS || vertexShader == VK_NULL_HANDLE) {
             return false;
         }
 
@@ -6388,7 +6437,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         fragmentShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         fragmentShaderInfo.codeSize = kSolidRectFragmentShaderSpvSize;
         fragmentShaderInfo.pCode = kSolidRectFragmentShaderSpv;
-        if (createShaderModule(device, &fragmentShaderInfo, nullptr, &fragmentShader) != VK_SUCCESS || fragmentShader == VK_NULL_HANDLE) {
+        if (CreateGraphicsShaderModule(&fragmentShaderInfo, &fragmentShader) != VK_SUCCESS || fragmentShader == VK_NULL_HANDLE) {
             destroyShaderModule(device, vertexShader, nullptr);
             return false;
         }
@@ -6498,7 +6547,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         vertexShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         vertexShaderInfo.codeSize = kBitmapQuadVertexShaderSpvSize;
         vertexShaderInfo.pCode = kBitmapQuadVertexShaderSpv;
-        if (createShaderModule(device, &vertexShaderInfo, nullptr, &vertexShader) != VK_SUCCESS || vertexShader == VK_NULL_HANDLE) {
+        if (CreateGraphicsShaderModule(&vertexShaderInfo, &vertexShader) != VK_SUCCESS || vertexShader == VK_NULL_HANDLE) {
             return false;
         }
 
@@ -6506,7 +6555,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         fragmentShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         fragmentShaderInfo.codeSize = kBitmapQuadFragmentShaderSpvSize;
         fragmentShaderInfo.pCode = kBitmapQuadFragmentShaderSpv;
-        if (createShaderModule(device, &fragmentShaderInfo, nullptr, &fragmentShader) != VK_SUCCESS || fragmentShader == VK_NULL_HANDLE) {
+        if (CreateGraphicsShaderModule(&fragmentShaderInfo, &fragmentShader) != VK_SUCCESS || fragmentShader == VK_NULL_HANDLE) {
             destroyShaderModule(device, vertexShader, nullptr);
             return false;
         }
@@ -6612,7 +6661,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         vertexShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         vertexShaderInfo.codeSize = kBitmapQuadVertexShaderSpvSize;  // reuse the shared bitmap quad VS
         vertexShaderInfo.pCode = kBitmapQuadVertexShaderSpv;
-        if (createShaderModule(device, &vertexShaderInfo, nullptr, &vertexShader) != VK_SUCCESS || vertexShader == VK_NULL_HANDLE) {
+        if (CreateGraphicsShaderModule(&vertexShaderInfo, &vertexShader) != VK_SUCCESS || vertexShader == VK_NULL_HANDLE) {
             return false;
         }
 
@@ -6620,7 +6669,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         fragmentShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         fragmentShaderInfo.codeSize = kInkCompositeFragSpvSize;
         fragmentShaderInfo.pCode = kInkCompositeFragSpv;
-        if (createShaderModule(device, &fragmentShaderInfo, nullptr, &fragmentShader) != VK_SUCCESS || fragmentShader == VK_NULL_HANDLE) {
+        if (CreateGraphicsShaderModule(&fragmentShaderInfo, &fragmentShader) != VK_SUCCESS || fragmentShader == VK_NULL_HANDLE) {
             destroyShaderModule(device, vertexShader, nullptr);
             return false;
         }
@@ -6727,7 +6776,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         vertexShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         vertexShaderInfo.codeSize = kBitmapQuadVertexShaderSpvSize;  // shared bitmap quad VS
         vertexShaderInfo.pCode = kBitmapQuadVertexShaderSpv;
-        if (createShaderModule(device, &vertexShaderInfo, nullptr, &vertexShader) != VK_SUCCESS || vertexShader == VK_NULL_HANDLE) {
+        if (CreateGraphicsShaderModule(&vertexShaderInfo, &vertexShader) != VK_SUCCESS || vertexShader == VK_NULL_HANDLE) {
             return false;
         }
 
@@ -6735,7 +6784,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         fragmentShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         fragmentShaderInfo.codeSize = kBitmapQuadPremulFragSpvSize;
         fragmentShaderInfo.pCode = kBitmapQuadPremulFragSpv;
-        if (createShaderModule(device, &fragmentShaderInfo, nullptr, &fragmentShader) != VK_SUCCESS || fragmentShader == VK_NULL_HANDLE) {
+        if (CreateGraphicsShaderModule(&fragmentShaderInfo, &fragmentShader) != VK_SUCCESS || fragmentShader == VK_NULL_HANDLE) {
             destroyShaderModule(device, vertexShader, nullptr);
             return false;
         }
@@ -6837,7 +6886,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         vertexShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         vertexShaderInfo.codeSize = kBitmapQuadVertexShaderSpvSize;
         vertexShaderInfo.pCode = kBitmapQuadVertexShaderSpv;
-        if (createShaderModule(device, &vertexShaderInfo, nullptr, &vertexShader) != VK_SUCCESS ||
+        if (CreateGraphicsShaderModule(&vertexShaderInfo, &vertexShader) != VK_SUCCESS ||
             vertexShader == VK_NULL_HANDLE) {
             return false;
         }
@@ -6846,7 +6895,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         fragmentShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         fragmentShaderInfo.codeSize = kBitmapQuadLcdFragSpvSize;
         fragmentShaderInfo.pCode = kBitmapQuadLcdFragSpv;
-        if (createShaderModule(device, &fragmentShaderInfo, nullptr, &fragmentShader) != VK_SUCCESS ||
+        if (CreateGraphicsShaderModule(&fragmentShaderInfo, &fragmentShader) != VK_SUCCESS ||
             fragmentShader == VK_NULL_HANDLE) {
             destroyShaderModule(device, vertexShader, nullptr);
             return false;
@@ -7035,7 +7084,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         vertexShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         vertexShaderInfo.codeSize = kTextGlyphVertSpvSize;
         vertexShaderInfo.pCode = kTextGlyphVertSpv;
-        if (createShaderModule(device, &vertexShaderInfo, nullptr, &vertexShader) != VK_SUCCESS || vertexShader == VK_NULL_HANDLE) {
+        if (CreateGraphicsShaderModule(&vertexShaderInfo, &vertexShader) != VK_SUCCESS || vertexShader == VK_NULL_HANDLE) {
             return false;
         }
 
@@ -7043,7 +7092,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         fragmentShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         fragmentShaderInfo.codeSize = kTextGlyphFragSpvSize;
         fragmentShaderInfo.pCode = kTextGlyphFragSpv;
-        if (createShaderModule(device, &fragmentShaderInfo, nullptr, &fragmentShader) != VK_SUCCESS || fragmentShader == VK_NULL_HANDLE) {
+        if (CreateGraphicsShaderModule(&fragmentShaderInfo, &fragmentShader) != VK_SUCCESS || fragmentShader == VK_NULL_HANDLE) {
             destroyShaderModule(device, vertexShader, nullptr);
             return false;
         }
@@ -7146,7 +7195,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
             clearTypeFragmentShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
             clearTypeFragmentShaderInfo.codeSize = kTextGlyphFragClearTypeSpvSize;
             clearTypeFragmentShaderInfo.pCode = kTextGlyphFragClearTypeSpv;
-            if (createShaderModule(device, &clearTypeFragmentShaderInfo, nullptr, &clearTypeFragmentShader) == VK_SUCCESS
+            if (CreateGraphicsShaderModule(&clearTypeFragmentShaderInfo, &clearTypeFragmentShader) == VK_SUCCESS
                 && clearTypeFragmentShader != VK_NULL_HANDLE) {
                 VkPipelineShaderStageCreateInfo ctStages[2] = { shaderStages[0], shaderStages[1] };
                 ctStages[1].module = clearTypeFragmentShader;
@@ -7201,7 +7250,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         vertexShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         vertexShaderInfo.codeSize = kBlurQuadVertexShaderSpvSize;
         vertexShaderInfo.pCode = kBlurQuadVertexShaderSpv;
-        if (createShaderModule(device, &vertexShaderInfo, nullptr, &vertexShader) != VK_SUCCESS || vertexShader == VK_NULL_HANDLE) {
+        if (CreateGraphicsShaderModule(&vertexShaderInfo, &vertexShader) != VK_SUCCESS || vertexShader == VK_NULL_HANDLE) {
             return false;
         }
 
@@ -7209,7 +7258,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         fragmentShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         fragmentShaderInfo.codeSize = kBlurQuadFragmentShaderSpvSize;
         fragmentShaderInfo.pCode = kBlurQuadFragmentShaderSpv;
-        if (createShaderModule(device, &fragmentShaderInfo, nullptr, &fragmentShader) != VK_SUCCESS || fragmentShader == VK_NULL_HANDLE) {
+        if (CreateGraphicsShaderModule(&fragmentShaderInfo, &fragmentShader) != VK_SUCCESS || fragmentShader == VK_NULL_HANDLE) {
             destroyShaderModule(device, vertexShader, nullptr);
             return false;
         }
@@ -7325,7 +7374,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         vertexShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         vertexShaderInfo.codeSize = kBackdropQuadVertexShaderSpvSize;
         vertexShaderInfo.pCode = kBackdropQuadVertexShaderSpv;
-        if (createShaderModule(device, &vertexShaderInfo, nullptr, &vertexShader) != VK_SUCCESS || vertexShader == VK_NULL_HANDLE) {
+        if (CreateGraphicsShaderModule(&vertexShaderInfo, &vertexShader) != VK_SUCCESS || vertexShader == VK_NULL_HANDLE) {
             return false;
         }
 
@@ -7333,7 +7382,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         fragmentShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         fragmentShaderInfo.codeSize = kBackdropQuadFragmentShaderSpvSize;
         fragmentShaderInfo.pCode = kBackdropQuadFragmentShaderSpv;
-        if (createShaderModule(device, &fragmentShaderInfo, nullptr, &fragmentShader) != VK_SUCCESS || fragmentShader == VK_NULL_HANDLE) {
+        if (CreateGraphicsShaderModule(&fragmentShaderInfo, &fragmentShader) != VK_SUCCESS || fragmentShader == VK_NULL_HANDLE) {
             destroyShaderModule(device, vertexShader, nullptr);
             return false;
         }
@@ -7427,7 +7476,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         layoutInfo.pushConstantRangeCount = 1;
         layoutInfo.pPushConstantRanges = &pushConstantRange;
-        if (createPipelineLayout(device, &layoutInfo, nullptr, &glowPipelineLayout) != VK_SUCCESS || glowPipelineLayout == VK_NULL_HANDLE) {
+        if (CreateEllipticalPipelineLayout(layoutInfo, &glowPipelineLayout) != VK_SUCCESS || glowPipelineLayout == VK_NULL_HANDLE) {
             return false;
         }
     }
@@ -7440,7 +7489,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         vertexShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         vertexShaderInfo.codeSize = kGlowQuadVertexShaderSpvSize;
         vertexShaderInfo.pCode = kGlowQuadVertexShaderSpv;
-        if (createShaderModule(device, &vertexShaderInfo, nullptr, &vertexShader) != VK_SUCCESS || vertexShader == VK_NULL_HANDLE) {
+        if (CreateGraphicsShaderModule(&vertexShaderInfo, &vertexShader) != VK_SUCCESS || vertexShader == VK_NULL_HANDLE) {
             return false;
         }
 
@@ -7448,7 +7497,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         fragmentShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         fragmentShaderInfo.codeSize = kGlowQuadFragmentShaderSpvSize;
         fragmentShaderInfo.pCode = kGlowQuadFragmentShaderSpv;
-        if (createShaderModule(device, &fragmentShaderInfo, nullptr, &fragmentShader) != VK_SUCCESS || fragmentShader == VK_NULL_HANDLE) {
+        if (CreateGraphicsShaderModule(&fragmentShaderInfo, &fragmentShader) != VK_SUCCESS || fragmentShader == VK_NULL_HANDLE) {
             destroyShaderModule(device, vertexShader, nullptr);
             return false;
         }
@@ -7557,7 +7606,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         vertexShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         vertexShaderInfo.codeSize = kLiquidGlassQuadVertexShaderSpvSize;
         vertexShaderInfo.pCode = kLiquidGlassQuadVertexShaderSpv;
-        if (createShaderModule(device, &vertexShaderInfo, nullptr, &vertexShader) != VK_SUCCESS || vertexShader == VK_NULL_HANDLE) {
+        if (CreateGraphicsShaderModule(&vertexShaderInfo, &vertexShader) != VK_SUCCESS || vertexShader == VK_NULL_HANDLE) {
             return false;
         }
 
@@ -7565,7 +7614,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         fragmentShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         fragmentShaderInfo.codeSize = kLiquidGlassQuadFragmentShaderSpvSize;
         fragmentShaderInfo.pCode = kLiquidGlassQuadFragmentShaderSpv;
-        if (createShaderModule(device, &fragmentShaderInfo, nullptr, &fragmentShader) != VK_SUCCESS || fragmentShader == VK_NULL_HANDLE) {
+        if (CreateGraphicsShaderModule(&fragmentShaderInfo, &fragmentShader) != VK_SUCCESS || fragmentShader == VK_NULL_HANDLE) {
             destroyShaderModule(device, vertexShader, nullptr);
             return false;
         }
@@ -7672,7 +7721,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         vertexShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         vertexShaderInfo.codeSize = kTriangleFillVertexShaderSpvSize;
         vertexShaderInfo.pCode = kTriangleFillVertexShaderSpv;
-        if (createShaderModule(device, &vertexShaderInfo, nullptr, &vertexShader) != VK_SUCCESS || vertexShader == VK_NULL_HANDLE) {
+        if (CreateGraphicsShaderModule(&vertexShaderInfo, &vertexShader) != VK_SUCCESS || vertexShader == VK_NULL_HANDLE) {
             return false;
         }
 
@@ -7680,7 +7729,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         fragmentShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         fragmentShaderInfo.codeSize = kTriangleFillFragmentShaderSpvSize;
         fragmentShaderInfo.pCode = kTriangleFillFragmentShaderSpv;
-        if (createShaderModule(device, &fragmentShaderInfo, nullptr, &fragmentShader) != VK_SUCCESS || fragmentShader == VK_NULL_HANDLE) {
+        if (CreateGraphicsShaderModule(&fragmentShaderInfo, &fragmentShader) != VK_SUCCESS || fragmentShader == VK_NULL_HANDLE) {
             destroyShaderModule(device, vertexShader, nullptr);
             return false;
         }
@@ -7808,7 +7857,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         vertexShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         vertexShaderInfo.codeSize = kTriangleFillVcVertShaderSpvSize;
         vertexShaderInfo.pCode = kTriangleFillVcVertShaderSpv;
-        if (createShaderModule(device, &vertexShaderInfo, nullptr, &vertexShader) != VK_SUCCESS || vertexShader == VK_NULL_HANDLE) {
+        if (CreateGraphicsShaderModule(&vertexShaderInfo, &vertexShader) != VK_SUCCESS || vertexShader == VK_NULL_HANDLE) {
             return false;
         }
 
@@ -7816,7 +7865,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         fragmentShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         fragmentShaderInfo.codeSize = kTriangleFillVcFragShaderSpvSize;
         fragmentShaderInfo.pCode = kTriangleFillVcFragShaderSpv;
-        if (createShaderModule(device, &fragmentShaderInfo, nullptr, &fragmentShader) != VK_SUCCESS || fragmentShader == VK_NULL_HANDLE) {
+        if (CreateGraphicsShaderModule(&fragmentShaderInfo, &fragmentShader) != VK_SUCCESS || fragmentShader == VK_NULL_HANDLE) {
             destroyShaderModule(device, vertexShader, nullptr);
             return false;
         }
@@ -8003,7 +8052,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         vertexShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         vertexShaderInfo.codeSize = kTransitionQuadVertexShaderSpvSize;
         vertexShaderInfo.pCode = kTransitionQuadVertexShaderSpv;
-        if (createShaderModule(device, &vertexShaderInfo, nullptr, &vertexShader) != VK_SUCCESS || vertexShader == VK_NULL_HANDLE) {
+        if (CreateGraphicsShaderModule(&vertexShaderInfo, &vertexShader) != VK_SUCCESS || vertexShader == VK_NULL_HANDLE) {
             return false;
         }
 
@@ -8011,7 +8060,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         fragmentShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         fragmentShaderInfo.codeSize = kTransitionQuadFragmentShaderSpvSize;
         fragmentShaderInfo.pCode = kTransitionQuadFragmentShaderSpv;
-        if (createShaderModule(device, &fragmentShaderInfo, nullptr, &fragmentShader) != VK_SUCCESS || fragmentShader == VK_NULL_HANDLE) {
+        if (CreateGraphicsShaderModule(&fragmentShaderInfo, &fragmentShader) != VK_SUCCESS || fragmentShader == VK_NULL_HANDLE) {
             destroyShaderModule(device, vertexShader, nullptr);
             return false;
         }
@@ -8189,12 +8238,12 @@ bool VulkanRenderTarget::Impl::UpdateFrameDescriptorSet()
     writes[1].pImageInfo = &samplerInfo;
     updateDescriptorSets(device, static_cast<uint32_t>(std::size(writes)), writes, 0, nullptr);
 
-    // NearestNeighbor twin: same upload image at binding 0, point sampler at
-    // binding 1. Kept in lockstep with the linear set so the bitmap replay
-    // can pick a set per command without any mid-frame descriptor writes.
-    if (frameDescriptorSetNearest != VK_NULL_HANDLE && framePointSampler != VK_NULL_HANDLE) {
+    // Each in-flight frame owns independent default, point and bilinear sets.
+    for (const auto& [set, sampler] : {std::pair{frameDescriptorSetNearest, framePointSampler},
+                                     std::pair{frameDescriptorSetBilinear, frameBilinearSampler}}) {
+        if (set == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) continue;
         VkDescriptorImageInfo pointSamplerInfo {};
-        pointSamplerInfo.sampler = framePointSampler;
+        pointSamplerInfo.sampler = sampler;
         // Same NVIDIA-driver workaround as above: hand the sampler write a
         // valid image view even though the spec says it is ignored.
         pointSamplerInfo.imageView = uploadImageView;
@@ -8202,13 +8251,13 @@ bool VulkanRenderTarget::Impl::UpdateFrameDescriptorSet()
 
         VkWriteDescriptorSet nearestWrites[2] {};
         nearestWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        nearestWrites[0].dstSet = frameDescriptorSetNearest;
+        nearestWrites[0].dstSet = set;
         nearestWrites[0].dstBinding = 0;
         nearestWrites[0].descriptorCount = 1;
         nearestWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
         nearestWrites[0].pImageInfo = &sampledImageInfo;
         nearestWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        nearestWrites[1].dstSet = frameDescriptorSetNearest;
+        nearestWrites[1].dstSet = set;
         nearestWrites[1].dstBinding = 1;
         nearestWrites[1].descriptorCount = 1;
         nearestWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
@@ -8457,8 +8506,18 @@ bool VulkanRenderTarget::Impl::EnsureEllipticalLayouts()
 VkResult VulkanRenderTarget::Impl::CreateEllipticalPipelineLayout(const VkPipelineLayoutCreateInfo& info, VkPipelineLayout* output)
 {
     if (!EnsureEllipticalLayouts()) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
-    VkDescriptorSetLayout layouts[2] { info.setLayoutCount ? info.pSetLayouts[0] : ellipticalEmptySetLayout_, ellipticalSetLayout_ };
-    auto extended = info; extended.setLayoutCount = 2; extended.pSetLayouts = layouts;
+    if (uniformGraphicsConstants && !EnsureGraphicsConstantLayout())
+        return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    VkDescriptorSetLayout layouts[3] {
+        info.setLayoutCount ? info.pSetLayouts[0] : ellipticalEmptySetLayout_,
+        ellipticalSetLayout_, graphicsConstantSetLayout_ };
+    auto extended = info;
+    extended.setLayoutCount = uniformGraphicsConstants ? 3 : 2;
+    extended.pSetLayouts = layouts;
+    if (uniformGraphicsConstants) {
+        extended.pushConstantRangeCount = 0;
+        extended.pPushConstantRanges = nullptr;
+    }
     return createPipelineLayout(device, &extended, nullptr, output);
 }
 
@@ -8466,6 +8525,7 @@ bool VulkanRenderTarget::Impl::PrepareEllipticalFrame(const std::vector<GpuRepla
     const std::vector<VkImpellerDrawBatch>* batches)
 {
     if (!EnsureEllipticalLayouts()) return false;
+    if (!PrepareGraphicsConstantFrame()) return false;
     auto& frame = ellipticalFrames_[currentFrame_];
     ellipticalSets_.clear(); currentEllipticalKey_ = nullptr;
     std::vector<EllipticalClipSnapshot> clips;
@@ -8549,7 +8609,7 @@ bool VulkanRenderTarget::Impl::PrepareEllipticalFrame(const std::vector<GpuRepla
 void VulkanRenderTarget::Impl::BindEllipticalSet(VkCommandBuffer cmd, VkPipelineLayout layout, bool enabled)
 {
     if (layout == VK_NULL_HANDLE) return;
-    const bool compatible = layout == solidRectPipelineLayout || layout == bitmapPipelineLayout ||
+    bool compatible = layout == solidRectPipelineLayout || layout == bitmapPipelineLayout ||
         layout == triangleFillPipelineLayout || layout == vcTrianglePipelineLayout || layout == engineBatchPipelineLayout ||
         layout == blurPipelineLayout || layout == backdropPipelineLayout || layout == liquidGlassPipelineLayout ||
         layout == transitionPipelineLayout || layout == velloCompositePipelineLayout
@@ -8557,6 +8617,10 @@ void VulkanRenderTarget::Impl::BindEllipticalSet(VkCommandBuffer cmd, VkPipeline
         || layout == textPipelineLayout
 #endif
         ;
+    if (!compatible) {
+        compatible = std::any_of(videoPipelines.begin(), videoPipelines.end(),
+            [layout](const auto& entry) { return entry.second.layout == layout; });
+    }
     if (!compatible) return;
     auto entry = ellipticalSets_.find(enabled ? currentEllipticalKey_ : nullptr);
     if (entry != ellipticalSets_.end())
@@ -8567,11 +8631,175 @@ void VulkanRenderTarget::Impl::PushGraphicsConstants(VkCommandBuffer cmd, VkPipe
     VkShaderStageFlags stages, uint32_t offset, uint32_t size, const void* values, bool clip)
 {
     BindEllipticalSet(cmd, layout, clip);
-    cmdPushConstants(cmd, layout, stages, offset, size, values);
+    if (!uniformGraphicsConstants) {
+        cmdPushConstants(cmd, layout, stages, offset, size, values);
+        return;
+    }
+    auto& frame = graphicsConstantFrames_[currentFrame_];
+    constexpr auto range = vulkan_graphics_constants::kUniformRangeBytes;
+    // PrepareGraphicsConstantFrame guarantees one valid descriptor before
+    // command recording. If a later growth fails, bind existing storage so
+    // recording remains valid, then discard the entire unsubmitted frame.
+    if (frame.chunks.empty()) { frame.failed = true; return; }
+    auto* chunk = &frame.chunks[frame.currentChunk];
+    VkDeviceSize position = (chunk->cursor + graphicsConstantAlignment - 1) &
+        ~(graphicsConstantAlignment - 1);
+    if (!frame.failed && position + range > kGraphicsConstantChunkBytes) {
+        const size_t next = frame.currentChunk + 1;
+        if (next == frame.chunks.size()) {
+            GraphicsConstantChunk candidate;
+            if (CreateGraphicsConstantChunk(candidate)) {
+                auto candidateExit = MakeScopeExit([&]() noexcept { DestroyGraphicsConstantChunk(candidate); });
+                frame.chunks.push_back(candidate);
+                candidateExit.Release();
+            } else frame.failed = true;
+        }
+        if (!frame.failed) {
+            frame.currentChunk = next;
+            chunk = &frame.chunks[next];
+            position = 0;
+        }
+    }
+    if (!values || offset > range || size > range - offset) frame.failed = true;
+    if (frame.failed) {
+        position = 0;
+    } else {
+        auto* destination = static_cast<uint8_t*>(chunk->mapped) + position;
+        std::memset(destination, 0, range);
+        std::memcpy(destination + offset, values, size);
+        chunk->cursor = position + range;
+    }
+    const uint32_t dynamicOffset = static_cast<uint32_t>(position);
+    cmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout,
+        vulkan_graphics_constants::kDescriptorSet, 1, &chunk->set, 1, &dynamicOffset);
+}
+
+VkResult VulkanRenderTarget::Impl::CreateGraphicsShaderModule(
+    const VkShaderModuleCreateInfo* info, VkShaderModule* output)
+{
+    if (!uniformGraphicsConstants) return createShaderModule(device, info, nullptr, output);
+    std::vector<uint32_t> relocated;
+    if (info->codeSize % sizeof(uint32_t) != 0 ||
+        !vulkan_graphics_constants::RemapToUniform(
+            info->pCode, info->codeSize / sizeof(uint32_t), relocated))
+        return VK_ERROR_INITIALIZATION_FAILED;
+    auto uniformInfo = *info;
+    uniformInfo.codeSize = relocated.size() * sizeof(uint32_t);
+    uniformInfo.pCode = relocated.data();
+    return createShaderModule(device, &uniformInfo, nullptr, output);
+}
+
+bool VulkanRenderTarget::Impl::EnsureGraphicsConstantLayout()
+{
+    if (graphicsConstantSetLayout_) return true;
+    VkDescriptorSetLayoutBinding binding {};
+    binding.binding = 0;
+    binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+    binding.descriptorCount = 1;
+    binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    VkDescriptorSetLayoutCreateInfo info {};
+    info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    info.bindingCount = 1;
+    info.pBindings = &binding;
+    return NoteVk(createDescriptorSetLayout(device, &info, nullptr, &graphicsConstantSetLayout_),
+        "graphicsConstants.createLayout") == VK_SUCCESS;
+}
+
+void VulkanRenderTarget::Impl::DestroyGraphicsConstantChunk(GraphicsConstantChunk& chunk)
+{
+    if (chunk.pool) destroyDescriptorPool(device, chunk.pool, nullptr);
+    if (chunk.mapped) unmapMemory(device, chunk.memory);
+    if (chunk.buffer) destroyBuffer(device, chunk.buffer, nullptr);
+    if (chunk.memory) freeMemory(device, chunk.memory, nullptr);
+    chunk = {};
+}
+
+bool VulkanRenderTarget::Impl::CreateGraphicsConstantChunk(GraphicsConstantChunk& chunk)
+{
+    if (!EnsureGraphicsConstantLayout()) return false;
+    auto failure = MakeScopeExit([&]() noexcept { DestroyGraphicsConstantChunk(chunk); });
+    VkBufferCreateInfo bufferInfo {};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = kGraphicsConstantChunkBytes;
+    bufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (NoteVk(createBuffer(device, &bufferInfo, nullptr, &chunk.buffer),
+            "graphicsConstants.createBuffer") != VK_SUCCESS) return false;
+    VkMemoryRequirements requirements {};
+    getBufferMemoryRequirements(device, chunk.buffer, &requirements);
+    const auto type = FindMemoryType(requirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (type == VK_QUEUE_FAMILY_IGNORED) return false;
+    VkMemoryAllocateInfo allocation {};
+    allocation.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocation.allocationSize = requirements.size;
+    allocation.memoryTypeIndex = type;
+    if (NoteVk(allocateMemory(device, &allocation, nullptr, &chunk.memory),
+            "graphicsConstants.allocateMemory") != VK_SUCCESS ||
+        NoteVk(bindBufferMemory(device, chunk.buffer, chunk.memory, 0),
+            "graphicsConstants.bindBuffer") != VK_SUCCESS ||
+        NoteVk(mapMemory(device, chunk.memory, 0, VK_WHOLE_SIZE, 0, &chunk.mapped),
+            "graphicsConstants.mapMemory") != VK_SUCCESS) return false;
+    VkDescriptorPoolSize poolSize { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1 };
+    VkDescriptorPoolCreateInfo poolInfo {};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.maxSets = 1;
+    poolInfo.poolSizeCount = 1;
+    poolInfo.pPoolSizes = &poolSize;
+    if (NoteVk(createDescriptorPool(device, &poolInfo, nullptr, &chunk.pool),
+            "graphicsConstants.createPool") != VK_SUCCESS) return false;
+    VkDescriptorSetAllocateInfo setInfo {};
+    setInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    setInfo.descriptorPool = chunk.pool;
+    setInfo.descriptorSetCount = 1;
+    setInfo.pSetLayouts = &graphicsConstantSetLayout_;
+    if (NoteVk(allocateDescriptorSets(device, &setInfo, &chunk.set),
+            "graphicsConstants.allocateSet") != VK_SUCCESS) return false;
+    VkDescriptorBufferInfo buffer { chunk.buffer, 0, vulkan_graphics_constants::kUniformRangeBytes };
+    VkWriteDescriptorSet write {};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = chunk.set;
+    write.dstBinding = 0;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+    write.pBufferInfo = &buffer;
+    updateDescriptorSets(device, 1, &write, 0, nullptr);
+    failure.Release();
+    return true;
+}
+
+bool VulkanRenderTarget::Impl::PrepareGraphicsConstantFrame()
+{
+    if (!uniformGraphicsConstants) return true;
+    auto& frame = graphicsConstantFrames_[currentFrame_];
+    frame.currentChunk = 0;
+    frame.failed = false;
+    if (frame.chunks.empty()) {
+        GraphicsConstantChunk candidate;
+        if (!CreateGraphicsConstantChunk(candidate)) return false;
+        auto candidateExit = MakeScopeExit([&]() noexcept { DestroyGraphicsConstantChunk(candidate); });
+        frame.chunks.push_back(candidate);
+        candidateExit.Release();
+    }
+    for (auto& chunk : frame.chunks) chunk.cursor = 0;
+    return true;
+}
+
+void VulkanRenderTarget::Impl::DestroyGraphicsConstants()
+{
+    for (auto& frame : graphicsConstantFrames_) {
+        for (auto& chunk : frame.chunks) DestroyGraphicsConstantChunk(chunk);
+        frame = {};
+    }
+    if (graphicsConstantSetLayout_) {
+        destroyDescriptorSetLayout(device, graphicsConstantSetLayout_, nullptr);
+        graphicsConstantSetLayout_ = VK_NULL_HANDLE;
+    }
 }
 
 void VulkanRenderTarget::Impl::DestroyEllipticalFrames()
 {
+    DestroyGraphicsConstants();
     for (auto& frame : ellipticalFrames_) {
         if (frame.pool && destroyDescriptorPool) destroyDescriptorPool(device, frame.pool, nullptr);
         if (frame.mapped && unmapMemory) unmapMemory(device, frame.memory);
@@ -9105,6 +9333,15 @@ void VulkanRenderTarget::Impl::DestroyTransitionImages()
 
 void VulkanRenderTarget::Impl::DestroyGraphicsResources()
 {
+    for (auto& entry : videoPipelines) {
+        if (device != VK_NULL_HANDLE) {
+            if (entry.second.pipeline && destroyPipeline)
+                destroyPipeline(device, entry.second.pipeline, nullptr);
+            if (entry.second.layout && destroyPipelineLayout)
+                destroyPipelineLayout(device, entry.second.layout, nullptr);
+        }
+    }
+    videoPipelines.clear();
     // Stencil-then-cover scratch is swap-chain-extent-sized + bound to its own
     // render pass, so it must be rebuilt on resize/teardown like the rest.
     // (Self-guards on device == VK_NULL_HANDLE: just nulls handles when the
@@ -9157,10 +9394,12 @@ void VulkanRenderTarget::Impl::DestroyGraphicsResources()
         framePipelineLayout = VK_NULL_HANDLE;
         frameDescriptorSet = VK_NULL_HANDLE;
         frameDescriptorSetNearest = VK_NULL_HANDLE;
+        frameDescriptorSetBilinear = VK_NULL_HANDLE;
         frameDescriptorPool = VK_NULL_HANDLE;
         frameDescriptorSetLayout = VK_NULL_HANDLE;
         frameSampler = VK_NULL_HANDLE;
         framePointSampler = VK_NULL_HANDLE;
+        frameBilinearSampler = VK_NULL_HANDLE;
         return;
     }
 
@@ -9373,6 +9612,8 @@ void VulkanRenderTarget::Impl::DestroyGraphicsResources()
     if (destroySampler && framePointSampler != VK_NULL_HANDLE) {
         destroySampler(device, framePointSampler, nullptr);
     }
+    if (destroySampler && frameBilinearSampler != VK_NULL_HANDLE)
+        destroySampler(device, frameBilinearSampler, nullptr);
 
     solidRectPipeline = VK_NULL_HANDLE;
     clearRectPipeline = VK_NULL_HANDLE;
@@ -9417,10 +9658,12 @@ void VulkanRenderTarget::Impl::DestroyGraphicsResources()
     framePipelineLayout = VK_NULL_HANDLE;
     frameDescriptorSet = VK_NULL_HANDLE;
     frameDescriptorSetNearest = VK_NULL_HANDLE;
+    frameDescriptorSetBilinear = VK_NULL_HANDLE;
     frameDescriptorPool = VK_NULL_HANDLE;
     frameDescriptorSetLayout = VK_NULL_HANDLE;
     frameSampler = VK_NULL_HANDLE;
     framePointSampler = VK_NULL_HANDLE;
+    frameBilinearSampler = VK_NULL_HANDLE;
 }
 
 bool VulkanRenderTarget::Impl::EnsureStagingBuffer(uint32_t width, uint32_t height)
@@ -9447,6 +9690,7 @@ void VulkanRenderTarget::Impl::BeginFrame()
     uploadHeight = s.uploadHeight;
     frameDescriptorSet = s.frameDescriptorSet;
     frameDescriptorSetNearest = s.frameDescriptorSetNearest;
+    frameDescriptorSetBilinear = s.frameDescriptorSetBilinear;
 #ifdef _WIN32
     textDescriptorSet = s.textDescriptorSet;
     textDescriptorSetSmooth = s.textDescriptorSetSmooth;
@@ -9474,6 +9718,7 @@ void VulkanRenderTarget::Impl::CommitCurrentFrame()
     s.uploadHeight = uploadHeight;
     s.frameDescriptorSet = frameDescriptorSet;
     s.frameDescriptorSetNearest = frameDescriptorSetNearest;
+    s.frameDescriptorSetBilinear = frameDescriptorSetBilinear;
 #ifdef _WIN32
     s.textDescriptorSet = textDescriptorSet;
     s.textDescriptorSetSmooth = textDescriptorSetSmooth;
@@ -9586,6 +9831,7 @@ void VulkanRenderTarget::Impl::DestroyPerFrameResources()
     uploadHeight = 0;
     frameDescriptorSet = VK_NULL_HANDLE;
     frameDescriptorSetNearest = VK_NULL_HANDLE;
+    frameDescriptorSetBilinear = VK_NULL_HANDLE;
 #ifdef _WIN32
     textDescriptorSet = VK_NULL_HANDLE;
     textDescriptorSetSmooth = VK_NULL_HANDLE;
@@ -9652,10 +9898,12 @@ bool VulkanRenderTarget::Impl::ShrinkPerFrameBuffers()
         for (auto& s : perFrameStates_) {
             s.frameDescriptorSet = VK_NULL_HANDLE;
             s.frameDescriptorSetNearest = VK_NULL_HANDLE;
+            s.frameDescriptorSetBilinear = VK_NULL_HANDLE;
             s.blurTempDescriptorSet = VK_NULL_HANDLE;
         }
         frameDescriptorSet = VK_NULL_HANDLE;
         frameDescriptorSetNearest = VK_NULL_HANDLE;
+        frameDescriptorSetBilinear = VK_NULL_HANDLE;
     }
 #ifdef _WIN32
     if (textDescriptorPool != VK_NULL_HANDLE) {
@@ -10267,7 +10515,11 @@ bool VulkanRenderTarget::Impl::DrawFrame(const uint8_t* pixels, uint32_t width, 
     cmdSetScissor(commandBuffer, 0, 1, &scissor);
 
     cmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, framePipeline);
-    cmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, framePipelineLayout, 0, 1, &frameDescriptorSet, 0, nullptr);
+    // This canvas is already rasterized at the destination pixel resolution.
+    // A filtered/aniso sample can soften sharp edges during the 1:1 composite.
+    const VkDescriptorSet canvasSet = frameDescriptorSetNearest != VK_NULL_HANDLE
+        ? frameDescriptorSetNearest : frameDescriptorSet;
+    cmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, framePipelineLayout, 0, 1, &canvasSet, 0, nullptr);
     cmdDraw(commandBuffer, 3, 1, 0, 0);
     cmdEndRenderPass(commandBuffer);
 
@@ -10484,7 +10736,7 @@ bool VulkanRenderTarget::Impl::EnsureEngineBatchPipeline()
     vertexShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     vertexShaderInfo.codeSize = kImpellerSolidFillVertShaderSpvSize;
     vertexShaderInfo.pCode = kImpellerSolidFillVertShaderSpv;
-    if (createShaderModule(device, &vertexShaderInfo, nullptr, &vertexShader) != VK_SUCCESS
+    if (CreateGraphicsShaderModule(&vertexShaderInfo, &vertexShader) != VK_SUCCESS
         || vertexShader == VK_NULL_HANDLE) {
         return false;
     }
@@ -10493,7 +10745,7 @@ bool VulkanRenderTarget::Impl::EnsureEngineBatchPipeline()
     fragmentShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     fragmentShaderInfo.codeSize = kImpellerSolidFillFragShaderSpvSize;
     fragmentShaderInfo.pCode = kImpellerSolidFillFragShaderSpv;
-    if (createShaderModule(device, &fragmentShaderInfo, nullptr, &fragmentShader) != VK_SUCCESS
+    if (CreateGraphicsShaderModule(&fragmentShaderInfo, &fragmentShader) != VK_SUCCESS
         || fragmentShader == VK_NULL_HANDLE) {
         destroyShaderModule(device, vertexShader, nullptr);
         return false;
@@ -11456,7 +11708,7 @@ VulkanRenderTarget::Impl::EnsureBitmapResidentImage(const void* key, uint32_t w,
         bitmapResidentImages_.erase(it);
     }
     if (frameDescriptorSetLayout == VK_NULL_HANDLE || frameSampler == VK_NULL_HANDLE
-        || framePointSampler == VK_NULL_HANDLE) {
+        || framePointSampler == VK_NULL_HANDLE || frameBilinearSampler == VK_NULL_HANDLE) {
         return nullptr;  // the bitmap descriptor infrastructure must exist
     }
     auto createImage          = LoadDeviceProc<PFN_vkCreateImage>(getDeviceProcAddr, device, "vkCreateImage");
@@ -11522,41 +11774,45 @@ VulkanRenderTarget::Impl::EnsureBitmapResidentImage(const void* key, uint32_t w,
         DestroyBitmapResidentImageInline(img); return nullptr;
     }
 
-    // One pool, TWO sets: linear (frameSampler) + nearest (framePointSampler). Same
+    // One pool, three immutable sets: default, nearest and explicit bilinear. Same
     // frameDescriptorSetLayout the bitmap pipeline binds, so the resident image samples
     // exactly like an uploaded bitmap; the draw picks the set by useNearestSampler.
     VkDescriptorPoolSize ps[2] {};
-    ps[0].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE; ps[0].descriptorCount = 2;
-    ps[1].type = VK_DESCRIPTOR_TYPE_SAMPLER;       ps[1].descriptorCount = 2;
+    ps[0].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE; ps[0].descriptorCount = 3;
+    ps[1].type = VK_DESCRIPTOR_TYPE_SAMPLER;       ps[1].descriptorCount = 3;
     VkDescriptorPoolCreateInfo pci {};
     pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    pci.maxSets = 2; pci.poolSizeCount = 2; pci.pPoolSizes = ps;
+    pci.maxSets = 3; pci.poolSizeCount = 2; pci.pPoolSizes = ps;
     if (createDescriptorPool(device, &pci, nullptr, &img.descPool) != VK_SUCCESS || img.descPool == VK_NULL_HANDLE) {
         DestroyBitmapResidentImageInline(img); return nullptr;
     }
-    VkDescriptorSetLayout layouts[2] = { frameDescriptorSetLayout, frameDescriptorSetLayout };
-    VkDescriptorSet sets[2] = { VK_NULL_HANDLE, VK_NULL_HANDLE };
+    VkDescriptorSetLayout layouts[3] = { frameDescriptorSetLayout, frameDescriptorSetLayout, frameDescriptorSetLayout };
+    VkDescriptorSet sets[3] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
     VkDescriptorSetAllocateInfo dai {};
     dai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     dai.descriptorPool = img.descPool;
-    dai.descriptorSetCount = 2;
+    dai.descriptorSetCount = 3;
     dai.pSetLayouts = layouts;
-    if (allocateDescriptorSets(device, &dai, sets) != VK_SUCCESS || sets[0] == VK_NULL_HANDLE || sets[1] == VK_NULL_HANDLE) {
+    if (allocateDescriptorSets(device, &dai, sets) != VK_SUCCESS || sets[0] == VK_NULL_HANDLE || sets[1] == VK_NULL_HANDLE || sets[2] == VK_NULL_HANDLE) {
         DestroyBitmapResidentImageInline(img); return nullptr;
     }
     img.descSetLinear  = sets[0];
     img.descSetNearest = sets[1];
+    img.descSetBilinear = sets[2];
     // Write both sets: same view, differing sampler.
     VkDescriptorImageInfo viewInfoL {}; viewInfoL.imageView = img.view; viewInfoL.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     VkDescriptorImageInfo sampInfoL {}; sampInfoL.sampler = frameSampler;      sampInfoL.imageView = img.view; sampInfoL.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     VkDescriptorImageInfo viewInfoN {}; viewInfoN.imageView = img.view; viewInfoN.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     VkDescriptorImageInfo sampInfoN {}; sampInfoN.sampler = framePointSampler; sampInfoN.imageView = img.view; sampInfoN.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    VkWriteDescriptorSet wd[4] {};
+    VkDescriptorImageInfo sampInfoB=sampInfoL; sampInfoB.sampler=frameBilinearSampler;
+    VkWriteDescriptorSet wd[6] {};
     wd[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; wd[0].dstSet = img.descSetLinear;  wd[0].dstBinding = 0; wd[0].descriptorCount = 1; wd[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE; wd[0].pImageInfo = &viewInfoL;
     wd[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; wd[1].dstSet = img.descSetLinear;  wd[1].dstBinding = 1; wd[1].descriptorCount = 1; wd[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;       wd[1].pImageInfo = &sampInfoL;
     wd[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; wd[2].dstSet = img.descSetNearest; wd[2].dstBinding = 0; wd[2].descriptorCount = 1; wd[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE; wd[2].pImageInfo = &viewInfoN;
     wd[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; wd[3].dstSet = img.descSetNearest; wd[3].dstBinding = 1; wd[3].descriptorCount = 1; wd[3].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;       wd[3].pImageInfo = &sampInfoN;
-    updateDescriptorSets(device, 4, wd, 0, nullptr);
+    wd[4]=wd[0]; wd[4].dstSet=img.descSetBilinear;
+    wd[5]=wd[1]; wd[5].dstSet=img.descSetBilinear; wd[5].pImageInfo=&sampInfoB;
+    updateDescriptorSets(device, 6, wd, 0, nullptr);
 
     img.lruTick = ++bitmapResidentLruClock_;
     bitmap_stats::AddGpuResidentBytes(static_cast<int64_t>(w) * h * 4);
@@ -11637,6 +11893,7 @@ void VulkanRenderTarget::Impl::DestroyBitmapResidentImageInline(BitmapResidentIm
     img.descPool = VK_NULL_HANDLE;
     img.descSetLinear = VK_NULL_HANDLE;
     img.descSetNearest = VK_NULL_HANDLE;
+    img.descSetBilinear = VK_NULL_HANDLE;
     img.view = VK_NULL_HANDLE;
     img.image = VK_NULL_HANDLE;
     img.memory = VK_NULL_HANDLE;
@@ -12032,7 +12289,7 @@ bool VulkanRenderTarget::Impl::EnsureStencilCoverResources(VkExtent2D extent)
         vmi.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         vmi.codeSize = kImpellerSolidFillVertShaderSpvSize;
         vmi.pCode = kImpellerSolidFillVertShaderSpv;
-        if (createShaderModule(device, &vmi, nullptr, &vs) != VK_SUCCESS) {
+        if (CreateGraphicsShaderModule(&vmi, &vs) != VK_SUCCESS) {
             DestroyStencilCoverResources();
             return false;
         }
@@ -12040,7 +12297,7 @@ bool VulkanRenderTarget::Impl::EnsureStencilCoverResources(VkExtent2D extent)
         fmi.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         fmi.codeSize = kImpellerSolidFillFragShaderSpvSize;
         fmi.pCode = kImpellerSolidFillFragShaderSpv;
-        if (createShaderModule(device, &fmi, nullptr, &fs) != VK_SUCCESS) {
+        if (CreateGraphicsShaderModule(&fmi, &fs) != VK_SUCCESS) {
             destroyShaderModule(device, vs, nullptr);
             DestroyStencilCoverResources();
             return false;
@@ -12927,12 +13184,12 @@ bool VulkanRenderTarget::Impl::EnsureVelloCompositePipeline()
     vsi.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     vsi.codeSize = kVelloCompositeVertSpvSize;
     vsi.pCode = kVelloCompositeVertSpv;
-    if (createShaderModule(device, &vsi, nullptr, &vs) != VK_SUCCESS) return false;
+    if (CreateGraphicsShaderModule(&vsi, &vs) != VK_SUCCESS) return false;
     VkShaderModuleCreateInfo fsi {};
     fsi.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     fsi.codeSize = kVelloCompositeFragSpvSize;
     fsi.pCode = kVelloCompositeFragSpv;
-    if (createShaderModule(device, &fsi, nullptr, &fs) != VK_SUCCESS) {
+    if (CreateGraphicsShaderModule(&fsi, &fs) != VK_SUCCESS) {
         destroyShaderModule(device, vs, nullptr);
         return false;
     }
@@ -13163,6 +13420,83 @@ bool VulkanRenderTarget::Impl::ResetCustomShaderDescriptorPoolForCompletedSlot(
     return NoteVk(resetDescriptorPool(device, pool, 0), where) == VK_SUCCESS;
 }
 
+VulkanRenderTarget::Impl::VideoPipeline* VulkanRenderTarget::Impl::EnsureVideoPipeline(
+    const std::shared_ptr<VulkanVideoSamplingResources>& sampling)
+{
+    if (!sampling || !sampling->layout || !frameRenderPass) return nullptr;
+    auto existing = videoPipelines.find(sampling.get());
+    if (existing != videoPipelines.end()) return &existing->second;
+    VideoPipeline value;
+    value.sampling = sampling;
+    VkPushConstantRange range{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(BitmapQuadPushConstants)};
+    VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    layoutInfo.setLayoutCount = 1;
+    layoutInfo.pSetLayouts = &sampling->layout;
+    layoutInfo.pushConstantRangeCount = 1;
+    layoutInfo.pPushConstantRanges = &range;
+    if (CreateEllipticalPipelineLayout(layoutInfo, &value.layout) != VK_SUCCESS) return nullptr;
+    VkShaderModule vertex = VK_NULL_HANDLE, fragment = VK_NULL_HANDLE;
+    auto cleanup = MakeScopeExit([&] {
+        if (vertex) destroyShaderModule(device, vertex, nullptr);
+        if (fragment) destroyShaderModule(device, fragment, nullptr);
+        if (value.pipeline) destroyPipeline(device, value.pipeline, nullptr);
+        if (value.layout) destroyPipelineLayout(device, value.layout, nullptr);
+    });
+    VkShaderModuleCreateInfo shader{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    shader.codeSize = kBitmapQuadVertexShaderSpvSize;
+    shader.pCode = kBitmapQuadVertexShaderSpv;
+    if (CreateGraphicsShaderModule(&shader, &vertex) != VK_SUCCESS) return nullptr;
+    shader.codeSize = kVideoQuadFragSpvSize;
+    shader.pCode = kVideoQuadFragSpv;
+    if (CreateGraphicsShaderModule(&shader, &fragment) != VK_SUCCESS) return nullptr;
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    for (int i = 0; i < 2; ++i) {
+        stages[i].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[i].stage = i == 0 ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT;
+        stages[i].module = i == 0 ? vertex : fragment;
+        stages[i].pName = "main";
+    }
+    VkPipelineVertexInputStateCreateInfo vertexInput{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo viewport{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    viewport.viewportCount = viewport.scissorCount = 1;
+    VkPipelineRasterizationStateCreateInfo raster{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    raster.polygonMode = VK_POLYGON_MODE_FILL;
+    raster.cullMode = VK_CULL_MODE_NONE;
+    raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    raster.lineWidth = 1.0f;
+    VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineColorBlendAttachmentState attachment{};
+    attachment.blendEnable = VK_TRUE;
+    attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    attachment.colorBlendOp = attachment.alphaBlendOp = VK_BLEND_OP_ADD;
+    attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    blend.attachmentCount = 1;
+    blend.pAttachments = &attachment;
+    const VkDynamicState dynamics[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    dynamic.dynamicStateCount = 2;
+    dynamic.pDynamicStates = dynamics;
+    VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    info.stageCount = 2; info.pStages = stages;
+    info.pVertexInputState = &vertexInput; info.pInputAssemblyState = &assembly;
+    info.pViewportState = &viewport; info.pRasterizationState = &raster;
+    info.pMultisampleState = &multisample; info.pColorBlendState = &blend;
+    info.pDynamicState = &dynamic; info.layout = value.layout; info.renderPass = frameRenderPass;
+    if (NoteVk(createGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &value.pipeline),
+               "video.createGraphicsPipeline") != VK_SUCCESS) return nullptr;
+    auto inserted = videoPipelines.emplace(sampling.get(), value);
+    value.pipeline = VK_NULL_HANDLE;
+    value.layout = VK_NULL_HANDLE;
+    return &inserted.first->second;
+}
+
 bool VulkanRenderTarget::Impl::EnsureCustomShaderBase()
 {
     if (customShaderBaseReady) return true;
@@ -13180,7 +13514,7 @@ bool VulkanRenderTarget::Impl::EnsureCustomShaderBase()
     vsInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     vsInfo.codeSize = kEffectBuiltinCustomShaderVsSpvSize;
     vsInfo.pCode = kEffectBuiltinCustomShaderVsSpv;
-    if (createShaderModule(device, &vsInfo, nullptr, &customShaderVs) != VK_SUCCESS) return false;
+    if (CreateGraphicsShaderModule(&vsInfo, &customShaderVs) != VK_SUCCESS) return false;
 
     // Descriptor layout: b0 UBO (user constants, FS), t0 sampled image (FS),
     // s0 sampler (FS) — bindings follow the compiler's register→binding shifts.
@@ -13213,7 +13547,7 @@ bool VulkanRenderTarget::Impl::EnsureCustomShaderBase()
     plInfo.pSetLayouts = &customShaderDescLayout;
     plInfo.pushConstantRangeCount = 1;
     plInfo.pPushConstantRanges = &pcRange;
-    if (createPipelineLayout(device, &plInfo, nullptr, &customShaderPipelineLayout) != VK_SUCCESS) return false;
+    if (CreateEllipticalPipelineLayout(plInfo, &customShaderPipelineLayout) != VK_SUCCESS) return false;
 
     customShaderBaseReady = true;
     return true;
@@ -13262,7 +13596,7 @@ VkPipeline VulkanRenderTarget::Impl::EnsureCustomShaderPipeline(uint64_t hash, c
         psInfo.pCode = psSpirv.data();
     }
     VkShaderModule psModule = VK_NULL_HANDLE;
-    if (createShaderModule(device, &psInfo, nullptr, &psModule) != VK_SUCCESS) {
+    if (CreateGraphicsShaderModule(&psInfo, &psModule) != VK_SUCCESS) {
         customShaderPipelines.emplace(hash, VkPipeline{});
         return VK_NULL_HANDLE;
     }
@@ -14928,6 +15262,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
     // frame slot is safe to reset because waitForFences at frame start already
     // observed its previous use complete.
     bool inkBlitPoolReset = false;
+    std::vector<VulkanImportedVideoSurface*> sampledVideos;
     // The custom-shader pool was reset once at the completed-slot boundary,
     // before any deferred buffer was released. A pool created later in this
     // frame is already empty, so no mid-command-buffer reset is needed.
@@ -16458,9 +16793,9 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             VkImageView sampledView = VK_NULL_HANDLE;
             float sampledX = 0.0f, sampledY = 0.0f;
             float sampledW = 0.0f, sampledH = 0.0f, sampledOpacity = 1.0f;
-            bool transitionExternal = false;
+            VulkanImportedVideoSurface* video = nullptr;
             if (isExternalVideo) {
-                auto* video = reinterpret_cast<VulkanImportedVideoSurface*>(
+                video = reinterpret_cast<VulkanImportedVideoSurface*>(
                     command.externalVideo.surface);
                 if (!video || video->DeviceLost() ||
                     video->DeviceHandle() != device) continue;
@@ -16471,7 +16806,6 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
                 sampledW = command.externalVideo.w;
                 sampledH = command.externalVideo.h;
                 sampledOpacity = command.externalVideo.opacity;
-                transitionExternal = video->ConsumeInitialLayoutTransition();
             } else {
                 const auto& inkGeneration =
                     command.inkLayer.imageGeneration;
@@ -16484,82 +16818,79 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
                 sampledH = command.inkLayer.h;
                 sampledOpacity = command.inkLayer.opacity;
             }
-            const VkPipeline sampledPipeline = isExternalVideo
+            VkPipeline sampledPipeline = isExternalVideo
                 ? bitmapPipeline : inkCompositePipeline;
+            VkPipelineLayout sampledLayout = bitmapPipelineLayout;
+            const bool ycbcr = video && video->Sampling();
+            if (ycbcr) {
+                auto* pipeline = EnsureVideoPipeline(video->Sampling());
+                if (!pipeline) { EndFrame(); return false; }
+                sampledPipeline = pipeline->pipeline;
+                sampledLayout = pipeline->layout;
+            }
             if (sampledView == VK_NULL_HANDLE || frameSampler == VK_NULL_HANDLE ||
                 sampledPipeline == VK_NULL_HANDLE || !resetDescriptorPool) {
                 continue;
             }
 
-            if (transitionExternal && sampledImage != VK_NULL_HANDLE) {
-                VkImageMemoryBarrier barrier{};
-                barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-                barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-                barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                barrier.image = sampledImage;
-                barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-                barrier.subresourceRange.levelCount = 1;
-                barrier.subresourceRange.layerCount = 1;
-                barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-                cmdPipelineBarrier(commandBuffer,
-                    VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                    0, 0, nullptr, 0, nullptr, 1, &barrier);
+            if (video && std::find(sampledVideos.begin(), sampledVideos.end(), video) == sampledVideos.end()) {
+                video->RecordAcquire(commandBuffer);
+                sampledVideos.push_back(video);
             }
 
-            VkDescriptorPool& inkPool = inkBlitDescriptorPools[currentFrame_];
-            if (inkPool == VK_NULL_HANDLE) {
-                VkDescriptorPoolSize inkSizes[2]{};
-                inkSizes[0].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-                inkSizes[0].descriptorCount = 32;
-                inkSizes[1].type = VK_DESCRIPTOR_TYPE_SAMPLER;
-                inkSizes[1].descriptorCount = 32;
-                VkDescriptorPoolCreateInfo inkPoolInfo{};
-                inkPoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-                inkPoolInfo.maxSets = 32;
-                inkPoolInfo.poolSizeCount = 2;
-                inkPoolInfo.pPoolSizes = inkSizes;
-                if (createDescriptorPool(device, &inkPoolInfo, nullptr, &inkPool) != VK_SUCCESS) {
-                    inkPool = VK_NULL_HANDLE;
-                    continue;
+            VkDescriptorSet inkSet = ycbcr ? video->DescriptorSet() : VK_NULL_HANDLE;
+            if (!ycbcr) {
+                VkDescriptorPool& inkPool = inkBlitDescriptorPools[currentFrame_];
+                if (inkPool == VK_NULL_HANDLE) {
+                    VkDescriptorPoolSize inkSizes[2]{};
+                    inkSizes[0].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+                    inkSizes[0].descriptorCount = 32;
+                    inkSizes[1].type = VK_DESCRIPTOR_TYPE_SAMPLER;
+                    inkSizes[1].descriptorCount = 32;
+                    VkDescriptorPoolCreateInfo inkPoolInfo{};
+                    inkPoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+                    inkPoolInfo.maxSets = 32;
+                    inkPoolInfo.poolSizeCount = 2;
+                    inkPoolInfo.pPoolSizes = inkSizes;
+                    if (createDescriptorPool(device, &inkPoolInfo, nullptr, &inkPool) != VK_SUCCESS) {
+                        inkPool = VK_NULL_HANDLE;
+                        continue;
+                    }
                 }
-            }
-            if (!inkBlitPoolReset) {
-                resetDescriptorPool(device, inkPool, 0);
-                inkBlitPoolReset = true;
-            }
+                if (!inkBlitPoolReset) {
+                    resetDescriptorPool(device, inkPool, 0);
+                    inkBlitPoolReset = true;
+                }
 
-            VkDescriptorSet inkSet = VK_NULL_HANDLE;
-            VkDescriptorSetAllocateInfo inkAlloc{};
-            inkAlloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-            inkAlloc.descriptorPool = inkPool;
-            inkAlloc.descriptorSetCount = 1;
-            inkAlloc.pSetLayouts = &frameDescriptorSetLayout;
-            if (allocateDescriptorSets(device, &inkAlloc, &inkSet) != VK_SUCCESS || inkSet == VK_NULL_HANDLE) {
-                continue;  // pool exhausted this frame — drop (cap is generous)
-            }
+                VkDescriptorSetAllocateInfo inkAlloc{};
+                inkAlloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+                inkAlloc.descriptorPool = inkPool;
+                inkAlloc.descriptorSetCount = 1;
+                inkAlloc.pSetLayouts = &frameDescriptorSetLayout;
+                if (allocateDescriptorSets(device, &inkAlloc, &inkSet) != VK_SUCCESS || inkSet == VK_NULL_HANDLE) {
+                    continue;  // pool exhausted this frame — drop (cap is generous)
+                }
 
-            VkDescriptorImageInfo imgInfo{};
-            imgInfo.imageView = sampledView;
-            imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            VkDescriptorImageInfo sampInfo{};
-            sampInfo.sampler = frameSampler;
-            VkWriteDescriptorSet inkWrites[2]{};
-            inkWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            inkWrites[0].dstSet = inkSet;
-            inkWrites[0].dstBinding = 0;
-            inkWrites[0].descriptorCount = 1;
-            inkWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-            inkWrites[0].pImageInfo = &imgInfo;
-            inkWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            inkWrites[1].dstSet = inkSet;
-            inkWrites[1].dstBinding = 1;
-            inkWrites[1].descriptorCount = 1;
-            inkWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-            inkWrites[1].pImageInfo = &sampInfo;
-            updateDescriptorSets(device, 2, inkWrites, 0, nullptr);
+                VkDescriptorImageInfo imgInfo{};
+                imgInfo.imageView = sampledView;
+                imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                VkDescriptorImageInfo sampInfo{};
+                sampInfo.sampler = frameSampler;
+                VkWriteDescriptorSet inkWrites[2]{};
+                inkWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                inkWrites[0].dstSet = inkSet;
+                inkWrites[0].dstBinding = 0;
+                inkWrites[0].descriptorCount = 1;
+                inkWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+                inkWrites[0].pImageInfo = &imgInfo;
+                inkWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                inkWrites[1].dstSet = inkSet;
+                inkWrites[1].dstBinding = 1;
+                inkWrites[1].descriptorCount = 1;
+                inkWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+                inkWrites[1].pImageInfo = &sampInfo;
+                updateDescriptorSets(device, 2, inkWrites, 0, nullptr);
+            }
 
             beginLoadRenderPass();
             cmdSetScissor(commandBuffer, 0, 1, &commandScissor);
@@ -16571,6 +16902,12 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             pushConstants.uvOpacity[0] = 1.0f;  // descriptor binds the whole ink image
             pushConstants.uvOpacity[1] = 1.0f;
             pushConstants.uvOpacity[2] = sampledOpacity;
+            if (video) {
+                pushConstants.padding[0] = static_cast<float>(video->GetWidth());
+                pushConstants.padding[1] = static_cast<float>(video->GetHeight());
+                pushConstants.padding3[0] = command.externalVideo.scalingMode == 6 ? 1.0f : 0.0f;
+                pushConstants.padding3[1] = command.externalVideo.scalingMode == 3 ? 1.0f : 0.0f;
+            }
             pushConstants.screenSize[0] = static_cast<float>(extent.width);
             pushConstants.screenSize[1] = static_cast<float>(extent.height);
             if (command.hasRoundedClip && !command.roundedClipInverse) {
@@ -16607,8 +16944,8 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             // opacity; the ink FS scales all four channels by it so the premul
             // SrcOver blend (srcColorBlendFactor = ONE) is correct.
             cmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, sampledPipeline);
-            cmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bitmapPipelineLayout, 0, 1, &inkSet, 0, nullptr);
-            PushGraphicsConstants(commandBuffer, bitmapPipelineLayout,
+            cmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, sampledLayout, 0, 1, &inkSet, 0, nullptr);
+            PushGraphicsConstants(commandBuffer, sampledLayout,
                              VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                              0, sizeof(pushConstants), &pushConstants);
             cmdDraw(commandBuffer, 6, 1, 0, 0);
@@ -17081,7 +17418,8 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
                 pc.quadPoint23[3] = command.quadPoint3Y;
                 pc.geometryFlags[0] = 1.0f;
             }
-            VkDescriptorSet rSet = command.bitmap.useNearestSampler ? rimg->descSetNearest : rimg->descSetLinear;
+            VkDescriptorSet rSet = command.bitmap.useNearestSampler ? rimg->descSetNearest :
+                command.bitmap.useLinearSampler ? rimg->descSetBilinear : rimg->descSetLinear;
             cmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             command.bitmap.lcdCoverage
                                 ? bitmapLcdPipeline
@@ -17202,7 +17540,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
         VkDescriptorSet bitmapSet =
             (command.bitmap.useNearestSampler && frameDescriptorSetNearest != VK_NULL_HANDLE)
                 ? frameDescriptorSetNearest
-                : frameDescriptorSet;
+                : command.bitmap.useLinearSampler ? frameDescriptorSetBilinear : frameDescriptorSet;
         // The staging pack premultiplied this bitmap's pixels, so bind the
         // PREMULTIPLIED pipeline (SrcBlend=ONE + all-channel opacity FS) —
         // D3D12 bitmap parity. Falls back to the straight pipeline if the
@@ -17231,6 +17569,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
     // A full frame whose stream opened no main-target pass (nothing to draw)
     // still owes the image its background clear.
     flushPendingMainClear();
+    for (auto* video : sampledVideos) video->RecordRelease(commandBuffer);
 
     // E1: cap the resident-bitmap cache (retire LRU entries past the limit,
     // fence-gated). Host-side only; the retired images drain post-fence next frame.
@@ -17389,6 +17728,11 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
         tf.batchCountAtFinalize = batchCount;
     }
 
+    if (uniformGraphicsConstants && graphicsConstantFrames_[currentFrame_].failed) {
+        VK_LOG("[Vulkan] DrawReplayFrame: graphics constant allocation failed; discarding frame");
+        EndFrame();
+        return false;
+    }
     if (NoteVk(endCommandBuffer(commandBuffer), "DrawReplayFrame.endCommandBuffer") != VK_SUCCESS) {
         EndFrame();
         return false;
@@ -17409,12 +17753,19 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
         EndFrame();
         return false;
     }
-    const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    std::vector<VkSemaphore> waitSemaphores{imageAvailable};
+    std::vector<VkPipelineStageFlags> waitStages{VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+    for (auto* video : sampledVideos) {
+        if (auto semaphore = video->AcquireSemaphore()) {
+            waitSemaphores.push_back(semaphore);
+            waitStages.push_back(VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+        }
+    }
     VkSubmitInfo submitInfo {};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submitInfo.waitSemaphoreCount = 1;
-    submitInfo.pWaitSemaphores = &imageAvailable;
-    submitInfo.pWaitDstStageMask = &waitStage;
+    submitInfo.waitSemaphoreCount = static_cast<uint32_t>(waitSemaphores.size());
+    submitInfo.pWaitSemaphores = waitSemaphores.data();
+    submitInfo.pWaitDstStageMask = waitStages.data();
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffer;
     submitInfo.signalSemaphoreCount = 1;
@@ -17426,6 +17777,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
         EndFrame();
         return false;
     }
+    for (auto* video : sampledVideos) video->MarkAcquireSubmitted();
     acquiredImagePendingSubmit = false;
     fencePending = true;
     // Damage bookkeeping (the GPU work is now queued, so this image WILL hold
@@ -17746,6 +18098,7 @@ void VulkanRenderTarget::Impl::Destroy()
     physicalDevice = VK_NULL_HANDLE;
     device = VK_NULL_HANDLE;
     queue = VK_NULL_HANDLE;
+    presentQueue = VK_NULL_HANDLE;
     surface = VK_NULL_HANDLE;
     swapchain = VK_NULL_HANDLE;
     commandPool = VK_NULL_HANDLE;
@@ -17755,10 +18108,12 @@ void VulkanRenderTarget::Impl::Destroy()
     uploadImageView = VK_NULL_HANDLE;
     frameSampler = VK_NULL_HANDLE;
     framePointSampler = VK_NULL_HANDLE;
+    frameBilinearSampler = VK_NULL_HANDLE;
     frameDescriptorSetLayout = VK_NULL_HANDLE;
     frameDescriptorPool = VK_NULL_HANDLE;
     frameDescriptorSet = VK_NULL_HANDLE;
     frameDescriptorSetNearest = VK_NULL_HANDLE;
+    frameDescriptorSetBilinear = VK_NULL_HANDLE;
     framePipelineLayout = VK_NULL_HANDLE;
     frameRenderPass = VK_NULL_HANDLE;
     framePipeline = VK_NULL_HANDLE;
@@ -18367,6 +18722,10 @@ bool VulkanRenderTarget::BuildEngineBrush(Brush* brush, float opacity,
                                           EngineBrushData& bd,
                                           std::vector<EngineBrushData::GradientStop>& stopStore) const {
     if (!brush) return false;
+    if (const auto* coordinates=dynamic_cast<const GradientPaintTransformState*>(brush))
+        coordinates->CopyPaintTransform(bd);
+    if (const auto* radial=dynamic_cast<const RadialGradientGeometryState*>(brush))
+        radial->CopyRadialGeometry(bd);
     switch (brush->GetType()) {
         case JALIUM_BRUSH_SOLID: {
             auto* s = static_cast<VulkanSolidBrush*>(brush);
@@ -18386,6 +18745,7 @@ bool VulkanRenderTarget::BuildEngineBrush(Brush* brush, float opacity,
             // so this is a pass-through today — consumed once the shared
             // sampler grows Repeat/Reflect support.
             bd.spreadMethod = lg->spreadMethod_;
+        bd.colorInterpolationMode = 1; // source ramp is prepared for encoded-sRGB pipelines
             stopStore.clear();
             stopStore.reserve(lg->stops_.size());
             // Straight stop colors; opacity folded into the stop alpha (the engine
@@ -18406,9 +18766,13 @@ bool VulkanRenderTarget::BuildEngineBrush(Brush* brush, float opacity,
             // See the linear-gradient note: symmetric wiring, Pad-only sampler
             // today; consumed once Repeat/Reflect lands in the shared sampler.
             bd.spreadMethod = rg->spreadMethod_;
+        bd.colorInterpolationMode = 1; // source ramp is prepared for encoded-sRGB pipelines
             stopStore.clear();
             stopStore.reserve(rg->stops_.size());
-            for (const auto& st : rg->stops_)
+            const bool sourcePaint=(rg->radialFlags&1) && !rg->interpolationSource_.empty();
+            if(sourcePaint)bd.colorInterpolationMode=rg->colorInterpolationMode;
+            const auto& sourceStops=sourcePaint?rg->interpolationSource_:rg->stops_;
+            for (const auto& st : sourceStops)
                 stopStore.push_back({ st.position, st.r, st.g, st.b, st.a * opacity });
             bd.stops = stopStore.data();
             bd.stopCount = (uint32_t)stopStore.size();
@@ -18556,6 +18920,22 @@ void VulkanRenderTarget::EnsureCpuRasterization()
 
 void VulkanRenderTarget::ReplayCommandToCpu(const GpuReplayCommand& command)
 {
+    const size_t clipDepth = clipStack_.size();
+    auto restoreReplayClips = MakeScopeExit([&] { clipStack_.resize(clipDepth); });
+    if (command.ellipticalClips) for (const auto& gpu : *command.ellipticalClips) {
+        JaliumEllipticalRectClip shape{};
+        shape.structSize = sizeof(shape); shape.edges = static_cast<uint32_t>(gpu.localX[3]);
+        shape.width = gpu.box[0]; shape.height = gpu.box[1];
+        std::copy(std::begin(gpu.radiusX), std::end(gpu.radiusX), shape.radiusX);
+        std::copy(std::begin(gpu.radiusY), std::end(gpu.radiusY), shape.radiusY);
+        const float identity[] = {1, 0, 0, 1, 0, 0};
+        auto clip = std::make_shared<EllipticalClip>(shape, identity);
+        clip->inverse[0] = gpu.localX[0]; clip->inverse[2] = gpu.localX[1]; clip->inverse[4] = gpu.localX[2];
+        clip->inverse[1] = gpu.localY[0]; clip->inverse[3] = gpu.localY[1]; clip->inverse[5] = gpu.localY[2];
+        clip->invertible = gpu.box[3] == 0;
+        ClipState state; state.elliptical = std::move(clip); state.exclude = gpu.box[2] > .5f;
+        clipStack_.push_back(std::move(state));
+    }
     const auto toByte = [](float v) -> uint8_t {
         v = std::clamp(v, 0.0f, 1.0f);
         return static_cast<uint8_t>(v * 255.0f + 0.5f);
@@ -18610,7 +18990,20 @@ void VulkanRenderTarget::ReplayCommandToCpu(const GpuReplayCommand& command)
         case GpuReplayCommandKind::Bitmap: {
             const auto& bmp = command.bitmap;
             pushScissor();
-            if (bmp.lcdCoverage) {
+            if (command.hasCustomQuad) {
+                // Preserve UV orientation when a later capture promotes a
+                // reflected/rotated bitmap (including text) to the CPU canvas.
+                VulkanBitmap bitmap(bmp.pixelWidth, bmp.pixelHeight, std::vector<uint8_t>(bmp.GetPixels()));
+                const float affine[] = {
+                    command.quadPoint1X - command.quadPoint0X, command.quadPoint1Y - command.quadPoint0Y,
+                    command.quadPoint3X - command.quadPoint0X, command.quadPoint3Y - command.quadPoint0Y,
+                    command.quadPoint0X, command.quadPoint0Y};
+                PushTransform(affine);
+                DrawBitmapInternal(&bitmap, 0, 0, 1, 1, bmp.opacity,
+                    bmp.usePixelatedSampling ? 6 : bmp.useNearestSampler ? 3 : bmp.useLinearSampler ? 4 : 0,
+                    true, bmp.lcdCoverage, bmp.lcdTextR, bmp.lcdTextG, bmp.lcdTextB, bmp.lcdTextA);
+                PopTransform();
+            } else if (bmp.lcdCoverage) {
                 BlendLcdCoverageBuffer(bmp);
             } else {
                 BlendBuffer(bmp.GetPixels(),
@@ -18655,14 +19048,76 @@ void VulkanRenderTarget::ReplayCommandToCpu(const GpuReplayCommand& command)
             // to read from), or they are GPU-only effects with no CPU fallback.
             // In either case, there is nothing to replay here.
             break;
-        case GpuReplayCommandKind::VcTriangles:
-            // DrawLine 3-strip AA path: the matching CPU-side draw is the
-            // unconditional StrokePolyline at the end of DrawLine, which
-            // self-guards on cpuRasterNeeded_ and runs through pixelBuffer_
-            // directly when CPU fallback is active. Nothing to replay here.
+        case GpuReplayCommandKind::VcTriangles: {
+            // Gradients/AA strips encoded before a CPU capture must survive
+            // the replay transition. Vertex colors are already premultiplied,
+            // transformed and include the opacity stack.
+            const size_t transformDepth = transformStack_.size();
+            const size_t opacityDepth = opacityStack_.size();
+            auto restore = MakeScopeExit([&] {
+                transformStack_.resize(transformDepth); opacityStack_.resize(opacityDepth);
+            });
+            transformStack_.push_back(CpuTransform{}); opacityStack_.push_back(1.0f);
+            pushScissor();
+            const auto& vertices = command.vcTriangles.vertices;
+            const size_t count = std::min<size_t>(command.vcTriangles.vertexCount, vertices.size() / 6);
+            const auto edge = [](const float* a, const float* b, double x, double y) {
+                return (double(b[0]) - a[0]) * (y - a[1]) - (double(b[1]) - a[1]) * (x - a[0]);
+            };
+            const auto topLeft = [](const float* a, const float* b) {
+                return b[1] < a[1] || (b[1] == a[1] && b[0] > a[0]);
+            };
+            for (size_t triangle = 0; triangle + 2 < count; triangle += 3) {
+                const float* a = vertices.data() + triangle * 6;
+                const float* b = a + 6; const float* c = a + 12;
+                double area = edge(a, b, c[0], c[1]);
+                if (!std::isfinite(area) || std::abs(area) < 1e-12) continue;
+                if (area < 0) { std::swap(b, c); area = -area; }
+                const int left = static_cast<int>(std::floor(std::clamp(std::min({a[0], b[0], c[0]}), 0.0f, float(width_))));
+                const int top = static_cast<int>(std::floor(std::clamp(std::min({a[1], b[1], c[1]}), 0.0f, float(height_))));
+                const int right = static_cast<int>(std::ceil(std::clamp(std::max({a[0], b[0], c[0]}), 0.0f, float(width_))));
+                const int bottom = static_cast<int>(std::ceil(std::clamp(std::max({a[1], b[1], c[1]}), 0.0f, float(height_))));
+                for (int y = top; y < bottom; ++y) for (int x = left; x < right; ++x) {
+                    const double wa = edge(b, c, x + .5, y + .5);
+                    const double wb = edge(c, a, x + .5, y + .5);
+                    const double wc = edge(a, b, x + .5, y + .5);
+                    if (wa < 0 || wb < 0 || wc < 0 ||
+                        (wa == 0 && !topLeft(b, c)) || (wb == 0 && !topLeft(c, a)) ||
+                        (wc == 0 && !topLeft(a, b))) continue;
+                    const auto channel = [&](int index) {
+                        return static_cast<float>((wa * a[index] + wb * b[index] + wc * c[index]) / area);
+                    };
+                    const float alpha = channel(5);
+                    if (alpha <= 0) continue;
+                    BlendPixel(x, y, toByte(channel(4) / alpha), toByte(channel(3) / alpha),
+                               toByte(channel(2) / alpha), toByte(alpha));
+                }
+            }
+            popScissor();
             break;
+        }
+        case GpuReplayCommandKind::ExternalVideo: {
+            auto* video = reinterpret_cast<VulkanImportedVideoSurface*>(command.externalVideo.surface);
+            if (video) if (auto pixels = video->ReadbackPixels()) {
+                VulkanBitmap bitmap(video->GetWidth(), video->GetHeight(), std::move(pixels));
+                pushScissor();
+                if (command.hasCustomQuad) {
+                    const float affine[] = {
+                        command.quadPoint1X - command.quadPoint0X, command.quadPoint1Y - command.quadPoint0Y,
+                        command.quadPoint3X - command.quadPoint0X, command.quadPoint3Y - command.quadPoint0Y,
+                        command.quadPoint0X, command.quadPoint0Y};
+                    PushTransform(affine);
+                    DrawBitmap(&bitmap, 0, 0, 1, 1, command.externalVideo.opacity, command.externalVideo.scalingMode);
+                    PopTransform();
+                } else {
+                    const auto& v = command.externalVideo;
+                    DrawBitmap(&bitmap, v.x, v.y, v.w, v.h, v.opacity, v.scalingMode);
+                }
+                popScissor();
+            }
+            break;
+        }
         case GpuReplayCommandKind::InkLayer:
-        case GpuReplayCommandKind::ExternalVideo:
             // The CPU-fallback composite (image readback + BlendBuffer) is done
             // inline in BlitInkLayer when cpuRasterNeeded_ is set, so the
             // committed ink is already in pixelBuffer_. Nothing to replay here.
@@ -19323,6 +19778,7 @@ void VulkanRenderTarget::ResetGpuReplay()
     // Defensive for mid-frame resets and failed/abandoned frames. A successful
     // replay submission transfers this vector to the owning fence slot first.
     ReleaseRecordedExternalVideoSurfaces();
+    lastCaptureIsAlphaMask_ = false;
     gpuReplaySupported_ = true;
     gpuReplayHasClear_ = false;
     gpuReplayCommands_.clear();
@@ -20291,7 +20747,8 @@ bool VulkanRenderTarget::TryRecordGpuPixelBufferCommand(const std::vector<uint8_
     if (replayCommand.scissorRight <= replayCommand.scissorLeft || replayCommand.scissorBottom <= replayCommand.scissorTop) {
         return true;
     }
-    if (std::fabs(transform.m12) > kEpsilon || std::fabs(transform.m21) > kEpsilon) {
+    if (std::fabs(transform.m12) > kEpsilon || std::fabs(transform.m21) > kEpsilon ||
+        p1x < p0x || p3y < p0y) {
         replayCommand.hasCustomQuad = true;
         replayCommand.quadPoint0X = p0x;
         replayCommand.quadPoint0Y = p0y;
@@ -20346,6 +20803,7 @@ bool VulkanRenderTarget::TryRecordGpuPixelBufferCommandShared(
     // NearestNeighbor selects the point sampler. Pixelated uses direct texel
     // loads in the bitmap shader; the remaining modes use the shared sampler.
     replayCommand.bitmap.useNearestSampler = (scalingMode == 3 /* NearestNeighbor */);
+    replayCommand.bitmap.useLinearSampler = (scalingMode == JALIUM_BITMAP_SCALING_LINEAR || scalingMode == JALIUM_BITMAP_SCALING_LOW_QUALITY);
     replayCommand.bitmap.usePixelatedSampling = (scalingMode == 6 /* Pixelated */);
     replayCommand.bitmap.lcdCoverage = lcdCoverage;
     replayCommand.bitmap.lcdTextR = std::clamp(lcdTextR, 0.0f, 1.0f);
@@ -20373,7 +20831,8 @@ bool VulkanRenderTarget::TryRecordGpuPixelBufferCommandShared(
     if (replayCommand.scissorRight <= replayCommand.scissorLeft || replayCommand.scissorBottom <= replayCommand.scissorTop) {
         return true;
     }
-    if (std::fabs(transform.m12) > kEpsilon || std::fabs(transform.m21) > kEpsilon) {
+    if (std::fabs(transform.m12) > kEpsilon || std::fabs(transform.m21) > kEpsilon ||
+        p1x < p0x || p3y < p0y) {
         replayCommand.hasCustomQuad = true;
         replayCommand.quadPoint0X = p0x; replayCommand.quadPoint0Y = p0y;
         replayCommand.quadPoint1X = p1x; replayCommand.quadPoint1Y = p1y;
@@ -22068,7 +22527,8 @@ bool VulkanRenderTarget::TryRecordGpuInkLayerCommand(void* inkLayer, float x, fl
     if (cmd.scissorRight <= cmd.scissorLeft || cmd.scissorBottom <= cmd.scissorTop) {
         return true;  // fully clipped — nothing to draw, but stay on the GPU path
     }
-    if (std::fabs(transform.m12) > kEpsilon || std::fabs(transform.m21) > kEpsilon) {
+    if (std::fabs(transform.m12) > kEpsilon || std::fabs(transform.m21) > kEpsilon ||
+        p1x < p0x || p3y < p0y) {
         cmd.hasCustomQuad = true;
         cmd.quadPoint0X = p0x; cmd.quadPoint0Y = p0y;
         cmd.quadPoint1X = p1x; cmd.quadPoint1Y = p1y;
@@ -22082,7 +22542,7 @@ bool VulkanRenderTarget::TryRecordGpuInkLayerCommand(void* inkLayer, float x, fl
 
 bool VulkanRenderTarget::TryRecordGpuExternalVideoCommand(
     VulkanImportedVideoSurface* surface,
-    float x, float y, float w, float h, float opacity)
+    float x, float y, float w, float h, float opacity, int scalingMode)
 {
     if (!gpuReplaySupported_ || !gpuReplayHasClear_ || !surface ||
         opacity <= 0.0f || w <= 0.0f || h <= 0.0f ||
@@ -22104,6 +22564,7 @@ bool VulkanRenderTarget::TryRecordGpuExternalVideoCommand(
     GpuReplayCommand cmd{};
     cmd.kind = GpuReplayCommandKind::ExternalVideo;
     cmd.externalVideo.surface = surface;
+    cmd.externalVideo.scalingMode = scalingMode;
     cmd.externalVideo.x = std::min(std::min(p0x, p1x), std::min(p2x, p3x));
     cmd.externalVideo.y = std::min(std::min(p0y, p1y), std::min(p2y, p3y));
     cmd.externalVideo.w =
@@ -22125,7 +22586,7 @@ bool VulkanRenderTarget::TryRecordGpuExternalVideoCommand(
         return true;
     }
     if (std::fabs(transform.m12) > kEpsilon ||
-        std::fabs(transform.m21) > kEpsilon) {
+        std::fabs(transform.m21) > kEpsilon || p1x < p0x || p3y < p0y) {
         cmd.hasCustomQuad = true;
         cmd.quadPoint0X = p0x; cmd.quadPoint0Y = p0y;
         cmd.quadPoint1X = p1x; cmd.quadPoint1Y = p1y;
@@ -22818,6 +23279,21 @@ bool VulkanRenderTarget::TryRecordGradientFanInOrder(const std::vector<float>& p
     }
 
     const auto transform = GetCurrentTransform();
+    if (bd.type==2 && (bd.radialFlags&1)) {
+        Contour contour;contour.points=perimeterLocal;contour.closed=true;
+        const EngineTransform map{transform.m11,transform.m12,transform.m21,transform.m22,transform.dx,transform.dy};
+        const PixelRect clip{cmd.scissorLeft,cmd.scissorTop,cmd.scissorRight-cmd.scissorLeft,cmd.scissorBottom-cmd.scissorTop,1};
+        const bool result=RasterizeRadialPaint({contour},bd,map,FillRule::NonZero,
+            [&](float x,float y,const GradientColor& c){
+                const float red=c.r*c.a,green=c.g*c.a,blue=c.b*c.a;
+                const float vertices[]={x,y,red,green,blue,c.a,x+1,y,red,green,blue,c.a,x+1,y+1,red,green,blue,c.a,
+                    x,y,red,green,blue,c.a,x+1,y+1,red,green,blue,c.a,x,y+1,red,green,blue,c.a};
+                cmd.vcTriangles.vertices.insert(cmd.vcTriangles.vertices.end(),std::begin(vertices),std::end(vertices));
+            },&clip);
+        cmd.vcTriangles.vertexCount=static_cast<uint32_t>(cmd.vcTriangles.vertices.size()/6);
+        if(cmd.vcTriangles.vertexCount){if(cpuRasterNeeded_)ReplayCommandToCpu(cmd);RecordReplayCommand(std::move(cmd));}
+        return result;
+    }
     // Sample the gradient at a LOCAL point (bd geometry shares the perimeter's
     // local space), transform to world, then premultiply — the vc pipeline blends
     // premultiplied alpha and opacity is already folded into bd's stop alpha.
@@ -22826,7 +23302,7 @@ bool VulkanRenderTarget::TryRecordGradientFanInOrder(const std::vector<float>& p
                                  float stopSide = std::numeric_limits<float>::quiet_NaN()) {
         GradientColor gc = std::isnan(stopSide)
             ? SampleBrushGradient(bd, flatStops.data(), lx, ly)
-            : SampleGradientStops(stopSide, flatStops.data(), bd.stopCount);
+            : SampleGradientStops(stopSide, flatStops.data(), bd.stopCount, bd.colorInterpolationMode);
         const float pa = std::clamp(gc.a, 0.0f, 1.0f) *
             std::clamp(coverage, 0.0f, 1.0f);
         cmd.vcTriangles.vertices.push_back(wx);
@@ -22869,7 +23345,7 @@ bool VulkanRenderTarget::TryRecordGradientFanInOrder(const std::vector<float>& p
         const float glen2 = gdx * gdx + gdy * gdy;
         if (glen2 > 1e-6f) {
             auto tOf = [&](float lx, float ly) {
-                return ((lx - bd.startX) * gdx + (ly - bd.startY) * gdy) / glen2;
+                return GradientParameter(bd,lx,ly);
             };
             auto triangulate = [&](const std::vector<float>& p, float leftOfStop) {
                 const size_t m = p.size() / 2;
@@ -22928,8 +23404,8 @@ bool VulkanRenderTarget::TryRecordGradientFanInOrder(const std::vector<float>& p
         // its 400+px edges need interior spokes). Requires the centre inside
         // the convex perimeter so t is monotonic per spoke; otherwise keep
         // the legacy plain fan.
-        const float rcx = bd.centerX;
-        const float rcy = bd.centerY;
+        float rcx,rcy;
+        TransformGradientPoint(bd.gradientToUser,bd.originX,bd.originY,rcx,rcy);
         bool centreInside = true;
         {
             int sign = 0;
@@ -22948,9 +23424,7 @@ bool VulkanRenderTarget::TryRecordGradientFanInOrder(const std::vector<float>& p
         }
         if (centreInside) {
             auto tOf = [&](float lx, float ly) {
-                const float dx = (lx - rcx) / (std::max)(bd.radiusX, 1e-6f);
-                const float dy = (ly - rcy) / (std::max)(bd.radiusY, 1e-6f);
-                return std::sqrt(dx * dx + dy * dy);
+                return GradientParameter(bd,lx,ly);
             };
             // Densify long edges (never drops an original vertex; extra
             // spokes stop once the budget is reached).
@@ -23142,22 +23616,8 @@ bool VulkanRenderTarget::TryRecordGradientFanInOrder(const std::vector<float>& p
     if (cmd.vcTriangles.vertexCount < 3) {
         return false;
     }
+    if (cpuRasterNeeded_) ReplayCommandToCpu(cmd);
     RecordReplayCommand(std::move(cmd));
-
-    if (cpuRasterNeeded_) {
-        uint8_t b8 = 0, g8 = 0, r8 = 0, a8 = 0;
-        if (TryGetApproximateBrushColor(brush, b8, g8, r8, a8)) {
-            std::vector<float> world;
-            world.reserve(perimeterLocal.size());
-            for (uint32_t i = 0; i < n; ++i) {
-                float wx = 0.0f, wy = 0.0f;
-                ApplyTransform(transform, perimeterLocal[i * 2], perimeterLocal[i * 2 + 1], wx, wy);
-                world.push_back(wx);
-                world.push_back(wy);
-            }
-            RasterizePolygon(world, /*NonZero*/ 1, b8, g8, r8, a8);
-        }
-    }
     return true;
 }
 
@@ -24378,7 +24838,9 @@ void VulkanRenderTarget::PushTransform(const float* matrix)
     transform.dx = matrix[4];
     transform.dy = matrix[5];
 
-    transformStack_.push_back(MultiplyTransforms(GetCurrentTransform(), transform));
+    // Row vectors: a newly pushed local transform runs before its parent.
+    // In particular, the root DPI transform must also scale local translations.
+    transformStack_.push_back(MultiplyTransforms(transform, GetCurrentTransform()));
 }
 
 void VulkanRenderTarget::PopTransform()
@@ -25036,6 +25498,10 @@ void VulkanRenderTarget::DrawBitmapInternal(
         return;
     }
 
+    const size_t opacityDepth = opacityStack_.size();
+    auto restoreBakedOpacity = MakeScopeExit([&] { opacityStack_.resize(opacityDepth); });
+    if (opacityAlreadyBaked) opacityStack_.push_back(1.0f);
+
     if (!bitmap || opacity <= 0.0f) {
         return;
     }
@@ -25198,7 +25664,15 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
 #ifdef __ANDROID__
     if (rtDbg) VK_LOG("[TXTDBG] brush got=%d r=%u g=%u b=%u a=%u", (int)_gotBrush, r, g, b, a);
 #endif
-    if (!_gotBrush || a == 0) {
+    // A sparse gradient can have visible stops even when its stop-average
+    // alpha rounds to zero. The self-hosted path samples the actual stops.
+    const bool selfHostedGradient =
+#ifdef _WIN32
+        false;
+#else
+        brush && (brush->GetType() == JALIUM_BRUSH_LINEAR_GRADIENT || brush->GetType() == JALIUM_BRUSH_RADIAL_GRADIENT);
+#endif
+    if (!_gotBrush || (a == 0 && !selfHostedGradient)) {
         return;
     }
 
@@ -25598,13 +26072,25 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
         return;
     }
 
+    // Linux/Android stage a retained bitmap. Cache opaque glyph coverage and
+    // sample non-solid paint per pixel at draw time, rather than collapsing a
+    // whole paragraph (or a large single glyph) to a representative color.
+    EngineBrushData glyphGradient{};
+    std::vector<EngineBrushData::GradientStop> glyphGradientStops;
+    std::vector<float> glyphGradientData;
+    const bool gradientPaint = BuildEngineBrush(brush, GetCurrentOpacity(), glyphGradient, glyphGradientStops) &&
+        (glyphGradient.type == 1 || glyphGradient.type == 2) && glyphGradient.stopCount > 0;
+    if (gradientPaint) {
+        FlattenGradientStops(glyphGradient, glyphGradientData);
+        r = g = b = a = 255;
+    }
     const float brushR = static_cast<float>(r) / 255.0f;
     const float brushG = static_cast<float>(g) / 255.0f;
     const float brushB = static_cast<float>(b) / 255.0f;
     // Quantize the effective alpha (brush alpha x opacity stack) to 8 bits: it
     // is baked into the bitmap's alpha, so it must be part of the cache key
     // and identical for every hit. 1/255 opacity steps are invisible.
-    const float rawBrushA = static_cast<float>(a) / 255.0f * GetCurrentOpacity();
+    const float rawBrushA = gradientPaint ? 1.0f : static_cast<float>(a) / 255.0f * GetCurrentOpacity();
     const uint8_t brushA8 = static_cast<uint8_t>(std::clamp(rawBrushA * 255.0f + 0.5f, 0.0f, 255.0f));
     if (brushA8 == 0) {
         return;
@@ -25626,7 +26112,7 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
     const int32_t requestedAa = format->ResolveEffectiveTextRenderingMode();
     const bool stageLcdCoverage =
 #if defined(__linux__) && !defined(__ANDROID__)
-        requestedAa == JALIUM_TEXT_AA_CLEARTYPE &&
+        !gradientPaint && requestedAa == JALIUM_TEXT_AA_CLEARTYPE &&
         impl_ && impl_->dualSrcBlendSupported;
 #else
         false;
@@ -25636,11 +26122,17 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
             ? JALIUM_TEXT_AA_GRAYSCALE
             : requestedAa;
 
+    // Very long pre-shaped paragraphs need only the target's visible part.
+    // View-dependent staging bypasses the position-independent bitmap cache.
+    const bool viewportStaging = textLength > 1024 &&
+        (w * renderScale > width_ * 4.0f || h * renderScale > height_ * 4.0f);
     // ── Cache lookup ────────────────────────────────────────────────────────
     SelfHostedTextRunKey runKey {};
     runKey.formatInstanceId = ftFormat->GetInstanceId();
     runKey.formatStyleGeneration = ftFormat->GetStyleGeneration();
     runKey.textLength = textLength;
+    runKey.visibility = textGlyphRanges_.Mode();
+    runKey.glyphRanges = textGlyphRanges_.Ranges();
     {
         uint64_t hash = 0xcbf29ce484222325ULL;
         for (uint32_t i = 0; i < textLength; ++i) {
@@ -25652,7 +26144,7 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
     runKey.maxWidth = w;
     runKey.maxHeight = h;
     runKey.renderScale = renderScale;
-    runKey.aaMode = selfHostedAa | (stageLcdCoverage ? 0x100 : 0);
+    runKey.aaMode = selfHostedAa | (stageLcdCoverage ? 0x100 : 0) | (gradientPaint ? 0x200 : 0);
     runKey.r = r; runKey.g = g; runKey.b = b; runKey.a8 = brushA8;
 
     // Positions the cached (or freshly built) bitmaps and records the draws.
@@ -25667,9 +26159,22 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
         // the DIP rect onto exactly the physical pixel dimensions.
         const float invScale = 1.0f / renderScale;
         const float stagedX = x + entry.bitmapOffsetX * invScale;
-        const float stagedY = y + entry.bitmapOffsetY * invScale;
+        const float stagedY = y + (entry.bitmapOffsetY + entry.layoutOriginY) * invScale;
         const float stagedWidth = static_cast<float>(entry.bitmapWidth) * invScale;
         const float stagedHeight = static_cast<float>(entry.bitmapHeight) * invScale;
+        // Already-rasterized text must preserve its physical texels when the
+        // destination is pixel aligned and maps them 1:1. The generic image
+        // sampler enables anisotropy, whose footprint can otherwise change
+        // with the staging bitmap's extent (including viewport cropping).
+        const auto transform = GetCurrentTransform();
+        float physicalX = 0, physicalY = 0;
+        ApplyTransform(transform, stagedX, stagedY, physicalX, physicalY);
+        const auto near = [](float a, float b) { return std::abs(a - b) < 0.0001f; };
+        const int textSampling =
+            near(transform.m11, renderScale) && near(transform.m22, renderScale) &&
+            near(transform.m12, 0) && near(transform.m21, 0) &&
+            near(physicalX, std::round(physicalX)) && near(physicalY, std::round(physicalY))
+                ? JALIUM_BITMAP_SCALING_NEAREST_NEIGHBOR : JALIUM_BITMAP_SCALING_LINEAR;
         if (entry.lcdPixels) {
             VulkanBitmap lcdBitmap(static_cast<uint32_t>(entry.bitmapWidth),
                                    static_cast<uint32_t>(entry.bitmapHeight),
@@ -25679,23 +26184,36 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
             // pipeline. brushA already includes the current opacity stack.
             DrawBitmapInternal(
                 &lcdBitmap, stagedX, stagedY, stagedWidth, stagedHeight, 1.0f,
-                0 /* JALIUM_BITMAP_SCALING_UNSPECIFIED */,
+                textSampling,
                 /*opacityAlreadyBaked=*/true,
                 /*lcdCoverage=*/true,
                 brushR, brushG, brushB, brushA);
         }
         if (entry.pixels) {
+            auto painted = entry.pixels;
+            if (gradientPaint) {
+                painted = std::make_shared<std::vector<uint8_t>>(*entry.pixels);
+                const auto byte = [](float value) { return static_cast<uint8_t>(std::clamp(value * 255.0f + .5f, 0.0f, 255.0f)); };
+                for (int32_t row = 0; row < entry.bitmapHeight; ++row) for (int32_t col = 0; col < entry.bitmapWidth; ++col) {
+                    const size_t i = (static_cast<size_t>(row) * entry.bitmapWidth + col) * 4u;
+                    if (!(*painted)[i + 3]) continue;
+                    const auto color = SampleBrushGradient(glyphGradient, glyphGradientData.data(),
+                        stagedX + (col + .5f) * invScale, stagedY + (row + .5f) * invScale);
+                    (*painted)[i] = byte(color.b); (*painted)[i + 1] = byte(color.g); (*painted)[i + 2] = byte(color.r);
+                    (*painted)[i + 3] = byte((*painted)[i + 3] / 255.0f * color.a);
+                }
+            }
             VulkanBitmap textBitmap(static_cast<uint32_t>(entry.bitmapWidth),
                                     static_cast<uint32_t>(entry.bitmapHeight),
-                                    entry.pixels);
+                                    painted);
             DrawBitmapInternal(
                 &textBitmap, stagedX, stagedY, stagedWidth, stagedHeight, 1.0f,
-                0 /* JALIUM_BITMAP_SCALING_UNSPECIFIED */,
+                textSampling,
                 /*opacityAlreadyBaked=*/true);
         }
     };
 
-    if (impl_) {
+    if (impl_ && !viewportStaging) {
         if (const SelfHostedTextRunEntry* cached = impl_->selfHostedTextRuns_.Find(runKey, text)) {
             drawTextRunBitmaps(*cached);
             return;
@@ -25706,7 +26224,7 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
     SelfHostedTextRunEntry built {};
     auto commitAndDraw = [&]() {
         SelfHostedTextRunEntry* stored = nullptr;
-        if (impl_) {
+        if (impl_ && !viewportStaging) {
             stored = impl_->selfHostedTextRuns_.Insert(runKey, text, std::move(built));
         }
         if (stored) {
@@ -25716,9 +26234,35 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
         }
     };
 
+    // CSS paints pre-broken rows from one shaped paragraph. Rasterize a
+    // filtered row relative to its own line origin, then restore that origin
+    // when placing the immutable bitmap. Rounding an absolute paragraph Y and
+    // later subtracting a fractional line advance would shift its coverage.
+    float layoutOriginY = 0;
+    if (textGlyphRanges_.Mode() == 1 && textGlyphRanges_.Count()) {
+        uint32_t source = textGlyphRanges_.Data()[0], offset = 0, units = 0;
+        while (offset < textLength && units < source) {
+            units += sizeof(wchar_t) > 2 && uint32_t(text[offset]) > 0xFFFFu ? 2 : 1;
+            ++offset;
+        }
+        JaliumTextHitTestResult hit{};
+        if (ftFormat->HitTestTextPosition(text, textLength, w, h, offset, false, &hit) == JALIUM_OK)
+            layoutOriginY = hit.caretY * renderScale;
+    }
+    built.layoutOriginY = layoutOriginY;
+    // Filtering changes coverage, not the paragraph's sampling geometry.
+    // Keep the complete layout's staging bounds so separate source slices
+    // use the same quad and normalized UV plane even under affine transforms.
+    // Only cache misses visit this path; the existing byte/entry budget still
+    // bounds retained bitmaps, and long layouts use viewport-bounded staging.
+    std::vector<TextGlyphQuad> boundsQuads;
+    if (textGlyphRanges_.Mode())
+        ftFormat->GenerateGlyphQuadsForEngine(textEngine, text, textLength, w, h, brushR, brushG, brushB, brushA,
+            0.0f, -layoutOriginY, boundsQuads, renderScale, selfHostedAa, nullptr, 0, 0);
     std::vector<TextGlyphQuad> quads;
-    ftFormat->GenerateGlyphQuads(text, textLength, w, h, brushR, brushG, brushB, brushA,
-        0.0f, 0.0f, quads, renderScale, selfHostedAa);
+    ftFormat->GenerateGlyphQuadsForEngine(textEngine, text, textLength, w, h, brushR, brushG, brushB, brushA,
+        0.0f, -layoutOriginY, quads, renderScale, selfHostedAa,
+        textGlyphRanges_.Data(), textGlyphRanges_.Count(), textGlyphRanges_.Mode());
 #ifdef __ANDROID__
     if (rtDbg) VK_LOG("[TXTDBG] GenerateGlyphQuads -> quads=%zu dpi=(%.1f,%.1f) renderScale=%.2f brushA=%.2f", quads.size(), dpiX_, dpiY_, renderScale, brushA);
 #endif
@@ -25740,19 +26284,47 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
     float bboxMinY = scaledH;
     float bboxMaxX = 0.0f;
     float bboxMaxY = 0.0f;
-    for (const auto& quad : quads) {
+    for (const auto& quad : boundsQuads.empty() ? quads : boundsQuads) {
         bboxMinX = std::min(bboxMinX, quad.posX);
         bboxMinY = std::min(bboxMinY, quad.posY);
         bboxMaxX = std::max(bboxMaxX, quad.posX + quad.sizeX);
         bboxMaxY = std::max(bboxMaxY, quad.posY + quad.sizeY);
     }
-    bboxMinX = std::max(bboxMinX, 0.0f);
+    // Glyph bearings may extend before the paragraph origin (for example X
+    // in DejaVu Sans). Preserve that ink in the staging bitmap; the current
+    // render clip, rather than the paragraph's advance origin, limits paint.
     bboxMinY = std::max(bboxMinY, 0.0f);
     bboxMaxX = std::min(bboxMaxX, scaledW);
     bboxMaxY = std::min(bboxMaxY, scaledH);
 
-    const int32_t bitmapWidth = static_cast<int32_t>(std::ceil(bboxMaxX - bboxMinX));
-    const int32_t bitmapHeight = static_cast<int32_t>(std::ceil(bboxMaxY - bboxMinY));
+    if (viewportStaging) {
+        CpuTransform inverse{};
+        if (!TryInvertTransform(GetCurrentTransform(), inverse)) return;
+        float left = std::numeric_limits<float>::infinity(), top = left;
+        float right = -left, bottom = -left;
+        for (float px : {0.0f, float(width_)}) for (float py : {0.0f, float(height_)}) {
+            float localX = 0, localY = 0;
+            ApplyTransform(inverse, px, py, localX, localY);
+            localX = (localX - x) * renderScale;
+            localY = (localY - y) * renderScale - layoutOriginY;
+            left = std::min(left, localX); right = std::max(right, localX);
+            top = std::min(top, localY); bottom = std::max(bottom, localY);
+        }
+        // Keep a pixel of sampling coverage outside the conservative viewport.
+        bboxMinX = std::max(bboxMinX, std::floor(left) - 1);
+        bboxMaxX = std::min(bboxMaxX, std::ceil(right) + 1);
+        bboxMinY = std::max(bboxMinY, std::floor(top) - 1);
+        bboxMaxY = std::min(bboxMaxY, std::ceil(bottom) + 1);
+    }
+    // A filtered source range must retain the paragraph's raster grid. Round
+    // both edges, rather than only the size, so changing the first glyph never
+    // clips a fractional final texel or changes the staging image's phase.
+    bboxMinX = std::floor(bboxMinX);
+    bboxMinY = std::floor(bboxMinY);
+    bboxMaxX = std::ceil(bboxMaxX);
+    bboxMaxY = std::ceil(bboxMaxY);
+    const int32_t bitmapWidth = static_cast<int32_t>(bboxMaxX - bboxMinX);
+    const int32_t bitmapHeight = static_cast<int32_t>(bboxMaxY - bboxMinY);
 #ifdef __ANDROID__
     if (rtDbg) VK_LOG("[TXTDBG] bbox=(%.1f,%.1f..%.1f,%.1f) scaled=(%.1f,%.1f) bitmap=%dx%d", bboxMinX, bboxMinY, bboxMaxX, bboxMaxY, scaledW, scaledH, bitmapWidth, bitmapHeight);
 #endif
@@ -25840,7 +26412,7 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
                 // alpha composites (SrcOver) across overlapping glyphs.
                 uint8_t sourceR = r, sourceG = g, sourceB = b;
                 uint8_t sourceA = pixelA;
-                if (colorGlyph) {
+                if (colorGlyph && !gradientPaint) {
                     sourceA = static_cast<uint8_t>(brushA * coverage + 0.5f);
                     sourceR = static_cast<uint8_t>(std::min(
                         255u, static_cast<unsigned>(atlasData[atlasIdx]) * 255u / coverage));
@@ -26443,6 +27015,173 @@ static bool VulkanEffectCpuCaptureEnabled()
     return enabled;
 }
 
+// Alpha groups use an isolated CPU subframe, then return one immutable bitmap
+// to the Vulkan stream. The parent remains on its existing GPU/CPU path. This
+// keeps nested groups independent of the single GPU effect scratch image and
+// retains prior engine spans, external-image leases and open effect markers.
+void VulkanRenderTarget::RenderParagraphLine(TextParagraph* paragraph, uint32_t line, float x, float y, float opacity)
+{
+#ifndef _WIN32
+    auto* shared = dynamic_cast<SharedTextParagraph*>(paragraph);
+    JaliumParagraphLineMetrics metrics{};
+    if (!shared || opacity <= 0 || !isDrawing_.load() || shared->GetLine(line, &metrics) != JALIUM_OK) return;
+    auto runs = shared->PaintRuns(line, metrics.line.textPosition, metrics.line.length, textGlyphRanges_);
+    auto saved = textGlyphRanges_;
+    auto restore = MakeScopeExit([&] { textGlyphRanges_ = std::move(saved); });
+    for (const auto& run : runs) {
+        if (!textGlyphRanges_.Set(run.ranges.data(), static_cast<uint32_t>(run.ranges.size()/2), 1)) continue;
+        VulkanSolidBrush brush(run.r, run.g, run.b, run.a * opacity);
+        RenderText(shared->Text(), shared->TextLength(), shared->DrawingFormat(), x + metrics.line.x, y - metrics.line.y,
+            shared->Width(), shared->Height(), &brush);
+    }
+#endif
+}
+JaliumResult VulkanRenderTarget::RenderParagraphSlice(TextParagraph* paragraph, uint32_t line,
+    float x, float y, uint32_t start, uint32_t length, const float* rgba)
+{
+#ifndef _WIN32
+    auto* shared = dynamic_cast<SharedTextParagraph*>(paragraph);
+    if (!shared) return JALIUM_ERROR_NOT_SUPPORTED;
+    JaliumParagraphLineMetrics metrics{};
+    if (!isDrawing_.load() || shared->GetLine(line, &metrics) != JALIUM_OK) return JALIUM_ERROR_INVALID_ARGUMENT;
+    auto runs = shared->PaintRuns(line, start, length, textGlyphRanges_, rgba);
+    auto saved = textGlyphRanges_;
+    auto restore = MakeScopeExit([&] { textGlyphRanges_ = std::move(saved); });
+    for (const auto& run : runs) {
+        if (!textGlyphRanges_.Set(run.ranges.data(), static_cast<uint32_t>(run.ranges.size()/2), 1)) return JALIUM_ERROR_INVALID_ARGUMENT;
+        VulkanSolidBrush brush(run.r, run.g, run.b, run.a);
+        RenderText(shared->Text(), shared->TextLength(), shared->DrawingFormat(), x + metrics.line.x, y - metrics.line.y,
+            shared->Width(), shared->Height(), &brush);
+    }
+    return JALIUM_OK;
+#else
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
+JaliumResult VulkanRenderTarget::RenderParagraphBrush(TextParagraph* paragraph, uint32_t line,
+    float x, float y, uint32_t start, uint32_t length, Brush* brush)
+{
+#ifndef _WIN32
+    auto* shared = dynamic_cast<SharedTextParagraph*>(paragraph);
+    if (!shared) return JALIUM_ERROR_NOT_SUPPORTED;
+    JaliumParagraphLineMetrics metrics{};
+    if (!brush || !isDrawing_.load() || shared->GetLine(line, &metrics) != JALIUM_OK) return JALIUM_ERROR_INVALID_ARGUMENT;
+    const float white[]{1, 1, 1, 1};
+    auto runs = shared->PaintRuns(line, start, length, textGlyphRanges_, white);
+    auto saved = textGlyphRanges_;
+    auto restore = MakeScopeExit([&] { textGlyphRanges_ = std::move(saved); });
+    for (const auto& run : runs) {
+        if (!textGlyphRanges_.Set(run.ranges.data(), static_cast<uint32_t>(run.ranges.size()/2), 1)) return JALIUM_ERROR_INVALID_ARGUMENT;
+        RenderText(shared->Text(), shared->TextLength(), shared->DrawingFormat(), x + metrics.line.x, y - metrics.line.y,
+            shared->Width(), shared->Height(), brush);
+    }
+    return JALIUM_OK;
+#else
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
+JaliumResult VulkanRenderTarget::SetTextGlyphRanges(const uint32_t* pairs, uint32_t count, int32_t mode)
+{
+#ifdef _WIN32
+    (void)pairs; (void)count; (void)mode;
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#else
+    return textGlyphRanges_.Set(pairs, count, mode) ? JALIUM_OK : JALIUM_ERROR_INVALID_ARGUMENT;
+#endif
+}
+
+JaliumResult VulkanRenderTarget::BeginAlphaMaskCapture(float x, float y, float w, float h)
+{
+    if (!isDrawing_.load(std::memory_order_acquire)) return JALIUM_ERROR_INVALID_STATE;
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(w) || !std::isfinite(h) || w <= 0 || h <= 0)
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    if (width_ <= 0 || height_ <= 0 || uint64_t(width_) * uint64_t(height_) > 16'777'216u)
+        return JALIUM_ERROR_NOT_SUPPORTED;
+    std::vector<uint8_t> canvas;
+    try {
+        canvas.resize(size_t(width_) * size_t(height_) * 4u, 0);
+        effectCaptureStack_.reserve(effectCaptureStack_.size() + 1);
+    } catch (const std::bad_alloc&) { return JALIUM_ERROR_RESOURCE_CREATION_FAILED; }
+    TouchFrame();
+    MaybeEmitEngineSpan();
+    EffectCaptureState state {};
+    state.savedPixels = std::move(pixelBuffer_);
+    state.savedReplayCommands = std::move(gpuReplayCommands_);
+    state.savedReplaySupported = gpuReplaySupported_;
+    state.savedReplayHasClear = gpuReplayHasClear_;
+    state.savedCpuRasterNeeded = cpuRasterNeeded_;
+    state.alphaMask = true;
+    state.savedPendingShadowInsertIndex = pendingShadowInsertIndex_;
+    state.savedPendingShadowTailSize = pendingShadowTailSize_;
+    state.savedClips = std::move(clipStack_);
+    state.savedOpacities = std::move(opacityStack_);
+    state.x = x; state.y = y; state.w = w; state.h = h;
+    effectCaptureStack_.push_back(std::move(state));
+    gpuReplayCommands_.clear();
+    gpuReplaySupported_ = false;
+    gpuReplayHasClear_ = true;
+    cpuRasterNeeded_ = true;
+    clipStack_.clear();
+    opacityStack_.assign(1, 1.0f);
+    pixelBuffer_ = std::move(canvas);
+    PushClip(x, y, w, h);
+    lastCaptureIsAlphaMask_ = false;
+    return JALIUM_OK;
+}
+
+JaliumResult VulkanRenderTarget::DrawAlphaMaskEffect(const uint8_t* pixels, uint32_t bytes,
+    uint32_t width, uint32_t height, uint32_t stride,
+    float maskX, float maskY, float maskW, float maskH,
+    float, float, float, float)
+{
+    if (!AlphaMaskSampler::Valid(pixels, bytes, width, height, stride, maskX, maskY, maskW, maskH))
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    if (!isDrawing_.load(std::memory_order_acquire) || !lastCaptureIsAlphaMask_)
+        return JALIUM_ERROR_INVALID_STATE;
+    lastCaptureIsAlphaMask_ = false;
+    auto source = std::move(lastCapturedPixels_);
+    if (source.empty()) return JALIUM_OK;
+    const auto transform = GetCurrentTransform();
+    const float matrix[] = {transform.m11, transform.m12, transform.m21, transform.m22, transform.dx, transform.dy};
+    AlphaMaskSampler sample(pixels, width, height, stride, maskX, maskY, maskW, maskH, matrix);
+    for (int py = 0; py < height_; ++py) for (int px = 0; px < width_; ++px) {
+        const unsigned coverage = sample.At(px + .5, py + .5);
+        const size_t offset = (size_t(py) * width_ + px) * 4u;
+        for (int c = 0; c < 4; ++c) source[offset + c] = uint8_t((unsigned(source[offset + c]) * coverage + 127) / 255);
+    }
+    if (cpuRasterNeeded_) {
+        const unsigned opacity = unsigned(std::clamp(GetCurrentOpacity(), 0.0f, 1.0f) * 255 + .5f);
+        for (int py = 0; py < height_; ++py) for (int px = 0; px < width_; ++px) {
+            if (!IsInsideClip(px + .5f, py + .5f)) continue;
+            const size_t i = (size_t(py) * width_ + px) * 4u;
+            const unsigned alpha = (unsigned(source[i + 3]) * opacity + 127) / 255;
+            for (int c = 0; c < 4; ++c)
+                pixelBuffer_[i + c] = uint8_t(std::min(255u,
+                    (unsigned(source[i + c]) * opacity + 127) / 255 +
+                    (unsigned(pixelBuffer_[i + c]) * (255 - alpha) + 127) / 255));
+        }
+    }
+    // A warm CPU mirror can coexist with a healthy Vulkan replay stream.
+    // Update both representations instead of losing the group from GPU output.
+    if (!gpuReplaySupported_ || !gpuReplayHasClear_ || !effectCaptureStack_.empty() || activeTransitionSlot_ >= 0)
+        return cpuRasterNeeded_ ? JALIUM_OK : JALIUM_ERROR_NOT_SUPPORTED;
+    // Native bitmaps have straight BGRA pixels. The CPU capture is premultiplied;
+    // convert once before the normal Vulkan bitmap shader premultiplies it.
+    for (size_t i = 0; i < source.size(); i += 4) {
+        unsigned alpha = source[i + 3];
+        for (int c = 0; c < 3; ++c)
+            source[i + c] = alpha ? uint8_t(std::min(255u, (unsigned(source[i + c]) * 255 + alpha / 2) / alpha)) : 0;
+    }
+    VulkanBitmap bitmap(uint32_t(width_), uint32_t(height_), std::move(source));
+    auto transforms = std::move(transformStack_);
+    auto restoreTransforms = MakeScopeExit([&] { transformStack_ = std::move(transforms); });
+    transformStack_.assign(1, CpuTransform{}); // Captured pixels already include DPI and the full affine transform.
+    const bool recorded = TryRecordGpuBitmapCommand(&bitmap, 0, 0, float(width_), float(height_), 1, 3 /* NearestNeighbor */);
+    return recorded ? JALIUM_OK : JALIUM_ERROR_NOT_SUPPORTED;
+}
+
 void VulkanRenderTarget::BeginEffectCapture(float x, float y, float w, float h)
 {
     TouchFrame();
@@ -26569,9 +27308,10 @@ void VulkanRenderTarget::BeginEffectCapture(float x, float y, float w, float h)
 
     EffectCaptureState state {};
     state.savedPixels = std::move(pixelBuffer_);
-    state.savedReplayCommands = gpuReplayCommands_;
+    state.savedReplayCommands = std::move(gpuReplayCommands_);
     state.savedReplaySupported = gpuReplaySupported_;
     state.savedReplayHasClear = gpuReplayHasClear_;
+    state.savedCpuRasterNeeded = cpuRasterNeeded_;
     state.x = x;
     state.y = y;
     state.w = w;
@@ -26580,7 +27320,8 @@ void VulkanRenderTarget::BeginEffectCapture(float x, float y, float w, float h)
 
     ResizeCpuCanvas();
     ClearCpuCanvas(0, 0, 0, 0);
-    ResetGpuReplay();
+    gpuReplayCommands_.clear();
+    gpuReplaySupported_ = false;
     gpuReplayHasClear_ = true;
 }
 
@@ -26589,6 +27330,7 @@ void VulkanRenderTarget::EndEffectCapture()
     TouchFrame();
 
     if (effectCaptureStack_.empty()) {
+        lastCaptureIsAlphaMask_ = false;
         // GPU path: BeginEffectCapture recorded the content start in
         // effectContentStartStack_ (not effectCaptureStack_). Stamp the content
         // range [start, now) so the following OuterGlow / DropShadow can splice a
@@ -26671,6 +27413,14 @@ void VulkanRenderTarget::EndEffectCapture()
     gpuReplayCommands_ = std::move(effectCaptureStack_.back().savedReplayCommands);
     gpuReplaySupported_ = effectCaptureStack_.back().savedReplaySupported;
     gpuReplayHasClear_ = effectCaptureStack_.back().savedReplayHasClear;
+    cpuRasterNeeded_ = effectCaptureStack_.back().savedCpuRasterNeeded;
+    lastCaptureIsAlphaMask_ = effectCaptureStack_.back().alphaMask;
+    if (lastCaptureIsAlphaMask_) {
+        pendingShadowInsertIndex_ = effectCaptureStack_.back().savedPendingShadowInsertIndex;
+        pendingShadowTailSize_ = effectCaptureStack_.back().savedPendingShadowTailSize;
+        clipStack_ = std::move(effectCaptureStack_.back().savedClips);
+        opacityStack_ = std::move(effectCaptureStack_.back().savedOpacities);
+    }
     effectCaptureStack_.pop_back();
 }
 

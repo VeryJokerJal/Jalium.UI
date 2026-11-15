@@ -27,12 +27,16 @@ internal static partial class SvgParser
         internal required string? ClipRule;
         internal required string? Anchor;
         internal required bool Visible;
+        internal required string StrokeStyle;
+        internal required bool HasStroke;
         internal int LengthScopeId;
         internal int PathScopeId;
+        internal int ChunkId;
         internal double? AbsoluteX, AbsoluteY;
         internal double Dx, Dy, Rotate;
         internal double ScaleX = 1, GapAfter;
         internal string PathData = string.Empty;
+        internal bool OutlineAvailable;
         internal double Width, Baseline, X, Y;
     }
 
@@ -71,6 +75,7 @@ internal static partial class SvgParser
             if (measured.TryGetValue(key, out var cached))
             {
                 run.PathData = cached.Path;
+                run.OutlineAvailable = true;
                 run.Width = cached.Width;
                 run.Baseline = cached.Baseline;
             }
@@ -79,6 +84,7 @@ internal static partial class SvgParser
                 float.IsFinite(width) && float.IsFinite(baseline))
             {
                 run.PathData = path;
+                run.OutlineAvailable = true;
                 run.Width = width;
                 run.Baseline = baseline;
                 measured.Add(key, (path, width, baseline));
@@ -243,6 +249,10 @@ internal static partial class SvgParser
                     ClipRule = GetResolvedAttribute(current, "clip-rule"),
                     Anchor = GetResolvedAttribute(current, "text-anchor"),
                     Visible = GetResolvedAttribute(current, "visibility") is not ("hidden" or "collapse"),
+                    StrokeStyle = string.Join('\u001f', new[] { "stroke", "stroke-width", "stroke-opacity",
+                        "stroke-dasharray", "stroke-dashoffset", "stroke-linecap", "stroke-linejoin",
+                        "stroke-miterlimit", "paint-order", "vector-effect" }.Select(name => GetResolvedAttribute(current, name))),
+                    HasStroke = HasSvgTextStroke(current),
                     LengthScopeId = activeLengthScopes.Count == 0 ? 0 : activeLengthScopes[^1].Id,
                     PathScopeId = activePathScope?.Id ?? 0,
                     AbsoluteX = x,
@@ -278,15 +288,15 @@ internal static partial class SvgParser
            previous.Weight == next.Weight && previous.Style == next.Style &&
            previous.Fill == next.Fill && previous.FillOpacity == next.FillOpacity &&
            previous.Color == next.Color && previous.ClipRule == next.ClipRule &&
+           (!(previous.HasStroke || next.HasStroke) || previous.StrokeStyle == next.StrokeStyle) &&
            previous.Anchor == next.Anchor && previous.Visible == next.Visible;
 
     private static bool HasOwnSvgTextEffect(XElement element, XElement textRoot)
     {
         for (var current = element; !ReferenceEquals(current, textRoot);
              current = current.Parent!)
-            if (GetResolvedAttribute(current, "opacity") is not null ||
-                GetResolvedAttribute(current, "transform") is not null ||
-                GetResolvedAttribute(current, "clip-path") is not null)
+            if (t_styles is not null ? t_styles.IsSpecified(current, "opacity") || t_styles.IsSpecified(current, "transform") || t_styles.IsSpecified(current, "clip-path") || t_styles.IsSpecified(current, "mask-image") || t_styles.IsSpecified(current, "mix-blend-mode") || t_styles.IsSpecified(current, "isolation") :
+                GetResolvedAttribute(current, "opacity") is not null || GetResolvedAttribute(current, "transform") is not null || GetResolvedAttribute(current, "clip-path") is not null || GetResolvedAttribute(current, "mask") is not null || GetResolvedAttribute(current, "mix-blend-mode") is not null || GetResolvedAttribute(current, "isolation") is not null)
                 return true;
         return false;
     }
@@ -294,6 +304,7 @@ internal static partial class SvgParser
     private static double ResolveSvgTextFontSize(XElement element, double parentSize,
         double rootSize)
     {
+        if (t_styles?.Get(element, "font-size") is { } computed && double.TryParse(computed, NumberStyles.Float, CultureInfo.InvariantCulture, out var size)) return size;
         var style = element.Attribute("style")?.Value;
         string? raw = null;
         if (style is not null)

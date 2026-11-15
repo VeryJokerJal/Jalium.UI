@@ -1,0 +1,131 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:dev="clr-namespace:Jalium.UI.Controls.DevTools"
+                    xmlns:automation="clr-namespace:Jalium.UI.Automation">
+    <BooleanToVisibilityConverter x:Key="DevTools.PropertyEditorVisibility" />
+    <ControlTemplate x:Key="DevTools.PropertyEditor.Text" TargetType="PropertyGridEditor">
+        <Grid>
+            <VisualStateManager.VisualStateGroups>
+                <VisualStateGroup Name="EditingStates"><VisualState Name="Display" /><VisualState Name="Editing" /></VisualStateGroup>
+                <VisualStateGroup Name="ValidationStates"><VisualState Name="Valid"><VisualState.Setters><Setter TargetName="PART_Error" Property="Visibility" Value="Collapsed" /></VisualState.Setters></VisualState><VisualState Name="Invalid" /></VisualStateGroup>
+                <VisualStateGroup Name="ReadOnlyStates"><VisualState Name="Editable" /><VisualState Name="ReadOnly" /></VisualStateGroup>
+            </VisualStateManager.VisualStateGroups>
+            <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+            <TextBox Name="PART_TextBox" Style="{StaticResource DevTools.TextInput}" FontSize="11" MinHeight="28" IsReadOnly="{TemplateBinding EffectiveIsReadOnly}" FontWeight="{Binding PreviewFontWeight, RelativeSource={RelativeSource AncestorType=dev:DevToolsPropertyRow}}"
+                     Text="{Binding EditText, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                     automation:AutomationProperties.Name="{TemplateBinding DisplayName}" automation:AutomationProperties.HelpText="{TemplateBinding ErrorText}" />
+            <TextBlock Name="PART_Error" Grid.Row="1" Text="{TemplateBinding ErrorText}" Foreground="{DynamicResource DevTools.Error}" FontSize="11" TextWrapping="Wrap" Margin="0,3,0,0" automation:AutomationProperties.LiveSetting="Polite" />
+        </Grid>
+    </ControlTemplate>
+    <ControlTemplate x:Key="DevTools.PropertyEditor.FontFamily" TargetType="PropertyGridEditor">
+        <Grid>
+            <VisualStateManager.VisualStateGroups>
+                <VisualStateGroup Name="EditingStates"><VisualState Name="Display" /><VisualState Name="Editing" /></VisualStateGroup>
+                <VisualStateGroup Name="ValidationStates"><VisualState Name="Valid"><VisualState.Setters><Setter TargetName="PART_Error" Property="Visibility" Value="Collapsed" /></VisualState.Setters></VisualState><VisualState Name="Invalid" /></VisualStateGroup>
+                <VisualStateGroup Name="ReadOnlyStates"><VisualState Name="Editable" /><VisualState Name="ReadOnly" /></VisualStateGroup>
+            </VisualStateManager.VisualStateGroups>
+            <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+            <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                <TextBox Name="PART_TextBox" Style="{StaticResource DevTools.TextInput}" FontSize="11" MinHeight="28" IsReadOnly="{TemplateBinding EffectiveIsReadOnly}" FontFamily="{Binding PreviewFontFamily, RelativeSource={RelativeSource AncestorType=dev:DevToolsPropertyRow}}"
+                         Text="{Binding EditText, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" automation:AutomationProperties.Name="{TemplateBinding DisplayName}" automation:AutomationProperties.HelpText="{TemplateBinding ErrorText}" />
+                <dev:DevToolsActionButton Name="PART_ActionButton" Grid.Column="1" Label="Aa…" ToolTip="Choose font" Margin="4,0,0,0" Padding="6,2" IsEnabled="{TemplateBinding CanEdit}" automation:AutomationProperties.Name="Choose font"
+                    Visibility="{Binding HasFontDialog, RelativeSource={RelativeSource AncestorType=dev:DevToolsPropertyRow}, Converter={StaticResource DevTools.PropertyEditorVisibility}}"
+                    Command="{TemplateBinding ActionCommand}" CommandParameter="{TemplateBinding ActionCommandParameter}" />
+            </Grid>
+            <TextBlock Name="PART_Error" Grid.Row="1" Text="{TemplateBinding ErrorText}" Foreground="{DynamicResource DevTools.Error}" FontSize="11" TextWrapping="Wrap" Margin="0,3,0,0" automation:AutomationProperties.LiveSetting="Polite" />
+        </Grid>
+    </ControlTemplate>
+    <ControlTemplate x:Key="DevTools.PropertyEditor.Boolean" TargetType="PropertyGridEditor">
+        <Grid>
+            <VisualStateManager.VisualStateGroups>
+                <VisualStateGroup Name="EditingStates"><VisualState Name="Display" /><VisualState Name="Editing" /></VisualStateGroup>
+                <VisualStateGroup Name="ValidationStates"><VisualState Name="Valid"><VisualState.Setters><Setter TargetName="PART_Error" Property="Visibility" Value="Collapsed" /></VisualState.Setters></VisualState><VisualState Name="Invalid" /></VisualStateGroup>
+                <VisualStateGroup Name="ReadOnlyStates"><VisualState Name="Editable" /><VisualState Name="ReadOnly" /></VisualStateGroup>
+            </VisualStateManager.VisualStateGroups>
+            <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+            <CheckBox Name="PART_ValueControl" IsThreeState="{TemplateBinding IsNullable}" IsEnabled="{TemplateBinding CanEdit}" Foreground="{DynamicResource DevTools.TextPrimary}" MinHeight="28"
+                      IsChecked="{Binding BooleanValue, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}" automation:AutomationProperties.Name="{TemplateBinding DisplayName}" />
+            <TextBlock Name="PART_Error" Grid.Row="1" Text="{TemplateBinding ErrorText}" Foreground="{DynamicResource DevTools.Error}" FontSize="11" TextWrapping="Wrap" Margin="0,3,0,0" automation:AutomationProperties.LiveSetting="Polite" />
+        </Grid>
+    </ControlTemplate>
+    <ControlTemplate x:Key="DevTools.PropertyEditor.Enum" TargetType="PropertyGridEditor">
+        <Grid>
+            <VisualStateManager.VisualStateGroups>
+                <VisualStateGroup Name="EditingStates"><VisualState Name="Display" /><VisualState Name="Editing" /></VisualStateGroup>
+                <VisualStateGroup Name="ValidationStates"><VisualState Name="Valid"><VisualState.Setters><Setter TargetName="PART_Error" Property="Visibility" Value="Collapsed" /></VisualState.Setters></VisualState><VisualState Name="Invalid" /></VisualStateGroup>
+                <VisualStateGroup Name="ReadOnlyStates"><VisualState Name="Editable" /><VisualState Name="ReadOnly" /></VisualStateGroup>
+            </VisualStateManager.VisualStateGroups>
+            <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+            <ComboBox Name="PART_ValueControl" ItemsSource="{TemplateBinding EnumOptions}" IsEnabled="{TemplateBinding CanEdit}" MinHeight="28" FontSize="11" Padding="6,2"
+                      Background="{DynamicResource DevTools.Control}" Foreground="{DynamicResource DevTools.TextPrimary}" BorderBrush="{DynamicResource DevTools.Border}"
+                      SelectedItem="{Binding SelectedEnumOption, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}" automation:AutomationProperties.Name="{TemplateBinding DisplayName}" />
+            <TextBlock Name="PART_Error" Grid.Row="1" Text="{TemplateBinding ErrorText}" Foreground="{DynamicResource DevTools.Error}" FontSize="11" TextWrapping="Wrap" Margin="0,3,0,0" automation:AutomationProperties.LiveSetting="Polite" />
+        </Grid>
+    </ControlTemplate>
+    <ControlTemplate x:Key="DevTools.PropertyEditor.Color" TargetType="PropertyGridEditor">
+        <Grid>
+            <VisualStateManager.VisualStateGroups>
+                <VisualStateGroup Name="EditingStates"><VisualState Name="Display" /><VisualState Name="Editing" /></VisualStateGroup>
+                <VisualStateGroup Name="ValidationStates"><VisualState Name="Valid"><VisualState.Setters><Setter TargetName="PART_Error" Property="Visibility" Value="Collapsed" /></VisualState.Setters></VisualState><VisualState Name="Invalid" /></VisualStateGroup>
+                <VisualStateGroup Name="ReadOnlyStates"><VisualState Name="Editable" /><VisualState Name="ReadOnly" /></VisualStateGroup>
+            </VisualStateManager.VisualStateGroups>
+            <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+            <Expander Name="PART_Expander" Background="Transparent" Foreground="{DynamicResource DevTools.TextPrimary}" Padding="0" automation:AutomationProperties.Name="{TemplateBinding DisplayName}">
+                <Expander.Header><Grid>
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                    <Border Width="14" Height="14" CornerRadius="2" Margin="0,0,6,0" BorderThickness="1" BorderBrush="{DynamicResource DevTools.Border}" Background="{Binding PreviewBrush, RelativeSource={RelativeSource AncestorType=dev:DevToolsPropertyRow}}" />
+                    <TextBlock Name="PART_ColorValue" Grid.Column="1" Text="{Binding ValueText, RelativeSource={RelativeSource AncestorType=PropertyGridEditor}}" Foreground="{DynamicResource DevTools.TextPrimary}" FontSize="11" TextWrapping="Wrap" VerticalAlignment="Center" />
+                </Grid></Expander.Header>
+                <Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left" Margin="0,6,0,0">
+                    <ColorPicker Name="PART_ValueControl" IsAlphaEnabled="True" IsHexInputVisible="True" IsEnabled="{TemplateBinding CanEdit}" Color="{Binding ColorValue, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}" Foreground="{DynamicResource DevTools.TextPrimary}" Background="{DynamicResource DevTools.Control}" ErrorForeground="{DynamicResource DevTools.Error}" automation:AutomationProperties.Name="{TemplateBinding DisplayName}" />
+                </Viewbox>
+            </Expander>
+            <TextBlock Name="PART_Error" Grid.Row="1" Text="{TemplateBinding ErrorText}" Foreground="{DynamicResource DevTools.Error}" FontSize="11" TextWrapping="Wrap" Margin="0,3,0,0" automation:AutomationProperties.LiveSetting="Polite" />
+        </Grid>
+    </ControlTemplate>
+    <Style x:Key="DevTools.PropertyEditor" TargetType="PropertyGridEditor" BasedOn="{StaticResource {x:Type PropertyGridEditor}}">
+        <Setter Property="Margin" Value="0" /><Setter Property="Template" Value="{StaticResource DevTools.PropertyEditor.Text}" />
+        <Style.Triggers>
+            <Trigger Property="EditorKind" Value="Boolean"><Setter Property="Template" Value="{StaticResource DevTools.PropertyEditor.Boolean}" /></Trigger>
+            <Trigger Property="EditorKind" Value="Enum"><Setter Property="Template" Value="{StaticResource DevTools.PropertyEditor.Enum}" /></Trigger>
+            <Trigger Property="EditorKind" Value="Color"><Setter Property="Template" Value="{StaticResource DevTools.PropertyEditor.Color}" /></Trigger>
+            <DataTrigger Binding="{Binding IsFontFamily, RelativeSource={RelativeSource AncestorType=dev:DevToolsPropertyRow}}" Value="True"><Setter Property="Template" Value="{StaticResource DevTools.PropertyEditor.FontFamily}" /></DataTrigger>
+        </Style.Triggers>
+    </Style>
+    <Style TargetType="dev:DevToolsPropertyRow">
+        <Setter Property="Background" Value="Transparent" /><Setter Property="Margin" Value="8,2,4,2" /><Setter Property="NameForeground" Value="{DynamicResource DevTools.TokenProperty}" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsPropertyRow">
+            <Grid>
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup Name="CommonStates"><VisualState Name="Normal" /><VisualState Name="PointerOver"><VisualState.Setters><Setter TargetName="PART_Hover" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState><VisualState Name="Disabled"><VisualState.Setters><Setter TargetName="PART_Content" Property="Opacity" Value="0.55" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="SelectionStates"><VisualState Name="Unselected" /><VisualState Name="Selected"><VisualState.Setters><Setter TargetName="PART_Selection" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="FocusStates"><VisualState Name="Unfocused" /><VisualState Name="Focused"><VisualState.Setters><Setter TargetName="PART_Focus" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="LayoutStates"><VisualState Name="Wide" /><VisualState Name="Compact"><VisualState.Setters><Setter TargetName="PART_NameContainer" Property="Grid.ColumnSpan" Value="2" /><Setter TargetName="PART_Value" Property="Grid.Column" Value="0" /><Setter TargetName="PART_Value" Property="Grid.Row" Value="1" /><Setter TargetName="PART_Value" Property="Grid.ColumnSpan" Value="2" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="RowStates"><VisualState Name="Regular" /><VisualState Name="Alternate"><VisualState.Setters><Setter TargetName="PART_Background" Property="Background" Value="{DynamicResource DevTools.RowAlt}" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="SourceVisibilityStates"><VisualState Name="SourceVisible" /><VisualState Name="SourceHidden"><VisualState.Setters><Setter TargetName="PART_Source" Property="Visibility" Value="Collapsed" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="SourceStates">
+                        <VisualState Name="DefaultSource" /><VisualState Name="LocalSource"><VisualState.Setters><Setter TargetName="PART_Source" Property="Foreground" Value="{DynamicResource DevTools.Accent}" /></VisualState.Setters></VisualState>
+                        <VisualState Name="StyleSource"><VisualState.Setters><Setter TargetName="PART_Source" Property="Foreground" Value="{DynamicResource DevTools.Info}" /></VisualState.Setters></VisualState>
+                        <VisualState Name="TemplateSource"><VisualState.Setters><Setter TargetName="PART_Source" Property="Foreground" Value="{DynamicResource DevTools.TokenType}" /></VisualState.Setters></VisualState>
+                        <VisualState Name="InheritedSource"><VisualState.Setters><Setter TargetName="PART_Source" Property="Foreground" Value="{DynamicResource DevTools.TextSecondary}" /></VisualState.Setters></VisualState>
+                        <VisualState Name="AnimatedSource"><VisualState.Setters><Setter TargetName="PART_Source" Property="Foreground" Value="{DynamicResource DevTools.Success}" /></VisualState.Setters></VisualState>
+                        <VisualState Name="UnavailableSource"><VisualState.Setters><Setter TargetName="PART_Source" Property="Foreground" Value="{DynamicResource DevTools.Error}" /></VisualState.Setters></VisualState>
+                    </VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <Border Name="PART_Background" Background="{TemplateBinding Background}" CornerRadius="3" />
+                <Border Name="PART_Hover" Background="{DynamicResource DevTools.AccentSoft}" Visibility="Collapsed" IsHitTestVisible="False" CornerRadius="3" />
+                <Border Name="PART_Selection" BorderBrush="{DynamicResource DevTools.Accent}" BorderThickness="2,0,0,0" Visibility="Collapsed" IsHitTestVisible="False" />
+                <Grid Name="PART_Content" Margin="4">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                    <Grid Name="PART_NameContainer" Width="{TemplateBinding EffectiveNameColumnWidth}" VerticalAlignment="Top"><TextBlock Name="PART_Name" Text="{TemplateBinding DisplayName}" ToolTip="{TemplateBinding DisplayName}" Foreground="{TemplateBinding NameForeground}" FontSize="11" TextWrapping="Wrap" Margin="0,6,8,4" /></Grid>
+                    <StackPanel Name="PART_Value" Grid.Column="1">
+                        <PropertyGridEditor Name="PART_Editor" Property="{TemplateBinding Property}" Owner="{TemplateBinding Owner}" ActionCommand="{TemplateBinding FontDialogCommand}" ActionCommandParameter="{TemplateBinding Model}" Style="{StaticResource DevTools.PropertyEditor}" />
+                        <TextBlock Name="PART_Source" Text="{TemplateBinding SourceText}" FontSize="10" Foreground="{DynamicResource DevTools.TextSecondary}" TextWrapping="Wrap" Margin="0,3,0,0" />
+                    </StackPanel>
+                </Grid>
+                <Border Name="PART_Focus" BorderBrush="{DynamicResource DevTools.Accent}" BorderThickness="1" CornerRadius="3" Visibility="Collapsed" IsHitTestVisible="False" />
+            </Grid>
+        </ControlTemplate></Setter>
+    </Style>
+</ResourceDictionary>

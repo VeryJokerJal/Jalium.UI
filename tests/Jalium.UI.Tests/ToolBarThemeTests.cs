@@ -14,6 +14,10 @@ public class ToolBarThemeTests
         var currentField = typeof(Application).GetField("_current",
             BindingFlags.NonPublic | BindingFlags.Static);
         currentField?.SetValue(null, null);
+        // This test loads every default style. Do not leave those dictionaries
+        // installed for later direct-rendering CSS fixtures on the same thread.
+        typeof(ThemeManager).GetField("_controlThemeDictionaries",
+            BindingFlags.NonPublic | BindingFlags.Static)?.SetValue(null, Array.Empty<ResourceDictionary>());
 
         var resetMethod = typeof(ThemeManager).GetMethod("Reset",
             BindingFlags.NonPublic | BindingFlags.Static);

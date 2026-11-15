@@ -3,6 +3,7 @@ using Jalium.UI.Controls;
 using Jalium.UI.Controls.Platform;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
+using Jalium.UI.Media;
 using Jalium.UI.Threading;
 
 namespace Jalium.UI.Tests;
@@ -16,6 +17,7 @@ public sealed class ScrollViewerMacOSElasticityTests : IDisposable
 
     public ScrollViewerMacOSElasticityTests()
     {
+        ScrollBarTemplateTestHelper.Register();
         _previousReducedMotion = _reducedMotion.GetValue(null);
         _reducedMotion.SetValue(null, false);
     }
@@ -56,6 +58,226 @@ public sealed class ScrollViewerMacOSElasticityTests : IDisposable
         Assert.False(Bouncing(viewer));
         Assert.Equal(maximum, bar.Maximum);
         Assert.Equal(0, changes);
+    }
+
+    [Theory]
+    [InlineData(true, false, true)]
+    [InlineData(true, true, true)]
+    [InlineData(false, false, true)]
+    [InlineData(false, true, true)]
+    [InlineData(true, false, false)]
+    [InlineData(true, true, false)]
+    [InlineData(false, false, false)]
+    [InlineData(false, true, false)]
+    public void EdgeBounce_CompressesVisibleIndicator_WithoutShrinkingMinimumHitArea(
+        bool vertical, bool end, bool overlay)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        var viewer = CreateViewer(new Border { Width = 10000, Height = 10000 });
+        viewer.IsOverlayScrollBarEnabled = overlay;
+        viewer.Measure(new Size(200, 120));
+        viewer.Arrange(new Rect(0, 0, 200, 120));
+        double maximum = vertical ? viewer.ScrollableHeight : viewer.ScrollableWidth;
+        if (vertical) viewer.ScrollToVerticalOffset(end ? maximum : 0);
+        else viewer.ScrollToHorizontalOffset(end ? maximum : 0);
+        var bar = Field<ScrollBar>(viewer, vertical ? "_verticalScrollBar" : "_horizontalScrollBar");
+        ArrangeBar(bar);
+        var thumb = Assert.IsType<Thumb>(bar.Track.Thumb);
+        var indicator = Assert.IsType<Border>(thumb.GetVisualChild(0));
+        double hitLength = AxisLength(thumb, vertical);
+        double restingLength = AxisLength(indicator, vertical);
+        var padding = thumb.Padding;
+        var transform = thumb.RenderTransform;
+
+        Raise(viewer, vertical ? 0 : end ? 125 : -125, vertical ? end ? -125 : 125 : 0, MouseWheelPhase.Began);
+        ArrangeBar(bar);
+
+        double compressedLength = AxisLength(indicator, vertical);
+        Assert.True(compressedLength < restingLength,
+            $"Expected a visible compression below {restingLength}, got {compressedLength}.");
+        Assert.Equal(hitLength, AxisLength(thumb, vertical), precision: 6);
+        if (overlay) Assert.True(hitLength >= 40);
+        Assert.Equal(padding, thumb.Padding);
+        Assert.Same(transform, thumb.RenderTransform);
+        double indicatorStart = vertical ? indicator.VisualBounds.Y : indicator.VisualBounds.X;
+        Assert.Equal(end ? hitLength : 0,
+            end ? indicatorStart + compressedLength : indicatorStart, precision: 6);
+
+        // The visually empty portion of the original thumb must still begin a drag.
+        double gap = hitLength - compressedLength;
+        double hitAxis = end ? gap / 2 : hitLength - gap / 2;
+        var thumbOrigin = thumb.TransformToAncestor(bar);
+        var hitPoint = new Point(
+            thumbOrigin.X + (vertical ? thumb.RenderSize.Width / 2 : hitAxis),
+            thumbOrigin.Y + (vertical ? hitAxis : thumb.RenderSize.Height / 2));
+        var hit = bar.HitTest(hitPoint);
+        Assert.NotNull(hit);
+        Assert.True(HasAncestor(Assert.IsAssignableFrom<Visual>(hit!.VisualHit), thumb));
+
+        Raise(viewer, 0, 0, MouseWheelPhase.Ended);
+        AdvanceBounce(viewer, 160);
+        ArrangeBar(bar);
+        Assert.InRange(AxisLength(indicator, vertical), compressedLength + 0.001, restingLength - 0.001);
+        AdvanceBounce(viewer, 1000);
+        ArrangeBar(bar);
+        Assert.Equal(restingLength, AxisLength(indicator, vertical), precision: 6);
+        Assert.Equal(hitLength, AxisLength(thumb, vertical), precision: 6);
+        Assert.Equal(0, vertical ? indicator.VisualBounds.Y : indicator.VisualBounds.X, precision: 6);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void InterruptingBounce_RestoresVisibleIndicator(bool reducedMotion)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        var viewer = CreateViewer(new Border { Width = 10000, Height = 10000 });
+        var bar = Field<ScrollBar>(viewer, "_verticalScrollBar");
+        ArrangeBar(bar);
+        var indicator = Assert.IsType<Border>(bar.Track.Thumb!.GetVisualChild(0));
+        double restingLength = indicator.RenderSize.Height;
+        Raise(viewer, 0, 125, MouseWheelPhase.Began);
+        Raise(viewer, 0, 0, MouseWheelPhase.Ended);
+        ArrangeBar(bar);
+        Assert.True(indicator.RenderSize.Height < restingLength);
+
+        if (reducedMotion)
+        {
+            _reducedMotion.SetValue(null, true);
+            viewer.ApplyMacOSScrollBarPreferences(true);
+        }
+        else
+        {
+            viewer.ScrollToVerticalOffset(100);
+        }
+        ArrangeBar(bar);
+        Assert.Equal(restingLength, indicator.RenderSize.Height, precision: 6);
+        Assert.False(Bouncing(viewer));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ProportionalThumb_ReturnsToItsOriginalVisibleLength(bool vertical)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        var viewer = CreateViewer(new Border { Width = 300, Height = 180 });
+        var bar = Field<ScrollBar>(viewer, vertical ? "_verticalScrollBar" : "_horizontalScrollBar");
+        ArrangeBar(bar);
+        var thumb = Assert.IsType<Thumb>(bar.Track.Thumb);
+        var indicator = Assert.IsType<Border>(thumb.GetVisualChild(0));
+        double restingLength = AxisLength(indicator, vertical);
+        Assert.True(restingLength > 40);
+
+        Raise(viewer, vertical ? 0 : -125, vertical ? 125 : 0, MouseWheelPhase.Began);
+        ArrangeBar(bar);
+        Assert.True(AxisLength(indicator, vertical) < restingLength);
+        Assert.True(AxisLength(thumb, vertical) >= 40);
+        Assert.Equal(0, vertical ? viewer.VerticalOffset : viewer.HorizontalOffset);
+        Raise(viewer, 0, 0, MouseWheelPhase.Ended);
+        AdvanceBounce(viewer, 1000);
+        ArrangeBar(bar);
+        Assert.Equal(restingLength, AxisLength(indicator, vertical), precision: 6);
+    }
+
+    [Fact]
+    public void Detach_RestoresTheIndicatorBeforeReuse()
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        var viewer = CreateViewer(new Border { Width = 10000, Height = 10000 });
+        var root = new Grid();
+        root.Children.Add(viewer);
+        var bar = Field<ScrollBar>(viewer, "_verticalScrollBar");
+        ArrangeBar(bar);
+        var indicator = Assert.IsType<Border>(bar.Track.Thumb!.GetVisualChild(0));
+        double restingLength = indicator.RenderSize.Height;
+        Raise(viewer, 0, 125, MouseWheelPhase.Began);
+        Raise(viewer, 0, 0, MouseWheelPhase.Ended);
+        ArrangeBar(bar);
+        Assert.True(indicator.RenderSize.Height < restingLength);
+
+        root.Children.Remove(viewer);
+        ArrangeBar(bar);
+        Assert.Equal(restingLength, indicator.RenderSize.Height, precision: 6);
+        Assert.False(Bouncing(viewer));
+        root.Children.Add(viewer);
+        ArrangeBar(bar);
+        Assert.Equal(restingLength, indicator.RenderSize.Height, precision: 6);
+        root.Children.Remove(viewer);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void CompressedGap_MouseDownInterruptsReturn_AndStartsNormalDragging(bool vertical)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        var viewer = CreateViewer(new Border { Width = 10000, Height = 10000 });
+        var bar = Field<ScrollBar>(viewer, vertical ? "_verticalScrollBar" : "_horizontalScrollBar");
+        Raise(viewer, vertical ? 0 : -125, vertical ? 125 : 0, MouseWheelPhase.Began);
+        Raise(viewer, 0, 0, MouseWheelPhase.Ended);
+        ArrangeBar(bar);
+        var thumb = Assert.IsType<Thumb>(bar.Track.Thumb);
+        var indicator = Assert.IsType<Border>(thumb.GetVisualChild(0));
+        double hitAxis = (AxisLength(thumb, vertical) + AxisLength(indicator, vertical)) / 2;
+        var origin = thumb.TransformToAncestor(bar);
+        var localPoint = new Point(
+            origin.X + (vertical ? thumb.RenderSize.Width / 2 : hitAxis),
+            origin.Y + (vertical ? hitAxis : thumb.RenderSize.Height / 2));
+        var target = Assert.IsAssignableFrom<UIElement>(bar.HitTest(localPoint)?.VisualHit);
+        var barOrigin = bar.TransformToAncestor(viewer);
+        var point = new Point(barOrigin.X + localPoint.X, barOrigin.Y + localPoint.Y);
+        var down = MouseButton(UIElement.PreviewMouseDownEvent, point, MouseButtonState.Pressed);
+        target.RaiseEvent(down);
+        down.RoutedEvent = UIElement.MouseDownEvent;
+        target.RaiseEvent(down);
+        try
+        {
+            Assert.True(thumb.IsDragging);
+            Assert.True(bar.IsThumbDragging);
+            Assert.False(Bouncing(viewer));
+            Assert.Equal(0, Stretch(viewer, vertical));
+            ArrangeBar(bar);
+            Assert.Equal(AxisLength(thumb, vertical), AxisLength(indicator, vertical), precision: 6);
+
+            point = new Point(point.X + (vertical ? 0 : 12), point.Y + (vertical ? 12 : 0));
+            thumb.RaiseEvent(new MouseEventArgs(UIElement.MouseMoveEvent, point,
+                MouseButtonState.Pressed, MouseButtonState.Released, MouseButtonState.Released,
+                MouseButtonState.Released, MouseButtonState.Released, ModifierKeys.None, 2));
+            Assert.True(bar.Value > 0);
+        }
+        finally
+        {
+            thumb.RaiseEvent(MouseButton(UIElement.MouseUpEvent, point, MouseButtonState.Released));
+        }
+        Assert.False(thumb.IsDragging);
+        Assert.False(bar.IsThumbDragging);
+        Assert.True((vertical ? viewer.VerticalOffset : viewer.HorizontalOffset) > 0);
+    }
+
+    private static MouseButtonEventArgs MouseButton(RoutedEvent routedEvent, Point point, MouseButtonState state) =>
+        new(routedEvent, point, Jalium.UI.Input.MouseButton.Left, state, 1, state,
+            MouseButtonState.Released, MouseButtonState.Released, MouseButtonState.Released,
+            MouseButtonState.Released, ModifierKeys.None, 1);
+
+    private static double AxisLength(FrameworkElement element, bool vertical) =>
+        vertical ? element.RenderSize.Height : element.RenderSize.Width;
+
+    private static void ArrangeBar(ScrollBar bar)
+    {
+        // Headless trees do not have a LayoutManager to service this isolated host.
+        var bounds = bar.VisualBounds;
+        bar.Track.InvalidateArrange();
+        bar.InvalidateArrange();
+        bar.Measure(new Size(bounds.Width, bounds.Height));
+        bar.Arrange(bounds);
+    }
+
+    private static bool HasAncestor(Visual visual, Visual ancestor)
+    {
+        for (Visual? current = visual; current != null; current = current.VisualParent)
+            if (ReferenceEquals(current, ancestor)) return true;
+        return false;
     }
 
     [Fact]
@@ -404,5 +626,6 @@ public sealed class ScrollViewerMacOSElasticityTests : IDisposable
         foreach (var viewer in _viewers)
             typeof(ScrollViewer).GetMethod("CompleteLifecycleCleanup", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(viewer, null);
         _reducedMotion.SetValue(null, _previousReducedMotion);
+        ScrollBarTemplateTestHelper.Reset();
     }
 }

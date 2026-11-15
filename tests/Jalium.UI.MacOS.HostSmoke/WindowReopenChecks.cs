@@ -58,7 +58,7 @@ internal static class WindowReopenChecks
         index %= Names.Length;
         JaliumMacApplication.Initialize();
         var nativeApplication = NSApplication.SharedApplication;
-        nativeApplication.ActivationPolicy = NSApplicationActivationPolicy.Prohibited;
+        nativeApplication.ActivationPolicy = NSApplicationActivationPolicy.Accessory;
         RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
         var main = CreateWindow("Reopen main window", titleBar);
         var other = CreateWindow("Reopen independent window", titleBar);

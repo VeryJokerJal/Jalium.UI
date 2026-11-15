@@ -34,7 +34,7 @@ internal static partial class TextAccessibilityStyleChecks
     {
         if (!int.TryParse(argument.AsSpan("--text-font-transform-case=".Length),out int index)
             || (uint)index >= FontTransformCases) return 2;
-        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Prohibited;
+        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Accessory;
         RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
         using var resource = CssNativeFontResource.Create(File.ReadAllBytes("/System/Library/Fonts/Supplemental/Andale Mono.ttf"));
         Require(resource != null,"private transform fixture unavailable");

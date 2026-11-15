@@ -26,7 +26,7 @@ internal sealed record CssMathExpression(
         (Operation == "calc-mix"
             ? Arguments.Where((_, index) => index % 2 == 0).Any(a => a.UsesPercent)
             : Arguments.Any(a => a.UsesPercent));
-    internal bool RequiresElementContext => Operation is "sibling-index" or "sibling-count" ||
+    internal bool RequiresElementContext => Operation is "size" or "sibling-index" or "sibling-count" ||
         Operation == "random" && Option is null ||
         Operation == "round" && Option == "line-width" ||
         (Operation == "value" ? Kind == CssNumericKind.Length && !Literal.IsAbsolute
@@ -34,7 +34,7 @@ internal sealed record CssMathExpression(
     public bool IsAbsolute => Operation == "calc-mix"
         ? Arguments.Select((argument, index) => index % 2 == 0
             ? argument.IsAbsolute : !argument.RequiresElementContext).All(absolute => absolute)
-        : (Operation is "sibling-index" or "sibling-count" ||
+        : (Operation is "size" or "sibling-index" or "sibling-count" ||
         Operation == "random" && Option is null ||
         Operation == "round" && Option == "line-width") ? false :
         Operation is "value" or "none"
@@ -63,6 +63,12 @@ internal sealed record CssMathExpression(
     internal bool TryEvaluateCore(in CssLengthContext context, double percentBasis, out double value)
     {
         value = double.NaN;
+        if (Operation == "size")
+        {
+            if (context.CalcSizeBasis is not { } size) return false;
+            value = size;
+            return true;
+        }
         if (Operation == "random" && Option is null) return false;
         if (Operation is "sibling-index" or "sibling-count")
             return TryEvaluateSibling(context, out value);
@@ -162,6 +168,12 @@ internal sealed record CssMathExpression(
 
     private bool TryEvaluateSibling(in CssLengthContext context, out double value)
     {
+        if (context.RenderSnapshot is { } snapshot)
+        {
+            value = Operation == "sibling-count" ? snapshot.SiblingCount : snapshot.SiblingIndex;
+            return double.IsFinite(value);
+        }
+
         value = 0;
         if (context.Element is not { } element)
         {
@@ -291,8 +303,8 @@ internal sealed record CssMathExpression(
         }
 
         if (!double.IsFinite(value) || value == 0) return value;
-        var scale = context.Element?.Target is Visual visual
-            ? VisualTreeHelper.GetDpi(VisualTreeHelper.GetRoot(visual) as Visual ?? visual).DpiScaleX : 1d;
+        var scale = context.RenderSnapshot?.DpiScale ?? (context.Element?.Target is Visual visual
+            ? VisualTreeHelper.GetDpi(VisualTreeHelper.GetRoot(visual) as Visual ?? visual).DpiScaleX : 1d);
         if (!double.IsFinite(scale) || scale <= 0) scale = 1;
         var devicePixels = value * scale;
         if (!double.IsFinite(devicePixels)) return value;
@@ -319,7 +331,15 @@ internal sealed record CssMathExpression(
     public static CssMathExpression? Parse(string name, ReadOnlySpan<char> arguments, int depth = 0)
         => Parse(name, arguments, depth, new ParseBudget());
 
-    private sealed class ParseBudget { internal int Terms; }
+    internal static CssMathExpression? ParseNumberPercentage(string name, ReadOnlySpan<char> arguments)
+        => Parse(name, arguments, 0, new ParseBudget { PercentAsNumber = true });
+
+    internal static CssMathExpression? ParseSizeCalculation(ReadOnlySpan<char> arguments)
+        => Parse("calc", arguments, 0, new ParseBudget { AllowSize = true });
+
+    internal bool UsesSize => Operation == "size" || Arguments.Any(static value => value.UsesSize);
+
+    private sealed class ParseBudget { internal int Terms; internal bool PercentAsNumber, AllowSize; }
 
     private static CssMathExpression? Parse(string name, ReadOnlySpan<char> arguments, int depth, ParseBudget budget)
     {
@@ -555,6 +575,11 @@ internal sealed record CssMathExpression(
             token = new CssTokenReader(_text[_position..]);
             if (token.TryReadIdent(out var keyword))
             {
+                if (_budget.AllowSize && keyword.Equals("size", StringComparison.OrdinalIgnoreCase))
+                {
+                    _position += token.Position;
+                    return new("size", CssNumericType.Of(CssNumericKind.Length), default, []);
+                }
                 var constant = keyword.ToString().ToLowerInvariant() switch
                 {
                     "e" => Math.E, "pi" => Math.PI, "infinity" => double.PositiveInfinity,
@@ -566,6 +591,7 @@ internal sealed record CssMathExpression(
             token = new CssTokenReader(_text[_position..]);
             if (!token.TryReadNumber(out var value, out var unit)) return null;
             _position += token.Position;
+            if (unit == CssUnit.Percent && _budget.PercentAsNumber) { value /= 100; unit = CssUnit.None; }
             var kind = unit switch
             {
                 CssUnit.None => CssNumericKind.Number, CssUnit.Percent => CssNumericKind.Percent,

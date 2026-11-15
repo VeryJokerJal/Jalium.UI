@@ -24,7 +24,9 @@ internal sealed partial class DispatcherCore : IDisposable
     // 现有所有 enqueue 一律走 DispatcherPriority.Normal，因此对既有调用者而言出队顺序与
     // 旧的单一 FIFO 队列完全一致（优先级排序是其严格超集）。
     private readonly LinkedList<DispatcherOperation> _queue = new();
+    private long _enqueueSequence;
     private readonly object _instanceLock = new();
+    private readonly object _windowsWakeLock = new();
     private readonly ManualResetEventSlim _workAvailable = new(false);
 
     private volatile bool _isShutdown;
@@ -594,6 +596,7 @@ internal sealed partial class DispatcherCore : IDisposable
                 op.AbortInternal();
                 return;
             }
+            op.EnqueueSequence = ++_enqueueSequence;
             op.Node = _queue.AddLast(op);
             wake = true;
         }
@@ -605,7 +608,7 @@ internal sealed partial class DispatcherCore : IDisposable
     }
 
     // 出队最高优先级的待执行操作（同优先级 FIFO）；顺带剔除已中止节点；Inactive/Invalid 不出队。
-    private DispatcherOperation? DequeueNextOperation()
+    private DispatcherOperation? DequeueNextOperation(long maximumSequence)
     {
         lock (_instanceLock)
         {
@@ -621,7 +624,8 @@ internal sealed partial class DispatcherCore : IDisposable
                     _queue.Remove(node);
                     op.Node = null;
                 }
-                else if ((int)op.Priority >= MinDispatchPriority &&
+                else if (op.EnqueueSequence <= maximumSequence &&
+                         (int)op.Priority >= MinDispatchPriority &&
                          (best == null || (int)op.Priority > (int)best.Value.Priority))
                 {
                     best = node;
@@ -685,11 +689,13 @@ internal sealed partial class DispatcherCore : IDisposable
         // at least as many wake messages still sitting in the OS queue — behind any
         // input messages that arrived first, which is exactly the point.
         int budget;
+        long maximumSequence;
         lock (_instanceLock)
         {
             if (_disposed)
                 return;
             budget = _queue.Count;
+            maximumSequence = _enqueueSequence;
         }
 
         while (budget-- > 0)
@@ -697,7 +703,11 @@ internal sealed partial class DispatcherCore : IDisposable
             if (Volatile.Read(ref _disableProcessingCount) > 0)
                 break;
 
-            var op = DequeueNextOperation();
+            // A count alone is not a batch boundary: newly posted Normal/Render
+            // work could consume the entire budget ahead of existing Input work.
+            // Keep priority ordering within the entry cohort and leave newer
+            // operations for the next native-pump turn.
+            var op = DequeueNextOperation(maximumSequence);
             if (op == null)
                 break;
 
@@ -1322,6 +1332,12 @@ internal sealed partial class DispatcherCore : IDisposable
 
     private void NotifyDispatcherThread()
     {
+        if (s_isWindows)
+        {
+            NotifyWindowsDispatcherThread();
+            return;
+        }
+
         lock (_instanceLock)
         {
             // Dispose publishes terminal state under this same lock before it
@@ -1329,32 +1345,42 @@ internal sealed partial class DispatcherCore : IDisposable
             if (_disposed)
                 return;
 
-        _workAvailable.Set();
-
-        if (s_isWindows)
-        {
-            // Post ONE wake per idle→pending transition (see _wakeInFlight). The
-            // consumer releases the latch before running its batch, so an enqueue
-            // racing the batch posts the next wake; MessageWindowProc re-notifies
-            // after the batch when work remains ("queue non-empty ⇒ wake in flight").
-            if (_messageWindow != nint.Zero &&
-                Interlocked.CompareExchange(ref _wakeInFlight, 1, 0) == 0)
-            {
-                if (!PostMessageW(_messageWindow, WM_DISPATCHER_INVOKE, nint.Zero, nint.Zero))
-                {
-                    // Roll the latch back so a later enqueue retries. A failure here
-                    // means some OTHER code filled the thread quota — count it, don't
-                    // hide it (19k silent failures once cost a day of diagnosis).
-                    Interlocked.Exchange(ref _wakeInFlight, 0);
-                    Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.POST_FAIL);
-                }
-            }
-        }
-        else
-        {
-            // Wake via platform-native mechanism (eventfd on Linux, ALooper on Android)
+            _workAvailable.Set();
+            // Wake via platform-native mechanism (eventfd on Linux, ALooper on Android).
             _dispatcherWake?.Wake();
         }
+    }
+
+    private void NotifyWindowsDispatcherThread()
+    {
+        // Claim before acquiring the resource gate. Other producers have already
+        // published their queue entries and can share this pending wake without
+        // waiting for Set/PostMessage interop or touching a disposed event.
+        if (_disposed || Interlocked.CompareExchange(ref _wakeInFlight, 1, 0) != 0)
+            return;
+
+        lock (_windowsWakeLock)
+        {
+            if (_disposed)
+            {
+                Interlocked.Exchange(ref _wakeInFlight, 0);
+                return;
+            }
+
+            _workAvailable.Set();
+            if (_messageWindow == nint.Zero)
+            {
+                Interlocked.Exchange(ref _wakeInFlight, 0);
+                return;
+            }
+
+            // The message handler releases the claim before its bounded batch and
+            // re-notifies when work remains. Keep OS calls outside the queue gate.
+            if (!PostMessageW(_messageWindow, WM_DISPATCHER_INVOKE, nint.Zero, nint.Zero))
+            {
+                Interlocked.Exchange(ref _wakeInFlight, 0);
+                Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.POST_FAIL);
+            }
         }
     }
 
@@ -1371,9 +1397,9 @@ internal sealed partial class DispatcherCore : IDisposable
             if (_disposed)
                 return;
 
-            // Publish terminal state before detaching resources. Enqueue and
-            // Notify take this same lock, so neither can observe a live handle
-            // after teardown begins.
+            // Publish terminal state before detaching resources. Enqueue checks
+            // under this gate; Windows notifications check under their resource
+            // gate, which cleanup acquires after releasing the queue gate.
             _isShutdown = true;
             _disposed = true;
             pending = _queue.ToList();
@@ -1400,15 +1426,24 @@ internal sealed partial class DispatcherCore : IDisposable
                 CompleteCleanup(operation.AbortInternal);
         }
 
+        CompleteCleanup(ShutdownWindowsCompositionQueue);
         _dispatchers.TryRemove(_thread, out _);
+
+        void ReleaseWakeResources()
+        {
+            if (s_isWindows) CompleteCleanup(DestroyMessageWindow);
+            if (dispatcherWake != null) CompleteCleanup(dispatcherWake.Dispose);
+            CompleteCleanup(_workAvailable.Dispose);
+        }
 
         if (s_isWindows)
         {
-            CompleteCleanup(DestroyMessageWindow);
+            lock (_windowsWakeLock) { ReleaseWakeResources(); }
         }
-
-        if (dispatcherWake != null) CompleteCleanup(dispatcherWake.Dispose);
-        CompleteCleanup(_workAvailable.Dispose);
+        else
+        {
+            ReleaseWakeResources();
+        }
         CompleteCleanup(() => ShutdownFinished?.Invoke(Dispatcher.FromCore(this), EventArgs.Empty));
         // Cancellation observers may fail, but cannot strand later operations or
         // the dispatcher registration. Preserve the first exception for callers

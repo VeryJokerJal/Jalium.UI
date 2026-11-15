@@ -19,6 +19,11 @@
 #include <objidl.h>   // IStream
 #include <oleauto.h>  // BSTR
 #include <dxc/dxcapi.h>
+#if defined(__MINGW32__) && defined(__clang__)
+// DXC declares its COM UUIDs with __declspec(uuid). Use Clang's intrinsic;
+// MinGW's template emulation only covers interfaces declared by its own SDK.
+#undef __uuidof
+#endif
 #endif
 
 namespace jalium {

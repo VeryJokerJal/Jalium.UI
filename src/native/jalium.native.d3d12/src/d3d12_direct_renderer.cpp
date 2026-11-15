@@ -892,6 +892,8 @@ bool D3D12DirectRenderer::CreatePSOs()
 
     if (!wrapBytecode(ksdf_rect_vs, ksdf_rect_vsSize, &sdfRectVS_)) return false;
     if (!wrapBytecode(ksdf_rect_ps, ksdf_rect_psSize, &sdfRectPS_)) return false;
+    if (!wrapBytecode(kcoverage_rect_vs, kcoverage_rect_vsSize, &coverageRectVS_)) return false;
+    if (!wrapBytecode(kcoverage_rect_ps, kcoverage_rect_psSize, &coverageRectPS_)) return false;
     if (!wrapBytecode(kbitmap_text_vs, kbitmap_text_vsSize, &textVS_)) return false;
     if (!wrapBytecode(kbitmap_text_ps, kbitmap_text_psSize, &textPS_)) return false;
     if (!wrapBytecode(kbitmap_text_smooth_ps, kbitmap_text_smooth_psSize, &textSmoothPS_)) return false;
@@ -932,6 +934,13 @@ bool D3D12DirectRenderer::CreatePSOs()
     psoDesc.SampleDesc.Count = 1;
 
     if (FAILED(device_->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&sdfRectPSO_))))
+        return false;
+
+    // Compact shader interface for analytic coverage and simple ellipse fills.
+    // Both share a compact instance buffer, clip state and painter order.
+    psoDesc.VS = { coverageRectVS_->GetBufferPointer(), coverageRectVS_->GetBufferSize() };
+    psoDesc.PS = { coverageRectPS_->GetBufferPointer(), coverageRectPS_->GetBufferSize() };
+    if (FAILED(device_->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&coverageRectPSO_))))
         return false;
 
     // Text PSO — ClearType dual-source blending for per-channel sub-pixel alpha
@@ -1230,6 +1239,11 @@ bool D3D12DirectRenderer::BeginFrame(UINT frameIndex, UINT width, UINT height,
         D3D12_RESOURCE_STATE_PRESENT,
         D3D12_RESOURCE_STATE_RENDER_TARGET);
     commandList_->ResourceBarrier(1, &barrier);
+    // The edge placement can overlap the logical top-left image. Restore the
+    // last canonical frame before a partial redraw reads or changes it.
+    if (!clear) {
+        RestoreCompositionLogicalFrame();
+    }
     auto rtvHandle = GetSwapChainRtvHandle();
     commandList_->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
 
@@ -1257,6 +1271,7 @@ bool D3D12DirectRenderer::BeginFrame(UINT frameIndex, UINT width, UINT height,
 
     // Clear instance collections
     rectInstances_.clear();
+    coverageInstances_.clear();
     gradientStops_.clear();
     textInstances_.clear();
     bitmapInstances_.clear();
@@ -1448,6 +1463,7 @@ void D3D12DirectRenderer::AbortFrame()
 
     // Clear instance collections so they don't leak into the next frame
     rectInstances_.clear();
+    coverageInstances_.clear();
     gradientStops_.clear();
     textInstances_.clear();
     bitmapInstances_.clear();
@@ -1530,18 +1546,16 @@ JaliumResult D3D12DirectRenderer::EndFrame(bool useDirtyRects, const std::vector
     }
     inFrame_ = false;
 
+    // Capture the logical image before the edge placement can overlap its
+    // top-left region. Readback dimensions remain exactly the viewport size.
+    const bool readbackRecorded =
+        readbackPending_ && RecordBackBufferReadbackCopy();
+    readbackPending_ = false;
+
     if (compositionAnchorRight_ || compositionAnchorBottom_) {
         compositionResizePlacementRecorded_ =
             RecordCompositionResizePlacementCopy();
     }
-
-    // Parity-verification back-buffer readback: record after composition
-    // placement has restored the canonical logical frame at top-left, but
-    // before the PRESENT transition. The captured dimensions remain exactly
-    // RenderTarget.Width x RenderTarget.Height.
-    const bool readbackRecorded =
-        readbackPending_ && RecordBackBufferReadbackCopy();
-    readbackPending_ = false;
 
     // Transition back buffer RENDER_TARGET → PRESENT (matching the original
     // pre-MSAA flow now that we render directly into the swap chain).
@@ -1844,6 +1858,39 @@ bool D3D12DirectRenderer::RecordBackBufferReadbackCopy()
     return true;
 }
 
+void D3D12DirectRenderer::RestoreCompositionLogicalFrame()
+{
+    if ((!compositionAnchorRight_ && !compositionAnchorBottom_) ||
+        !compositionResizeScratchContentValid_ ||
+        compositionResizeScratchContentWidth_ != viewportWidth_ ||
+        compositionResizeScratchContentHeight_ != viewportHeight_) {
+        return;
+    }
+
+    auto* backBuffer = renderTargets_[currentFrame_].Get();
+    D3D12_RESOURCE_BARRIER barriers[] = {
+        MakeTransitionBarrier(backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET,
+            D3D12_RESOURCE_STATE_COPY_DEST),
+        MakeTransitionBarrier(compositionResizeScratch_.Get(),
+            compositionResizeScratchState_, D3D12_RESOURCE_STATE_COPY_SOURCE)
+    };
+    commandList_->ResourceBarrier(static_cast<UINT>(std::size(barriers)), barriers);
+
+    D3D12_TEXTURE_COPY_LOCATION destination = {};
+    destination.pResource = backBuffer;
+    destination.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    D3D12_TEXTURE_COPY_LOCATION source = {};
+    source.pResource = compositionResizeScratch_.Get();
+    source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    const D3D12_BOX logicalFrame = { 0, 0, 0, viewportWidth_, viewportHeight_, 1 };
+    commandList_->CopyTextureRegion(&destination, 0, 0, 0, &source, &logicalFrame);
+
+    for (auto& barrier : barriers) {
+        std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
+    }
+    commandList_->ResourceBarrier(static_cast<UINT>(std::size(barriers)), barriers);
+}
+
 bool D3D12DirectRenderer::RecordCompositionResizePlacementCopy()
 {
     if (!device_ || !commandList_) return false;
@@ -1991,12 +2038,10 @@ bool D3D12DirectRenderer::RecordCompositionResizePlacementCopy()
     }
     compositionResizeScratchState_ = D3D12_RESOURCE_STATE_COPY_SOURCE;
 
-    // Keep both placements coherent. The top-left copy is the ordinary
-    // post-resize layout used when the modal loop ends; the capacity-edge copy
-    // is selected by the matching DirectComposition visual offset while dragging.
-    // A second
-    // no-dirty frame can therefore never expose stale contents from whichever
-    // flip-sequential back buffer DXGI rotates in next.
+    // Seed the logical origin and the stationary-edge placement in every flip
+    // buffer. These regions may overlap: the scratch texture remains canonical
+    // and BeginFrame restores it before any partial redraw. Composition selects
+    // the complete capacity-edge image while the native resize loop is active.
     commandList_->CopyTextureRegion(
         &backBufferLocation,
         0, 0, 0,
@@ -2360,32 +2405,95 @@ void D3D12DirectRenderer::AddSdfRect(const SdfRectInstance& inst)
         adjusted.shapeN = currentShapeN_;
     }
 
+    if (adjusted.shapeType == 2.0f && adjusted.shapeN == 2.0f &&
+        adjusted.paintMode == 0.0f && adjusted.gradientType == 0 &&
+        adjusted.borderWidth == 0.0f && adjusted._xfPad0 == 0.0f) {
+        if (coverageInstances_.size() >= kMaxInstancesPerFrame && !FlushGraphicsForCompute()) return;
+        CoverageRectInstance coverage = {
+            adjusted.posX, adjusted.posY, adjusted.sizeX, adjusted.sizeY,
+            adjusted.fillR, adjusted.fillG, adjusted.fillB, adjusted.fillA,
+            adjusted.xfM11, adjusted.xfM12, adjusted.xfM21, adjusted.xfM22,
+            adjusted.xfDx, adjusted.xfDy, adjusted.shapeN, adjusted.opacity
+        };
+        const uint32_t first = (uint32_t)coverageInstances_.size();
+        coverageInstances_.AppendEllipse(coverage);
+        RecordRectBatch(first, 1, DrawBatchType::CoverageRect);
+        return;
+    }
+
+    const uint32_t startInstance = (uint32_t)rectInstances_.size();
+    rectInstances_.push_back(adjusted);
+    RecordRectBatch(startInstance, 1, DrawBatchType::SdfRect);
+}
+
+void D3D12DirectRenderer::AddCoverageRectsPreTransformed(
+    const D3D12CoverageRect* rects, uint32_t count, float positionScale)
+{
+    if (!inFrame_ || !rects || count == 0) return;
+    uint32_t consumed = 0;
+    while (consumed < count) {
+        if (coverageInstances_.size() >= kMaxInstancesPerFrame && !FlushGraphicsForCompute()) return;
+        const uint32_t first = (uint32_t)coverageInstances_.size();
+        const uint32_t chunk = (std::min)(count - consumed, (uint32_t)(kMaxInstancesPerFrame - first));
+        coverageInstances_.AppendRects(rects + consumed, chunk, positionScale);
+        RecordRectBatch(first, chunk, DrawBatchType::CoverageRect);
+        consumed += chunk;
+    }
+}
+
+void D3D12DirectRenderer::AddCoverageMasksPreTransformed(const D3D12CoverageMaskRun* runs, uint32_t count, float positionScale)
+{
+    if (!inFrame_ || !runs || count == 0) return;
+    uint32_t first = (uint32_t)coverageInstances_.size();
+    uint32_t pending = 0;
+    for (uint32_t index = 0; index < count; ++index) {
+        const auto& run = runs[index];
+        if (!run.mask) continue;
+        const uint32_t rectCount = (uint32_t)run.mask->rects.size();
+        uint32_t consumed = 0;
+        while (consumed < rectCount) {
+            if (coverageInstances_.size() >= kMaxInstancesPerFrame) {
+                if (pending) RecordRectBatch(first, pending, DrawBatchType::CoverageRect);
+                if (!FlushGraphicsForCompute()) return;
+                first = (uint32_t)coverageInstances_.size();
+                pending = 0;
+            }
+            const uint32_t chunk = (std::min)(rectCount - consumed,
+                (uint32_t)(kMaxInstancesPerFrame - coverageInstances_.size()));
+            coverageInstances_.AppendMaskRects(run, consumed, chunk, positionScale);
+            pending += chunk;
+            consumed += chunk;
+        }
+    }
+    if (pending) RecordRectBatch(first, pending, DrawBatchType::CoverageRect);
+}
+
+void D3D12DirectRenderer::RecordRectBatch(uint32_t startInstance, uint32_t instanceCount, DrawBatchType type)
+{
     // Prepare the candidate batch state (scissor + rounded clip).
     DrawBatch candidate;
-    candidate.type = DrawBatchType::SdfRect;
-    candidate.instanceOffset = (uint32_t)rectInstances_.size();
-    candidate.instanceCount = 1;
+    candidate.type = type;
+    candidate.instanceOffset = startInstance;
+    candidate.instanceCount = instanceCount;
     candidate.hasScissor = !scissorStack_.empty();
     if (candidate.hasScissor) candidate.scissor = scissorStack_.top();
     ResolveRoundedClipForBatch(candidate);
 
     // Coalesce with the previous batch when state matches and the new
-    // instance lands directly after it in rectInstances_ — N back-to-back
+    // instance lands directly after it in the corresponding stream — N back-to-back
     // FillRectangle / FillRoundedRectangle / FillPerCornerRoundedRectangle
     // calls collapse into 1 DrawIndexedInstanced(N) at record time.
     if (!batches_.empty()) {
         DrawBatch& prev = batches_.back();
         if (BatchStateCompatibleForMerge(prev, candidate) &&
-            prev.instanceOffset + prev.instanceCount == (uint32_t)rectInstances_.size()) {
-            prev.instanceCount++;
-            rectInstances_.push_back(adjusted);
+            prev.instanceOffset + prev.instanceCount == startInstance) {
+            prev.instanceCount += instanceCount;
             return;
         }
     }
 
     candidate.sortOrder = drawOrder_++;
     batches_.push_back(candidate);
-    rectInstances_.push_back(adjusted);
 }
 
 // ── JALIUM_TEXT_TRACE ─────────────────────────────────────────────────────
@@ -2933,6 +3041,38 @@ void D3D12DirectRenderer::AddTrianglesPreTransformed(const TriangleVertex* verti
     uint32_t startVertex = (uint32_t)triangleVertices_.size();
     triangleVertices_.insert(triangleVertices_.end(), vertices, vertices + vertexCount);
 
+    RecordTriangleBatch(startVertex, vertexCount);
+}
+
+void D3D12DirectRenderer::AddIndexedTrianglesPreTransformed(
+    const void* vertices, uint32_t vertexCount, const uint32_t* indices,
+    uint32_t indexCount, float positionScale)
+{
+    if (!inFrame_ || !vertices || !indices || vertexCount == 0 || indexCount < 3) return;
+    if (triangleVertices_.size() + indexCount > kMaxInstancesPerFrame * 16) {
+        if (!FlushGraphicsForCompute()) return;
+    }
+    const uint32_t startVertex = (uint32_t)triangleVertices_.size();
+    triangleVertices_.resize((size_t)startVertex + indexCount);
+    auto* output = triangleVertices_.data() + startVertex;
+    const auto* input = static_cast<const unsigned char*>(vertices);
+    uint32_t written = 0;
+    for (uint32_t i = 0; i < indexCount; ++i) {
+        const uint32_t index = indices[i];
+        if (index >= vertexCount) continue;
+        TriangleVertex vertex;
+        // memcpy accepts either engine's vertex type without type-punning.
+        std::memcpy(&vertex, input + (size_t)index * sizeof(TriangleVertex), sizeof(vertex));
+        vertex.x *= positionScale;
+        vertex.y *= positionScale;
+        output[written++] = vertex;
+    }
+    triangleVertices_.resize((size_t)startVertex + written);
+    if (written > 0) RecordTriangleBatch(startVertex, written);
+}
+
+void D3D12DirectRenderer::RecordTriangleBatch(uint32_t startVertex, uint32_t vertexCount)
+{
     DrawBatch candidate;
     candidate.type = DrawBatchType::Triangle;
     candidate.instanceOffset = startVertex;
@@ -3346,7 +3486,9 @@ void D3D12DirectRenderer::FlushVelloPaths()
             scissorStack_ = {};
             float savedOp = currentOpacity_;
             currentOpacity_ = 1.0f;
-            AddBitmap(x, y, w, h, 1.0f, output, DXGI_FORMAT_R8G8B8A8_UNORM, 1.0f, 1.0f);
+            AddBitmap(x, y, w, h, 1.0f, output, DXGI_FORMAT_R8G8B8A8_UNORM,
+                      static_cast<float>(reg.width) / velloRenderer_->GetOutputW(),
+                      static_cast<float>(reg.height) / velloRenderer_->GetOutputH());
             currentOpacity_ = savedOp;
             scissorStack_ = std::move(savedSc);
             transformStack_ = std::move(savedXf);
@@ -3461,6 +3603,9 @@ void D3D12DirectRenderer::UploadInstances()
         if (!rectInstances_.empty()) {
             probe += rectInstances_.size() * sizeof(SdfRectInstance);
         }
+        const size_t coverageAlignProbe = 16;
+        probe = ((probe + coverageAlignProbe - 1) / coverageAlignProbe) * coverageAlignProbe;
+        probe += coverageInstances_.data_size_bytes() + coverageInstances_.size() * sizeof(uint32_t);
         probe = ((probe + 3) / 4) * 4;
         if (!gradientStops_.empty()) {
             probe += gradientStops_.size() * sizeof(SdfGradientStop);
@@ -3500,6 +3645,7 @@ void D3D12DirectRenderer::UploadInstances()
                 frameDeviceLost_ = true;
             }
             rectInstances_.clear();
+            coverageInstances_.clear();
             gradientStops_.clear();
             textInstances_.clear();
             bitmapInstances_.clear();
@@ -3529,6 +3675,16 @@ void D3D12DirectRenderer::UploadInstances()
             OutputDebugStringA("[D3D12DirectRenderer] WARNING: Rect instance buffer overflow — data dropped\n");
         }
     }
+
+    const size_t coverageAlign = 16;
+    coverageBufferByteOffset_ = ((offset + coverageAlign - 1) / coverageAlign) * coverageAlign;
+    const size_t coverageDataSize = coverageInstances_.data_size_bytes();
+    if (coverageDataSize > 0) memcpy(dst + coverageBufferByteOffset_, coverageInstances_.data(), coverageDataSize);
+    offset = coverageBufferByteOffset_ + coverageDataSize;
+    coverageIndexByteOffset_ = (uint32_t)coverageDataSize;
+    const size_t coverageIndexSize = coverageInstances_.size() * sizeof(uint32_t);
+    if (coverageIndexSize > 0) memcpy(dst + offset, coverageInstances_.offsets(), coverageIndexSize);
+    offset += coverageIndexSize;
 
     // Upload the complete gradient stop table after rects. SdfRectInstance
     // stores an offset/count pair into this raw 20-byte-stride array, so no
@@ -3644,7 +3800,7 @@ void D3D12DirectRenderer::UploadInstances()
     // Save upload buffer write position for next flush
     uploadBufferOffset_ = offset;
     // Each flush allocates descriptor slots from the SRV heap.
-    // Base layout: [0-1] rect SRV + atlas, [4-5] text SRV + atlas
+    // Base layout: [0-1] rect SRV + atlas, [2-3] coverage SRV, [4-5] text SRV + atlas
     // Per-bitmap/snapshot batch: 2 extra slots (instance SRV + texture)
     // Per-stencil-path batch: at most one extra resolve SRV slot. Path slots
     //   live AFTER the bitmap range so the bitmap descriptor pairs stay
@@ -3684,6 +3840,7 @@ void D3D12DirectRenderer::UploadInstances()
             fflush(stderr);
         }
         rectInstances_.clear();
+        coverageInstances_.clear();
         gradientStops_.clear();
         textInstances_.clear();
         bitmapInstances_.clear();
@@ -3712,6 +3869,20 @@ void D3D12DirectRenderer::UploadInstances()
         srvDesc.Buffer.StructureByteStride = sizeof(SdfRectInstance);
         srvDesc.Format = DXGI_FORMAT_UNKNOWN;
         auto handle = srvCpuBase;
+        device_->CreateShaderResourceView(fr.instanceUploadBuffer.Get(), &srvDesc, handle);
+    }
+
+    // Slot base+2: compact analytic coverage / solid ellipse instances.
+    if (!coverageInstances_.empty()) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Buffer.FirstElement = coverageBufferByteOffset_ / sizeof(uint32_t);
+        srvDesc.Buffer.NumElements = (UINT)((coverageDataSize + coverageIndexSize) / sizeof(uint32_t));
+        srvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+        srvDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+        auto handle = srvCpuBase;
+        handle.ptr += 2 * srvDescriptorSize_;
         device_->CreateShaderResourceView(fr.instanceUploadBuffer.Get(), &srvDesc, handle);
     }
 
@@ -3817,6 +3988,7 @@ void D3D12DirectRenderer::RecordDrawCommands()
 
     // Draw in painter's order (batches are already in order)
     DrawBatchType currentPSO = DrawBatchType::SdfRect;
+    bool currentTextSmooth = false;
     commandList_->SetPipelineState(sdfRectPSO_.Get());
 
     // ── Path-pipeline state machine ────────────────────────────────────
@@ -4342,8 +4514,11 @@ void D3D12DirectRenderer::RecordDrawCommands()
             exitPathMode();
         }
 
-        // Switch PSO if needed
-        if (batch.type != currentPSO) {
+        // Text batches can differ only in their atlas sampling contract.
+        // Switching from a pixel-aligned strike to a supersampled run (or
+        // back) still needs a PSO change even when both batches are Text.
+        if (batch.type != currentPSO ||
+            (batch.type == DrawBatchType::Text && batch.smoothText != currentTextSmooth)) {
             currentPSO = batch.type;
             // Tag the GPU work that's about to be issued so DevTools can
             // attribute time to the right category. Map DrawBatchType → the
@@ -4351,6 +4526,7 @@ void D3D12DirectRenderer::RecordDrawCommands()
             GpuTimingCategory cat;
             switch (batch.type) {
             case DrawBatchType::SdfRect:
+            case DrawBatchType::CoverageRect:
             case DrawBatchType::Ellipse:
             case DrawBatchType::Line:
             case DrawBatchType::PunchRect:
@@ -4371,6 +4547,15 @@ void D3D12DirectRenderer::RecordDrawCommands()
             MarkGpuTimingPoint(cat);
 
             switch (batch.type) {
+            case DrawBatchType::CoverageRect:
+                commandList_->SetPipelineState(coverageRectPSO_.Get());
+                commandList_->SetGraphicsRoot32BitConstant(2, coverageIndexByteOffset_, 1);
+                {
+                    auto coverageSrvGpu = srvGpuBase;
+                    coverageSrvGpu.ptr += 2 * srvDescriptorSize_;
+                    commandList_->SetGraphicsRootDescriptorTable(1, coverageSrvGpu);
+                }
+                break;
             case DrawBatchType::SdfRect:
             case DrawBatchType::Ellipse:
             case DrawBatchType::Line:
@@ -4384,6 +4569,7 @@ void D3D12DirectRenderer::RecordDrawCommands()
                 // point PSO. (Batches with different smoothText never coalesce.)
                 commandList_->SetPipelineState(
                     batch.smoothText ? textSmoothPSO_.Get() : textPSO_.Get());
+                currentTextSmooth = batch.smoothText;
                 {
                     auto textSrvGpu = srvGpuBase;
                     textSrvGpu.ptr += 4 * srvDescriptorSize_;
@@ -4954,6 +5140,7 @@ bool D3D12DirectRenderer::FlushGraphicsForCompute()
     // this flush (barriers, dispatches, SRV creation — same AV class).
     if (!CheckFrameDeviceAlive()) {
         rectInstances_.clear();
+        coverageInstances_.clear();
         gradientStops_.clear();
         textInstances_.clear();
         bitmapInstances_.clear();
@@ -4970,6 +5157,7 @@ bool D3D12DirectRenderer::FlushGraphicsForCompute()
 
     // Clear the batch/instance lists so EndFrame won't re-record them
     rectInstances_.clear();
+    coverageInstances_.clear();
     gradientStops_.clear();
     textInstances_.clear();
     bitmapInstances_.clear();
@@ -6621,20 +6809,22 @@ void D3D12DirectRenderer::ReclaimCompletedFrameResources(uint64_t completedFence
     }
 }
 
-void D3D12DirectRenderer::ReclaimIdleResources()
+bool D3D12DirectRenderer::ReclaimIdleResources()
 {
-    if (inFrame_ || cmdListRecording_.load(std::memory_order_acquire) || !fence_) return;
+    if (inFrame_ || cmdListRecording_.load(std::memory_order_acquire) || !fence_) return false;
     const auto completed = fence_->GetCompletedValue();
     // UINT64_MAX is the device-removed sentinel, not proof of completion.
-    if (completed == UINT64_MAX) return;
+    if (completed == UINT64_MAX) return false;
     ReclaimCompletedFrameResources(completed);
     ReclaimRetiredPipelineStates(completed);
     if (lastFrameSubmissionTickMs_ == 0 ||
         GetTickCount64() - lastFrameSubmissionTickMs_ < 2000 ||
-        completed < nextFenceValue_ - 1) return;
+        completed < nextFenceValue_ - 1) return false;
 
     if (velloRenderer_) velloRenderer_->ReclaimIdleResources();
+    coverageInstances_.Release();
     lastFrameSubmissionTickMs_ = 0;
+    return true;
 }
 
 void D3D12DirectRenderer::RetirePendingPipelineStates(uint64_t submissionFenceValue)

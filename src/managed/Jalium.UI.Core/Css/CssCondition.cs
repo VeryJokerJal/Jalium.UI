@@ -9,7 +9,7 @@ internal sealed record CssCondition(string Kind, string Query, CssCondition? Lef
     public bool Evaluate(CssNode element) => Kind switch
     {
         "and" => Left!.Evaluate(element) && Right!.Evaluate(element),
-        "supports" => _supports?.Evaluate() == true,
+        "supports" => _supports?.Evaluate((element.Target as CssXmlElement)?.SupportsProperty) == true,
         "media" => _media?.Evaluate(element) == true,
         "container" => (ContainerQuery ?? CssContainerQuery.Parse(Query, Namespaces))?.Evaluate(element) == true,
         _ => false,

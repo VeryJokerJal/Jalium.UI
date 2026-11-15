@@ -6,305 +6,215 @@ using Jalium.UI.Media;
 using Jalium.UI.Styling;
 
 namespace Jalium.UI.Controls;
-
 /// <summary>
 /// Represents a command in a MenuFlyout control.
 /// </summary>
+[TemplatePart(Name = "PART_Root", Type = typeof(Border))]
+[TemplatePart(Name = "PART_Text", Type = typeof(TextBlock))]
+[TemplatePart(Name = "PART_Accelerator", Type = typeof(TextBlock))]
+[TemplateVisualState(Name = "Normal", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "PointerOver", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Focused", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "SubmenuOpen", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Disabled", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Checked", GroupName = "CheckStates")]
+[TemplateVisualState(Name = "Unchecked", GroupName = "CheckStates")]
 public class MenuFlyoutItem : Control
 {
-    /// <inheritdoc />
-    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
-        => new Jalium.UI.Automation.Peers.MenuFlyoutItemAutomationPeer(this);
+    /// <inheritdoc/>
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer() => new Jalium.UI.Automation.Peers.MenuFlyoutItemAutomationPeer(this);
+    public static readonly DependencyProperty MenuForegroundProperty = DependencyProperty.Register(nameof(MenuForeground), typeof(Brush), typeof(MenuFlyoutItem), new PropertyMetadata(Brushes.White));
+    private static readonly DependencyPropertyKey ItemFontSizePropertyKey = DependencyProperty.RegisterReadOnly(nameof(ItemFontSize), typeof(double), typeof(MenuFlyoutItem), new PropertyMetadata(14.0));
+    public static readonly DependencyProperty ItemFontSizeProperty = ItemFontSizePropertyKey.DependencyProperty;
+    public double ItemFontSize => (double)GetValue(ItemFontSizeProperty)!;
 
-    private static readonly SolidColorBrush s_fallbackHoverBrush = new(Color.FromRgb(62, 62, 64));
-    private static readonly SolidColorBrush s_fallbackTextBrush = new(Color.FromRgb(255, 255, 255));
-    private static readonly SolidColorBrush s_fallbackDisabledTextBrush = new(Color.FromRgb(90, 90, 90));
-    private static readonly SolidColorBrush s_fallbackAcceleratorBrush = new(Color.FromRgb(136, 136, 136));
-    private const double LeftPadding = 12;
-    private const double RightPadding = 12;
-    private const double IconColumnWidth = 28;
-    private const double TextTrailingPadding = 16;
-    private const double AcceleratorColumnWidth = 80;
-    private const double TextToAcceleratorGap = 16;
-    private const double ItemHeight = 32;
-    private Border? _cssBorderPainter;
+    private static readonly DependencyPropertyKey ItemFontFamilyPropertyKey = DependencyProperty.RegisterReadOnly(nameof(ItemFontFamily), typeof(FontFamily), typeof(MenuFlyoutItem), new PropertyMetadata(FontFamilyProperty.GetMetadata(typeof(Control)).DefaultValue));
+    public static readonly DependencyProperty ItemFontFamilyProperty = ItemFontFamilyPropertyKey.DependencyProperty;
+    public FontFamily ItemFontFamily => (FontFamily)GetValue(ItemFontFamilyProperty)!;
 
-    #region Dependency Properties
+    private static readonly DependencyPropertyKey ItemFontWeightPropertyKey = DependencyProperty.RegisterReadOnly(nameof(ItemFontWeight), typeof(FontWeight), typeof(MenuFlyoutItem), new PropertyMetadata(FontWeightProperty.GetMetadata(typeof(Control)).DefaultValue));
+    public static readonly DependencyProperty ItemFontWeightProperty = ItemFontWeightPropertyKey.DependencyProperty;
+    public FontWeight ItemFontWeight => (FontWeight)GetValue(ItemFontWeightProperty)!;
 
+    private static readonly DependencyPropertyKey ItemForegroundPropertyKey = DependencyProperty.RegisterReadOnly(nameof(ItemForeground), typeof(Brush), typeof(MenuFlyoutItem), new PropertyMetadata(Brushes.White));
+    public static readonly DependencyProperty ItemForegroundProperty = ItemForegroundPropertyKey.DependencyProperty;
+    public Brush? ItemForeground => (Brush? )GetValue(ItemForegroundProperty);
+
+    private static readonly DependencyPropertyKey IsItemHighlightedPropertyKey = DependencyProperty.RegisterReadOnly(nameof(IsItemHighlighted), typeof(bool), typeof(MenuFlyoutItem), new PropertyMetadata(false));
+    public static readonly DependencyProperty IsItemHighlightedProperty = IsItemHighlightedPropertyKey.DependencyProperty;
+    private static readonly DependencyPropertyKey IsItemCheckedPropertyKey = DependencyProperty.RegisterReadOnly(nameof(IsItemChecked), typeof(bool), typeof(MenuFlyoutItem), new PropertyMetadata(false));
+    public static readonly DependencyProperty IsItemCheckedProperty = IsItemCheckedPropertyKey.DependencyProperty;
+    private static readonly DependencyPropertyKey HasSubmenuPropertyKey = DependencyProperty.RegisterReadOnly(nameof(HasSubmenu), typeof(bool), typeof(MenuFlyoutItem), new PropertyMetadata(false));
+    public static readonly DependencyProperty HasSubmenuProperty = HasSubmenuPropertyKey.DependencyProperty;
+    private static readonly DependencyPropertyKey HasAcceleratorPropertyKey = DependencyProperty.RegisterReadOnly(nameof(HasAccelerator), typeof(bool), typeof(MenuFlyoutItem), new PropertyMetadata(false));
+    public static readonly DependencyProperty HasAcceleratorProperty = HasAcceleratorPropertyKey.DependencyProperty;
+    private static readonly DependencyPropertyKey ShowHighlightPropertyKey = DependencyProperty.RegisterReadOnly(nameof(ShowHighlight), typeof(bool), typeof(MenuFlyoutItem), new PropertyMetadata(false));
+    public static readonly DependencyProperty ShowHighlightProperty = ShowHighlightPropertyKey.DependencyProperty;
+    private static readonly DependencyPropertyKey AcceleratorFontSizePropertyKey = DependencyProperty.RegisterReadOnly(nameof(AcceleratorFontSize), typeof(double), typeof(MenuFlyoutItem), new PropertyMetadata(12.0));
+    public static readonly DependencyProperty AcceleratorFontSizeProperty = AcceleratorFontSizePropertyKey.DependencyProperty;
+    public Brush? MenuForeground { get => (Brush? )GetValue(MenuForegroundProperty); set => SetValue(MenuForegroundProperty, value); }
+    public bool IsItemHighlighted => (bool)GetValue(IsItemHighlightedProperty)!;
+    public bool IsItemChecked => (bool)GetValue(IsItemCheckedProperty)!;
+    public bool HasSubmenu => (bool)GetValue(HasSubmenuProperty)!;
+    public bool HasAccelerator => (bool)GetValue(HasAcceleratorProperty)!;
+    public bool ShowHighlight => (bool)GetValue(ShowHighlightProperty)!;
+    public double AcceleratorFontSize => (double)GetValue(AcceleratorFontSizeProperty)!;
+
+    static MenuFlyoutItem()
+    {
+        DefaultStyleKeyProperty.OverrideMetadata(typeof(MenuFlyoutItem), new PropertyMetadata(typeof(MenuFlyoutItem)));
+        FocusableProperty.OverrideMetadata(typeof(MenuFlyoutItem), new PropertyMetadata(true));
+    }
+
+#region Dependency Properties
     /// <summary>
     /// Identifies the Text dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    public static readonly DependencyProperty TextProperty =
-        DependencyProperty.Register(nameof(Text), typeof(string), typeof(MenuFlyoutItem),
-            new PropertyMetadata(string.Empty));
-
+    public static readonly DependencyProperty TextProperty = DependencyProperty.Register(nameof(Text), typeof(string), typeof(MenuFlyoutItem), new PropertyMetadata(string.Empty));
     /// <summary>
     /// Identifies the Icon dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    public static readonly DependencyProperty IconProperty =
-        DependencyProperty.Register(nameof(Icon), typeof(object), typeof(MenuFlyoutItem),
-            new PropertyMetadata(null));
-
+    public static readonly DependencyProperty IconProperty = DependencyProperty.Register(nameof(Icon), typeof(object), typeof(MenuFlyoutItem), new PropertyMetadata(null));
     /// <summary>
     /// Identifies the Command dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
-    public static readonly DependencyProperty CommandProperty =
-        DependencyProperty.Register(nameof(Command), typeof(ICommand), typeof(MenuFlyoutItem),
-            new PropertyMetadata(null, OnCommandChanged));
-
+    public static readonly DependencyProperty CommandProperty = DependencyProperty.Register(nameof(Command), typeof(ICommand), typeof(MenuFlyoutItem), new PropertyMetadata(null, OnCommandChanged));
     /// <summary>
     /// Identifies the CommandParameter dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
-    public static readonly DependencyProperty CommandParameterProperty =
-        DependencyProperty.Register(nameof(CommandParameter), typeof(object), typeof(MenuFlyoutItem),
-            new PropertyMetadata(null));
-
+    public static readonly DependencyProperty CommandParameterProperty = DependencyProperty.Register(nameof(CommandParameter), typeof(object), typeof(MenuFlyoutItem), new PropertyMetadata(null));
     /// <summary>
     /// Identifies the KeyboardAcceleratorTextOverride dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public static readonly DependencyProperty KeyboardAcceleratorTextOverrideProperty =
-        DependencyProperty.Register(nameof(KeyboardAcceleratorTextOverride), typeof(string), typeof(MenuFlyoutItem),
-            new PropertyMetadata(string.Empty));
-
-    #endregion
-
-    #region Routed Events
-
+    public static readonly DependencyProperty KeyboardAcceleratorTextOverrideProperty = DependencyProperty.Register(nameof(KeyboardAcceleratorTextOverride), typeof(string), typeof(MenuFlyoutItem), new PropertyMetadata(string.Empty));
+#endregion
+#region Routed Events
     /// <summary>
     /// Identifies the Click routed event.
     /// </summary>
-    public static readonly RoutedEvent ClickEvent =
-        EventManager.RegisterRoutedEvent(nameof(Click), RoutingStrategy.Bubble,
-            typeof(RoutedEventHandler), typeof(MenuFlyoutItem));
-
+    public static readonly RoutedEvent ClickEvent = EventManager.RegisterRoutedEvent(nameof(Click), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(MenuFlyoutItem));
     /// <summary>
     /// Occurs when the menu flyout item is clicked.
     /// </summary>
-    public event RoutedEventHandler Click
-    {
-        add => AddHandler(ClickEvent, value);
-        remove => RemoveHandler(ClickEvent, value);
-    }
+    public event RoutedEventHandler Click { add => AddHandler(ClickEvent, value); remove => RemoveHandler(ClickEvent, value); }
 
-    #endregion
-
-    #region CLR Properties
-
+#endregion
+#region CLR Properties
     /// <summary>
     /// Gets or sets the text content of the menu item.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    public string Text
-    {
-        get => (string?)GetValue(TextProperty) ?? string.Empty;
-        set => SetValue(TextProperty, value);
-    }
+    public string Text { get => (string? )GetValue(TextProperty) ?? string.Empty; set => SetValue(TextProperty, value); }
 
     /// <summary>
     /// Gets or sets the graphic content of the menu item.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    public object? Icon
-    {
-        get => GetValue(IconProperty);
-        set => SetValue(IconProperty, value);
-    }
+    public object? Icon { get => GetValue(IconProperty); set => SetValue(IconProperty, value); }
 
     /// <summary>
     /// Gets or sets the command to invoke when the item is pressed.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
-    public ICommand? Command
-    {
-        get => (ICommand?)GetValue(CommandProperty);
-        set => SetValue(CommandProperty, value);
-    }
+    public ICommand? Command { get => (ICommand? )GetValue(CommandProperty); set => SetValue(CommandProperty, value); }
 
     /// <summary>
     /// Gets or sets the parameter to pass to the Command property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
-    public object? CommandParameter
-    {
-        get => GetValue(CommandParameterProperty);
-        set => SetValue(CommandParameterProperty, value);
-    }
+    public object? CommandParameter { get => GetValue(CommandParameterProperty); set => SetValue(CommandParameterProperty, value); }
 
     /// <summary>
     /// Gets or sets the keyboard accelerator text override for display.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public string KeyboardAcceleratorTextOverride
-    {
-        get => (string?)GetValue(KeyboardAcceleratorTextOverrideProperty) ?? string.Empty;
-        set => SetValue(KeyboardAcceleratorTextOverrideProperty, value);
-    }
+    public string KeyboardAcceleratorTextOverride { get => (string? )GetValue(KeyboardAcceleratorTextOverrideProperty) ?? string.Empty; set => SetValue(KeyboardAcceleratorTextOverrideProperty, value); }
 
-    #endregion
-
+#endregion
     /// <summary>
     /// Initializes a new instance of the MenuFlyoutItem class.
     /// </summary>
     public MenuFlyoutItem()
     {
-        Focusable = true;
         AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
         AddHandler(MouseEnterEvent, new MouseEventHandler(OnMouseEnterHandler));
         AddHandler(MouseLeaveEvent, new MouseEventHandler(OnMouseLeaveHandler));
         AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
+        Loaded += (_, _) => UpdateItemPresentation();
     }
 
-    /// <inheritdoc />
+    public override void OnApplyTemplate()
+    {
+        base.OnApplyTemplate();
+        UpdateItemPresentation();
+    }
+
     protected override Size MeasureOverride(Size availableSize)
     {
-        var insets = CssBoxMetrics.ContentInsets(this,
-            CssLayout?.ContainingWidthCache ?? availableSize.Width);
-        var fontSize = FontSize;
-        double textWidth = 0;
-        if (!string.IsNullOrEmpty(Text))
-        {
-            var formattedText = new FormattedText(Text, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, fontSize);
-            TextMeasurement.MeasureText(formattedText);
-            textWidth = formattedText.Width;
-        }
-
-        var contentWidth = LeftPadding + IconColumnWidth + textWidth + TextTrailingPadding + RightPadding;
-
-        if (!string.IsNullOrEmpty(KeyboardAcceleratorTextOverride))
-        {
-            // Reserve a fixed right-side gesture column so shortcuts align to the far edge.
-            contentWidth += TextToAcceleratorGap + AcceleratorColumnWidth;
-        }
-
-        return new Size(
-            ControlRenderGeometry.GetAvailableLength(
-                contentWidth + insets.Left + insets.Right, availableSize.Width),
-            ControlRenderGeometry.GetAvailableLength(
-                ItemHeight + insets.Top + insets.Bottom, availableSize.Height));
+        UpdateItemPresentation();
+        return base.MeasureOverride(availableSize);
     }
 
-    /// <inheritdoc />
-    protected override void OnRender(DrawingContext drawingContext)
+    protected override void RenderTemplatedBackground(DrawingContext context)
     {
-        var dc = drawingContext;
-        base.OnRender(drawingContext);
-        if (RenderSize.Width <= 0 || RenderSize.Height <= 0) return;
-
-        var rect = new Rect(RenderSize);
-        var content = GetItemContentBounds();
-        var backgroundLayer = GetEffectiveValueLayer(BackgroundProperty);
-        var hoverFallback = IsHighlighted &&
-            (backgroundLayer is null or DependencyValueStore.Layer.StyleSetter);
-        if (hoverFallback)
-        {
-            const double hoverInset = 2.0;
-            var hoverBrush = ResolveBrush("OneSurfaceHover", "MenuFlyoutItemBackgroundHover", s_fallbackHoverBrush);
-            var hoverBounds = new Rect(
-                    hoverInset,
-                    hoverInset,
-                    Math.Max(0, RenderSize.Width - hoverInset * 2),
-                    Math.Max(0, RenderSize.Height - hoverInset * 2));
-            if (CssBorderRadiusProperties.Get(this) is { } hoverRadius)
-            {
-                var radii = hoverRadius.Resolve(RenderSize)
-                    .Inset(new Thickness(hoverInset)).Normalize(hoverBounds.Size);
-                dc.DrawGeometry(hoverBrush, null, new CssRoundedRectangleGeometry(hoverBounds, radii));
-            }
-            else
-                dc.DrawRoundedRectangle(hoverBrush, null, hoverBounds, 4, 4);
-        }
-        else if (Background is { } background)
-        {
-            var cssRadius = CssBorderRadiusProperties.Get(this);
-            var cssBackground = backgroundLayer is
-                DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState;
-            if (!cssBackground && cssRadius is null)
-                dc.DrawRoundedRectangle(background, null, rect, CornerRadius);
-            else
-            {
-                var radii = cssRadius?.Resolve(RenderSize) ??
-                    CssBackgroundPainter.CircularRadii(CornerRadius).Normalize(RenderSize);
-                var shape = new CssRoundedRectangleGeometry(rect, radii);
-                var (border, padding) = CssBoxMetrics.BackgroundInsets(this,
-                    CssLayout?.ContainingWidthCache ?? RenderSize.Width);
-                if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty, background, dc,
-                        rect, radii, border, padding,
-                        brush => dc.DrawGeometry(brush, null, shape)))
-                    dc.DrawGeometry(background, null, shape);
-            }
-        }
-
-        // Focus indicator is painted by FocusVisualManager into the adorner layer.
-
-        var textBrush = ResolveAuthoredForegroundBrush() ?? (IsEnabled
-            ? ResolveForegroundBrush()
-            : ResolveBrush("OneTextDisabled", "TextDisabled", s_fallbackDisabledTextBrush));
-
-        double x = content.X + LeftPadding;
-
-        var fontSize = FontSize;
-
-        // Icon
-        if (Icon is string iconText && !string.IsNullOrEmpty(iconText) && FontSize > 0)
-        {
-            var iconFormatted = new FormattedText(
-                iconText, "Segoe MDL2 Assets", fontSize) { Foreground = textBrush };
-            TextMeasurement.MeasureText(iconFormatted);
-            dc.DrawText(iconFormatted, new Point(x, content.Y + (content.Height - iconFormatted.Height) / 2));
-        }
-        // Reserve icon/check column even when there is no icon so labels line up.
-        x += IconColumnWidth;
-
-        // Text
-        if (!string.IsNullOrEmpty(Text) && FontSize > 0)
-        {
-            var textFormatted = new FormattedText(
-                Text, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, fontSize) { Foreground = textBrush };
-            TextMeasurement.MeasureText(textFormatted);
-            dc.DrawText(textFormatted, new Point(x, content.Y + (content.Height - textFormatted.Height) / 2));
-        }
-
-        // Keyboard accelerator text (right-aligned)
-        if (!string.IsNullOrEmpty(KeyboardAcceleratorTextOverride) && FontSize > 0)
-        {
-            var accelBrush = ResolveAuthoredForegroundBrush() ??
-                ResolveBrush("OneTextSecondary", "TextSecondary", s_fallbackAcceleratorBrush);
-            var accelFormatted = new FormattedText(
-                KeyboardAcceleratorTextOverride, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName,
-                fontSize * (12.0 / 14.0)) { Foreground = accelBrush };
-            TextMeasurement.MeasureText(accelFormatted);
-            var accelX = content.Right - accelFormatted.Width - RightPadding;
-            dc.DrawText(accelFormatted, new Point(accelX, content.Y + (content.Height - accelFormatted.Height) / 2));
-        }
+        // Inherited values are resolved lazily. Refresh derived presentation
+        // before the template reads them, including color-only ancestor changes.
+        UpdateItemPresentation();
+        if (RenderSize.Width > 0 && RenderSize.Height > 0)
+            base.RenderTemplatedBackground(context);
     }
 
-    /// <inheritdoc />
-    protected override void OnPostRender(DrawingContext drawingContext)
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs args)
     {
-        base.OnPostRender(drawingContext);
-        CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter, drawNative: true);
+        base.OnPropertyChanged(args);
+        if (args.Property == FontSizeProperty || args.Property == FontFamilyProperty || args.Property == FontWeightProperty || args.Property == KeyboardAcceleratorTextOverrideProperty || args.Property == BackgroundProperty || args.Property == ForegroundProperty || args.Property == MenuForegroundProperty || args.Property == IsMouseOverProperty || args.Property == IsKeyboardFocusedProperty)
+            UpdateItemPresentation();
+    }
+
+    protected override void OnIsEnabledChanged(bool oldValue, bool newValue)
+    {
+        base.OnIsEnabledChanged(oldValue, newValue);
+        UpdateItemPresentation();
+    }
+
+    protected void UpdateItemPresentation()
+    {
+        var foregroundSource = DependencyPropertyHelper.GetValueSource(this, ForegroundProperty).BaseValueSource;
+        SetValue(ItemForegroundPropertyKey, foregroundSource == BaseValueSource.Default ? MenuForeground : Foreground);
+        SetValue(ItemFontSizePropertyKey, FontSize);
+        SetValue(ItemFontFamilyPropertyKey, FontFamily);
+        SetValue(ItemFontWeightPropertyKey, FontWeight);
+        bool highlighted = IsHighlighted;
+        bool isChecked = this is ToggleMenuFlyoutItem toggle && toggle.IsChecked;
+        bool hasSubmenu = this is MenuFlyoutSubItem;
+        bool transparent = Background is null || Background is SolidColorBrush brush && brush.Color.A == 0;
+        SetValue(IsItemHighlightedPropertyKey, highlighted);
+        SetValue(IsItemCheckedPropertyKey, isChecked);
+        SetValue(HasSubmenuPropertyKey, hasSubmenu);
+        SetValue(HasAcceleratorPropertyKey, !string.IsNullOrEmpty(KeyboardAcceleratorTextOverride));
+        SetValue(ShowHighlightPropertyKey, IsEnabled && highlighted && transparent);
+        SetValue(AcceleratorFontSizePropertyKey, FontSize * (12.0 / 14.0));
+        VisualStateManager.GoToState(this, !IsEnabled ? "Disabled" : this is MenuFlyoutSubItem { IsSubMenuOpen: true } ? "SubmenuOpen" : IsKeyboardFocused ? "Focused" : IsMouseOver ? "PointerOver" : "Normal", false);
+        VisualStateManager.GoToState(this, isChecked ? "Checked" : "Unchecked", false);
     }
 
     /// <summary>Returns the area left for icons and labels after CSS box edges.</summary>
-    protected Rect GetItemContentBounds() => ControlRenderGeometry.GetContentRect(
-        new Rect(RenderSize), CssBoxMetrics.ContentInsets(this,
-            CssLayout?.ContainingWidthCache ?? RenderSize.Width));
-
+    protected Rect GetItemContentBounds() => ControlRenderGeometry.GetContentRect(new Rect(RenderSize), CssBoxMetrics.ContentInsets(this, CssLayout?.ContainingWidthCache ?? RenderSize.Width));
     /// <summary>
     /// 本项当前是否应画成高亮（悬停底色）。基类：指针悬停或键盘焦点；
-    /// <see cref="MenuFlyoutSubItem"/> 在子菜单打开期间额外保持高亮。
+    /// <see cref = "MenuFlyoutSubItem"/> 在子菜单打开期间额外保持高亮。
     /// </summary>
     protected virtual bool IsHighlighted => IsMouseOver || IsKeyboardFocused;
 
     private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
-        if (!IsEnabled) return;
-
+        if (!IsEnabled)
+            return;
         InvokeItem();
         e.Handled = true;
     }
@@ -312,12 +222,12 @@ public class MenuFlyoutItem : Control
     private void OnMouseEnterHandler(object sender, MouseEventArgs e)
     {
         CloseSiblingSubMenus();
-        InvalidateVisual();
+        UpdateItemPresentation();
     }
 
     private void OnMouseLeaveHandler(object sender, MouseEventArgs e)
     {
-        InvalidateVisual();
+        UpdateItemPresentation();
     }
 
     private void CloseSiblingSubMenus()
@@ -355,11 +265,17 @@ public class MenuFlyoutItem : Control
             Key.Escape => CloseParentPopupAndRestoreFocus(),
             _ => false
         };
-
         if (handled)
         {
             e.Handled = true;
         }
+    }
+
+    internal void InvokeFromAutomation()
+    {
+        if (!IsEnabled)
+            throw new InvalidOperationException("The menu item is disabled.");
+        InvokeItem();
     }
 
     protected virtual void InvokeItem()
@@ -386,12 +302,13 @@ public class MenuFlyoutItem : Control
     private void CloseMenuChain()
     {
         var popupRoot = FindAncestorPopupRoot();
+        if (popupRoot == null)
+            FindAncestorPresenter()?.CloseMenu();
         while (popupRoot != null)
         {
             var popup = popupRoot.OwnerPopup;
             var placementTarget = popup.PlacementTarget;
             popup.IsOpen = false;
-
             popupRoot = FindAncestorPopupRootFrom(placementTarget);
         }
     }
@@ -431,9 +348,7 @@ public class MenuFlyoutItem : Control
         for (int offset = 1; offset < panel.Children.Count; offset++)
         {
             var nextIndex = (currentIndex + (direction * offset) + panel.Children.Count) % panel.Children.Count;
-            if (panel.Children[nextIndex] is not UIElement candidate ||
-                !candidate.IsEnabled ||
-                candidate.Visibility != Visibility.Visible)
+            if (panel.Children[nextIndex] is not UIElement candidate || !candidate.IsEnabled || candidate.Visibility != Visibility.Visible)
             {
                 continue;
             }
@@ -458,10 +373,7 @@ public class MenuFlyoutItem : Control
         {
             for (int i = 0; i < panel.Children.Count; i++)
             {
-                if (panel.Children[i] is UIElement candidate &&
-                    candidate.IsEnabled &&
-                    candidate.Visibility == Visibility.Visible &&
-                    candidate.Focus())
+                if (panel.Children[i] is UIElement candidate && candidate.IsEnabled && candidate.Visibility == Visibility.Visible && candidate.Focus())
                 {
                     return true;
                 }
@@ -472,10 +384,7 @@ public class MenuFlyoutItem : Control
 
         for (int i = panel.Children.Count - 1; i >= 0; i--)
         {
-            if (panel.Children[i] is UIElement candidate &&
-                candidate.IsEnabled &&
-                candidate.Visibility == Visibility.Visible &&
-                candidate.Focus())
+            if (panel.Children[i] is UIElement candidate && candidate.IsEnabled && candidate.Visibility == Visibility.Visible && candidate.Focus())
             {
                 return true;
             }
@@ -501,13 +410,21 @@ public class MenuFlyoutItem : Control
         var popupRoot = FindAncestorPopupRoot();
         if (popupRoot == null)
         {
-            return false;
+            var presenter = FindAncestorPresenter();
+            if (presenter == null)
+                return false;
+            presenter.CloseAndRestoreFocus();
+            return true;
         }
 
         var placementTarget = popupRoot.OwnerPopup.PlacementTarget as UIElement;
         var parentSubItem = placementTarget as MenuFlyoutSubItem;
-        popupRoot.OwnerPopup.IsOpen = false;
-
+        if (placementTarget is MenuBarItem ownerItem)
+            ownerItem.CloseMenu();
+        else if (parentSubItem != null)
+            parentSubItem.HideSubMenu();
+        else
+            popupRoot.OwnerPopup.SetCurrentValue(Popup.IsOpenProperty, false);
         Dispatcher.BeginInvokeCritical(() =>
         {
             if (parentSubItem != null)
@@ -518,24 +435,32 @@ public class MenuFlyoutItem : Control
 
             placementTarget?.Focus();
         });
-
         return true;
     }
 
     protected bool MoveFocusToAdjacentMenuBarItem(int direction)
     {
         var popupRoot = FindAncestorPopupRoot();
-        if (popupRoot?.OwnerPopup.PlacementTarget is not MenuBarItem ownerItem || ownerItem.ParentMenuBar == null)
+        var ownerItem = popupRoot?.OwnerPopup.PlacementTarget as MenuBarItem ?? FindAncestorPresenter()?.OwnerTarget as MenuBarItem;
+        if (ownerItem?.ParentMenuBar == null)
         {
             return false;
         }
 
-        popupRoot.OwnerPopup.IsOpen = false;
+        ownerItem.CloseMenu();
         // Switch the top-level owner synchronously. FocusSibling opens the new menu and
         // queues exactly one focus transfer to its first command. Deferring this whole
         // operation would create a nested dispatcher callback; a single ProcessQueue pass
         // could then stop on the MenuBarItem before the command-focus callback runs.
         return ownerItem.ParentMenuBar.FocusSibling(ownerItem, direction, openMenu: true);
+    }
+
+    private MenuFlyoutPresenter? FindAncestorPresenter()
+    {
+        for (Visual? current = this; current != null; current = current.VisualParent)
+            if (current is MenuFlyoutPresenter presenter)
+                return presenter;
+        return null;
     }
 
     private PopupRoot? FindAncestorPopupRoot()
@@ -561,28 +486,6 @@ public class MenuFlyoutItem : Control
         }
     }
 
-    private Brush ResolveForegroundBrush()
-    {
-        return ResolveAuthoredForegroundBrush() ??
-            ResolveBrush("OnePopupText", "TextPrimary", s_fallbackTextBrush);
-    }
-
     /// <summary>Gets a local or CSS text brush for derived menu item glyphs.</summary>
-    protected Brush? ResolveAuthoredForegroundBrush() =>
-        Foreground != null &&
-        (HasLocalOrAnimatedValue(ForegroundProperty) ||
-         GetEffectiveValueLayer(ForegroundProperty) is
-             (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState) ||
-         DependencyPropertyHelper.GetValueSource(this, ForegroundProperty).BaseValueSource ==
-             BaseValueSource.Inherited)
-            ? Foreground : null;
-
-    private Brush ResolveBrush(string primaryKey, string secondaryKey, Brush fallback)
-    {
-        if (TryFindResource(primaryKey) is Brush primary)
-            return primary;
-        if (TryFindResource(secondaryKey) is Brush secondary)
-            return secondary;
-        return fallback;
-    }
+    protected Brush? ResolveAuthoredForegroundBrush() => Foreground != null && (HasLocalOrAnimatedValue(ForegroundProperty) || GetEffectiveValueLayer(ForegroundProperty)is (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState) || DependencyPropertyHelper.GetValueSource(this, ForegroundProperty).BaseValueSource == BaseValueSource.Inherited) ? Foreground : null;
 }

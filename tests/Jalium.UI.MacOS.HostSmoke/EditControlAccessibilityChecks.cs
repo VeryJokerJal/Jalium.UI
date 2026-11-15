@@ -49,7 +49,7 @@ internal static class EditControlAccessibilityChecks
             || (uint)index >= Names.Length * 2) return 2;
         int kind = index % Names.Length;
         JaliumMacApplication.Initialize();
-        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Prohibited;
+        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Accessory;
         RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
         var editor = new EditControl { Text = "原文🙂\n第二行", Height = 180, IsScrollInertiaEnabled = false };
         AutomationProperties.SetAutomationId(editor, "code-editor");
@@ -80,9 +80,10 @@ internal static class EditControlAccessibilityChecks
                             && text.AccessibilityNumberOfCharacters == value.Length, "empty/single/multiline role or UTF-16 length differs");
                     }
                     text.AccessibilityFocused = true;
-                    Require(editor.IsKeyboardFocused
+                    Require(AccessibilityFocusChecks.Wait(window, editor)
                         && text.AccessibilityFocused == (NSApplication.SharedApplication.KeyWindow?.Handle == view.Window!.Handle)
-                        && text.AccessibilityLabel == "中文代码编辑器", "AX focus or name missing");
+                        && text.AccessibilityLabel == "中文代码编辑器",
+                        $"AX focus or name missing; managed={editor.IsKeyboardFocused}; nativeKey={view.Window!.IsKeyWindow}; appActive={NSApplication.SharedApplication.Active}; label={text.AccessibilityLabel}");
                     break;
                 case 1:
                     string original = editor.Text;

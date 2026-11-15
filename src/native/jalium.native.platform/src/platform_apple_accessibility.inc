@@ -216,12 +216,20 @@ static id QueryWindowAccessibilityButton(JaliumPlatformWindow* window, int32_t k
     return [button isAccessibilityElement] ? button : nil;
 }
 
+// Optional INFO query hints. Zero preserves the complete legacy descriptor;
+// older managed providers ignore these hints and continue returning all fields.
+static constexpr int32_t JaliumAXInfoMetadataOnly = -1;
+static constexpr int32_t JaliumAXInfoChildrenOnly = -2;
+static constexpr int32_t JaliumAXInfoBoundsOnly = -3;
+static constexpr int32_t JaliumAXInfoVisibilityOnly = -4;
+
 @interface JaliumAppleAccessibilityElement : NSAccessibilityElement
 @property(nonatomic, weak) JaliumAppleAccessibilityBridge* bridge;
 @property(nonatomic) uint64_t nodeId;
 @property(nonatomic) BOOL retired;
 @property(nonatomic) BOOL postingDestruction;
 - (BOOL)info:(JaliumAccessibilityRequest*)request;
+- (BOOL)info:(JaliumAccessibilityRequest*)request query:(int32_t)query;
 - (BOOL)action:(int32_t)action;
 - (BOOL)canServeTextService:(BOOL)writing;
 - (void)retire;
@@ -253,6 +261,9 @@ static NSAccessibilityRole JaliumAccessibilityRole(int32_t role, uint32_t flags)
         case 22: return NSAccessibilityHelpTagRole;
         case 23: return NSAccessibilityOutlineRole;
         case 24: case 29: return NSAccessibilityRowRole;
+        // ToggleSwitch keeps its Custom UIA control type. Match NSSwitch's
+        // actionable button role and switch subrole in the AppKit adapter.
+        case 25: return (flags & JALIUM_AX_TOGGLE) ? NSAccessibilityButtonRole : NSAccessibilityGroupRole;
         case 27: case 38: return NSAccessibilitySplitterRole;
         case 28: case 36: return NSAccessibilityTableRole;
         case 30: return NSAccessibilityTextAreaRole;
@@ -422,9 +433,15 @@ static NSAccessibilityRole JaliumAccessibilityRole(int32_t role, uint32_t flags)
     return YES;
 }
 - (BOOL)info:(JaliumAccessibilityRequest*)request {
+    return [self info:request query:JaliumAXInfoMetadataOnly];
+}
+- (BOOL)info:(JaliumAccessibilityRequest*)request query:(int32_t)query {
     *request = {};
-    request->nodeId = _nodeId; request->operation = JALIUM_AX_INFO;
-    return [_bridge query:request];
+    request->nodeId = _nodeId; request->operation = JALIUM_AX_INFO; request->index = query;
+    BOOL result = [_bridge query:request];
+    // Callers reuse the request for text/actions; keep their original zero index.
+    request->index = 0;
+    return result;
 }
 - (BOOL)action:(int32_t)action {
     JaliumAccessibilityRequest request{};
@@ -445,6 +462,7 @@ static NSAccessibilityRole JaliumAccessibilityRole(int32_t role, uint32_t flags)
     JaliumAccessibilityRequest request{};
     if (![self info:&request]) return nil;
     if (request.flags & JALIUM_AX_PASSWORD) return NSAccessibilitySecureTextFieldSubrole;
+    if (request.role == 25 && (request.flags & JALIUM_AX_TOGGLE)) return NSAccessibilitySwitchSubrole;
     if (request.role == 0) {
         if (request.flags & JALIUM_AX_CLOSE) return NSAccessibilityCloseButtonSubrole;
         if (request.flags & JALIUM_AX_MINIMIZE) return NSAccessibilityMinimizeButtonSubrole;
@@ -467,42 +485,50 @@ static NSAccessibilityRole JaliumAccessibilityRole(int32_t role, uint32_t flags)
 - (id)accessibilityTopLevelUIElement { return self.accessibilityWindow; }
 - (NSRect)accessibilityFrame {
     JaliumAccessibilityRequest request{};
-    return [self info:&request] ? [_bridge screenFrame:NSMakeRect(request.x, request.y, request.width, request.height)] : NSZeroRect;
+    return [self info:&request query:JaliumAXInfoBoundsOnly] ? [_bridge screenFrame:NSMakeRect(request.x, request.y, request.width, request.height)] : NSZeroRect;
 }
 - (NSArray*)accessibilityChildren {
     JaliumAppleAccessibilityBridge* bridge = _bridge;
     JaliumAccessibilityRequest request{};
-    request.nodeId = _nodeId;
-    request.operation = JALIUM_AX_BEGIN_CHILDREN;
-    // query may reject an accepted callback when it retires the tree. Still
-    // release the token through the captured callback/context below.
-    const auto callback = bridge.callback;
-    void* context = bridge.userData;
-    const BOOL accepted = [bridge query:&request];
-    if (!request.resultId) return @[];
-    @try {
-        if (!accepted || request.childCount < 0) return @[];
-        try {
-            std::vector<uint64_t> ids((size_t)request.childCount);
-            request.operation = JALIUM_AX_READ_CHILDREN;
-            request.text = reinterpret_cast<uint16_t*>(ids.data());
-            request.textCapacity = request.childCount;
-            if (![bridge query:&request] || request.childCount != (int32_t)ids.size()) return @[];
-            NSMutableArray* children = [NSMutableArray new];
-            for (uint64_t nodeId : ids) {
-                id child = [bridge element:nodeId];
-                if (child) [children addObject:child];
+    if (![self info:&request query:JaliumAXInfoChildrenOnly]) return @[];
+    int count = request.childCount;
+    if ((request.flags & JALIUM_AX_CHILD_BATCH) && count >= 0 && count <= 65536) {
+        std::vector<uint64_t> ids((size_t)count);
+        for (int attempt = 0; attempt < 2; attempt++) {
+            JaliumAccessibilityRequest batch{};
+            batch.nodeId = _nodeId; batch.operation = JALIUM_AX_READ_CHILDREN;
+            batch.text = reinterpret_cast<uint16_t*>(ids.data());
+            batch.textCapacity = (int32_t)ids.size(); batch.textCount = -1;
+            // A provider that does not implement the optional operation keeps
+            // the original indexed protocol below. Its INFO count stays intact.
+            if (![bridge query:&batch]) break;
+            if (batch.childCount < 0 || batch.childCount > 65536) return @[];
+            if (batch.textCount == batch.childCount && batch.textCount <= batch.textCapacity) {
+                NSMutableArray* result = [NSMutableArray new];
+                for (int index = 0; index < batch.textCount; index++) {
+                    uint64_t node = ids[(size_t)index];
+                    if (!node || node == _nodeId) return @[];
+                    id child = [bridge element:node];
+                    if (child) [result addObject:child];
+                }
+                return _bridge == bridge && [bridge hasAccessibleContent] ? result : @[];
             }
-            return [bridge hasAccessibleContent] ? children : @[];
-        } catch (const std::bad_alloc&) { return @[]; }
-    } @finally {
-        // Only call the original context while it is still installed. Disposal
-        // clears managed snapshots before freeing that context.
-        if (callback && bridge.callback == callback && bridge.userData == context) {
-            request.operation = JALIUM_AX_RELEASE_CHILDREN;
-            callback(&request, context);
+            // The tree can grow between INFO and the copy. Retry once with the
+            // current size; malformed or repeatedly growing responses fail closed.
+            if (batch.textCount != -1 || batch.childCount <= batch.textCapacity) return @[];
+            ids.resize((size_t)batch.childCount);
+            if (attempt == 1) return @[];
         }
     }
+    NSMutableArray* children = [NSMutableArray new];
+    for (int index = 0; index < count; index++) {
+        request.operation = JALIUM_AX_CHILD; request.index = index;
+        if ([bridge query:&request]) {
+            id child = [bridge element:request.resultId];
+            if (child) [children addObject:child];
+        }
+    }
+    return [bridge hasAccessibleContent] ? children : @[];
 }
 - (NSArray*)accessibilityChildrenInNavigationOrder { return self.accessibilityChildren; }
 - (NSArray*)accessibilityVisibleChildren {
@@ -511,7 +537,7 @@ static NSAccessibilityRole JaliumAccessibilityRole(int32_t role, uint32_t flags)
     for (id child in self.accessibilityChildren) {
         if ([child isKindOfClass:[JaliumAppleAccessibilityElement class]]) {
             JaliumAccessibilityRequest request{};
-            if (![child info:&request] || (request.flags & JALIUM_AX_OFFSCREEN)) continue;
+            if (![child info:&request query:JaliumAXInfoVisibilityOnly] || (request.flags & JALIUM_AX_OFFSCREEN)) continue;
         }
         if (NSIntersectsRect(frame, [child accessibilityFrame])) [children addObject:child];
     }
@@ -626,6 +652,13 @@ static NSAccessibilityRole JaliumAccessibilityRole(int32_t role, uint32_t flags)
     if (request.flags & (JALIUM_AX_RANGE | JALIUM_AX_TOGGLE)) return @(request.value);
     if (request.role == 13 || request.role == 19) return @((request.flags & JALIUM_AX_SELECTED) != 0);
     return [_bridge string:_nodeId property:JALIUM_AX_VALUE];
+}
+- (NSString*)accessibilityValueDescription {
+    JaliumAccessibilityRequest request{};
+    if (![self info:&request] || !(request.flags & JALIUM_AX_HAS_VALUE_DESCRIPTION)
+        || (request.flags & JALIUM_AX_PASSWORD)) return nil;
+    NSString* description = [_bridge string:_nodeId property:JALIUM_AX_VALUE_DESCRIPTION];
+    return description.length ? description : nil;
 }
 - (void)setAccessibilityValue:(id)value {
     JaliumAccessibilityRequest request{};
@@ -775,7 +808,7 @@ static NSAccessibilityRole JaliumAccessibilityRole(int32_t role, uint32_t flags)
 - (BOOL)canServeTextService:(BOOL)writing {
     JaliumAppleAccessibilityBridge* bridge = _bridge;
     JaliumAccessibilityRequest request{};
-    if ([bridge focusedElement] != self || ![self info:&request] ||
+    if ([bridge focusedElement] != self || ![self info:&request query:JaliumAXInfoVisibilityOnly] ||
         (request.flags & (JALIUM_AX_ENABLED | JALIUM_AX_TEXT)) != (JALIUM_AX_ENABLED | JALIUM_AX_TEXT) ||
         (request.flags & (JALIUM_AX_PASSWORD | JALIUM_AX_OFFSCREEN)) ||
         (writing && !(request.flags & JALIUM_AX_EDITABLE_TEXT)) || request.textCount < 0) return NO;
@@ -844,6 +877,8 @@ static NSAccessibilityRole JaliumAccessibilityRole(int32_t role, uint32_t flags)
     if (selector == @selector(accessibilitySelectedChildren)) return (request.flags & JALIUM_AX_SELECTION) != 0;
     if (selector == @selector(accessibilityMinValue) || selector == @selector(accessibilityMaxValue))
         return (request.flags & JALIUM_AX_RANGE) != 0;
+    if (selector == @selector(accessibilityValueDescription))
+        return (request.flags & JALIUM_AX_HAS_VALUE_DESCRIPTION) && !(request.flags & JALIUM_AX_PASSWORD);
     if (selector == @selector(accessibilityValue))
         return (request.flags & (JALIUM_AX_HAS_VALUE | JALIUM_AX_TEXT | JALIUM_AX_RANGE | JALIUM_AX_TOGGLE))
             || request.role == 20 || ((request.role == 13 || request.role == 19) && selectable);

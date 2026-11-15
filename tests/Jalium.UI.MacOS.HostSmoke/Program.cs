@@ -149,6 +149,681 @@ if (args.Length == 1 && args[0] == "--window-writing-tools-glyphs")
 if (args.Length == 1 && args[0] == "--window-writing-tools")
     return WindowWritingToolsChecks.Run();
 
+if (args.Length == 1 && args[0] == "--css-collapsed-borders")
+{
+    return CssCollapsedBorderChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-document-table-widths")
+{
+    return CssDocumentTableWidthChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-document-heights")
+{
+    return CssDocumentHeightChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-empty-table-grid")
+{
+    return CssEmptyTableGridChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-document-intrinsic-sizing")
+{
+    return CssDocumentIntrinsicSizingChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-hanging-whitespace")
+{
+    return CssHangingWhitespaceChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-line-height")
+{
+    return CssLineHeightChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-shared-justification")
+{
+    return CssSharedJustificationChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-tab-justification")
+{
+    return CssTabJustificationChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-paragraph-wrap")
+{
+    return CssParagraphWrapChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-inline-boxes")
+{
+    return CssInlineBoxChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-richtext-boxes")
+{
+    return CssRichTextBoxChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-placeholder")
+{
+    return CssWritingToolsChecks.RunPlaceholders();
+}
+
+if (args.Length == 1 && args[0] == "--css-placeholder-lifecycle")
+{
+    return CssWritingToolsChecks.RunPlaceholderLifecycle();
+}
+
+if (args.Length == 1 && args[0] == "--css-placeholder-gallery")
+{
+    return CssWritingToolsChecks.RunPlaceholderGallery();
+}
+
+if (args.Length == 1 && args[0] == "--css-background-text-clip")
+{
+    return CssWritingToolsChecks.RunBackgroundTextClip();
+}
+
+if (args.Length == 1 && args[0] == "--css-background-text-clip-scenes")
+{
+    return CssWritingToolsChecks.RunBackgroundTextClipScenes();
+}
+
+if (args.Length == 1 && args[0] == "--css-gradient-input-recording")
+{
+    return CssWritingToolsChecks.RunGradientRecordingInputs();
+}
+
+if (args.Length == 1 && args[0] == "--css-gradient-recording")
+{
+    return CssWritingToolsChecks.RunGradientRecording();
+}
+
+if (args.Length == 1 && args[0] == "--css-software-gradient-text")
+{
+    return CssWritingToolsChecks.RunSoftwareGradientText();
+}
+
+if (args.Length == 1 && args[0] == "--css-input-spacing")
+{
+    return CssWritingToolsChecks.RunInputSpacing();
+}
+
+if (args.Length == 1 && args[0] == "--css-input-spacing-selection")
+{
+    return CssWritingToolsChecks.RunInputSpacingSelection();
+}
+
+if (args.Length == 1 && args[0] == "--css-input-spacing-lifecycle")
+{
+    return CssWritingToolsChecks.RunInputSpacingLifecycle();
+}
+
+if (args.Length == 1 && args[0] == "--css-input-spacing-gallery")
+{
+    return CssWritingToolsChecks.RunInputSpacingGallery();
+}
+
+if (args.Length == 1 && args[0] == "--css-writing-tools")
+{
+    return CssWritingToolsChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-writing-tools-editing")
+{
+    return CssWritingToolsChecks.RunEditing();
+}
+
+if (args.Length == 1 && args[0] == "--css-document-list-markers")
+{
+    return CssWritingToolsChecks.RunDocumentListMarkers();
+}
+
+if (args.Length == 1 && args[0] == "--css-document-paint-refresh")
+{
+    return CssWritingToolsChecks.RunDocumentPaintRefresh();
+}
+
+if (args.Length == 1 && args[0] == "--css-font-numeric")
+{
+    return CssWritingToolsChecks.RunFontNumeric();
+}
+
+if (args.Length == 1 && args[0] == "--css-font-east-asian")
+{
+    return CssWritingToolsChecks.RunFontEastAsian();
+}
+
+if (args.Length == 1 && args[0] == "--css-font-caps")
+{
+    return CssWritingToolsChecks.RunFontCaps();
+}
+
+if (args.Length == 1 && args[0] == "--css-font-caps-boundaries")
+{
+    return CssWritingToolsChecks.RunFontCapsBoundaries();
+}
+
+if (args.Length == 1 && args[0] == "--css-shared-caps-context")
+{
+    return CssWritingToolsChecks.RunSharedCapsContext();
+}
+
+if (args.Length == 1 && args[0] == "--css-caps-combining-context")
+{
+    return CssWritingToolsChecks.RunCapsCombiningContext();
+}
+
+if (args.Length == 1 && args[0] == "--css-compositing")
+{
+    return CssWritingToolsChecks.RunCompositing();
+}
+
+if (args.Length == 1 && args[0] == "--css-geometry-transforms")
+{
+    return CssWritingToolsChecks.RunGeometryTransforms();
+}
+
+if (args.Length == 1 && args[0] == "--css-vector-effects")
+{
+    return CssWritingToolsChecks.RunVectorEffects();
+}
+
+if (args.Length == 1 && args[0] == "--css-svg-viewports")
+{
+    return CssWritingToolsChecks.RunSvgViewports();
+}
+
+if (args.Length == 1 && args[0] == "--css-shape-image-sizing")
+{
+    return CssWritingToolsChecks.RunShapeImageSizing();
+}
+
+if (args.Length == 1 && args[0] == "--css-first-letter")
+{
+    return CssWritingToolsChecks.RunFirstLetters();
+}
+if (args.Length == 1 && args[0] == "--css-first-line")
+{
+    return CssWritingToolsChecks.RunFirstLines();
+}
+if (args.Length == 1 && args[0] == "--css-initial-letter")
+{
+    return CssWritingToolsChecks.RunInitialLetters();
+}
+if (args.Length == 1 && args[0] == "--css-initial-letter-gallery")
+{
+    return CssWritingToolsChecks.RunInitialLetterGallery();
+}
+if (args.Length == 1 && args[0] == "--css-initial-letter-flow-gallery")
+{
+    return CssWritingToolsChecks.RunInitialLetterFlowGallery();
+}
+if (args.Length == 1 && args[0] == "--css-initial-letter-fragments")
+{
+    return CssWritingToolsChecks.RunInitialLetterFragments();
+}
+if (args.Length == 1 && args[0] == "--css-initial-letter-lifecycle")
+{
+    return CssWritingToolsChecks.RunInitialLetterLifecycle();
+}
+if (args.Length == 1 && args[0] == "--css-initial-letter-generated")
+{
+    return CssWritingToolsChecks.RunGeneratedInitialLetters();
+}
+if (args.Length == 1 && args[0] == "--css-initial-letter-block-flow")
+{
+    return CssWritingToolsChecks.RunInitialLetterBlockFlow();
+}
+if (args.Length == 1 && args[0] == "--css-selection-gallery")
+{
+    return CssWritingToolsChecks.RunSelectionGallery();
+}
+if (args.Length == 1 && args[0] == "--css-selection")
+{
+    return CssWritingToolsChecks.RunSelection();
+}
+if (args.Length == 1 && args[0] == "--css-selection-context")
+{
+    return CssWritingToolsChecks.RunSelectionContext();
+}
+if (args.Length == 1 && args[0] == "--css-editor-emphasis-gallery")
+{
+    return CssWritingToolsChecks.RunEditorEmphasisGallery();
+}
+
+if (args.Length == 1 && args[0] == "--css-input-foreground-gallery")
+{
+    return CssWritingToolsChecks.RunInputForegroundGallery();
+}
+
+if (args.Length == 1 && args[0] == "--css-theme-currentcolor")
+{
+    return CssWritingToolsChecks.RunThemeCurrentColor();
+}
+
+if (args.Length == 1 && args[0] == "--css-theme-currentcolor-gallery")
+{
+    return CssWritingToolsChecks.RunThemeCurrentColorGallery();
+}
+
+if (args.Length == 1 && args[0] == "--css-input-foreground")
+{
+    return CssWritingToolsChecks.RunInputForeground();
+}
+
+if (args.Length == 1 && args[0] == "--css-editor-emphasis")
+{
+    return CssWritingToolsChecks.RunEditorEmphasis();
+}
+
+if (args.Length == 1 && args[0] == "--css-text-emphasis")
+{
+    return CssWritingToolsChecks.RunTextEmphasis();
+}
+
+if (args.Length == 1 && args[0] == "--css-text-emphasis-gallery")
+{
+    return CssWritingToolsChecks.RunTextEmphasisGallery();
+}
+
+if (args.Length == 1 && args[0] == "--css-selection-fallback")
+{
+    return CssWritingToolsChecks.RunSelectionFallback();
+}
+if (args.Length == 1 && args[0] == "--css-selection-context-gallery")
+{
+    return CssWritingToolsChecks.RunSelectionContextGallery();
+}
+if (args.Length == 1 && args[0] == "--css-initial-letter-floats")
+{
+    return CssWritingToolsChecks.RunInitialLetterFloats();
+}
+
+if (args.Length == 1 && args[0] == "--css-image-intrinsic")
+{
+    return CssWritingToolsChecks.RunImageIntrinsic();
+}
+
+if (args.Length == 1 && args[0] == "--css-radial-cones")
+{
+    return CssWritingToolsChecks.RunRadialCones();
+}
+
+if (args.Length == 1 && args[0] == "--css-gradient-transforms")
+{
+    return CssWritingToolsChecks.RunGradientTransforms();
+}
+
+if (args.Length == 1 && args[0] == "--css-gradient-interpolation")
+{
+    return CssWritingToolsChecks.RunGradientInterpolation();
+}
+
+if (args.Length == 1 && args[0] == "--css-svg-markers")
+{
+    return CssWritingToolsChecks.RunSvgMarkers();
+}
+
+if (args.Length == 1 && args[0] == "--css-svg-text-images")
+{
+    return CssWritingToolsChecks.RunSvgTextImages();
+}
+
+if (args.Length == 1 && args[0] == "--css-svg-text-paint")
+{
+    return CssWritingToolsChecks.RunSvgTextPaint();
+}
+
+if (args.Length == 1 && args[0] == "--css-svg-strokes")
+{
+    return CssWritingToolsChecks.RunSvgStrokes();
+}
+
+if (args.Length == 1 && args[0] == "--css-svg-styles")
+{
+    return CssWritingToolsChecks.RunSvgStyles();
+}
+
+if (args.Length == 1 && args[0] == "--css-svg-masks")
+{
+    return CssWritingToolsChecks.RunSvgMasks();
+}
+
+if (args.Length == 1 && args[0] == "--css-mask-borders")
+{
+    return CssWritingToolsChecks.RunMaskBorders();
+}
+
+if (args.Length == 1 && args[0] == "--css-masks")
+{
+    return CssWritingToolsChecks.RunMasks();
+}
+
+if (args.Length == 1 && args[0] == "--css-font-face-metrics")
+{
+    return CssWritingToolsChecks.RunFontFaceMetrics();
+}
+
+if (args.Length == 1 && args[0] == "--css-font-size-adjust")
+{
+    return CssWritingToolsChecks.RunFontSizeAdjust();
+}
+
+if (args.Length == 1 && args[0] == "--css-font-optical")
+{
+    return CssWritingToolsChecks.RunFontOpticalSizing();
+}
+
+if (args.Length == 1 && args[0] == "--css-font-variations")
+{
+    return CssWritingToolsChecks.RunFontVariations();
+}
+
+if (args.Length == 1 && args[0] == "--css-font-feature-priority")
+{
+    return CssWritingToolsChecks.RunFontFeaturePriority();
+}
+
+if (args.Length == 1 && args[0] == "--css-font-emoji")
+{
+    return CssWritingToolsChecks.RunFontEmoji();
+}
+
+if (args.Length == 1 && args[0] == "--css-font-position")
+{
+    return CssWritingToolsChecks.RunFontPosition();
+}
+
+if (args.Length == 1 && args[0] == "--css-font-caps-synthesis")
+{
+    return CssWritingToolsChecks.RunFontCapsSynthesis();
+}
+
+if (args.Length == 1 && args[0] == "--css-font-caps-fallback")
+{
+    return CssWritingToolsChecks.RunFontCapsFallback();
+}
+
+if (args.Length == 1 && args[0] == "--css-font-alternates")
+{
+    return CssWritingToolsChecks.RunFontAlternates();
+}
+
+if (args.Length == 1 && args[0] == "--css-font-width-animation")
+{
+    return CssWritingToolsChecks.RunFontWidthAnimation();
+}
+
+if (args.Length == 1 && args[0] == "--css-system-fonts")
+{
+    return CssWritingToolsChecks.RunSystemFonts();
+}
+
+if (args.Length == 1 && args[0] == "--css-shaped-spacing")
+{
+    return CssWritingToolsChecks.RunShapedSpacing();
+}
+
+if (args.Length == 1 && args[0] == "--css-shared-shaping")
+{
+    return CssWritingToolsChecks.RunSharedShaping();
+}
+
+if (args.Length == 1 && args[0] == "--css-word-shaping")
+{
+    return CssWritingToolsChecks.RunWordShaping();
+}
+
+if (args.Length == 1 && args[0] == "--css-contextual-shaping")
+{
+    return CssWritingToolsChecks.RunContextualShaping();
+}
+
+if (args.Length == 1 && args[0] == "--css-justified-shaping")
+{
+    return CssWritingToolsChecks.RunJustifiedShaping();
+}
+
+if (args.Length == 1 && args[0] == "--css-percentage-spacing")
+{
+    return CssWritingToolsChecks.RunPercentageSpacing();
+}
+
+if (args.Length == 1 && args[0] == "--css-font-ligatures")
+{
+    return CssWritingToolsChecks.RunFontLigatures();
+}
+
+if (args.Length == 1 && args[0] == "--css-font-feature-settings")
+{
+    return CssWritingToolsChecks.RunFontFeatureSettings();
+}
+
+if (args.Length == 1 && args[0] == "--css-document-box-formatters")
+    return CssDocumentBoxFormatterChecks.RunAll();
+
+if (args.Length == 1 && args[0] == "--css-document-table-contents")
+    return CssDocumentTableContentsChecks.RunAll();
+
+if (args.Length == 1 && args[0] == "--css-document-contents")
+    return CssDocumentContentsChecks.RunAll();
+
+if (args.Length == 1 && args[0] == "--css-document-display")
+    return CssDocumentDisplayChecks.RunAll();
+
+if (args.Length == 1 && args[0] == "--css-document-line-clamp")
+    return CssDocumentLineClampChecks.RunAll();
+
+if (args.Length == 1 && args[0] == "--css-line-clamp")
+{
+    return CssLineClampChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-calc-size")
+{
+    return CssCalcSizeChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-mixed-axis-sizing")
+{
+    return CssMixedAxisSizingChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-cyclic-percentage-sizing")
+{
+    return CssCyclicPercentageSizingChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-intrinsic-size-values")
+{
+    return CssIntrinsicSizeValueChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-flex-intrinsic-sizing")
+{
+    return CssFlexIntrinsicSizingChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-flex-item-sizing")
+{
+    return CssFlexItemSizingChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-table-auto-height")
+{
+    return CssTableAutoHeightChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-table-grid-normalization")
+{
+    return CssTableGridNormalizationChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-table-row-group-order")
+{
+    return CssTableRowGroupOrderChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-page-text-geometry")
+{
+    return CssPageTextGeometryChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-nested-table-intrinsics")
+{
+    return CssNestedTableIntrinsicChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-table-colspan-widths")
+{
+    return CssTableColspanWidthChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-table-percent-columns")
+{
+    return CssTablePercentColumnChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-table-row-group-heights")
+{
+    return CssTableRowGroupHeightChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-table-row-heights")
+{
+    return CssTableRowHeightChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-document-cell-heights")
+{
+    return CssDocumentCellHeightChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-document-root-boxes")
+{
+    return CssDocumentRootBoxChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-document-column-heights")
+{
+    return CssDocumentColumnHeightChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-document-boxes")
+{
+    return CssDocumentBoxChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-fragment-capacities")
+{
+    return CssDocumentFragmentCapacityChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-nested-document-columns")
+{
+    return CssNestedDocumentColumnChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-document-columns")
+{
+    return CssDocumentColumnChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-multicolumn")
+{
+    return CssMultiColumnChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-table-visibility")
+{
+    return CssTableVisibilityChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-table-captions")
+{
+    return CssTableCaptionChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-table-formatting")
+{
+    return CssTableFormattingChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-document-tables")
+{
+    return CssDocumentTableChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-pagination")
+{
+    return CssPaginationChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-flow-viewers")
+{
+    return CssFlowDocumentViewerChecks.RunAll();
+}
+
+if (args.Length == 1 && args[0] == "--css-rich-document-images")
+    return CssRichDocumentImageChecks.RunAll();
+if (args.Length == 1 && args[0] == "--css-border-image-inline")
+    return CssBorderImageInlineChecks.RunAll();
+if (args.Length == 1 && args[0] == "--css-border-image")
+    return CssBorderImageChecks.RunAll();
+if (args.Length == 1 && args[0] == "--css-image-annotations")
+    return CssImageAnnotationChecks.RunAll();
+if (args.Length == 1 && args[0] == "--css-cross-fade")
+    return CssCrossFadeChecks.RunAll();
+
+if (args.Length == 1 && args[0] == "--css-contents")
+    return CssContentsChecks.RunAll();
+
+if (args.Length == 1 && args[0] == "--css-image-content")
+    return CssImageContentChecks.RunAll();
+
+if (args.Length == 1 && args[0] == "--css-image-set")
+    return CssImageSetChecks.RunAll();
+
+if (args.Length == 1 && args[0] == "--css-image-shapes")
+    return CssImageShapeChecks.RunAll();
+
+if (args.Length == 1 && args[0] == "--css-float-shapes")
+    return CssFloatShapeChecks.RunAll();
+
+if (args.Length == 1 && args[0] == "--css-inline-block-descendants")
+    return CssInlineBlockDescendantChecks.RunAll();
+
+if (args.Length == 1 && args[0] == "--css-nested-inline")
+    return CssNestedInlineChecks.RunAll();
+
+if (args.Length == 1 && args[0] == "--css-inline-floats")
+    return CssInlineFloatChecks.RunAll();
+if (args.Length == 1 && args[0] == "--css-shared-inline")
+    return CssSharedInlineChecks.RunAll();
+if (args.Length == 1 && args[0] == "--css-inline-fragments")
+    return CssInlineFragmentChecks.RunAll();
+
+if (args.Length == 1 && args[0] == "--css-text-content")
+    return CssTextContentChecks.RunAll();
+
+if (args.Length == 1 && args[0] == "--css-content-hosts")
+    return CssContentHostChecks.RunAll();
+
+if (args.Length == 1 && args[0] == "--css-list-markers")
+    return CssListMarkerChecks.RunAll();
+
+if (args.Length == 1 && args[0] == "--css-counter-styles")
+    return CssCounterStyleChecks.RunAll();
+
+if (args.Length == 1 && args[0] == "--css-counters")
+    return CssCounterChecks.RunAll();
+
 if (args.Length == 1 && args[0] == "--window-notifications-observe")
     return WindowNotificationChecks.Observe(false);
 if (args.Length == 1 && args[0] == "--window-notifications-observe-custom")
@@ -256,6 +931,8 @@ if (args.Length == 1 && args[0].StartsWith("--text-accessibility-navigation-case
 
 if (args.Length == 1 && args[0] == "--path-rendering")
     return PathRenderingChecks.RunAll();
+if (args.Length == 1 && args[0] == "--subpixel-motion")
+    return SubpixelMotionChecks.RunAll();
 
 if (args.Length == 1 && args[0] == "--window-visibility")
     return WindowVisibilityChecks.RunAll();

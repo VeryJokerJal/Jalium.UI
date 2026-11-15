@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Interop;
+using Jalium.UI.Interop;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -7,58 +7,43 @@ namespace Jalium.UI.Controls;
 /// Lightweight visual element that renders dock indicator buttons on top of a panel or layout.
 /// Added as the topmost visual child when dock highlighting is active.
 /// </summary>
-internal sealed class DockIndicatorVisual : FrameworkElement
+public sealed partial class DockIndicatorVisual : Control
 {
     /// <summary>
     /// The dock position currently hovered by the cursor.
     /// </summary>
-    internal DockPosition HoveredPosition { get; set; }
+    public DockPosition HoveredPosition { get => (DockPosition)GetValue(HoveredPositionProperty)!; set => SetValue(HoveredPositionProperty, value); }
 
     /// <summary>
     /// Whether to render center cross buttons (for DockTabPanel).
     /// </summary>
-    internal bool ShowCenterCross { get; set; }
+    public bool ShowCenterCross { get => (bool)GetValue(ShowCenterCrossProperty)!; set => SetValue(ShowCenterCrossProperty, value); }
 
     /// <summary>
     /// Whether to render edge buttons (for DockLayout).
     /// </summary>
-    internal bool ShowEdgeButtons { get; set; }
+    public bool ShowEdgeButtons { get => (bool)GetValue(ShowEdgeButtonsProperty)!; set => SetValue(ShowEdgeButtonsProperty, value); }
 
-    internal DockIndicatorVisual()
+    public DockIndicatorVisual()
     {
         IsHitTestVisible = false;
+        Focusable = false;
+        SetValue(TargetsPropertyKey, Array.AsReadOnly(_targets));
     }
 
     protected override Size MeasureOverride(Size availableSize)
     {
-        return availableSize;
+        var size = new Size(double.IsFinite(availableSize.Width) ? availableSize.Width : 300, double.IsFinite(availableSize.Height) ? availableSize.Height : 200);
+        RefreshPresentation(size);
+        base.MeasureOverride(size);
+        return size;
     }
 
     protected override Size ArrangeOverride(Size finalSize)
     {
+        RefreshPresentation(finalSize);
+        base.ArrangeOverride(finalSize);
         return finalSize;
     }
 
-    protected override void OnRender(DrawingContext drawingContextObj)
-    {
-        if (drawingContextObj is not DrawingContext dc)
-            return;
-
-        if (ShowCenterCross)
-        {
-            DockIndicator.RenderPreview(dc, ActualWidth, ActualHeight, HoveredPosition);
-            DockIndicator.RenderCenterCross(dc, ActualWidth, ActualHeight, HoveredPosition);
-        }
-
-        if (ShowEdgeButtons)
-        {
-            // Only render preview for edge positions
-            if (HoveredPosition is DockPosition.EdgeLeft or DockPosition.EdgeRight
-                or DockPosition.EdgeTop or DockPosition.EdgeBottom)
-            {
-                DockIndicator.RenderPreview(dc, ActualWidth, ActualHeight, HoveredPosition);
-            }
-            DockIndicator.RenderEdgeButtons(dc, ActualWidth, ActualHeight, HoveredPosition);
-        }
-    }
 }

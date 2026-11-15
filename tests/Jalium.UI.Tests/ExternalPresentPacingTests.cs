@@ -30,6 +30,9 @@ namespace Jalium.UI.Tests;
 [Collection("Application")]
 public class ExternalPresentPacingTests
 {
+    private const int RenderFlagScheduled = 1 << 0;
+    private const int RenderFlagDirtyBetween = 1 << 3;
+
     [Fact]
     public void TryBeginDraw_WithCredit_ConsumesCreditAndBegins()
     {
@@ -86,6 +89,57 @@ public class ExternalPresentPacingTests
         Assert.Equal(0, GetSwapCredit(window));
         Assert.True((bool)GetPrivateField(window, "_renderPendingOnSwap")!);
         Assert.Null(GetPrivateField(window, "_renderThrottleTimer"));
+    }
+
+    [Fact]
+    public void FrameStarting_WithoutCredit_KeepsDirtyBankedUntilCreditArrives()
+    {
+        var (window, native) = CreatePacedWindow(beginDrawResult: (int)JaliumResult.Ok);
+        SetPrivateField(window, "<Handle>k__BackingField", new nint(0x2002));
+        SetPrivateField(window, "_renderState", RenderFlagDirtyBetween);
+        SetSwapCredit(window, 0);
+
+        try
+        {
+            InvokePrivateMethod(window, "OnFrameStarting");
+
+            Assert.Equal(0, (int)GetPrivateField(window, "_renderState")! & RenderFlagScheduled);
+            Assert.NotEqual(0, (int)GetPrivateField(window, "_renderState")! & RenderFlagDirtyBetween);
+            Assert.True((bool)GetPrivateField(window, "_renderPendingOnSwap")!);
+            Assert.Equal(0, native.BeginDrawCalls);
+
+            SetSwapCredit(window, 1);
+            InvokePrivateMethod(window, "OnFrameStarting");
+
+            Assert.NotEqual(0, (int)GetPrivateField(window, "_renderState")! & RenderFlagScheduled);
+            Assert.Equal(0, (int)GetPrivateField(window, "_renderState")! & RenderFlagDirtyBetween);
+            Assert.False((bool)GetPrivateField(window, "_renderPendingOnSwap")!);
+        }
+        finally
+        {
+            SetPrivateField(window, "<Handle>k__BackingField", nint.Zero);
+        }
+    }
+
+    [Fact]
+    public void WaitableSignal_WithPendingFrame_ClaimsOneScheduledHandoff()
+    {
+        var (window, _) = CreatePacedWindow(beginDrawResult: (int)JaliumResult.Ok);
+        SetPrivateField(window, "_renderState", RenderFlagDirtyBetween);
+        SetPrivateField(window, "_renderPendingOnSwap", true);
+        SetSwapCredit(window, 0);
+
+        var callback = typeof(Window).GetMethod(
+            "OnSwapWaitableSignaled",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(callback);
+        callback!.Invoke(window, new object?[] { null, false });
+
+        var renderState = (int)GetPrivateField(window, "_renderState")!;
+        Assert.NotEqual(0, renderState & RenderFlagScheduled);
+        Assert.Equal(0, renderState & RenderFlagDirtyBetween);
+        Assert.False((bool)GetPrivateField(window, "_renderPendingOnSwap")!);
+        Assert.Equal(1, GetSwapCredit(window));
     }
 
     [Fact]

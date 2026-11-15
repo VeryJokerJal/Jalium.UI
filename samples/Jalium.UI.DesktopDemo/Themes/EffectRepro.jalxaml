@@ -1,0 +1,34 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:local="clr-namespace:Jalium.UI.DesktopDemo"
+                    xmlns:fx="clr-namespace:Jalium.UI.Media.Effects"
+                    x:Class="Jalium.UI.DesktopDemo.Themes.EffectReproTheme">
+    <Style x:Key="EffectRepro.Window" TargetType="Window"><Setter Property="Background" Value="#101A14" /></Style>
+    <Style x:Key="EffectRepro.Caption" TargetType="TextBlock"><Setter Property="FontSize" Value="13" /><Setter Property="Foreground" Value="#96A59B" /><Setter Property="Margin" Value="0,10,0,4" /><Setter Property="TextWrapping" Value="Wrap" /><Setter Property="Focusable" Value="False" /></Style>
+    <Style TargetType="local:EffectReproSurface">
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="local:EffectReproSurface">
+            <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto" Padding="28">
+                <VisualStateManager.VisualStateGroups><VisualStateGroup x:Name="PlaybackStates"><VisualState x:Name="Playing" /><VisualState x:Name="Paused" /></VisualStateGroup></VisualStateManager.VisualStateGroups>
+                <StackPanel>
+                    <TextBlock Text="A  static glow — halo must fade OUT past the text bounds" Style="{StaticResource EffectRepro.Caption}" />
+                    <TextBlock Text="that ship." FontSize="54" FontWeight="Bold" Foreground="#FFAA28" HorizontalAlignment="Left" Margin="8,2,0,10" Focusable="False"><TextBlock.Effect><fx:OuterGlowEffect GlowColor="#FF9614" GlowSize="18" Opacity="0.9" Intensity="1.4" /></TextBlock.Effect></TextBlock>
+                    <TextBlock Text="B  entrance loop (scale+translate) — effects must FOLLOW the motion" Style="{StaticResource EffectRepro.Caption}" />
+                    <TextBlock Text="gliding glow" FontSize="34" FontWeight="Bold" Foreground="#78DCFF" HorizontalAlignment="Left" Margin="8,0,0,4" RenderTransformOrigin="0.5,0.5" RenderTransform="{TemplateBinding GlowTransform}" Focusable="False"><TextBlock.Effect><fx:OuterGlowEffect GlowColor="#5AC8FF" GlowSize="14" Opacity="0.85" Intensity="1.2" /></TextBlock.Effect></TextBlock>
+                    <Border Width="220" Height="46" CornerRadius="8" Background="#464A5A" HorizontalAlignment="Left" Margin="8,4,0,10" RenderTransformOrigin="0.5,0.5" RenderTransform="{TemplateBinding ShadowTransform}">
+                        <Border.Effect><fx:DropShadowEffect Color="Black" BlurRadius="18" Direction="270" ShadowDepth="8" Opacity="0.85" /></Border.Effect>
+                        <TextBlock Text="shadow follows me" FontSize="15" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center" Focusable="False" />
+                    </Border>
+                    <TextBlock Text="C  shadow card in a rounded clipped panel — shadow must NOT vanish" Style="{StaticResource EffectRepro.Caption}" />
+                    <Border Width="340" Height="130" CornerRadius="18" ClipToBounds="True" Background="#1A261F" BorderBrush="#466050" BorderThickness="1" HorizontalAlignment="Left" Margin="8,0,0,10">
+                        <Border Width="200" Height="70" CornerRadius="10" Background="#2E3C34" HorizontalAlignment="Center" VerticalAlignment="Center"><Border.Effect><fx:DropShadowEffect Color="Black" BlurRadius="16" Direction="270" ShadowDepth="6" Opacity="0.9" /></Border.Effect><TextBlock Text="card with shadow" FontSize="14" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center" Focusable="False" /></Border>
+                    </Border>
+                    <TextBlock Text="D  static glow near moving block — no marching seam through the halo" Style="{StaticResource EffectRepro.Caption}" />
+                    <Canvas Height="110" Margin="8,0,0,0">
+                        <TextBlock Text="steady halo" FontSize="34" FontWeight="Bold" Foreground="#B4FF8C" Canvas.Left="0" Canvas.Top="30" Focusable="False"><TextBlock.Effect><fx:OuterGlowEffect GlowColor="#8CF05A" GlowSize="16" Opacity="0.9" Intensity="1.3" /></TextBlock.Effect></TextBlock>
+                        <Border x:Name="PART_MovingBlock" Width="30" Height="30" CornerRadius="4" Background="#E65A5A" Canvas.Left="260" Canvas.Top="40" />
+                    </Canvas>
+                </StackPanel>
+            </ScrollViewer>
+        </ControlTemplate></Setter.Value></Setter>
+    </Style>
+</ResourceDictionary>

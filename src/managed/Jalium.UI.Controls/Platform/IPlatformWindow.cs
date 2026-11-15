@@ -20,6 +20,7 @@ internal interface IPlatformWindow : IDisposable
     void Close();
 
     void SetTitle(string title);
+    bool SetDesktopApplicationId(string applicationId) => false;
     void Resize(int width, int height);
     void Move(int x, int y);
 
@@ -58,6 +59,12 @@ internal interface IPlatformWindow : IDisposable
     /// <summary>Starts a window-system-driven interactive resize from the given edge.</summary>
     bool BeginResizeDrag(int edge);
 
+    /// <summary>Window-manager keyboard operations supported by this window.</summary>
+    PlatformWindowKeyboardOperations KeyboardOperations => PlatformWindowKeyboardOperations.None;
+
+    /// <summary>Hands a menu command to the window manager after closing popup grabs.</summary>
+    bool BeginKeyboardMoveResize(bool resize) => false;
+
     /// <summary>Sets the taskbar/window icon from BGRA pixels; null clears. Returns false when unsupported.</summary>
     bool SetIcon(uint[]? bgraPixels, int width, int height);
 
@@ -78,6 +85,16 @@ internal interface IPlatformWindow : IDisposable
 
     /// <summary>Toggles server-side window decorations where supported.</summary>
     bool SetDecorated(bool decorated);
+
+    /// <summary>Gets the effective decoration provider after window-system negotiation.</summary>
+    PlatformWindowDecorationMode DecorationMode => PlatformWindowDecorationMode.Unspecified;
+    PlatformWindowCapabilities Capabilities => PlatformWindowCapabilities.All;
+    /// <summary>Edges permitted by the compositor; style and overall resize capability apply separately.</summary>
+    PlatformWindowResizeEdges ResizableEdges => PlatformWindowResizeEdges.All;
+    /// <summary>True when the compositor controls this window's tiled geometry.</summary>
+    bool IsTiled => false;
+    /// <summary>True when the compositor has suspended repainting this visible surface.</summary>
+    bool IsRenderingSuspended => false;
 
     /// <summary>Applies all style capabilities atomically where supported.</summary>
     bool SetStyle(uint style) => false;
@@ -353,6 +370,10 @@ internal enum PlatformEventType
     MonitorsChanged = 10,
     PointingDevicesChanged = 11,
     ScrollBarSettingsChanged = 12,
+    DecorationsChanged = 13,
+    CapabilitiesChanged = 14,
+    RenderingAvailabilityChanged = 15,
+    ResizeConstraintsChanged = 16,
 
     FocusGained = 20,
     FocusLost = 21,
@@ -365,6 +386,7 @@ internal enum PlatformEventType
     MouseWheel = 33,
     MouseEnter = 34,
     MouseLeave = 35,
+    MouseCancel = 36,
 
     KeyDown = 40,
     KeyUp = 41,
@@ -401,4 +423,45 @@ internal enum PlatformEventType
     DragFinished = 84,
 
     Quit = 99,
+}
+
+internal enum PlatformWindowDecorationMode
+{
+    Unspecified,
+    Client,
+    Server,
+}
+
+[Flags]
+internal enum PlatformWindowResizeEdges : uint
+{
+    None = 0,
+    Top = 1,
+    Bottom = 2,
+    Left = 4,
+    Right = 8,
+    All = Top | Bottom | Left | Right,
+}
+
+[Flags]
+internal enum PlatformWindowKeyboardOperations : uint
+{
+    None = 0,
+    Move = 1,
+    Resize = 2,
+    All = Move | Resize,
+}
+
+[Flags]
+internal enum PlatformWindowCapabilities : uint
+{
+    WindowMenu = 1,
+    Maximize = 2,
+    FullScreen = 4,
+    Minimize = 8,
+    Move = 16,
+    Resize = 32,
+    Close = 64,
+    All = WindowMenu | Maximize | FullScreen | Minimize | Move | Resize | Close,
+    StateRequestsRestricted = 1u << 31,
 }

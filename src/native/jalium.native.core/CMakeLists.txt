@@ -74,6 +74,7 @@ if(WIN32)
             user32
             dwrite
             gdi32
+            comctl32
     )
 elseif(APPLE)
     target_link_libraries(${PROJECT_NAME} PRIVATE "-framework CoreText" "-framework CoreGraphics" "-framework CoreFoundation")
@@ -102,3 +103,19 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
     OUTPUT_NAME "jalium.native.core"
     DEBUG_POSTFIX ""
 )
+
+if(JALIUM_METAL_BUILD_TESTS OR JALIUM_SOFTWARE_BUILD_TESTS OR
+   JALIUM_D3D12_BUILD_TESTS OR JALIUM_VULKAN_BUILD_TESTS)
+    add_executable(jalium.native.stroke-contours.tests tests/stroke_contour_tests.cpp)
+    target_include_directories(jalium.native.stroke-contours.tests PRIVATE include)
+    add_test(NAME jalium.native.stroke-contours.tests COMMAND jalium.native.stroke-contours.tests)
+    add_executable(jalium.native.gradient-interpolation.tests tests/gradient_color_interpolation_tests.cpp)
+    target_include_directories(jalium.native.gradient-interpolation.tests PRIVATE include)
+    add_test(NAME jalium.native.gradient-interpolation.tests COMMAND jalium.native.gradient-interpolation.tests)
+    add_executable(jalium.native.gradient-transform.tests tests/gradient_transform_tests.cpp)
+    target_include_directories(jalium.native.gradient-transform.tests PRIVATE include)
+    add_test(NAME jalium.native.gradient-transform.tests COMMAND jalium.native.gradient-transform.tests)
+    add_executable(jalium.native.radial-geometry.tests tests/radial_gradient_geometry_tests.cpp)
+    target_include_directories(jalium.native.radial-geometry.tests PRIVATE include)
+    add_test(NAME jalium.native.radial-geometry.tests COMMAND jalium.native.radial-geometry.tests)
+endif()

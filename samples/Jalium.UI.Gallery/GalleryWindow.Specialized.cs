@@ -1,15 +1,10 @@
+using System.Collections;
 using Jalium.UI.Controls;
+using Jalium.UI.Ink;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Gallery;
 
-/// <summary>
-/// Gallery section for media, drawing, code/data viewers, editors and
-/// resource-backed hosts. Resource-dependent controls (WebView, Terminal,
-/// CameraView, MediaElement, MapView, Viewport3D, MiniMap) and Image (no
-/// bundled asset) are documented via <see cref="GalleryWindow.Placeholder"/>
-/// so the catalog stays 100% safe to construct for a static screenshot.
-/// </summary>
 internal static partial class GalleryWindow
 {
     public static UIElement BuildSpecializedSection() => SectionFromCards(
@@ -19,12 +14,12 @@ internal static partial class GalleryWindow
 
     private static DeferredCard[] CreateSpecializedCards() =>
     [
-        new("Gallery.Card.Specialized.QRCode", "QRCode", QrCodeDemo, Width: 0),
-        new("Gallery.Card.Specialized.InkCanvas", "InkCanvas", InkCanvasDemo, Width: 0),
-        new("Gallery.Card.Specialized.DiffViewer", "DiffViewer", DiffViewerDemo, Width: 480),
-        new("Gallery.Card.Specialized.JsonTreeViewer", "JsonTreeViewer", JsonTreeViewerDemo, Width: 340),
-        new("Gallery.Card.Specialized.PropertyGrid", "PropertyGrid", PropertyGridDemo, Width: 340),
-        new("Gallery.Card.Specialized.HexEditor", "HexEditor", HexEditorDemo, Width: 480),
+        new("Gallery.Card.Specialized.QRCode", "QRCode", static () => new GallerySampleQrDemo(), Width: 0),
+        new("Gallery.Card.Specialized.InkCanvas", "InkCanvas", static () => new GallerySampleInkDemo(), Width: 0),
+        new("Gallery.Card.Specialized.DiffViewer", "DiffViewer", static () => new GallerySampleDiffDemo(), Width: 480),
+        new("Gallery.Card.Specialized.JsonTreeViewer", "JsonTreeViewer", static () => new GallerySampleJsonDemo(), Width: 340),
+        new("Gallery.Card.Specialized.PropertyGrid", "PropertyGrid", static () => new GallerySamplePropertyDemo(), Width: 340),
+        new("Gallery.Card.Specialized.HexEditor", "HexEditor", static () => new GallerySampleHexDemo(), Width: 480),
         new(
             "Gallery.Card.Specialized.Image",
             "Image",
@@ -75,77 +70,61 @@ internal static partial class GalleryWindow
                 "Bird's-eye overview of a larger scrollable surface.")),
     ];
 
-    // QRCode renders its foreground (default black) onto its Background. On the
-    // dark card a default QR would be invisible, so we present it on a white
-    // plate Border — this is a container, not a recolor of the control itself.
-    private static UIElement QrCodeDemo()
-    {
-        var qr = new QRCode
+}
+
+[TemplatePart(Name = "PART_QrCode", Type = typeof(QRCode))]
+public class GallerySampleQrDemo : GallerySampleDemo
+{
+    public static readonly DependencyProperty TextProperty = DependencyProperty.Register(nameof(Text), typeof(string), typeof(GallerySampleQrDemo), new PropertyMetadata("https://jalium.dev"));
+    public string Text { get => (string)GetValue(TextProperty)!; set => SetValue(TextProperty, value); }
+    public GallerySampleQrDemo() { DefaultStyleKey = typeof(GallerySampleQrDemo);  }
+}
+[TemplatePart(Name = "PART_Ink", Type = typeof(InkCanvas))]
+public class GallerySampleInkDemo : GallerySampleDemo
+{
+    public static readonly DependencyProperty StrokesProperty = DependencyProperty.Register(nameof(Strokes), typeof(StrokeCollection), typeof(GallerySampleInkDemo), new PropertyMetadata(null));
+    public StrokeCollection Strokes { get => (StrokeCollection)GetValue(StrokesProperty)!; set => SetValue(StrokesProperty, value); }
+    public GallerySampleInkDemo() { DefaultStyleKey = typeof(GallerySampleInkDemo); SetCurrentValue(StrokesProperty, new StrokeCollection()); }
+}
+[TemplatePart(Name = "PART_Diff", Type = typeof(DiffViewer))]
+public class GallerySampleDiffDemo : GallerySampleDemo
+{
+    public static readonly DependencyProperty OriginalTextProperty = DependencyProperty.Register(nameof(OriginalText), typeof(string), typeof(GallerySampleDiffDemo), new PropertyMetadata("func greet(name string) {\n    fmt.Println(\"Hi \" + name)\n}"));
+    public string OriginalText { get => (string)GetValue(OriginalTextProperty)!; set => SetValue(OriginalTextProperty, value); }
+    public static readonly DependencyProperty ModifiedTextProperty = DependencyProperty.Register(nameof(ModifiedText), typeof(string), typeof(GallerySampleDiffDemo), new PropertyMetadata("func greet(name, title string) {\n    fmt.Printf(\"Hi %s %s\\n\", title, name)\n}"));
+    public string ModifiedText { get => (string)GetValue(ModifiedTextProperty)!; set => SetValue(ModifiedTextProperty, value); }
+    public GallerySampleDiffDemo() { DefaultStyleKey = typeof(GallerySampleDiffDemo);  }
+}
+[TemplatePart(Name = "PART_Json", Type = typeof(JsonTreeViewer))]
+public class GallerySampleJsonDemo : GallerySampleDemo
+{
+    public static readonly DependencyProperty JsonTextProperty = DependencyProperty.Register(nameof(JsonText), typeof(string), typeof(GallerySampleJsonDemo), new PropertyMetadata("{\n  \"name\": \"Jalium.UI\",\n  \"version\": \"26.10.5\",\n  \"gpu\": true,\n  \"engines\": [\"D3D12\", \"Vulkan\"]\n}"));
+    public string JsonText { get => (string)GetValue(JsonTextProperty)!; set => SetValue(JsonTextProperty, value); }
+    public GallerySampleJsonDemo() { DefaultStyleKey = typeof(GallerySampleJsonDemo);  }
+}
+[TemplatePart(Name = "PART_PropertyGrid", Type = typeof(PropertyGrid))]
+public class GallerySamplePropertyDemo : GallerySampleDemo
+{
+    public static readonly DependencyProperty SelectedObjectProperty = DependencyProperty.Register(nameof(SelectedObject), typeof(object), typeof(GallerySamplePropertyDemo), new PropertyMetadata(null));
+    public object SelectedObject { get => (object)GetValue(SelectedObjectProperty)!; set => SetValue(SelectedObjectProperty, value); }
+    public GallerySamplePropertyDemo() { DefaultStyleKey = typeof(GallerySamplePropertyDemo); SetCurrentValue(SelectedObjectProperty, new GallerySampleProfile()); }
+}
+
+public sealed class GallerySampleProfile
+{
+    public string Name { get; set; } = "Jalium";
+    public int Version { get; set; } = 26;
+    public bool GpuAccelerated { get; set; } = true;
+    public double Opacity { get; set; } = .95;
+}
+[TemplatePart(Name = "PART_HexEditor", Type = typeof(HexEditor))]
+public class GallerySampleHexDemo : GallerySampleDemo
+{
+    public static readonly DependencyProperty DataProperty = DependencyProperty.Register(nameof(Data), typeof(byte[]), typeof(GallerySampleHexDemo), new PropertyMetadata(null));
+    public byte[] Data { get => (byte[])GetValue(DataProperty)!; set => SetValue(DataProperty, value); }
+    public GallerySampleHexDemo() { DefaultStyleKey = typeof(GallerySampleHexDemo); SetCurrentValue(DataProperty, new byte[]
         {
-            Text = "https://jalium.dev",
-            ErrorCorrectionLevel = QRCodeErrorCorrectionLevel.Q,
-            Width = 150,
-            Height = 150,
-        };
-
-        return new Border
-        {
-            Background = new SolidColorBrush(Colors.White),
-            CornerRadius = new CornerRadius(6),
-            Padding = new Thickness(10),
-            HorizontalAlignment = HorizontalAlignment.Left,
-            Child = qr,
-        };
-    }
-
-    private static UIElement InkCanvasDemo() => new InkCanvas
-    {
-        Width = 280,
-        Height = 150,
-        HorizontalAlignment = HorizontalAlignment.Left,
-    };
-
-    private static UIElement DiffViewerDemo() => new DiffViewer
-    {
-        OriginalText = "func greet(name string) {\n    fmt.Println(\"Hi \" + name)\n}",
-        ModifiedText = "func greet(name, title string) {\n    fmt.Printf(\"Hi %s %s\\n\", title, name)\n}",
-        Width = 452,
-        Height = 190,
-    };
-
-    private static UIElement JsonTreeViewerDemo() => new JsonTreeViewer
-    {
-        JsonText = "{\n  \"name\": \"Jalium.UI\",\n  \"version\": \"26.10.5\",\n  \"gpu\": true,\n  \"engines\": [\"D3D12\", \"Vulkan\"]\n}",
-        Width = 312,
-        Height = 190,
-    };
-
-    private static UIElement PropertyGridDemo() => new PropertyGrid
-    {
-        SelectedObject = new SampleProfile(),
-        Width = 312,
-        Height = 210,
-    };
-
-    private static UIElement HexEditorDemo() => new HexEditor
-    {
-        Data = new byte[]
-        {
-            0x4A, 0x61, 0x6C, 0x69, 0x75, 0x6D, 0x2E, 0x55,
-            0x49, 0x20, 0x47, 0x50, 0x55, 0x20, 0x55, 0x49,
-            0x00, 0x01, 0x02, 0x03, 0x80, 0xFE, 0xFF, 0x7F,
-            0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE,
-        },
-        Width = 452,
-        Height = 190,
-    };
-
-    // A tiny POCO so PropertyGrid has a handful of readable rows to reflect over.
-    private sealed class SampleProfile
-    {
-        public string Name { get; set; } = "Jalium";
-        public int Version { get; set; } = 26;
-        public bool GpuAccelerated { get; set; } = true;
-        public double Opacity { get; set; } = 0.95;
-    }
+            0x4A, 0x61, 0x6C, 0x69, 0x75, 0x6D, 0x2E, 0x55, 0x49, 0x20, 0x47, 0x50, 0x55, 0x20, 0x55, 0x49,
+            0x00, 0x01, 0x02, 0x03, 0x80, 0xFE, 0xFF, 0x7F, 0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE,
+        }); }
 }

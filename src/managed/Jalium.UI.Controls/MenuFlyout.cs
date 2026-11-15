@@ -1,212 +1,211 @@
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Input;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
-
 /// <summary>
 /// Represents a flyout that displays a menu of commands.
 /// </summary>
 [Jalium.UI.Markup.ContentProperty("Items")]
 public sealed class MenuFlyout : FlyoutBase
 {
+    /// <summary>Identifies the MenuFlyoutPresenterStyle dependency property.</summary>
+    public static readonly DependencyProperty MenuFlyoutPresenterStyleProperty = DependencyProperty.Register(nameof(MenuFlyoutPresenterStyle), typeof(Style), typeof(MenuFlyout), new PropertyMetadata(null, (d, args) =>
+    {
+        if (((MenuFlyout)d)._presenter is { } presenter)
+            presenter.SetCurrentValue(FrameworkElement.StyleProperty, args.NewValue);
+    }));
     private readonly ObservableCollection<Control> _items = new();
+    private MenuFlyoutPresenter? _presenter;
+    public MenuFlyout()
+    {
+        Opened += (_, _) => Dispatcher.BeginInvokeCritical(() =>
+        {
+            if (IsOpen)
+                _presenter?.FocusFirstItem();
+        });
+    }
 
     /// <summary>
     /// Gets the collection of items in the MenuFlyout.
     /// </summary>
     public IList<Control> Items => _items;
-
     internal ObservableCollection<Control> ItemCollection => _items;
-
     /// <summary>
     /// Gets or sets the style applied to the MenuFlyoutPresenter.
     /// </summary>
-    public Style? MenuFlyoutPresenterStyle { get; set; }
+    public Style? MenuFlyoutPresenterStyle { get => (Style? )GetValue(MenuFlyoutPresenterStyleProperty); set => SetValue(MenuFlyoutPresenterStyleProperty, value); }
 
-    /// <inheritdoc />
+    /// <inheritdoc/>
     protected override Control CreatePresenter()
     {
-        return new MenuFlyoutPresenter(this) { Style = MenuFlyoutPresenterStyle };
+        return _presenter = new MenuFlyoutPresenter(this)
+        {
+            Style = MenuFlyoutPresenterStyle
+        };
     }
 }
 
-/// <summary>
-/// Displays the content of a MenuFlyout.
-/// </summary>
+/// <summary>Displays the original containers of a MenuFlyout through a replaceable template.</summary>
+[TemplatePart(Name = "PART_ScrollHost", Type = typeof(MenuPopupScrollHost))]
 internal sealed class MenuFlyoutPresenter : Control
 {
-    private static readonly Thickness s_defaultBorderThickness = new(1);
-    private static readonly Thickness s_defaultPadding = new(4);
-    private static readonly CornerRadius s_defaultCornerRadius = new(8);
-    private static readonly SolidColorBrush s_fallbackBackgroundBrush = new(Color.FromRgb(45, 45, 48));
-    private static readonly SolidColorBrush s_fallbackBorderBrush = new(Color.FromRgb(67, 67, 70));
-
     private readonly MenuFlyout _flyout;
-    private readonly MenuPopupScrollHost _scrollHost;
+    private MenuPopupScrollHost? _scrollHost;
+    private bool _observing, _suspended;
+    private double _savedOffset;
+    static MenuFlyoutPresenter()
+    {
+        DefaultStyleKeyProperty.OverrideMetadata(typeof(MenuFlyoutPresenter), new PropertyMetadata(typeof(MenuFlyoutPresenter)));
+        FocusableProperty.OverrideMetadata(typeof(MenuFlyoutPresenter), new PropertyMetadata(true));
+        UseLayoutRoundingProperty.OverrideMetadata(typeof(MenuFlyoutPresenter), new PropertyMetadata(true));
+        BorderThicknessProperty.OverrideMetadata(typeof(MenuFlyoutPresenter), new PropertyMetadata(new Thickness(1)));
+        PaddingProperty.OverrideMetadata(typeof(MenuFlyoutPresenter), new PropertyMetadata(new Thickness(4)));
+        CornerRadiusProperty.OverrideMetadata(typeof(MenuFlyoutPresenter), new PropertyMetadata(new CornerRadius(8)));
+    }
 
     public MenuFlyoutPresenter(MenuFlyout flyout)
     {
         _flyout = flyout;
-        UseLayoutRounding = true;
-        BorderThickness = s_defaultBorderThickness;
-        Padding = s_defaultPadding;
-        CornerRadius = s_defaultCornerRadius;
-        _scrollHost = new MenuPopupScrollHost();
-        _flyout.ItemCollection.CollectionChanged += OnFlyoutItemsChanged;
-        RefreshItems();
+        AttachItemsListener();
+        Loaded += (_, _) => Resume();
+        Unloaded += (_, _) =>
+        {
+            _suspended = true;
+            DetachItemsListener();
+        };
+        KeyDown += OnKeyDown;
+    }
 
-        AddVisualChild(_scrollHost);
+    public override void OnApplyTemplate()
+    {
+        ReleaseParts();
+        base.OnApplyTemplate();
+        _scrollHost = GetTemplateChild("PART_ScrollHost") as MenuPopupScrollHost;
+        RefreshItems();
+        _scrollHost?.RestoreVerticalOffset(_savedOffset);
+        UpdateVisualState();
+    }
+
+    internal override void OnTemplateContentClearing()
+    {
+        ReleaseParts();
+        base.OnTemplateContentClearing();
+    }
+
+    private void ReleaseParts()
+    {
+        if (_scrollHost is not { } old)
+            return;
+        _savedOffset = old.VerticalOffset;
+        _scrollHost = null;
+        old.Items.Clear();
+    }
+
+    private void AttachItemsListener()
+    {
+        if (_observing)
+            return;
+        _flyout.ItemCollection.CollectionChanged += OnFlyoutItemsChanged;
+        _observing = true;
+    }
+
+    private void DetachItemsListener()
+    {
+        if (!_observing)
+            return;
+        _flyout.ItemCollection.CollectionChanged -= OnFlyoutItemsChanged;
+        _observing = false;
+    }
+
+    private void Resume()
+    {
+        _suspended = false;
+        AttachItemsListener();
+        RefreshItems();
+        UpdateVisualState();
     }
 
     protected override Size MeasureOverride(Size availableSize)
     {
-        var borderThickness = GetEffectiveBorderThickness();
-        var padding = GetEffectivePadding();
-        var horizontalInset = borderThickness.Left + borderThickness.Right + padding.Left + padding.Right;
-        var verticalInset = borderThickness.Top + borderThickness.Bottom + padding.Top + padding.Bottom;
+        // Popup layout precedes Loaded when a cached presenter is reopened.
+        if (_suspended)
+            for (var ancestor = VisualParent; ancestor is not null; ancestor = (ancestor as Visual)?.VisualParent)
+                if (ancestor is PopupRoot root && root.OwnerPopup.IsOpen)
+                {
+                    Resume();
+                    break;
+                }
 
-        var innerSize = new Size(
-            Math.Max(0, availableSize.Width - horizontalInset),
-            Math.Max(0, availableSize.Height - verticalInset));
-        _scrollHost.Measure(innerSize);
-        // Negative BorderThickness/Padding are legal; the Size constructor is not —
-        // clamp at the summation sink.
-        return new Size(
-            Math.Max(0, _scrollHost.DesiredSize.Width + horizontalInset),
-            Math.Max(0, _scrollHost.DesiredSize.Height + verticalInset));
+        return base.MeasureOverride(availableSize);
     }
 
-    protected override Size ArrangeOverride(Size finalSize)
-    {
-        var borderThickness = GetEffectiveBorderThickness();
-        var padding = GetEffectivePadding();
-        var leftInset = borderThickness.Left + padding.Left;
-        var topInset = borderThickness.Top + padding.Top;
-        var horizontalInset = borderThickness.Left + borderThickness.Right + padding.Left + padding.Right;
-        var verticalInset = borderThickness.Top + borderThickness.Bottom + padding.Top + padding.Bottom;
-
-        _scrollHost.Arrange(new Rect(
-            leftInset,
-            topInset,
-            Math.Max(0, finalSize.Width - horizontalInset),
-            Math.Max(0, finalSize.Height - verticalInset)));
-        return finalSize;
-    }
-
-    protected override int VisualChildrenCount => 1;
-
-    protected override Visual? GetVisualChild(int index)
-    {
-        if (index == 0) return _scrollHost;
-        throw new ArgumentOutOfRangeException(nameof(index));
-    }
-
-    protected override void OnRender(DrawingContext drawingContext)
-    {
-        var dc = drawingContext;
-        base.OnRender(drawingContext);
-
-        var background = Background ?? ResolveBrush("OnePopupBackground", "MenuFlyoutPresenterBackground", s_fallbackBackgroundBrush);
-        var border = BorderBrush ?? ResolveBrush("OnePopupBorder", "MenuFlyoutPresenterBorderBrush", s_fallbackBorderBrush);
-        var borderThickness = GetEffectiveBorderThickness();
-        var penThickness = Math.Max(Math.Max(borderThickness.Left, borderThickness.Top), Math.Max(borderThickness.Right, borderThickness.Bottom));
-        var cornerRadius = GetEffectiveCornerRadius();
-
-        // DrawingContext strokes are centered on their rectangle. Keep the whole
-        // outline inside the popup surface; a stroke on (0,0,width,height) loses
-        // half of each straight edge to the window clip while its corners survive.
-        var halfBorder = penThickness * 0.5;
-        var borderRect = new Rect(
-            halfBorder, halfBorder,
-            Math.Max(0, RenderSize.Width - penThickness),
-            Math.Max(0, RenderSize.Height - penThickness));
-        var strokeRadius = Math.Max(0, cornerRadius - halfBorder);
-        var pen = penThickness > 0 ? new Pen(border, penThickness) : null;
-        if (borderRect.Width > 0 && borderRect.Height > 0)
-        {
-            dc.DrawRoundedRectangle(background, pen, borderRect, strokeRadius, strokeRadius);
-        }
-    }
-
-    /// <summary>
-    /// Hands this level's frame to the submenus opened from it, so the whole chain matches.
-    /// </summary>
-    internal MenuPopupChrome GetChrome()
-    {
-        return new MenuPopupChrome(
-            new CornerRadius(GetEffectiveCornerRadius()),
-            GetEffectivePadding(),
-            GetEffectiveBorderThickness(),
-            Background ?? ResolveBrush("OnePopupBackground", "MenuFlyoutPresenterBackground", s_fallbackBackgroundBrush),
-            BorderBrush ?? ResolveBrush("OnePopupBorder", "MenuFlyoutPresenterBorderBrush", s_fallbackBorderBrush));
-    }
-
-    private Brush ResolveBrush(string primaryKey, string secondaryKey, Brush fallback)
-    {
-        if (TryFindResource(primaryKey) is Brush primary)
-            return primary;
-        if (TryFindResource(secondaryKey) is Brush secondary)
-            return secondary;
-        return fallback;
-    }
-
-    private void OnFlyoutItemsChanged(object? sender, NotifyCollectionChangedEventArgs e)
-    {
-        RefreshItems();
-        InvalidateMeasure();
-        InvalidateVisual();
-    }
-
+    private void OnFlyoutItemsChanged(object? sender, NotifyCollectionChangedEventArgs args) => RefreshItems();
     private void RefreshItems()
     {
-        _scrollHost.ItemsPanel.Children.Clear();
-        foreach (var item in _flyout.Items)
+        if (_suspended || _scrollHost is not { } host)
+            return;
+        if (host.Items.Count == _flyout.Items.Count && host.Items.SequenceEqual(_flyout.Items))
+            return;
+        host.Items.BeginBatchUpdate();
+        try
         {
-            _scrollHost.ItemsPanel.Children.Add(item);
+            host.Items.Clear();
+            foreach (var item in _flyout.Items)
+                host.Items.Add(item);
+        }
+        finally
+        {
+            host.Items.EndBatchUpdate();
         }
     }
 
-    private Thickness GetEffectiveBorderThickness()
+    internal void FocusFirstItem()
     {
-        var thickness = IsZero(BorderThickness) ? s_defaultBorderThickness : BorderThickness;
-        return new Thickness(
-            RoundLayoutValue(thickness.Left),
-            RoundLayoutValue(thickness.Top),
-            RoundLayoutValue(thickness.Right),
-            RoundLayoutValue(thickness.Bottom));
+        // Opening can request focus before the first native layout pass.
+        // Materialize the current template's host so keyboard routes can walk
+        // from the focused command back to its popup and top-level owner.
+        UpdateDefaultStyle();
+        ApplyTemplate();
+        if (_suspended)
+            Resume();
+        _scrollHost?.PrepareForOpen();
+        // Cached popup rows can outlive their owner's DataContext. Re-resolve
+        // bindings before choosing the first enabled command on each opening.
+        foreach (var item in _flyout.Items.ToArray())
+            ReactivateBindingsRecursive(item);
+        foreach (var item in _flyout.Items)
+            if (item.IsEnabled && item.Visibility == Visibility.Visible && item.Focusable && item.Focus())
+                return;
+        Focus();
     }
 
-    private Thickness GetEffectivePadding()
+    internal FrameworkElement? OwnerTarget => _flyout.PlacementTarget;
+
+    internal void CloseMenu() => _flyout.Hide();
+    internal void CloseAndRestoreFocus()
     {
-        return IsZero(Padding) ? s_defaultPadding : Padding;
+        var target = OwnerTarget;
+        _flyout.Hide();
+        Dispatcher.BeginInvokeCritical(() => target?.Focus());
     }
 
-    private double GetEffectiveCornerRadius()
+    private void OnKeyDown(object sender, KeyEventArgs args)
     {
-        var cornerRadius = CornerRadius;
-        if (IsZero(cornerRadius))
-            return s_defaultCornerRadius.TopLeft;
-
-        return Math.Max(
-            Math.Max(cornerRadius.TopLeft, cornerRadius.TopRight),
-            Math.Max(cornerRadius.BottomRight, cornerRadius.BottomLeft));
+        if (args.Key != Key.Escape)
+            return;
+        CloseAndRestoreFocus();
+        args.Handled = true;
     }
 
-    private static bool IsZero(Thickness thickness)
+    internal MenuPopupChrome GetChrome() => new(CornerRadius, Padding, BorderThickness, Background, BorderBrush);
+    protected override void OnIsEnabledChanged(bool oldValue, bool newValue)
     {
-        return thickness.Left <= 0
-            && thickness.Top <= 0
-            && thickness.Right <= 0
-            && thickness.Bottom <= 0;
+        base.OnIsEnabledChanged(oldValue, newValue);
+        UpdateVisualState();
     }
 
-    private static bool IsZero(CornerRadius cornerRadius)
-    {
-        return cornerRadius.TopLeft <= 0
-            && cornerRadius.TopRight <= 0
-            && cornerRadius.BottomRight <= 0
-            && cornerRadius.BottomLeft <= 0;
-    }
+    private void UpdateVisualState() => VisualStateManager.GoToState(this, IsEnabled ? "Normal" : "Disabled", false);
 }

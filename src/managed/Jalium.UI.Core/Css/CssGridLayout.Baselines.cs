@@ -38,7 +38,7 @@ internal sealed partial class CssGridLayout
         if (ItemBlockAlignment(item, container) is not (CssBoxAlignment.Baseline or CssBoxAlignment.LastBaseline)) return false;
         if (item.Box.Element is not FrameworkElement element) return true;
         if (element.HasLocalOrAnimatedValue(FrameworkElement.VerticalAlignmentProperty)) return false;
-        if (element is Panel panel && CssDisplayLayout.IsSubgridded(panel, true)) return false;
+        if (element is FrameworkElement panel && CssDisplayLayout.IsSubgridded(panel, true)) return false;
         return element.HasLocalOrAnimatedValue(FrameworkElement.MarginProperty) ||
             element.CssLayout is not { HasMargin: true } margin ||
             !margin.MarginTop.IsAuto && !margin.MarginBottom.IsAuto;

@@ -9,7 +9,7 @@ public partial class TextBlock
         int groupStart)
     {
         var style = (CssTextWrapStyle)GetValue(CssFlowProperties.TextWrapStyleProperty)!;
-        if (style is CssTextWrapStyle.Auto or CssTextWrapStyle.Stable || intrinsic ||
+        if (CssLineClampLayout.Stable(this) || style is CssTextWrapStyle.Auto or CssTextWrapStyle.Stable || intrinsic ||
             lineLength <= 0 || !double.IsFinite(constraintWidth) || constraintWidth <= 1 ||
             EffectiveTextWrapping() == TextWrapping.NoWrap)
             return;
@@ -79,7 +79,7 @@ public partial class TextBlock
     }
 
     private double OccupiedWidth(in TextLayoutLine line, double containerWidth)
-        => line.Width + ResolveTextIndent(line.IndentApplies, containerWidth) +
+        => line.Width + CssClampAdvance(line) + ResolveTextIndent(line.IndentApplies, containerWidth) +
             line.StartPadding + line.EndPadding;
 
     private double MaxWrapOverflow(List<TextLayoutLine> lines, double containerWidth)

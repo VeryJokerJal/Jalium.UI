@@ -54,7 +54,7 @@ internal static class WindowCaptionAccessibilityChecks
         if (!int.TryParse(argument.AsSpan("--window-caption-accessibility-case=".Length), out int index)
             || (uint)index >= s_names.Length) return 2;
         JaliumMacApplication.Initialize();
-        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Prohibited;
+        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Accessory;
         RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
         var editor = new TextBox { Text = "保留中文编辑内容🙂", Height = 40 };
         var fakeClose = new TitleBarButton { Kind = TitleBarButtonKind.Close, Height = 32 };

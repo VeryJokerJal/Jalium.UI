@@ -7,6 +7,11 @@ namespace Jalium.UI.Tests;
 [Collection("Application")]
 public class DockTabPanelLayoutTests
 {
+    public DockTabPanelLayoutTests()
+    {
+        Jalium.UI.Controls.Themes.ThemeManager.RegisterControlThemes(MenuFlyoutTemplateTestHelper.Themes.Value);
+    }
+
     [Fact]
     public void HorizontalOverflow_ShouldShowScrollBar_AndAutoScrollToSelectedTab()
     {

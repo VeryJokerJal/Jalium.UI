@@ -13,19 +13,21 @@ public partial class TextBlock
 
     private void RebuildLetterSpacing()
     {
+        ClearShapedSpacing();
         _letterSpacingGaps.Clear();
         _internalPaintSpacingUnits.Clear();
         _hasLetterSpacing = false;
-        var blockSpacing = (double)GetValue(CssFlowProperties.LetterSpacingProperty)!;
+        _usesAutospaceShaping = CouldShapeAutospace();
+        var blockSpacing = CssTextSpacing.Letter(this);
         var blockAutospace = (CssTextAutospace)GetValue(CssFlowProperties.TextAutospaceProperty)!;
         var ranges = GetInlineTextRanges();
-        if (!double.IsFinite(blockSpacing) || Math.Abs(blockSpacing) <= 0.001)
+        if (!double.IsFinite(blockSpacing) || blockSpacing == 0)
         {
             var hasInlineSpacing = false;
             foreach (var range in ranges)
             {
-                var value = (double)range.Run.GetValue(CssFlowProperties.LetterSpacingProperty)!;
-                if (!double.IsFinite(value) || Math.Abs(value) <= 0.001) continue;
+                var value = CssTextSpacing.Letter(range.Run);
+                if (!double.IsFinite(value) || value == 0) continue;
                 hasInlineSpacing = true;
                 break;
             }
@@ -64,9 +66,9 @@ public partial class TextBlock
             var crossesRunBoundary = rangeIndex < ranges.Count &&
                 (run is null ? ranges[rangeIndex].Start < end : ranges[rangeIndex].End < end);
             var spacing = run is null ? blockSpacing
-                : (double)run.GetValue(CssFlowProperties.LetterSpacingProperty)!;
+                : CssTextSpacing.Letter(run);
             if (!double.IsFinite(spacing)) spacing = 0;
-            if (Math.Abs(spacing) > 0.001 && _hasPaintTextChanges)
+            if (spacing != 0 && _hasPaintTextChanges)
                 AddInternalPaintSpacingUnit(start, end, run, spacing, crossesRunBoundary);
 
             if (previousStart >= 0)
@@ -75,7 +77,7 @@ public partial class TextBlock
                     (previousEnd == start
                         ? AutospaceAtBoundary(previousStart, start, previousRun, run).Width
                         : 0);
-                if (Math.Abs(requested) > 0.001)
+                if (requested != 0)
                 {
                     // Preserve nonnegative advances for width fitting while
                     // allowing glyphs to overlap under negative tracking.
@@ -85,7 +87,7 @@ public partial class TextBlock
                         limit = Math.Min(limit,
                             MeasureInternallySpacedRange(previousStart, previousEnd));
                     var adjustment = Math.Max(-limit, requested);
-                    if (Math.Abs(adjustment) > 0.001)
+                    if (adjustment != 0)
                         _letterSpacingGaps.Add(new LetterSpacingGap(
                             start, end, previousStart, adjustment));
                 }
@@ -128,7 +130,7 @@ public partial class TextBlock
                     spacing);
                 gapsBefore[piece] = adjustment;
                 width += adjustment;
-                hasGap |= Math.Abs(adjustment) > 0.001;
+                hasGap |= adjustment != 0;
             }
             if (visible)
             {
@@ -243,8 +245,8 @@ public partial class TextBlock
             if (IsInvisibleLetterSpacingUnit(unitStart, unitEnd)) continue;
             var preceding = ComputedLetterSpacingAt(unitStart);
             var following = ellipsisRun is null
-                ? (double)GetValue(CssFlowProperties.LetterSpacingProperty)!
-                : (double)ellipsisRun.GetValue(CssFlowProperties.LetterSpacingProperty)!;
+                ? CssTextSpacing.Letter(this)
+                : CssTextSpacing.Letter(ellipsisRun);
             var requested = (preceding + following) / 2;
             if (!double.IsFinite(requested) || Math.Abs(requested) <= 0.001) return 0;
             var limit = Math.Min(
@@ -259,12 +261,13 @@ public partial class TextBlock
     {
         foreach (var range in GetInlineTextRanges())
             if (range.Start <= position && position < range.End)
-                return (double)range.Run.GetValue(CssFlowProperties.LetterSpacingProperty)!;
-        return (double)GetValue(CssFlowProperties.LetterSpacingProperty)!;
+                return CssTextSpacing.Letter(range.Run);
+        return CssTextSpacing.Letter(this);
     }
 
     private double MeasureLetterSpacedRange(int start, int end)
     {
+        if (TryShapedSpacing(start, end, FontSize * 1.2, out var shaped)) return shaped.Lines[0].Metrics.Line.Width;
         var cursor = start;
         var width = 0.0;
         for (var index = FirstLetterSpacingGapAtOrAfter(start);
@@ -304,6 +307,7 @@ public partial class TextBlock
     private void DrawLetterSpacedInlineRange(DrawingContext context,
         in TextLayoutLine line, int start, int end, ref double x, double lineY)
     {
+        if (TryDrawShapedSpacing(context, line, start, end, ref x, lineY)) return;
         var cursor = start;
         var lineEnd = line.StartIndex + line.Length;
         for (var index = FirstLetterSpacingGapAtOrAfter(start);

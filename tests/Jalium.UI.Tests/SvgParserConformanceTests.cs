@@ -41,6 +41,146 @@ public class SvgParserConformanceTests
         }
     }
 
+    [Fact]
+    public void HiddenSvgGroupKeepsAnExplicitlyVisibleChild()
+    {
+        var svg = "<svg xmlns='http://www.w3.org/2000/svg' width='40' height='20'>" +
+                  "<g visibility='hidden'><rect width='20' height='20' fill='red'/>" +
+                  "<rect x='20' width='20' height='20' fill='blue' " +
+                  "visibility='visible'/></g></svg>";
+        var pixels = Raster(SvgImage.FromSvgString(svg), 40, 20);
+        Assert.Equal((byte)0, Px(pixels, 40, 10, 10).A);
+        Assert.True(Px(pixels, 40, 30, 10).A >= 250);
+        Assert.True(Px(pixels, 40, 30, 10).B >= 250);
+    }
+
+    [Fact]
+    public void LocalClipPathClipsShapesGroupsAndUseInTheirUserSpace()
+    {
+        var svg = """
+            <svg xmlns="http://www.w3.org/2000/svg" width="70" height="24">
+              <defs>
+                <clipPath id="round"><circle cx="10" cy="10" r="8"/></clipPath>
+                <rect id="tile" width="20" height="20" fill="white"/>
+              </defs>
+              <rect width="20" height="20" fill="white" clip-path="url(#round)"/>
+              <g transform="translate(25 0)" clip-path="url(#round)">
+                <rect width="20" height="20" fill="white"/>
+              </g>
+              <use href="#tile" x="50" clip-path="url(#round)"/>
+            </svg>
+            """;
+        var pixels = Raster(SvgImage.FromSvgString(svg), 70, 24);
+        foreach (var x in new[] { 0, 25, 50 })
+        {
+            Assert.True(Px(pixels, 70, x + 10, 10).A >= 250);
+            Assert.Equal((byte)0, Px(pixels, 70, x + 2, 2).A);
+        }
+    }
+
+    [Fact]
+    public void LocalClipPathObjectBoundingBoxUsesTargetOriginAndSize()
+    {
+        var svg = """
+            <svg xmlns="http://www.w3.org/2000/svg" width="50" height="30">
+              <defs><clipPath id="left" clipPathUnits="objectBoundingBox">
+                <rect x="0" y="0" width="0.5" height="1"/>
+              </clipPath></defs>
+              <rect x="10" y="5" width="30" height="20" fill="white" clip-path="url(#left)"/>
+            </svg>
+            """;
+        var pixels = Raster(SvgImage.FromSvgString(svg), 50, 30);
+        Assert.True(Px(pixels, 50, 15, 15).A >= 250);
+        Assert.Equal((byte)0, Px(pixels, 50, 35, 15).A);
+    }
+
+    [Fact]
+    public void LocalClipPathUnitesOppositeWindingChildrenAndPreservesHoles()
+    {
+        var svg = """
+            <svg xmlns="http://www.w3.org/2000/svg" width="80" height="40">
+              <defs>
+                <clipPath id="overlap">
+                  <path d="M0 0 H30 V30 H0 Z"/>
+                  <path d="M40 0 V30 H10 V0 Z"/>
+                </clipPath>
+                <clipPath id="hole">
+                  <path clip-rule="evenodd" d="M0 0 H40 V40 H0 Z M10 10 H30 V30 H10 Z"/>
+                  <rect x="15" y="15" width="10" height="10"/>
+                </clipPath>
+              </defs>
+              <rect width="40" height="40" fill="white" clip-path="url(#overlap)"/>
+              <g transform="translate(40 0)" clip-path="url(#hole)">
+                <rect width="40" height="40" fill="white"/>
+              </g>
+            </svg>
+            """;
+        var pixels = Raster(SvgImage.FromSvgString(svg), 80, 40);
+        Assert.True(Px(pixels, 80, 20, 15).A >= 250);
+        Assert.True(Px(pixels, 80, 45, 20).A >= 250);
+        Assert.Equal((byte)0, Px(pixels, 80, 52, 20).A);
+        Assert.True(Px(pixels, 80, 60, 20).A >= 250);
+    }
+
+    [Fact]
+    public void LocalNestedClipPathsIntersectAndCyclesAreIgnored()
+    {
+        var svg = """
+            <svg xmlns="http://www.w3.org/2000/svg" width="90" height="25">
+              <defs>
+                <clipPath id="mask"><rect x="10" width="10" height="25"/></clipPath>
+                <clipPath id="parent" clip-path="url(#mask)">
+                  <rect width="30" height="25"/>
+                </clipPath>
+                <clipPath id="child">
+                  <rect width="30" height="25" clip-path="url(#mask)"/>
+                </clipPath>
+                <clipPath id="cycle" clip-path="url(#cycle)">
+                  <rect width="30" height="25"/>
+                </clipPath>
+              </defs>
+              <rect width="30" height="25" fill="white" clip-path="url(#parent)"/>
+              <g transform="translate(30 0)">
+                <rect width="30" height="25" fill="white" clip-path="url(#child)"/>
+              </g>
+              <g transform="translate(60 0)">
+                <rect width="30" height="25" fill="white" clip-path="url(#cycle)"/>
+              </g>
+            </svg>
+            """;
+        var pixels = Raster(SvgImage.FromSvgString(svg), 90, 25);
+        Assert.Equal((byte)0, Px(pixels, 90, 5, 12).A);
+        Assert.True(Px(pixels, 90, 15, 12).A >= 250);
+        Assert.Equal((byte)0, Px(pixels, 90, 25, 12).A);
+        Assert.Equal((byte)0, Px(pixels, 90, 35, 12).A);
+        Assert.True(Px(pixels, 90, 45, 12).A >= 250);
+        Assert.Equal((byte)0, Px(pixels, 90, 55, 12).A);
+        Assert.True(Px(pixels, 90, 65, 12).A >= 250);
+    }
+
+    [Fact]
+    public void LocalEmptyClipHidesPaintWhileInvalidTargetsLeaveItVisible()
+    {
+        var svg = """
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="60">
+              <defs>
+                <clipPath id="empty">
+                  <line x1="0" y1="0" x2="20" y2="20" stroke="white"/>
+                  <animate attributeName="opacity" from="1" to="1" dur="1s"/>
+                </clipPath>
+                <rect id="notClip" width="20" height="20"/>
+              </defs>
+              <rect width="20" height="20" fill="white" clip-path="url(#empty)"/>
+              <rect y="20" width="20" height="20" fill="white" clip-path="url(#notClip)"/>
+              <rect y="40" width="20" height="20" fill="white" clip-path="url(other.svg#empty)"/>
+            </svg>
+            """;
+        var pixels = Raster(SvgImage.FromSvgString(svg), 20, 60);
+        Assert.Equal((byte)0, Px(pixels, 20, 10, 10).A);
+        Assert.True(Px(pixels, 20, 10, 30).A >= 250);
+        Assert.True(Px(pixels, 20, 10, 50).A >= 250);
+    }
+
     // ── ① SVG transform 列表：右侧变换先作用（translate(10) scale(2) ≠ scale 后再平移 20）──
     [Fact]
     public void Transform_list_composes_right_to_left()

@@ -13,6 +13,17 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class HyperlinkButton : ButtonBase
 {
+    private Border? _cssBorderPainter;
+    protected override bool SupportsSelfDrawnCssContentAdapter => true;
+    internal override Brush? ResolveCssAdapterForeground() => IsPressed
+        ? ResolveHyperlinkBrush("HyperlinkForegroundPressed", s_hoverBrush)
+        : _isHovered
+            ? ResolveHyperlinkBrush("HyperlinkForegroundHover", s_hoverBrush)
+            : Foreground ?? ResolveHyperlinkBrush("HyperlinkForeground", s_defaultBrush);
+    internal override TextDecorationCollection? ResolveCssAdapterTextDecorations() =>
+        IsUnderlined && GetValueSourceInternal(Styling.CssTextDecorationProperties.LineProperty).BaseValueSource == BaseValueSource.Default
+            ? TextDecorations.Underline : null;
+
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
@@ -127,6 +138,7 @@ public class HyperlinkButton : ButtonBase
     {
         base.OnMouseEnter(e);
         _isHovered = true;
+        RefreshCssContentAdapterState();
         InvalidateVisual();
     }
 
@@ -135,6 +147,15 @@ public class HyperlinkButton : ButtonBase
     {
         base.OnMouseLeave(e);
         _isHovered = false;
+        RefreshCssContentAdapterState();
+        InvalidateVisual();
+    }
+
+    /// <inheritdoc />
+    protected override void OnIsPressedChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnIsPressedChanged(e);
+        RefreshCssContentAdapterState();
         InvalidateVisual();
     }
 
@@ -145,6 +166,8 @@ public class HyperlinkButton : ButtonBase
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
+        EnsureCssContentAdapter();
+
         // If using template, delegate to base class which handles template root
         if (Template != null)
         {
@@ -198,8 +221,11 @@ public class HyperlinkButton : ButtonBase
     /// <inheritdoc />
     protected override void OnRender(DrawingContext drawingContext)
     {
+        if (CssInlineBoxPainter.Background(this, BackgroundProperty, Background, drawingContext))
+            return;
+
         // If using template, let the template handle rendering
-        if (Template != null)
+        if (Template != null && !UsesCssContentAdapter)
         {
             return;
         }
@@ -212,7 +238,17 @@ public class HyperlinkButton : ButtonBase
         // Draw background if set (usually null for hyperlinks)
         if (Background != null)
         {
-            dc.DrawRectangle(Background, null, rect);
+            var radii = Styling.CssBorderRadiusProperties.Get(this)?.Resolve(RenderSize) ?? default;
+            var shape = new Styling.CssRoundedRectangleGeometry(rect, radii);
+            if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty, Background, dc,
+                    rect, radii, BorderThickness, padding,
+                    brush => dc.DrawGeometry(brush, null, shape)))
+                dc.DrawRectangle(Background, null, rect);
+        }
+
+        if (UsesCssContentAdapter)
+        {
+            return;
         }
 
         // Determine foreground color based on state
@@ -246,6 +282,15 @@ public class HyperlinkButton : ButtonBase
         }
     }
 
+    protected override void OnPostRender(DrawingContext drawingContext)
+    {
+        base.OnPostRender(drawingContext);
+        if (CssInlineBoxPainter.Border(this, drawingContext, ref _cssBorderPainter))
+            return;
+        if (Template == null || UsesCssContentAdapter)
+            CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter);
+    }
+
     private SolidColorBrush ResolveHyperlinkBrush(string resourceKey, SolidColorBrush fallback)
     {
         return TryFindResource(resourceKey) as SolidColorBrush ?? fallback;
@@ -259,6 +304,7 @@ public class HyperlinkButton : ButtonBase
     {
         if (d is HyperlinkButton button)
         {
+            button.RefreshCssContentAdapterState();
             button.InvalidateVisual();
         }
     }

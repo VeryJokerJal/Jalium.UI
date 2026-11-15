@@ -5,8 +5,10 @@ internal static class CssBoxMetrics
 {
     internal static Thickness Margin(FrameworkElement element, double containingWidth)
     {
+        if (CssRubyBoxMetrics.IsStructural(element)) return default;
         if (element.HasLocalOrAnimatedValue(FrameworkElement.MarginProperty) || element.CssLayout is not { HasMargin: true } state)
             return element.Margin;
+        containingWidth = CssIntrinsicPercentage.EdgeBasis(element, containingWidth);
         return new(state.MarginLeft.Resolve(containingWidth, 0), state.MarginTop.Resolve(containingWidth, 0),
             state.MarginRight.Resolve(containingWidth, 0), state.MarginBottom.Resolve(containingWidth, 0));
     }
@@ -14,14 +16,23 @@ internal static class CssBoxMetrics
     internal static (Thickness Border, Thickness Padding) BackgroundInsets(
         FrameworkElement element, double containingWidth)
     {
+        if (CssTableLayout.IsStructural(element) || CssRubyBoxMetrics.IsStructural(element)) return (default, default);
         var paddingProperty = CssDependencyPropertyLookup.Find(element.GetType(), "Padding");
         var padding = paddingProperty is not null && element.GetValue(paddingProperty) is Thickness nativePadding ? nativePadding : default;
-        if (paddingProperty is null && element.CssLayout is { HasPadding: true } state)
+        // Inline frames can be allocated before MeasureCore materializes their
+        // padding DP. Resolve layout-owned edges from this formatting context,
+        // including the final basis after an intrinsic sizing probe.
+        if ((paddingProperty is null || !element.HasLocalOrAnimatedValue(paddingProperty)) && element.CssLayout is { HasPadding: true } state)
+        {
+            containingWidth = CssIntrinsicPercentage.EdgeBasis(element, containingWidth);
             padding = new(Math.Max(0, state.PaddingLeft.Resolve(containingWidth, 0)), Math.Max(0, state.PaddingTop.Resolve(containingWidth, 0)),
                 Math.Max(0, state.PaddingRight.Resolve(containingWidth, 0)), Math.Max(0, state.PaddingBottom.Resolve(containingWidth, 0)));
+        }
         var border = CssDependencyPropertyLookup.Find(element.GetType(), "BorderThickness") is { } borderProperty &&
             element.GetValue(borderProperty) is Thickness nativeBorder
                 ? nativeBorder : CssBorderUsedThicknessProperties.Get(element);
+        if (CssTableLayout.TryCollapsedBorder(element, out var collapsed))
+            return (collapsed, element.CssDisplayMode == CssDisplayMode.Table ? default : padding);
         return (border, padding);
     }
 

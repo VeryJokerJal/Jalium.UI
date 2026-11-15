@@ -50,7 +50,7 @@ internal static class AccessibilitySemanticsChecks
     {
         if (!int.TryParse(argument.AsSpan("--accessibility-semantics-case=".Length), out int index) || (uint)index >= s_names.Length) return 2;
         JaliumMacApplication.Initialize();
-        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Prohibited;
+        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Accessory;
         RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
         var panel = new StackPanel { Margin = new Thickness(24) };
         var button = new Button { Content = "保存中文", Height = 32 };

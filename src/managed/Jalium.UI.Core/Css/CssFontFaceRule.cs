@@ -12,6 +12,10 @@ internal sealed record CssFontFaceRule(
 {
     internal Uri? BaseUri;
     internal ICssResourceResolver? Resolver;
+    internal CssFontVariationSettings VariationSettings { get; init; } = CssFontVariationSettings.Normal;
+    internal CssFontFeatureSettings FeatureSettings { get; init; } = CssFontFeatureSettings.Normal;
+    internal CssFontFaceMetrics Metrics { get; init; } = CssFontFaceMetrics.Initial;
+    internal bool DisplaySpecified { get; init; } = true;
     internal bool Contains(int codepoint) => Ranges.Any(range => codepoint >= range.Start && codepoint <= range.End);
 
     internal static CssFontFaceRule? Parse(ReadOnlySpan<char> header, ReadOnlySpan<char> body, int offset)
@@ -19,7 +23,10 @@ internal sealed record CssFontFaceRule(
         if (!CssParser.StripComments(header).Trim().IsEmpty) return null;
         string? family = null; CssFontSource[]? sources = null;
         double minWeight = 400, maxWeight = 400, minWidth = 100, maxWidth = 100;
-        var style = 0; var display = "auto";
+        var style = 0; var display = "auto"; bool displaySpecified = false;
+        var features = CssFontFeatureSettings.Normal;
+        var variations = CssFontVariationSettings.Normal;
+        var metrics = CssFontFaceMetrics.Initial;
         CssUnicodeRange[] ranges = [new(0, 0x10ffff)];
         foreach (var declaration in CssParser.ParseInlineDeclarations(body.ToString(), null))
         {
@@ -47,13 +54,34 @@ internal sealed record CssFontFaceRule(
                     if (candidate >= 0 && reader.AtEnd) style = candidate;
                     break;
                 case "font-display":
-                    var value = raw.Trim().ToLowerInvariant();
-                    if (value is "auto" or "block" or "swap" or "fallback" or "optional") display = value;
+                    var displayReader = new CssTokenReader(raw);
+                    if (displayReader.TryReadIdent(out var word) && displayReader.AtEnd && word.ToString().ToLowerInvariant() is { } value &&
+                        value is "auto" or "block" or "swap" or "fallback" or "optional") { display = value; displaySpecified = true; }
                     break;
                 case "unicode-range": if (UnicodeRanges(raw) is { } parsedRanges) ranges = parsedRanges; break;
+                case "font-variation-settings":
+                    var variationReader = new CssTokenReader(raw);
+                    if (CssFontVariationSettings.Read(ref variationReader) is { } coordinates) variations = coordinates;
+                    break;
+                case "size-adjust":
+                    if (CssFontFaceMetrics.TrySizeAdjust(raw, out var factor)) metrics = metrics with { SizeAdjust = factor };
+                    break;
+                case "ascent-override":
+                    if (CssFontFaceMetrics.TryOverride(raw, out var horizontal, out var vertical)) metrics = metrics with { Ascent = horizontal, VerticalAscent = vertical };
+                    break;
+                case "descent-override":
+                    if (CssFontFaceMetrics.TryOverride(raw, out horizontal, out vertical)) metrics = metrics with { Descent = horizontal, VerticalDescent = vertical };
+                    break;
+                case "line-gap-override":
+                    if (CssFontFaceMetrics.TryOverride(raw, out horizontal, out vertical)) metrics = metrics with { LineGap = horizontal, VerticalLineGap = vertical };
+                    break;
+                case "font-feature-settings":
+                    var featureReader = new CssTokenReader(raw);
+                    if (CssFontFeatureSettings.Read(ref featureReader) is { } settings) features = settings;
+                    break;
             }
         }
-        return family is null || sources is null ? null : new(family, sources, minWeight, maxWeight, style, minWidth, maxWidth, ranges, display, offset);
+        return family is null || sources is null ? null : new(family, sources, minWeight, maxWeight, style, minWidth, maxWidth, ranges, display, offset) { FeatureSettings = features, VariationSettings = variations, Metrics = metrics, DisplaySpecified = displaySpecified };
     }
 
     internal static string? FamilyName(string text)

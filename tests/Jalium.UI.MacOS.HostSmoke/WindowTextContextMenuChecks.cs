@@ -38,7 +38,7 @@ internal static class WindowTextContextMenuChecks
         bool heldButtonCase = index >= 20;
         int kind = heldButtonCase ? (index - 20) % 4 : index % 10;
         JaliumMacApplication.Initialize();
-        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Prohibited;
+        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Accessory;
         RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
         const string sample = "中文🙂 alpha beta";
         UIElement editor = kind switch

@@ -13,14 +13,18 @@ enum JaliumAccessibilityOperation {
     // array of decimal uint64 node IDs in caller-owned UTF-16, at most 65536 IDs
     // and 2 Mi UTF-16 units. Existing operation numbers and request ABI stay stable.
     JALIUM_AX_SET_SELECTED_ITEMS = 65,
+    // Optional single-request child enumeration (advertised by CHILD_BATCH).
+    // For this operation only, text is an 8-byte-aligned caller-owned uint64_t
+    // buffer, textCapacity/textCount are ID counts, and childCount is the required
+    // count. Capacity 0/null performs sizing; textCount=-1 means insufficient
+    // capacity and writes nothing. Maximum capacity is 65536 IDs. Old providers
+    // and larger collections retain INFO/CHILD; no request layout changes.
+    JALIUM_AX_READ_CHILDREN = 66,
     JALIUM_AX_INFO = 0, JALIUM_AX_CHILD, JALIUM_AX_STRING, JALIUM_AX_FOCUS,
     JALIUM_AX_HIT_TEST, JALIUM_AX_ACTION, JALIUM_AX_SET_VALUE,
     JALIUM_AX_TEXT_SELECTION, JALIUM_AX_SET_TEXT_SELECTION, JALIUM_AX_TEXT_BOUNDS,
     JALIUM_AX_ATTACHED, JALIUM_AX_WINDOW_BUTTON, JALIUM_AX_TEXT_NAVIGATION,
-    JALIUM_AX_TEXT_STYLES, JALIUM_AX_TEXT_STYLE_RANGE,
-    // Request-scoped ID snapshot: resultId is its token, childCount its size.
-    // READ copies uint64_t IDs into text; textCapacity counts IDs, not UTF-16.
-    JALIUM_AX_BEGIN_CHILDREN, JALIUM_AX_READ_CHILDREN, JALIUM_AX_RELEASE_CHILDREN
+    JALIUM_AX_TEXT_STYLES, JALIUM_AX_TEXT_STYLE_RANGE
 };
 enum JaliumAccessibilityTextNavigation {
     JALIUM_AX_LINE_FOR_INDEX, JALIUM_AX_RANGE_FOR_INDEX, JALIUM_AX_RANGE_FOR_LINE,
@@ -33,7 +37,7 @@ enum JaliumAccessibilityWindowButton {
 };
 enum JaliumAccessibilityString {
     JALIUM_AX_NAME, JALIUM_AX_HELP, JALIUM_AX_IDENTIFIER, JALIUM_AX_VALUE,
-    JALIUM_AX_PLACEHOLDER
+    JALIUM_AX_PLACEHOLDER, JALIUM_AX_VALUE_DESCRIPTION
 };
 enum JaliumAccessibilityAction {
     JALIUM_AX_PRESS, JALIUM_AX_SET_FOCUS, JALIUM_AX_INCREMENT,
@@ -52,7 +56,10 @@ enum JaliumAccessibilityFlags {
     JALIUM_AX_CLOSE = 1 << 18, JALIUM_AX_MINIMIZE = 1 << 19, JALIUM_AX_ZOOM = 1 << 20,
     JALIUM_AX_NAVIGABLE_TEXT = 1 << 21, JALIUM_AX_EDITABLE_TEXT = 1 << 22,
     JALIUM_AX_OFFSCREEN = 1 << 23, JALIUM_AX_STYLED_TEXT = 1 << 24,
-    JALIUM_AX_SELECTION_WRITABLE = 1 << 25
+    JALIUM_AX_SELECTION_WRITABLE = 1 << 25,
+    JALIUM_AX_CHILD_BATCH = 1 << 26,
+    // Optional read-only localized description; original request size is unchanged.
+    JALIUM_AX_HAS_VALUE_DESCRIPTION = 1 << 27
 };
 // Values deliberately match AutomationControlType. Keep the native role map
 // and managed enum contract covered by end-to-end host checks.

@@ -54,6 +54,11 @@ struct EngineBrushData {
     };
     const GradientStop* stops = nullptr;
     uint32_t stopCount = 0;
+    uint32_t colorInterpolationMode = 1; // 0=linear light, 1=encoded sRGB
+    JaliumMatrix gradientToUser{1,0,0,1,0,0};
+    JaliumMatrix userToGradient{1,0,0,1,0,0};
+    float focalRadius = 0;
+    uint32_t radialFlags = 0;
 };
 
 /// Transform matrix (3x2 column-major, same as JaliumMatrix).

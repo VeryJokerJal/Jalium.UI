@@ -9,6 +9,8 @@ namespace Jalium.UI.Controls.Ribbon;
 [Jalium.UI.Markup.ContentProperty("Items")]
 public class RibbonMenuItem : MenuItem
 {
+    static RibbonMenuItem() => DefaultStyleKeyProperty.OverrideMetadata(typeof(RibbonMenuItem), new PropertyMetadata(typeof(RibbonMenuItem)));
+
     private static readonly DependencyPropertyKey HasGalleryPropertyKey =
         DependencyProperty.RegisterReadOnly(nameof(HasGallery), typeof(bool), typeof(RibbonMenuItem),
             new PropertyMetadata(false));
@@ -286,6 +288,8 @@ public class RibbonMenuItem : MenuItem
 /// </summary>
 public class RibbonSplitMenuItem : RibbonMenuItem
 {
+    static RibbonSplitMenuItem() => DefaultStyleKeyProperty.OverrideMetadata(typeof(RibbonSplitMenuItem), new PropertyMetadata(typeof(RibbonSplitMenuItem)));
+
     public static readonly DependencyProperty DropDownToolTipDescriptionProperty =
         DependencyProperty.Register(nameof(DropDownToolTipDescription), typeof(string), typeof(RibbonSplitMenuItem),
             new PropertyMetadata(null));

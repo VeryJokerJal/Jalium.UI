@@ -66,6 +66,7 @@ internal static class CssRegisteredProperties
     internal static void Invalidate(CssNode element)
     {
         CssFontFaces.Invalidate(element);
+        CssCounterStyles.Invalidate(element);
         if (!IsActive) return;
         var root = CssMatcher.Root(element);
         s_documents.GetValue(root, static _ => new()).Dirty = true;

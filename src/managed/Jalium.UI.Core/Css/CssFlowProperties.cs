@@ -128,8 +128,9 @@ internal static class CssFlowProperties
         "CssWordSpacing", typeof(CssLayoutLength), typeof(CssFlowProperties),
         new PropertyMetadata(CssLayoutLength.Px(0), Changed, null, inherits: true));
     internal static readonly DependencyProperty LetterSpacingProperty = DependencyProperty.RegisterAttached(
-        "CssLetterSpacing", typeof(double), typeof(CssFlowProperties),
-        new PropertyMetadata(0.0, Changed, null, inherits: true));
+        "CssLetterSpacing", typeof(object), typeof(CssFlowProperties),
+        new PropertyMetadata(0.0, Changed, null, inherits: true),
+        static value => value is double or CssLayoutLength);
     internal static readonly DependencyProperty TextAutospaceProperty = DependencyProperty.RegisterAttached(
         "CssTextAutospace", typeof(CssTextAutospace), typeof(CssFlowProperties),
         new PropertyMetadata(CssTextAutospace.Normal, Changed, null, inherits: true));
@@ -168,7 +169,7 @@ internal static class CssFlowProperties
             return;
         }
         if (target is FrameworkContentElement content &&
-            (change.Property == LinePaddingProperty ||
+            (change.Property == LinePaddingProperty || change.Property == TextJustifyProperty ||
              change.Property == WordSpacingProperty || change.Property == LetterSpacingProperty ||
              change.Property == TextAutospaceProperty || change.Property == HangingPunctuationProperty ||
              change.Property == TextTransformProperty || change.Property == WordSpaceTransformProperty ||
@@ -190,7 +191,8 @@ internal static class CssFlowProperties
             return;
         }
         if (target is not UIElement element) return;
-        if (change.Property == TextGroupAlignProperty || change.Property == LinePaddingProperty ||
+        if (change.Property == TextAlignProperty || change.Property == TextAlignLastProperty ||
+            change.Property == TextGroupAlignProperty || change.Property == LinePaddingProperty || change.Property == TextJustifyProperty ||
             change.Property == TextIndentProperty ||
             change.Property == OverflowWrapProperty ||
             change.Property == WordBreakProperty || change.Property == LineBreakProperty ||
@@ -223,18 +225,30 @@ internal static class CssFlowProperties
             property == OverflowWrapProperty || property == WordBreakProperty ||
             property == LineBreakProperty || property == LinePaddingProperty ||
             property == WordSpacingProperty || property == WordSpaceTransformProperty ||
+            property == TextTransformProperty || property == FrameworkElement.LanguageProperty ||
             property == LetterSpacingProperty || property == TextAutospaceProperty ||
             property == HangingPunctuationProperty || property == HyphensProperty ||
             property == HyphenateCharacterProperty || property == HyphenateLimitLinesProperty ||
             property == HyphenateLimitLastProperty || property == HyphenateLimitZoneProperty ||
             property == HyphenateLimitCharsProperty || property == WhiteSpaceProperty ||
             property == TextWrapModeProperty || property == TextWrapStyleProperty ||
-            property == WhiteSpaceTrimProperty || property == TabSizeProperty)
+            property == WhiteSpaceTrimProperty || property == TabSizeProperty ||
+            property == CssComputedLineHeightValue.Property || property == TextBlock.LineHeightProperty ||
+            property == TextBlock.LineStackingStrategyProperty ||
+            property == TextAlignProperty || property == TextAlignLastProperty || property == TextJustifyProperty)
             InvalidateWhiteSpaceOrigin(target);
+        else if (property == TextBlock.TextAlignmentProperty && target is FrameworkElement host &&
+                 (host is TextBlock || CssDisplayLayout.IsFlow(host)))
+            InvalidateWhiteSpaceOrigin(host);
     }
 
     internal static void InvalidateWhiteSpaceOrigin(DependencyObject target)
     {
+        // Document proxies copy computed text properties without becoming their
+        // logical children. An origin change (including an authored initial value)
+        // must refresh those copies even when inheritance has no cached readers.
+        if (target is FlowDocument document) document.NotifyPaginationStyleChanged();
+        else if (target is TextElement text) text.NotifyTextContentChanged();
         if (target is FrameworkContentElement content)
         {
             for (DependencyObject? ancestor = content.Parent; ancestor is not null;
@@ -253,7 +267,7 @@ internal static class CssFlowProperties
         if (element.VisualParent is UIElement parent) parent.InvalidateMeasure();
     }
 
-    private static void InvalidateInheritedTextLayout(Visual visual)
+    internal static void InvalidateInheritedTextLayout(Visual visual)
     {
         if (visual is TextBlock textBlock) textBlock.InvalidateCssTextLayout();
         if (visual is UIElement element)
@@ -269,7 +283,7 @@ internal static class CssFlowProperties
     internal static double GroupStartPadding(FrameworkElement element, double padding)
     {
         var mode = (CssTextGroupAlignment)element.GetValue(TextGroupAlignProperty)!;
-        return GroupStartPadding(mode, element.FlowDirection == FlowDirection.RightToLeft, padding);
+        return GroupStartPadding(mode, CssWritingModeProperties.GetUsedFlowDirection(element) == FlowDirection.RightToLeft, padding);
     }
 
     internal static double UsedLinePadding(DependencyObject element)
@@ -324,17 +338,18 @@ internal static class CssFlowProperties
         }
     }
 
-    internal static (double Height, double Baseline, double Ascent, double Descent) LineMetrics(FrameworkElement element)
+    internal static (double Height, double Baseline, double Ascent, double Descent) LineMetrics(FrameworkElement element,
+        bool rubyFontArea = true)
     {
         var fontSize = (double)element.GetValue(TextElement.FontSizeProperty)!;
         var family = (FontFamily)element.GetValue(TextElement.FontFamilyProperty)!;
         var weight = (FontWeight)element.GetValue(TextElement.FontWeightProperty)!;
         var style = (FontStyle)element.GetValue(TextElement.FontStyleProperty)!;
-        var metrics = TextMeasurement.GetFontMetrics(family.Source, fontSize, weight.ToOpenTypeWeight(), style.ToOpenTypeStyle());
-        var lineHeight = (double)element.GetValue(TextBlock.LineHeightProperty)!;
-        if (!double.IsFinite(lineHeight) || lineHeight < 0) lineHeight = Math.Max(metrics.LineHeight, metrics.Baseline + metrics.Descent);
-        var natural = Math.Max(metrics.LineHeight, metrics.Baseline + metrics.Descent);
-        return (lineHeight, metrics.Baseline + (lineHeight - natural) / 2, metrics.Ascent, metrics.Descent);
+        var metrics = TextMeasurement.GetFontMetrics(family.GetRenderingSource(element), fontSize, weight.ToOpenTypeWeight(), style.ToOpenTypeStyle());
+        if (CssInitialLetterProperties.Metrics(element) is { } initial)
+            return (initial.Height, initial.Baseline, metrics.Ascent, metrics.Descent);
+        var box = CssComputedLineHeightValue.LayoutBounds(element, fontSize, metrics, rubyFontArea);
+        return (box.Height, box.Baseline, metrics.Ascent, metrics.Descent);
     }
 
     internal static double InlineShift(FrameworkElement parent, UIElement item,
@@ -368,13 +383,26 @@ internal static class CssFlowProperties
         return float.IsFinite(xHeight) && xHeight > 0 ? xHeight : fontSize * 0.5;
     }
 
+    /// <summary>
+    /// True when the native alignment set on the element itself — locally, by its style, or by the
+    /// template that generated it — must win over the CSS property. CSS text-align is inherited, so a
+    /// value merely inherited from an ancestor's stylesheet ranks like property-value inheritance and
+    /// never outranks an explicit value on the element; a CSS value matched on the element still does.
+    /// </summary>
+    private static bool NativeAlignmentWins(FrameworkElement element, DependencyProperty native, DependencyProperty css)
+    {
+        if (element.HasLocalOrAnimatedValue(native)) return true;
+        var cssSource = element.GetValueSourceInternal(css).BaseValueSource;
+        var nativeSource = element.GetValueSourceInternal(native).BaseValueSource;
+        return cssSource is BaseValueSource.Default or BaseValueSource.Inherited &&
+            nativeSource is not (BaseValueSource.Default or BaseValueSource.Inherited);
+    }
+
     internal static CssFlowTextAlignment TextAlignment(FrameworkElement element,
         DependencyProperty? nativeProperty = null)
     {
         var native = nativeProperty ?? TextBlock.TextAlignmentProperty;
-        var cssSource = element.GetValueSourceInternal(TextAlignProperty).BaseValueSource;
-        if (element.HasLocalOrAnimatedValue(native) || cssSource == BaseValueSource.Default &&
-            element.GetValueSourceInternal(native).BaseValueSource != BaseValueSource.Default)
+        if (NativeAlignmentWins(element, native, TextAlignProperty))
             return (TextAlignment)element.GetValue(native)! switch
             {
                 Jalium.UI.TextAlignment.Right => CssFlowTextAlignment.Right,
@@ -391,6 +419,13 @@ internal static class CssFlowProperties
     internal static CssFlowTextAlignment LineAlignment(FrameworkElement element, bool isLast,
         DependencyProperty? nativeProperty = null)
     {
+        if (CssRubyWritingMode.IsInterCharacterAnnotation(element))
+            return CssWritingModeProperties.GetRubyAlign(element) switch
+            {
+                CssRubyAlign.Start => CssFlowTextAlignment.Start,
+                CssRubyAlign.Center => CssFlowTextAlignment.Center,
+                _ => CssFlowTextAlignment.Justify,
+            };
         var native = nativeProperty ?? TextBlock.TextAlignmentProperty;
         var all = TextAlignment(element, native);
         if (!isLast || element.HasLocalOrAnimatedValue(native)) return all;
@@ -411,15 +446,20 @@ internal static class CssFlowProperties
     internal static TextAlignment NativeLineTextAlignment(FrameworkElement element,
         DependencyProperty nativeProperty, bool isLast)
     {
+        if (CssRubyWritingMode.IsInterCharacterAnnotation(element))
+            return ToNativeTextAlignment(LineAlignment(element, isLast, nativeProperty),
+                CssWritingModeProperties.GetUsedFlowDirection(element) == FlowDirection.RightToLeft);
         if (element.GetValueSourceInternal(TextAlignProperty).BaseValueSource == BaseValueSource.Default &&
             element.GetValueSourceInternal(TextAlignLastProperty).BaseValueSource == BaseValueSource.Default)
             return (TextAlignment)element.GetValue(nativeProperty)!;
         return ToNativeTextAlignment(LineAlignment(element, isLast, nativeProperty),
-            element.FlowDirection == FlowDirection.RightToLeft);
+            CssWritingModeProperties.GetUsedFlowDirection(element) == FlowDirection.RightToLeft);
     }
 
     internal static bool JustifiesLastLine(FrameworkElement element, DependencyProperty nativeProperty)
-        => !element.HasLocalOrAnimatedValue(nativeProperty) &&
+        => CssRubyWritingMode.IsInterCharacterAnnotation(element)
+            ? CssWritingModeProperties.GetRubyAlign(element) is CssRubyAlign.SpaceBetween or CssRubyAlign.SpaceAround
+            : !element.HasLocalOrAnimatedValue(nativeProperty) &&
            (CssFlowLastTextAlignment)element.GetValue(TextAlignLastProperty)! == CssFlowLastTextAlignment.Justify;
 
     internal static CssFlowTextAlignment MatchParentAlignment(CssNode element)

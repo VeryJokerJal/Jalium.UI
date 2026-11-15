@@ -172,10 +172,10 @@ internal sealed partial class HiddenNativeWindow : IDisposable
 
     private nint _hwnd;
 
-    public HiddenNativeWindow(int width, int height)
+    public HiddenNativeWindow(int width, int height, uint exStyle = 0)
     {
         _hwnd = CreateWindowExW(
-            0, "Static", null, WS_POPUP,
+            exStyle, "Static", null, WS_POPUP,
             0, 0, width, height,
             nint.Zero, nint.Zero, nint.Zero, nint.Zero);
         if (_hwnd == nint.Zero)

@@ -38,7 +38,7 @@ internal static class WindowTabFocusChecks
         if (!int.TryParse(argument.AsSpan("--window-tab-focus-case=".Length), out int index)
             || (uint)index >= CaseCount) return 2;
         JaliumMacApplication.Initialize();
-        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Prohibited;
+        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Accessory;
         RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
         var first = Editor(index, "first 中文🙂");
         var second = Editor(index, "second 中文🙂");

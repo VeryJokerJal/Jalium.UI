@@ -11,22 +11,28 @@ internal static class CssOrdinaryStyleQuery
     // property-specific computed-value projection before they can join this set.
     private static readonly HashSet<string> s_properties = new(StringComparer.OrdinalIgnoreCase)
     {
-        "opacity", "direction", "float", "clear", "container-type", "container-name",
+        "opacity", "direction", "unicode-bidi", "float", "clear", "container-type", "container-name",
+        "initial-letter", "initial-letter-align", "initial-letter-wrap",
+        "mix-blend-mode", "background-blend-mode", "isolation", "z-index",
+        "transform-style", "backface-visibility", "transform-box", "perspective",
         "user-select", "image-rendering", "object-fit", "text-justify", "text-group-align",
         "overflow-wrap", "word-break", "line-break", "text-autospace",
         "hanging-punctuation", "hyphens", "text-transform", "white-space-collapse",
         "text-wrap-mode", "text-wrap-style", "white-space-trim", "caret-animation",
         "caret-shape", "box-decoration-break", "math-depth", "math-style",
+        "max-lines", "block-ellipsis", "continue", "-webkit-box-orient",
+        "font-synthesis-small-caps", "font-kerning", "font-variant-ligatures", "font-variant-numeric", "font-variant-east-asian", "font-variant-alternates", "font-feature-settings", "font-variation-settings", "font-optical-sizing", "font-size-adjust", "font-variant-caps", "font-variant-position", "font-variant-emoji", "font-synthesis-position",
     };
     private static readonly HashSet<string> s_shorthands = new(StringComparer.OrdinalIgnoreCase)
     {
-        "container", "text-wrap", "white-space",
+        "font-variant", "container", "text-wrap", "white-space", "line-clamp", "-webkit-line-clamp",
     };
 
     internal static bool IsSupported(string name)
     {
         name = name.ToLowerInvariant();
-        return Descriptor(name) is not null || CssDisplayStyleQuery.IsSupported(name) ||
+        return Descriptor(name) is not null || CssMaskStyleQuery.IsSupported(name) || CssDisplayStyleQuery.IsSupported(name) ||
+            CssTextSpacingStyleQuery.IsSupported(name) ||
             CssVisibilityStyleQuery.IsSupported(name) || CssColorStyleQuery.IsSupported(name) ||
             CssFontWeightStyleQuery.IsSupported(name) || CssFontSizeStyleQuery.IsSupported(name) ||
             CssFontStretchStyleQuery.IsSupported(name) ||
@@ -40,6 +46,9 @@ internal static class CssOrdinaryStyleQuery
     internal static bool Matches(string name, string? value, CssNode container, CssLengthContext lengths)
     {
         name = name.ToLowerInvariant();
+        if (CssMaskStyleQuery.IsSupported(name)) return CssMaskStyleQuery.Matches(name, value, container, lengths);
+        if (CssTextSpacingStyleQuery.IsSupported(name))
+            return CssTextSpacingStyleQuery.Matches(name, value, container, lengths);
         if (CssDisplayStyleQuery.IsSupported(name))
             return CssDisplayStyleQuery.Matches(value, container, lengths);
         if (CssVisibilityStyleQuery.IsSupported(name))

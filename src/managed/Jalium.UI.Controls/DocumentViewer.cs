@@ -7,7 +7,6 @@ using Jalium.UI.Media;
 using DocumentPaginator = Jalium.UI.Documents.DocumentPaginator;
 
 namespace Jalium.UI.Controls;
-
 /// <summary>
 /// Specifies how pages are displayed in a document viewer.
 /// </summary>
@@ -17,22 +16,18 @@ public enum DocumentViewerPageDisplay
     /// One page at a time.
     /// </summary>
     OnePage,
-
     /// <summary>
     /// Two pages side by side.
     /// </summary>
     TwoPages,
-
     /// <summary>
     /// Two pages with the first page on the right (book style).
     /// </summary>
     TwoUpFacing,
-
     /// <summary>
     /// Continuous scrolling through pages.
     /// </summary>
     Continuous,
-
     /// <summary>
     /// Continuous scrolling with two pages side by side.
     /// </summary>
@@ -48,17 +43,14 @@ public enum DocumentViewerFitMode
     /// No automatic fit, use zoom level directly.
     /// </summary>
     None,
-
     /// <summary>
     /// Fit the page width to the viewer width.
     /// </summary>
     FitWidth,
-
     /// <summary>
     /// Fit the whole page in the viewer.
     /// </summary>
     FitPage,
-
     /// <summary>
     /// Maximum width of the page.
     /// </summary>
@@ -68,26 +60,17 @@ public enum DocumentViewerFitMode
 /// <summary>
 /// Provides viewing, navigation, and printing capabilities for paginated documents.
 /// </summary>
+[TemplatePart(Name = "PART_PagePanel", Type = typeof(DocumentPagePanel))]
 public class DocumentViewer : DocumentViewerBase
 {
     private const int MaximumPagesAcross = 32;
     private const double LineScrollAmount = 16.0;
-    private static readonly double[] s_zoomLevels =
-    [
-        5000.0, 4000.0, 3200.0, 2400.0, 2000.0, 1600.0, 1200.0, 800.0,
-        400.0, 300.0, 200.0, 175.0, 150.0, 125.0, 100.0, 75.0, 66.0,
-        50.0, 33.0, 25.0, 10.0, 5.0,
-    ];
-
-    private static readonly RoutedUICommand s_viewThumbnailsCommand =
-        new("View Thumbnails", nameof(ViewThumbnailsCommand), typeof(DocumentViewer));
-    private static readonly RoutedUICommand s_fitToWidthCommand =
-        new("Fit To Width", nameof(FitToWidthCommand), typeof(DocumentViewer));
-    private static readonly RoutedUICommand s_fitToHeightCommand =
-        new("Fit To Height", nameof(FitToHeightCommand), typeof(DocumentViewer));
-    private static readonly RoutedUICommand s_fitToMaxPagesAcrossCommand =
-        new("Fit To Max Pages Across", nameof(FitToMaxPagesAcrossCommand), typeof(DocumentViewer));
-
+    private static readonly double[] s_zoomLevels = [5000.0, 4000.0, 3200.0, 2400.0, 2000.0, 1600.0, 1200.0, 800.0, 400.0, 300.0, 200.0, 175.0, 150.0, 125.0, 100.0, 75.0, 66.0, 50.0, 33.0, 25.0, 10.0, 5.0, ];
+    private static readonly RoutedUICommand s_viewThumbnailsCommand = new("View Thumbnails", nameof(ViewThumbnailsCommand), typeof(DocumentViewer));
+    private static readonly RoutedUICommand s_fitToWidthCommand = new("Fit To Width", nameof(FitToWidthCommand), typeof(DocumentViewer));
+    private static readonly RoutedUICommand s_fitToHeightCommand = new("Fit To Height", nameof(FitToHeightCommand), typeof(DocumentViewer));
+    private static readonly RoutedUICommand s_fitToMaxPagesAcrossCommand = new("Fit To Max Pages Across", nameof(FitToMaxPagesAcrossCommand), typeof(DocumentViewer));
+    private DocumentPagePanel? _pagePanel;
     private readonly List<DocumentPageView> _pageViews = [];
     private readonly ReadOnlyCollection<DocumentPageView> _readOnlyPageViews;
     private readonly List<TextSearchResult> _searchResults = [];
@@ -98,273 +81,106 @@ public class DocumentViewer : DocumentViewerBase
     private int _lastPageNumber;
     private int _currentSearchResultIndex = -1;
     private string _searchText = string.Empty;
-
     public DocumentViewer()
     {
+        SetValue(DefaultStyleKeyProperty, typeof(DocumentViewer));
         _readOnlyPageViews = new ReadOnlyCollection<DocumentPageView>(_pageViews);
         RegisterCommandBindings();
         UpdateZoomState();
     }
 
-    #region Commands
-
+#region Commands
     public static RoutedUICommand ViewThumbnailsCommand => s_viewThumbnailsCommand;
     public static RoutedUICommand FitToWidthCommand => s_fitToWidthCommand;
     public static RoutedUICommand FitToHeightCommand => s_fitToHeightCommand;
     public static RoutedUICommand FitToMaxPagesAcrossCommand => s_fitToMaxPagesAcrossCommand;
 
-    #endregion
-
-    #region Dependency properties
-
-    public new static readonly DependencyProperty ZoomProperty =
-        DocumentViewerBase.ZoomProperty.AddOwner(
-            typeof(DocumentViewer),
-            new PropertyMetadata(100.0, OnZoomChanged, CoerceZoom));
-
-    public new static readonly DependencyProperty MinZoomProperty =
-        DocumentViewerBase.MinZoomProperty.AddOwner(
-            typeof(DocumentViewer),
-            new PropertyMetadata(5.0, OnZoomBoundsChanged));
-
-    public new static readonly DependencyProperty MaxZoomProperty =
-        DocumentViewerBase.MaxZoomProperty.AddOwner(
-            typeof(DocumentViewer),
-            new PropertyMetadata(5000.0, OnZoomBoundsChanged));
-
-    public new static readonly DependencyProperty ZoomIncrementProperty =
-        DocumentViewerBase.ZoomIncrementProperty.AddOwner(typeof(DocumentViewer));
-
-    public static readonly DependencyProperty HorizontalOffsetProperty =
-        DependencyProperty.Register(
-            nameof(HorizontalOffset),
-            typeof(double),
-            typeof(DocumentViewer),
-            new PropertyMetadata(0.0, OnOffsetChanged),
-            IsValidOffset);
-
-    public static readonly DependencyProperty VerticalOffsetProperty =
-        DependencyProperty.Register(
-            nameof(VerticalOffset),
-            typeof(double),
-            typeof(DocumentViewer),
-            new PropertyMetadata(0.0, OnOffsetChanged),
-            IsValidOffset);
-
-    private static readonly DependencyPropertyKey ExtentWidthPropertyKey =
-        DependencyProperty.RegisterReadOnly(
-            nameof(ExtentWidth),
-            typeof(double),
-            typeof(DocumentViewer),
-            new PropertyMetadata(0.0));
-
+#endregion
+#region Dependency properties
+    public new static readonly DependencyProperty ZoomProperty = DocumentViewerBase.ZoomProperty.AddOwner(typeof(DocumentViewer), new PropertyMetadata(100.0, OnZoomChanged, CoerceZoom));
+    public new static readonly DependencyProperty MinZoomProperty = DocumentViewerBase.MinZoomProperty.AddOwner(typeof(DocumentViewer), new PropertyMetadata(5.0, OnZoomBoundsChanged));
+    public new static readonly DependencyProperty MaxZoomProperty = DocumentViewerBase.MaxZoomProperty.AddOwner(typeof(DocumentViewer), new PropertyMetadata(5000.0, OnZoomBoundsChanged));
+    public new static readonly DependencyProperty ZoomIncrementProperty = DocumentViewerBase.ZoomIncrementProperty.AddOwner(typeof(DocumentViewer));
+    public static readonly DependencyProperty HorizontalOffsetProperty = DependencyProperty.Register(nameof(HorizontalOffset), typeof(double), typeof(DocumentViewer), new PropertyMetadata(0.0, OnOffsetChanged), IsValidOffset);
+    public static readonly DependencyProperty VerticalOffsetProperty = DependencyProperty.Register(nameof(VerticalOffset), typeof(double), typeof(DocumentViewer), new PropertyMetadata(0.0, OnOffsetChanged), IsValidOffset);
+    private static readonly DependencyPropertyKey ExtentWidthPropertyKey = DependencyProperty.RegisterReadOnly(nameof(ExtentWidth), typeof(double), typeof(DocumentViewer), new PropertyMetadata(0.0));
     public static readonly DependencyProperty ExtentWidthProperty = ExtentWidthPropertyKey.DependencyProperty;
-
-    private static readonly DependencyPropertyKey ExtentHeightPropertyKey =
-        DependencyProperty.RegisterReadOnly(
-            nameof(ExtentHeight),
-            typeof(double),
-            typeof(DocumentViewer),
-            new PropertyMetadata(0.0));
-
+    private static readonly DependencyPropertyKey ExtentHeightPropertyKey = DependencyProperty.RegisterReadOnly(nameof(ExtentHeight), typeof(double), typeof(DocumentViewer), new PropertyMetadata(0.0));
     public static readonly DependencyProperty ExtentHeightProperty = ExtentHeightPropertyKey.DependencyProperty;
-
-    private static readonly DependencyPropertyKey ViewportWidthPropertyKey =
-        DependencyProperty.RegisterReadOnly(
-            nameof(ViewportWidth),
-            typeof(double),
-            typeof(DocumentViewer),
-            new PropertyMetadata(0.0));
-
+    private static readonly DependencyPropertyKey ViewportWidthPropertyKey = DependencyProperty.RegisterReadOnly(nameof(ViewportWidth), typeof(double), typeof(DocumentViewer), new PropertyMetadata(0.0));
     public static readonly DependencyProperty ViewportWidthProperty = ViewportWidthPropertyKey.DependencyProperty;
-
-    private static readonly DependencyPropertyKey ViewportHeightPropertyKey =
-        DependencyProperty.RegisterReadOnly(
-            nameof(ViewportHeight),
-            typeof(double),
-            typeof(DocumentViewer),
-            new PropertyMetadata(0.0));
-
+    private static readonly DependencyPropertyKey ViewportHeightPropertyKey = DependencyProperty.RegisterReadOnly(nameof(ViewportHeight), typeof(double), typeof(DocumentViewer), new PropertyMetadata(0.0));
     public static readonly DependencyProperty ViewportHeightProperty = ViewportHeightPropertyKey.DependencyProperty;
-
-    public static readonly DependencyProperty MaxPagesAcrossProperty =
-        DependencyProperty.Register(
-            nameof(MaxPagesAcross),
-            typeof(int),
-            typeof(DocumentViewer),
-            new PropertyMetadata(1, OnLayoutPropertyChanged),
-            IsValidMaxPagesAcross);
-
-    private static readonly DependencyPropertyKey CanMoveUpPropertyKey =
-        DependencyProperty.RegisterReadOnly(nameof(CanMoveUp), typeof(bool), typeof(DocumentViewer), new PropertyMetadata(false));
+    public static readonly DependencyProperty MaxPagesAcrossProperty = DependencyProperty.Register(nameof(MaxPagesAcross), typeof(int), typeof(DocumentViewer), new PropertyMetadata(1, OnLayoutPropertyChanged), IsValidMaxPagesAcross);
+    private static readonly DependencyPropertyKey CanMoveUpPropertyKey = DependencyProperty.RegisterReadOnly(nameof(CanMoveUp), typeof(bool), typeof(DocumentViewer), new PropertyMetadata(false));
     public static readonly DependencyProperty CanMoveUpProperty = CanMoveUpPropertyKey.DependencyProperty;
-
-    private static readonly DependencyPropertyKey CanMoveDownPropertyKey =
-        DependencyProperty.RegisterReadOnly(nameof(CanMoveDown), typeof(bool), typeof(DocumentViewer), new PropertyMetadata(false));
+    private static readonly DependencyPropertyKey CanMoveDownPropertyKey = DependencyProperty.RegisterReadOnly(nameof(CanMoveDown), typeof(bool), typeof(DocumentViewer), new PropertyMetadata(false));
     public static readonly DependencyProperty CanMoveDownProperty = CanMoveDownPropertyKey.DependencyProperty;
-
-    private static readonly DependencyPropertyKey CanMoveLeftPropertyKey =
-        DependencyProperty.RegisterReadOnly(nameof(CanMoveLeft), typeof(bool), typeof(DocumentViewer), new PropertyMetadata(false));
+    private static readonly DependencyPropertyKey CanMoveLeftPropertyKey = DependencyProperty.RegisterReadOnly(nameof(CanMoveLeft), typeof(bool), typeof(DocumentViewer), new PropertyMetadata(false));
     public static readonly DependencyProperty CanMoveLeftProperty = CanMoveLeftPropertyKey.DependencyProperty;
-
-    private static readonly DependencyPropertyKey CanMoveRightPropertyKey =
-        DependencyProperty.RegisterReadOnly(nameof(CanMoveRight), typeof(bool), typeof(DocumentViewer), new PropertyMetadata(false));
+    private static readonly DependencyPropertyKey CanMoveRightPropertyKey = DependencyProperty.RegisterReadOnly(nameof(CanMoveRight), typeof(bool), typeof(DocumentViewer), new PropertyMetadata(false));
     public static readonly DependencyProperty CanMoveRightProperty = CanMoveRightPropertyKey.DependencyProperty;
-
-    private static readonly DependencyPropertyKey CanIncreaseZoomPropertyKey =
-        DependencyProperty.RegisterReadOnly(nameof(CanIncreaseZoom), typeof(bool), typeof(DocumentViewer), new PropertyMetadata(true));
+    private static readonly DependencyPropertyKey CanIncreaseZoomPropertyKey = DependencyProperty.RegisterReadOnly(nameof(CanIncreaseZoom), typeof(bool), typeof(DocumentViewer), new PropertyMetadata(true));
     public static readonly DependencyProperty CanIncreaseZoomProperty = CanIncreaseZoomPropertyKey.DependencyProperty;
-
-    private static readonly DependencyPropertyKey CanDecreaseZoomPropertyKey =
-        DependencyProperty.RegisterReadOnly(nameof(CanDecreaseZoom), typeof(bool), typeof(DocumentViewer), new PropertyMetadata(true));
+    private static readonly DependencyPropertyKey CanDecreaseZoomPropertyKey = DependencyProperty.RegisterReadOnly(nameof(CanDecreaseZoom), typeof(bool), typeof(DocumentViewer), new PropertyMetadata(true));
     public static readonly DependencyProperty CanDecreaseZoomProperty = CanDecreaseZoomPropertyKey.DependencyProperty;
-
-    public static readonly DependencyProperty ShowPageBordersProperty =
-        DependencyProperty.Register(
-            nameof(ShowPageBorders),
-            typeof(bool),
-            typeof(DocumentViewer),
-            new PropertyMetadata(true, OnShowPageBordersChanged));
-
-    public static readonly DependencyProperty HorizontalPageSpacingProperty =
-        DependencyProperty.Register(
-            nameof(HorizontalPageSpacing),
-            typeof(double),
-            typeof(DocumentViewer),
-            new PropertyMetadata(10.0, OnLayoutPropertyChanged),
-            IsValidPageSpacing);
-
-    public static readonly DependencyProperty VerticalPageSpacingProperty =
-        DependencyProperty.Register(
-            nameof(VerticalPageSpacing),
-            typeof(double),
-            typeof(DocumentViewer),
-            new PropertyMetadata(10.0, OnLayoutPropertyChanged),
-            IsValidPageSpacing);
-
-    public static readonly DependencyProperty FitModeProperty =
-        DependencyProperty.Register(
-            nameof(FitMode),
-            typeof(DocumentViewerFitMode),
-            typeof(DocumentViewer),
-            new PropertyMetadata(DocumentViewerFitMode.None, OnFitModeChanged));
-
-    public static readonly DependencyProperty PageDisplayProperty =
-        DependencyProperty.Register(
-            nameof(PageDisplay),
-            typeof(DocumentViewerPageDisplay),
-            typeof(DocumentViewer),
-            new PropertyMetadata(DocumentViewerPageDisplay.OnePage, OnPageDisplayChanged));
-
-    #endregion
-
-    #region CLR properties
-
-    public new double Zoom
-    {
-        get => (double)(GetValue(ZoomProperty) ?? 100.0);
-        set => SetValue(ZoomProperty, value);
-    }
-
-    public new double MinZoom
-    {
-        get => (double)(GetValue(MinZoomProperty) ?? 5.0);
-        set => SetValue(MinZoomProperty, value);
-    }
-
-    public new double MaxZoom
-    {
-        get => (double)(GetValue(MaxZoomProperty) ?? 5000.0);
-        set => SetValue(MaxZoomProperty, value);
-    }
-
-    public new double ZoomIncrement
-    {
-        get => (double)(GetValue(ZoomIncrementProperty) ?? 10.0);
-        set => SetValue(ZoomIncrementProperty, value);
-    }
-
-    public double HorizontalOffset
-    {
-        get => (double)(GetValue(HorizontalOffsetProperty) ?? 0.0);
-        set => SetValue(HorizontalOffsetProperty, value);
-    }
-
-    public double VerticalOffset
-    {
-        get => (double)(GetValue(VerticalOffsetProperty) ?? 0.0);
-        set => SetValue(VerticalOffsetProperty, value);
-    }
-
+    public static readonly DependencyProperty ShowPageBordersProperty = DependencyProperty.Register(nameof(ShowPageBorders), typeof(bool), typeof(DocumentViewer), new PropertyMetadata(true, OnShowPageBordersChanged));
+    public static readonly DependencyProperty HorizontalPageSpacingProperty = DependencyProperty.Register(nameof(HorizontalPageSpacing), typeof(double), typeof(DocumentViewer), new PropertyMetadata(10.0, OnLayoutPropertyChanged), IsValidPageSpacing);
+    public static readonly DependencyProperty VerticalPageSpacingProperty = DependencyProperty.Register(nameof(VerticalPageSpacing), typeof(double), typeof(DocumentViewer), new PropertyMetadata(10.0, OnLayoutPropertyChanged), IsValidPageSpacing);
+    public static readonly DependencyProperty FitModeProperty = DependencyProperty.Register(nameof(FitMode), typeof(DocumentViewerFitMode), typeof(DocumentViewer), new PropertyMetadata(DocumentViewerFitMode.None, OnFitModeChanged));
+    public static readonly DependencyProperty PageDisplayProperty = DependencyProperty.Register(nameof(PageDisplay), typeof(DocumentViewerPageDisplay), typeof(DocumentViewer), new PropertyMetadata(DocumentViewerPageDisplay.OnePage, OnPageDisplayChanged));
+#endregion
+    private static readonly DependencyPropertyKey VisiblePageViewsPropertyKey = DependencyProperty.RegisterReadOnly(nameof(VisiblePageViews), typeof(IReadOnlyList<DocumentPageView>), typeof(DocumentViewer), new PropertyMetadata(Array.Empty<DocumentPageView>()));
+    public static readonly DependencyProperty VisiblePageViewsProperty = VisiblePageViewsPropertyKey.DependencyProperty;
+    private static readonly DependencyPropertyKey DisplayPageSizePropertyKey = DependencyProperty.RegisterReadOnly(nameof(DisplayPageSize), typeof(Size), typeof(DocumentViewer), new PropertyMetadata(new Size(816, 1056)));
+    public static readonly DependencyProperty DisplayPageSizeProperty = DisplayPageSizePropertyKey.DependencyProperty;
+    private static readonly DependencyPropertyKey PageColumnsPropertyKey = DependencyProperty.RegisterReadOnly(nameof(PageColumns), typeof(int), typeof(DocumentViewer), new PropertyMetadata(1));
+    public static readonly DependencyProperty PageColumnsProperty = PageColumnsPropertyKey.DependencyProperty;
+    private static readonly DependencyPropertyKey IsFirstPageOnRightPropertyKey = DependencyProperty.RegisterReadOnly(nameof(IsFirstPageOnRight), typeof(bool), typeof(DocumentViewer), new PropertyMetadata(false));
+    public static readonly DependencyProperty IsFirstPageOnRightProperty = IsFirstPageOnRightPropertyKey.DependencyProperty;
+    /// <summary>The current retained page models for use in a replacement template.</summary>
+    public IReadOnlyList<DocumentPageView> VisiblePageViews => (IReadOnlyList<DocumentPageView>)GetValue(VisiblePageViewsProperty)!;
+    public Size DisplayPageSize => (Size)GetValue(DisplayPageSizeProperty)!;
+    public int PageColumns => (int)GetValue(PageColumnsProperty)!;
+    public bool IsFirstPageOnRight => (bool)GetValue(IsFirstPageOnRightProperty)!;
+#region CLR properties
+    public new double Zoom { get => (double)(GetValue(ZoomProperty) ?? 100.0); set => SetValue(ZoomProperty, value); }
+    public new double MinZoom { get => (double)(GetValue(MinZoomProperty) ?? 5.0); set => SetValue(MinZoomProperty, value); }
+    public new double MaxZoom { get => (double)(GetValue(MaxZoomProperty) ?? 5000.0); set => SetValue(MaxZoomProperty, value); }
+    public new double ZoomIncrement { get => (double)(GetValue(ZoomIncrementProperty) ?? 10.0); set => SetValue(ZoomIncrementProperty, value); }
+    public double HorizontalOffset { get => (double)(GetValue(HorizontalOffsetProperty) ?? 0.0); set => SetValue(HorizontalOffsetProperty, value); }
+    public double VerticalOffset { get => (double)(GetValue(VerticalOffsetProperty) ?? 0.0); set => SetValue(VerticalOffsetProperty, value); }
     public double ExtentWidth => (double)(GetValue(ExtentWidthProperty) ?? 0.0);
     public double ExtentHeight => (double)(GetValue(ExtentHeightProperty) ?? 0.0);
     public double ViewportWidth => (double)(GetValue(ViewportWidthProperty) ?? 0.0);
     public double ViewportHeight => (double)(GetValue(ViewportHeightProperty) ?? 0.0);
-
-    public int MaxPagesAcross
-    {
-        get => (int)(GetValue(MaxPagesAcrossProperty) ?? 1);
-        set => SetValue(MaxPagesAcrossProperty, value);
-    }
-
+    public int MaxPagesAcross { get => (int)(GetValue(MaxPagesAcrossProperty) ?? 1); set => SetValue(MaxPagesAcrossProperty, value); }
     public bool CanMoveUp => (bool)(GetValue(CanMoveUpProperty) ?? false);
     public bool CanMoveDown => (bool)(GetValue(CanMoveDownProperty) ?? false);
     public bool CanMoveLeft => (bool)(GetValue(CanMoveLeftProperty) ?? false);
     public bool CanMoveRight => (bool)(GetValue(CanMoveRightProperty) ?? false);
     public bool CanIncreaseZoom => (bool)(GetValue(CanIncreaseZoomProperty) ?? true);
     public bool CanDecreaseZoom => (bool)(GetValue(CanDecreaseZoomProperty) ?? true);
-
-    public bool ShowPageBorders
-    {
-        get => (bool)(GetValue(ShowPageBordersProperty) ?? true);
-        set => SetValue(ShowPageBordersProperty, value);
-    }
-
-    public double HorizontalPageSpacing
-    {
-        get => (double)(GetValue(HorizontalPageSpacingProperty) ?? 10.0);
-        set => SetValue(HorizontalPageSpacingProperty, value);
-    }
-
-    public double VerticalPageSpacing
-    {
-        get => (double)(GetValue(VerticalPageSpacingProperty) ?? 10.0);
-        set => SetValue(VerticalPageSpacingProperty, value);
-    }
-
-    public DocumentViewerFitMode FitMode
-    {
-        get => (DocumentViewerFitMode)(GetValue(FitModeProperty) ?? DocumentViewerFitMode.None);
-        set => SetValue(FitModeProperty, value);
-    }
-
-    public DocumentViewerPageDisplay PageDisplay
-    {
-        get => (DocumentViewerPageDisplay)(GetValue(PageDisplayProperty) ?? DocumentViewerPageDisplay.OnePage);
-        set => SetValue(PageDisplayProperty, value);
-    }
-
+    public bool ShowPageBorders { get => (bool)(GetValue(ShowPageBordersProperty) ?? true); set => SetValue(ShowPageBordersProperty, value); }
+    public double HorizontalPageSpacing { get => (double)(GetValue(HorizontalPageSpacingProperty) ?? 10.0); set => SetValue(HorizontalPageSpacingProperty, value); }
+    public double VerticalPageSpacing { get => (double)(GetValue(VerticalPageSpacingProperty) ?? 10.0); set => SetValue(VerticalPageSpacingProperty, value); }
+    public DocumentViewerFitMode FitMode { get => (DocumentViewerFitMode)(GetValue(FitModeProperty) ?? DocumentViewerFitMode.None); set => SetValue(FitModeProperty, value); }
+    public DocumentViewerPageDisplay PageDisplay { get => (DocumentViewerPageDisplay)(GetValue(PageDisplayProperty) ?? DocumentViewerPageDisplay.OnePage); set => SetValue(PageDisplayProperty, value); }
     public int CurrentPage => MasterPageNumber;
     public string SearchText => _searchText;
     public int SearchResultCount => _searchResults.Count;
 
-    #endregion
-
-    #region Events
-
+#endregion
+#region Events
     public event EventHandler<PageChangedEventArgs>? PageChanged;
     public event EventHandler? DocumentLoaded;
     public event EventHandler<SearchCompletedEventArgs>? SearchCompleted;
-
-    #endregion
-
-    #region Public commands and compatibility methods
-
+#endregion
+#region Public commands and compatibility methods
     public void ViewThumbnails() => OnViewThumbnailsCommand();
     public void FitToWidth() => OnFitToWidthCommand();
     public void FitToHeight() => OnFitToHeightCommand();
     public void FitToMaxPagesAcross() => OnFitToMaxPagesAcrossCommand();
-
     public void FitToMaxPagesAcross(int pagesAcross) => OnFitToMaxPagesAcrossCommand(pagesAcross);
     public void ScrollPageUp() => OnScrollPageUpCommand();
     public void ScrollPageDown() => OnScrollPageDownCommand();
@@ -376,10 +192,8 @@ public class DocumentViewer : DocumentViewerBase
     public void MoveRight() => OnMoveRightCommand();
     public new void IncreaseZoom() => OnIncreaseZoomCommand();
     public new void DecreaseZoom() => OnDecreaseZoomCommand();
-
     public void ZoomIn() => IncreaseZoom();
     public void ZoomOut() => DecreaseZoom();
-
     public void FitToPage()
     {
         if (_paginator == null)
@@ -388,26 +202,23 @@ public class DocumentViewer : DocumentViewerBase
         }
 
         SetFitMode(DocumentViewerFitMode.FitPage);
-        PageDisplay = DocumentViewerPageDisplay.OnePage;
+        SetCurrentValue(PageDisplayProperty, DocumentViewerPageDisplay.OnePage);
         SetZoomFromViewport(fitWidth: true, fitHeight: true, 1);
     }
 
     public void SetZoom(double zoomPercent)
     {
         SetFitMode(DocumentViewerFitMode.None);
-        Zoom = zoomPercent;
+        SetCurrentValue(ZoomProperty, zoomPercent);
     }
 
     public void Find() => OnFindCommand();
-
     public void Find(string text, bool matchCase = false, bool matchWholeWord = false)
     {
         ArgumentNullException.ThrowIfNull(text);
-
         _searchText = text;
         _searchResults.Clear();
         _currentSearchResultIndex = -1;
-
         if (text.Length == 0 || _paginator == null)
         {
             OnSearchCompleted(0);
@@ -416,8 +227,7 @@ public class DocumentViewer : DocumentViewerBase
 
         if (_paginator is not IDocumentTextSearchProvider searchProvider)
         {
-            throw new NotSupportedException(
-                "The current paginator does not expose searchable text. Implement IDocumentTextSearchProvider to enable document search.");
+            throw new NotSupportedException("The current paginator does not expose searchable text. Implement IDocumentTextSearchProvider to enable document search.");
         }
 
         _searchResults.AddRange(searchProvider.Find(text, matchCase, matchWholeWord));
@@ -454,16 +264,13 @@ public class DocumentViewer : DocumentViewerBase
         InvalidateVisual();
     }
 
-    #endregion
-
-    #region Protected command hooks
-
+#endregion
+#region Protected command hooks
     protected override void OnDocumentChanged()
     {
         var oldPage = CurrentPage;
         base.OnDocumentChanged();
         _paginator = Document?.DocumentPaginator;
-
         ClearSearch();
         _lastPageNumber = oldPage;
         if (PageCount > 0)
@@ -479,6 +286,7 @@ public class DocumentViewer : DocumentViewerBase
         {
             RefreshPageViews();
         }
+
         UpdateMoveState();
         DocumentLoaded?.Invoke(this, EventArgs.Empty);
     }
@@ -489,11 +297,11 @@ public class DocumentViewer : DocumentViewerBase
         var newPage = CurrentPage;
         var oldPage = _lastPageNumber;
         _lastPageNumber = newPage;
-
         if (!_publishingPageViews)
         {
             RefreshPageViews();
         }
+
         ScrollCurrentPageIntoView();
         if (oldPage != newPage)
         {
@@ -505,12 +313,22 @@ public class DocumentViewer : DocumentViewerBase
     {
         ArgumentNullException.ThrowIfNull(element);
         OnGoToPageCommand(pageNumber);
-
-        if (!rect.IsEmpty)
-        {
-            SetHorizontalOffset(rect.X);
-            SetVerticalOffset(rect.Y);
-        }
+        if (rect.IsEmpty)
+            return;
+        var index = Math.Max(0, _pageViews.FindIndex(page => page.PageNumber == pageNumber - 1));
+        var columns = GetEffectiveColumnCount();
+        var column = IsFirstPageOnRight && pageNumber == 1 ? columns - 1 : index % columns;
+        var pageSize = GetScaledPageSize();
+        var scale = Zoom / 100;
+        var bounds = new Rect(column * (pageSize.Width + HorizontalPageSpacing) + rect.X * scale, index / columns * (pageSize.Height + VerticalPageSpacing) + rect.Y * scale, rect.Width * scale, rect.Height * scale);
+        if (bounds.X < HorizontalOffset)
+            SetHorizontalOffset(bounds.X);
+        else if (bounds.Right > HorizontalOffset + ViewportWidth)
+            SetHorizontalOffset(bounds.Width > ViewportWidth ? bounds.X : bounds.Right - ViewportWidth);
+        if (bounds.Y < VerticalOffset)
+            SetVerticalOffset(bounds.Y);
+        else if (bounds.Bottom > VerticalOffset + ViewportHeight)
+            SetVerticalOffset(bounds.Height > ViewportHeight ? bounds.Y : bounds.Bottom - ViewportHeight);
     }
 
     protected override void OnPreviousPageCommand()
@@ -528,6 +346,7 @@ public class DocumentViewer : DocumentViewerBase
                 var currentRowStart = 2 + (((CurrentPage - 2) / 2) * 2);
                 OnGoToPageCommand(currentRowStart - 2);
             }
+
             return;
         }
 
@@ -538,9 +357,7 @@ public class DocumentViewer : DocumentViewerBase
     {
         if (PageDisplay == DocumentViewerPageDisplay.TwoUpFacing)
         {
-            var nextPage = CurrentPage <= 1
-                ? 2
-                : 2 + (((CurrentPage - 2) / 2) * 2) + 2;
+            var nextPage = CurrentPage <= 1 ? 2 : 2 + (((CurrentPage - 2) / 2) * 2) + 2;
             OnGoToPageCommand(Math.Min(PageCount, nextPage));
             return;
         }
@@ -550,7 +367,6 @@ public class DocumentViewer : DocumentViewerBase
 
     protected override void OnFirstPageCommand() => OnGoToPageCommand(1);
     protected override void OnLastPageCommand() => OnGoToPageCommand(PageCount);
-
     protected override void OnGoToPageCommand(int pageNumber)
     {
         if (pageNumber >= 1 && pageNumber <= PageCount)
@@ -569,11 +385,8 @@ public class DocumentViewer : DocumentViewerBase
         var pageWidth = GetUnscaledPageSize().Width;
         var viewport = GetEffectiveViewportWidth();
         var thumbnailWidth = Math.Max(1.0, pageWidth * Math.Max(MinZoom, 5.0) / 100.0);
-        var columns = viewport > 0
-            ? Math.Clamp((int)Math.Floor((viewport + HorizontalPageSpacing) / (thumbnailWidth + HorizontalPageSpacing)), 1, MaximumPagesAcross)
-            : Math.Min(4, MaximumPagesAcross);
-
-        PageDisplay = DocumentViewerPageDisplay.Continuous;
+        var columns = viewport > 0 ? Math.Clamp((int)Math.Floor((viewport + HorizontalPageSpacing) / (thumbnailWidth + HorizontalPageSpacing)), 1, MaximumPagesAcross) : Math.Min(4, MaximumPagesAcross);
+        SetCurrentValue(PageDisplayProperty, DocumentViewerPageDisplay.Continuous);
         OnFitToMaxPagesAcrossCommand(columns);
     }
 
@@ -584,8 +397,8 @@ public class DocumentViewer : DocumentViewerBase
             return;
         }
 
-        PageDisplay = DocumentViewerPageDisplay.OnePage;
-        MaxPagesAcross = 1;
+        SetCurrentValue(PageDisplayProperty, DocumentViewerPageDisplay.OnePage);
+        SetCurrentValue(MaxPagesAcrossProperty, 1);
         SetFitMode(DocumentViewerFitMode.FitWidth);
         SetZoomFromViewport(fitWidth: true, fitHeight: false, 1);
     }
@@ -597,15 +410,13 @@ public class DocumentViewer : DocumentViewerBase
             return;
         }
 
-        PageDisplay = DocumentViewerPageDisplay.OnePage;
-        MaxPagesAcross = 1;
+        SetCurrentValue(PageDisplayProperty, DocumentViewerPageDisplay.OnePage);
+        SetCurrentValue(MaxPagesAcrossProperty, 1);
         SetFitMode(DocumentViewerFitMode.FitPage);
         SetZoomFromViewport(fitWidth: false, fitHeight: true, 1);
     }
 
-    protected virtual void OnFitToMaxPagesAcrossCommand() =>
-        OnFitToMaxPagesAcrossCommand(MaxPagesAcross);
-
+    protected virtual void OnFitToMaxPagesAcrossCommand() => OnFitToMaxPagesAcrossCommand(MaxPagesAcross);
     protected virtual void OnFitToMaxPagesAcrossCommand(int pagesAcross)
     {
         if (!IsValidMaxPagesAcross(pagesAcross))
@@ -618,8 +429,8 @@ public class DocumentViewer : DocumentViewerBase
             return;
         }
 
-        PageDisplay = DocumentViewerPageDisplay.Continuous;
-        MaxPagesAcross = pagesAcross;
+        SetCurrentValue(PageDisplayProperty, DocumentViewerPageDisplay.Continuous);
+        SetCurrentValue(MaxPagesAcrossProperty, pagesAcross);
         SetFitMode(DocumentViewerFitMode.MaxWidth);
         SetZoomFromViewport(fitWidth: true, fitHeight: false, pagesAcross);
     }
@@ -628,8 +439,7 @@ public class DocumentViewer : DocumentViewerBase
     {
         if (string.IsNullOrEmpty(_searchText))
         {
-            throw new NotSupportedException(
-                "This viewer has no built-in find toolbar. Supply search text through Find(string, ...) first.");
+            throw new NotSupportedException("This viewer has no built-in find toolbar. Supply search text through Find(string, ...) first.");
         }
 
         Find(_searchText);
@@ -643,7 +453,6 @@ public class DocumentViewer : DocumentViewerBase
     protected virtual void OnMoveDownCommand() => SetVerticalOffset(VerticalOffset + LineScrollAmount);
     protected virtual void OnMoveLeftCommand() => SetHorizontalOffset(HorizontalOffset - LineScrollAmount);
     protected virtual void OnMoveRightCommand() => SetHorizontalOffset(HorizontalOffset + LineScrollAmount);
-
     protected virtual void OnIncreaseZoomCommand()
     {
         if (!CanIncreaseZoom)
@@ -655,12 +464,12 @@ public class DocumentViewer : DocumentViewerBase
         {
             if (s_zoomLevels[index] > Zoom)
             {
-                Zoom = Math.Min(MaxZoom, s_zoomLevels[index]);
+                SetCurrentValue(ZoomProperty, Math.Min(MaxZoom, s_zoomLevels[index]));
                 return;
             }
         }
 
-        Zoom = MaxZoom;
+        SetCurrentValue(ZoomProperty, MaxZoom);
     }
 
     protected virtual void OnDecreaseZoomCommand()
@@ -674,12 +483,12 @@ public class DocumentViewer : DocumentViewerBase
         {
             if (level < Zoom)
             {
-                Zoom = Math.Max(MinZoom, level);
+                SetCurrentValue(ZoomProperty, Math.Max(MinZoom, level));
                 return;
             }
         }
 
-        Zoom = MinZoom;
+        SetCurrentValue(ZoomProperty, MinZoom);
     }
 
     protected override ReadOnlyCollection<DocumentPageView> GetPageViewsCollection(out bool changed)
@@ -689,127 +498,132 @@ public class DocumentViewer : DocumentViewerBase
         {
             _pageViewsChanged = false;
         }
+
         return _readOnlyPageViews;
     }
 
-    #endregion
-
-    #region Layout
-
-    protected override int VisualChildrenCount => base.VisualChildrenCount + _pageViews.Count;
-
-    protected override Visual? GetVisualChild(int index)
+#endregion
+#region Layout
+    public override void OnApplyTemplate()
     {
-        var baseCount = base.VisualChildrenCount;
-        if (index < baseCount)
+        base.OnApplyTemplate();
+        _pagePanel = GetTemplateChild("PART_PagePanel") as DocumentPagePanel;
+        UpdatePageLayoutState();
+        UpdateVisualStates(false);
+    }
+
+    internal override void OnTemplateContentClearing()
+    {
+        if (_pagePanel is not null)
         {
-            return base.GetVisualChild(index);
+            _pagePanel.PagesSource = null;
+            Jalium.UI.Data.BindingOperations.ClearBinding(_pagePanel, DocumentPagePanel.HorizontalOffsetProperty);
+            Jalium.UI.Data.BindingOperations.ClearBinding(_pagePanel, DocumentPagePanel.VerticalOffsetProperty);
+            _pagePanel.ScrollOwner = null;
         }
 
-        var pageIndex = index - baseCount;
-        return pageIndex >= 0 && pageIndex < _pageViews.Count
-            ? _pageViews[pageIndex]
-            : throw new ArgumentOutOfRangeException(nameof(index));
+        _pagePanel = null;
+        base.OnTemplateContentClearing();
     }
 
     protected override Size MeasureOverride(Size availableSize)
     {
-        var pageSize = GetScaledPageSize();
-        var columns = GetEffectiveColumnCount();
-        var rows = _pageViews.Count == 0 ? 0 : (int)Math.Ceiling((double)_pageViews.Count / columns);
-
-        foreach (var pageView in _pageViews)
+        Size result = default;
+        for (int attempt = 0; attempt < 3; attempt++)
         {
-            pageView.Measure(pageSize);
+            UpdatePageLayoutState();
+            result = base.MeasureOverride(availableSize);
+            double measuredZoom = Zoom;
+            UpdatePanelMetrics();
+            if (measuredZoom == Zoom)
+                break;
         }
 
-        var extentWidth = _pageViews.Count == 0
-            ? 0.0
-            : (columns * pageSize.Width) + ((columns - 1) * HorizontalPageSpacing);
-        var extentHeight = rows == 0
-            ? 0.0
-            : (rows * pageSize.Height) + ((rows - 1) * VerticalPageSpacing);
-        var viewportWidth = NormalizeViewport(availableSize.Width, extentWidth);
-        var viewportHeight = NormalizeViewport(availableSize.Height, extentHeight);
-
-        SetLayoutMetrics(extentWidth, extentHeight, viewportWidth, viewportHeight);
-        return new Size(viewportWidth, viewportHeight);
+        return result;
     }
 
     protected override Size ArrangeOverride(Size finalSize)
     {
-        var pageSize = GetScaledPageSize();
-        var columns = GetEffectiveColumnCount();
-
-        for (var index = 0; index < _pageViews.Count; index++)
-        {
-            var row = index / columns;
-            var column = PageDisplay == DocumentViewerPageDisplay.TwoUpFacing &&
-                _pageViews[index].PageNumber == 0
-                ? 1
-                : index % columns;
-            var x = (column * (pageSize.Width + HorizontalPageSpacing)) - HorizontalOffset;
-            var y = (row * (pageSize.Height + VerticalPageSpacing)) - VerticalOffset;
-            _pageViews[index].Arrange(new Rect(x, y, pageSize.Width, pageSize.Height));
-        }
-
-        SetLayoutMetrics(ExtentWidth, ExtentHeight, finalSize.Width, finalSize.Height);
+        base.ArrangeOverride(finalSize);
+        UpdatePanelMetrics();
         return finalSize;
     }
 
-    #endregion
+    protected override void OnIsEnabledChanged(bool oldValue, bool newValue)
+    {
+        base.OnIsEnabledChanged(oldValue, newValue);
+        UpdateVisualStates(true);
+    }
 
-    #region Helpers
+    private void UpdatePageLayoutState()
+    {
+        SetValue(DisplayPageSizePropertyKey, GetScaledPageSize());
+        SetValue(PageColumnsPropertyKey, GetEffectiveColumnCount());
+        SetValue(IsFirstPageOnRightPropertyKey, PageDisplay == DocumentViewerPageDisplay.TwoUpFacing);
+    }
 
-    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer() =>
-        new Jalium.UI.Automation.Peers.DocumentViewerAutomationPeer(this);
+    private void UpdatePanelMetrics()
+    {
+        if (_pagePanel is null)
+            return;
+        bool viewportChanged = ViewportWidth != _pagePanel.Viewport.Width || ViewportHeight != _pagePanel.Viewport.Height;
+        SetLayoutMetrics(_pagePanel.ExtentWidth, _pagePanel.ExtentHeight, _pagePanel.Viewport.Width, _pagePanel.Viewport.Height);
+        if (viewportChanged && !_updatingFitMode)
+        {
+            var columns = GetLayoutColumns();
+            if (FitMode is DocumentViewerFitMode.FitWidth or DocumentViewerFitMode.MaxWidth)
+                SetZoomFromViewport(fitWidth: true, fitHeight: false, columns);
+            else if (FitMode == DocumentViewerFitMode.FitPage)
+                SetZoomFromViewport(fitWidth: true, fitHeight: true, columns);
+        }
+    }
 
+    private void UpdateVisualStates(bool transitions)
+    {
+        if (TemplateRootInternal is null)
+            return;
+        VisualStateManager.GoToState(this, IsEnabled ? "Normal" : "Disabled", transitions);
+        VisualStateManager.GoToState(this, Document is null ? "Empty" : "Ready", transitions);
+        VisualStateManager.GoToState(this, PageDisplay.ToString(), transitions);
+    }
+
+#endregion
+#region Helpers
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer() => new Jalium.UI.Automation.Peers.DocumentViewerAutomationPeer(this);
     private void RegisterCommandBindings()
     {
         AddCommandBinding(ViewThumbnailsCommand, static viewer => viewer.OnViewThumbnailsCommand(), static viewer => viewer.Document != null);
         AddCommandBinding(FitToWidthCommand, static viewer => viewer.OnFitToWidthCommand(), static viewer => viewer.Document != null);
         AddCommandBinding(FitToHeightCommand, static viewer => viewer.OnFitToHeightCommand(), static viewer => viewer.Document != null);
-        CommandBindings.Add(new CommandBinding(
-            FitToMaxPagesAcrossCommand,
-            (_, args) =>
+        CommandBindings.Add(new CommandBinding(FitToMaxPagesAcrossCommand, (_, args) =>
+        {
+            if (TryGetPagesAcross(args.Parameter, out var pagesAcross))
             {
-                if (TryGetPagesAcross(args.Parameter, out var pagesAcross))
-                {
-                    OnFitToMaxPagesAcrossCommand(pagesAcross);
-                }
-                else
-                {
-                    OnFitToMaxPagesAcrossCommand();
-                }
-            },
-            (_sender, args) => args.CanExecute = Document != null &&
-                (args.Parameter == null || TryGetPagesAcross(args.Parameter, out _))));
-
+                OnFitToMaxPagesAcrossCommand(pagesAcross);
+            }
+            else
+            {
+                OnFitToMaxPagesAcrossCommand();
+            }
+        }, (_sender, args) => args.CanExecute = Document != null && (args.Parameter == null || TryGetPagesAcross(args.Parameter, out _))));
         AddCommandBinding(NavigationCommands.FirstPage, static viewer => viewer.OnFirstPageCommand(), static viewer => viewer.PageCount > 0);
         AddCommandBinding(NavigationCommands.LastPage, static viewer => viewer.OnLastPageCommand(), static viewer => viewer.PageCount > 0);
         AddCommandBinding(NavigationCommands.PreviousPage, static viewer => viewer.OnPreviousPageCommand(), static viewer => viewer.CanGoToPreviousPage);
         AddCommandBinding(NavigationCommands.NextPage, static viewer => viewer.OnNextPageCommand(), static viewer => viewer.CanGoToNextPage);
-        CommandBindings.Add(new CommandBinding(
-            NavigationCommands.GoToPage,
-            (_, args) =>
+        CommandBindings.Add(new CommandBinding(NavigationCommands.GoToPage, (_, args) =>
+        {
+            if (TryGetPageNumber(args.Parameter, out var pageNumber))
             {
-                if (TryGetPageNumber(args.Parameter, out var pageNumber))
-                {
-                    OnGoToPageCommand(pageNumber);
-                }
-            },
-            (_, args) => args.CanExecute = TryGetPageNumber(args.Parameter, out var pageNumber) &&
-                pageNumber >= 1 && pageNumber <= PageCount));
-        CommandBindings.Add(new CommandBinding(
-            NavigationCommands.Zoom,
-            (_, args) =>
+                OnGoToPageCommand(pageNumber);
+            }
+        }, (_, args) => args.CanExecute = TryGetPageNumber(args.Parameter, out var pageNumber) && pageNumber >= 1 && pageNumber <= PageCount));
+        CommandBindings.Add(new CommandBinding(NavigationCommands.Zoom, (_, args) =>
+        {
+            if (TryGetZoom(args.Parameter, out var zoom))
             {
-                if (TryGetZoom(args.Parameter, out var zoom))
-                {
-                    SetZoom(zoom);
-                }
-            },
-            (_sender, args) => args.CanExecute = Document != null && TryGetZoom(args.Parameter, out _)));
+                SetZoom(zoom);
+            }
+        }, (_sender, args) => args.CanExecute = Document != null && TryGetZoom(args.Parameter, out _)));
         AddCommandBinding(NavigationCommands.IncreaseZoom, static viewer => viewer.OnIncreaseZoomCommand(), static viewer => viewer.CanIncreaseZoom && viewer.Document != null);
         AddCommandBinding(NavigationCommands.DecreaseZoom, static viewer => viewer.OnDecreaseZoomCommand(), static viewer => viewer.CanDecreaseZoom && viewer.Document != null);
         AddCommandBinding(ComponentCommands.ScrollPageUp, static viewer => viewer.OnScrollPageUpCommand(), static viewer => viewer.CanMoveUp);
@@ -821,18 +635,12 @@ public class DocumentViewer : DocumentViewerBase
         AddCommandBinding(ComponentCommands.MoveLeft, static viewer => viewer.OnMoveLeftCommand(), static viewer => viewer.CanMoveLeft);
         AddCommandBinding(ComponentCommands.MoveRight, static viewer => viewer.OnMoveRightCommand(), static viewer => viewer.CanMoveRight);
         AddCommandBinding(ApplicationCommands.Print, static viewer => viewer.Print(), static viewer => viewer.Document != null && viewer.PageCount > 0);
-        AddCommandBinding(
-            ApplicationCommands.Find,
-            static viewer => viewer.OnFindCommand(),
-            static viewer => viewer._paginator is IDocumentTextSearchProvider && !string.IsNullOrEmpty(viewer.SearchText));
+        AddCommandBinding(ApplicationCommands.Find, static viewer => viewer.OnFindCommand(), static viewer => viewer._paginator is IDocumentTextSearchProvider && !string.IsNullOrEmpty(viewer.SearchText));
     }
 
     private void AddCommandBinding(RoutedUICommand command, Action<DocumentViewer> execute, Predicate<DocumentViewer> canExecute)
     {
-        CommandBindings.Add(new CommandBinding(
-            command,
-            (_, _) => execute(this),
-            (_, args) => args.CanExecute = canExecute(this)));
+        CommandBindings.Add(new CommandBinding(command, (_, _) => execute(this), (_, args) => args.CanExecute = canExecute(this)));
     }
 
     private void RefreshPageViews()
@@ -841,8 +649,9 @@ public class DocumentViewer : DocumentViewerBase
         {
             var pageView = _pageViews[i];
             _pageViews.RemoveAt(i);
-            RemoveVisualChild(pageView);
+            RemoveLogicalChild(pageView);
         }
+
         if (_paginator != null && PageCount > 0)
         {
             foreach (var pageNumber in GetDisplayedPageNumbers())
@@ -852,12 +661,16 @@ public class DocumentViewer : DocumentViewerBase
                     DocumentPaginator = _paginator,
                     PageNumber = pageNumber,
                     BorderThickness = new Thickness(ShowPageBorders ? 1.0 : 0.0),
+                    StretchDirection = StretchDirection.Both,
                 };
                 _pageViews.Add(pageView);
-                AddVisualChild(pageView);
+                AddLogicalChild(pageView);
             }
         }
 
+        SetValue(VisiblePageViewsPropertyKey, Array.AsReadOnly(_pageViews.ToArray()));
+        UpdatePageLayoutState();
+        UpdateVisualStates(true);
         _pageViewsChanged = true;
         _publishingPageViews = true;
         try
@@ -868,6 +681,7 @@ public class DocumentViewer : DocumentViewerBase
         {
             _publishingPageViews = false;
         }
+
         InvalidateMeasure();
     }
 
@@ -880,14 +694,22 @@ public class DocumentViewer : DocumentViewerBase
 
         if (PageDisplay == DocumentViewerPageDisplay.OnePage)
         {
-            return CurrentPage > 0 ? new[] { CurrentPage - 1 } : Array.Empty<int>();
+            return CurrentPage > 0 ? new[]
+            {
+                CurrentPage - 1
+            }
+
+            : Array.Empty<int>();
         }
 
         if (PageDisplay == DocumentViewerPageDisplay.TwoUpFacing)
         {
             if (CurrentPage <= 1)
             {
-                return new[] { 0 };
+                return new[]
+                {
+                    0
+                };
             }
 
             var facingFirst = 1 + (((CurrentPage - 2) / 2) * 2);
@@ -924,9 +746,7 @@ public class DocumentViewer : DocumentViewerBase
     private Size GetUnscaledPageSize()
     {
         var pageSize = _paginator?.PageSize ?? Size.Empty;
-        return !pageSize.IsEmpty && pageSize.Width > 0 && pageSize.Height > 0
-            ? pageSize
-            : new Size(816.0, 1056.0);
+        return !pageSize.IsEmpty && pageSize.Width > 0 && pageSize.Height > 0 ? pageSize : new Size(816.0, 1056.0);
     }
 
     private Size GetScaledPageSize()
@@ -944,13 +764,13 @@ public class DocumentViewer : DocumentViewerBase
         SetValue(ExtentHeightPropertyKey, Math.Max(0.0, extentHeight));
         SetValue(ViewportWidthPropertyKey, viewportWidth);
         SetValue(ViewportHeightPropertyKey, viewportHeight);
-
         var maxHorizontal = Math.Max(0.0, ExtentWidth - ViewportWidth);
         var maxVertical = Math.Max(0.0, ExtentHeight - ViewportHeight);
         if (HorizontalOffset > maxHorizontal)
         {
             SetCurrentValue(HorizontalOffsetProperty, maxHorizontal);
         }
+
         if (VerticalOffset > maxVertical)
         {
             SetCurrentValue(VerticalOffsetProperty, maxVertical);
@@ -975,12 +795,8 @@ public class DocumentViewer : DocumentViewerBase
         SetValue(CanDecreaseZoomPropertyKey, Zoom > MinZoom);
     }
 
-    private void SetHorizontalOffset(double offset) =>
-        HorizontalOffset = Math.Clamp(offset, 0.0, Math.Max(0.0, ExtentWidth - ViewportWidth));
-
-    private void SetVerticalOffset(double offset) =>
-        VerticalOffset = Math.Clamp(offset, 0.0, Math.Max(0.0, ExtentHeight - ViewportHeight));
-
+    private void SetHorizontalOffset(double offset) => SetCurrentValue(HorizontalOffsetProperty, Math.Clamp(offset, 0.0, Math.Max(0.0, ExtentWidth - ViewportWidth)));
+    private void SetVerticalOffset(double offset) => SetCurrentValue(VerticalOffsetProperty, Math.Clamp(offset, 0.0, Math.Max(0.0, ExtentHeight - ViewportHeight)));
     private void ScrollCurrentPageIntoView()
     {
         if (PageDisplay is not (DocumentViewerPageDisplay.Continuous or DocumentViewerPageDisplay.ContinuousFacing) || CurrentPage <= 0)
@@ -998,7 +814,6 @@ public class DocumentViewer : DocumentViewerBase
     {
         var pageSize = GetUnscaledPageSize();
         var zoom = MaxZoom;
-
         if (fitWidth)
         {
             var viewportWidth = GetEffectiveViewportWidth();
@@ -1023,7 +838,7 @@ public class DocumentViewer : DocumentViewerBase
             _updatingFitMode = true;
             try
             {
-                Zoom = Math.Clamp(zoom, MinZoom, MaxZoom);
+                SetCurrentValue(ZoomProperty, Math.Clamp(zoom, MinZoom, MaxZoom));
             }
             finally
             {
@@ -1032,18 +847,14 @@ public class DocumentViewer : DocumentViewerBase
         }
     }
 
-    private double GetEffectiveViewportWidth() =>
-        ViewportWidth > 0 ? ViewportWidth : Math.Max(0.0, ActualWidth);
-
-    private double GetEffectiveViewportHeight() =>
-        ViewportHeight > 0 ? ViewportHeight : Math.Max(0.0, ActualHeight);
-
+    private double GetEffectiveViewportWidth() => ViewportWidth > 0 ? ViewportWidth : Math.Max(0.0, ActualWidth);
+    private double GetEffectiveViewportHeight() => ViewportHeight > 0 ? ViewportHeight : Math.Max(0.0, ActualHeight);
     private void SetFitMode(DocumentViewerFitMode fitMode)
     {
         _updatingFitMode = true;
         try
         {
-            FitMode = fitMode;
+            SetCurrentValue(FitModeProperty, fitMode);
         }
         finally
         {
@@ -1058,20 +869,11 @@ public class DocumentViewer : DocumentViewerBase
         InvalidateVisual();
     }
 
-    private void OnSearchCompleted(int resultCount) =>
-        SearchCompleted?.Invoke(this, new SearchCompletedEventArgs(resultCount));
-
-    private static double NormalizeViewport(double requested, double extent) =>
-        double.IsFinite(requested) ? Math.Max(0.0, requested) : Math.Max(0.0, extent);
-
-    private static bool IsValidOffset(object? value) =>
-        value is double offset && double.IsFinite(offset) && offset >= 0.0;
-
+    private void OnSearchCompleted(int resultCount) => SearchCompleted?.Invoke(this, new SearchCompletedEventArgs(resultCount));
+    private static double NormalizeViewport(double requested, double extent) => double.IsFinite(requested) ? Math.Max(0.0, requested) : Math.Max(0.0, extent);
+    private static bool IsValidOffset(object? value) => value is double offset && double.IsFinite(offset) && offset >= 0.0;
     private static bool IsValidPageSpacing(object? value) => IsValidOffset(value);
-
-    private static bool IsValidMaxPagesAcross(object? value) =>
-        value is int pagesAcross && pagesAcross is >= 1 and <= MaximumPagesAcross;
-
+    private static bool IsValidMaxPagesAcross(object? value) => value is int pagesAcross && pagesAcross is >= 1 and <= MaximumPagesAcross;
     private static bool TryGetPagesAcross(object? value, out int pagesAcross)
     {
         if (value is int integer && IsValidMaxPagesAcross(integer))
@@ -1080,9 +882,7 @@ public class DocumentViewer : DocumentViewerBase
             return true;
         }
 
-        if (value is string text &&
-            int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out integer) &&
-            IsValidMaxPagesAcross(integer))
+        if (value is string text && int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out integer) && IsValidMaxPagesAcross(integer))
         {
             pagesAcross = integer;
             return true;
@@ -1100,11 +900,7 @@ public class DocumentViewer : DocumentViewerBase
             return true;
         }
 
-        return int.TryParse(
-            Convert.ToString(value, CultureInfo.InvariantCulture),
-            NumberStyles.Integer,
-            CultureInfo.InvariantCulture,
-            out pageNumber);
+        return int.TryParse(Convert.ToString(value, CultureInfo.InvariantCulture), NumberStyles.Integer, CultureInfo.InvariantCulture, out pageNumber);
     }
 
     private static bool TryGetZoom(object? value, out double zoom)
@@ -1115,12 +911,7 @@ public class DocumentViewer : DocumentViewerBase
             return true;
         }
 
-        return double.TryParse(
-                Convert.ToString(value, CultureInfo.InvariantCulture),
-                NumberStyles.Float,
-                CultureInfo.InvariantCulture,
-                out zoom)
-            && double.IsFinite(zoom);
+        return double.TryParse(Convert.ToString(value, CultureInfo.InvariantCulture), NumberStyles.Float, CultureInfo.InvariantCulture, out zoom) && double.IsFinite(zoom);
     }
 
     private static object? CoerceZoom(DependencyObject d, object? value)
@@ -1145,6 +936,7 @@ public class DocumentViewer : DocumentViewerBase
         {
             viewer.SetFitMode(DocumentViewerFitMode.None);
         }
+
         viewer.InvalidateMeasure();
     }
 
@@ -1191,6 +983,7 @@ public class DocumentViewer : DocumentViewerBase
             {
                 pageView.BorderThickness = thickness;
             }
+
             viewer.InvalidateVisual();
         }
     }
@@ -1215,8 +1008,7 @@ public class DocumentViewer : DocumentViewerBase
                 break;
         }
     }
-
-    #endregion
+#endregion
 }
 
 /// <summary>
@@ -1228,7 +1020,6 @@ public sealed class PageChangedEventArgs : EventArgs
     /// Gets the previous page number.
     /// </summary>
     public int OldPageNumber { get; }
-
     /// <summary>
     /// Gets the new page number.
     /// </summary>
@@ -1272,12 +1063,10 @@ public sealed class TextSearchResult
     /// Gets the page number containing the result.
     /// </summary>
     public int PageNumber { get; }
-
     /// <summary>
     /// Gets the bounding rectangle of the result on the page.
     /// </summary>
     public Rect BoundingRect { get; }
-
     /// <summary>
     /// Gets the matched text.
     /// </summary>
@@ -1295,7 +1084,7 @@ public sealed class TextSearchResult
 }
 
 /// <summary>
-/// Optional paginator capability used by <see cref="DocumentViewer"/> to perform
+/// Optional paginator capability used by <see cref = "DocumentViewer"/> to perform
 /// real text search without assuming a particular document text model.
 /// </summary>
 public interface IDocumentTextSearchProvider

@@ -1,33 +1,56 @@
+using System.Collections.ObjectModel;
 using Jalium.UI.Controls;
+using Jalium.UI.Controls.Charts;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Gallery;
 
 internal static partial class GalleryWindow
 {
-    /// <summary>
-    /// Backdrop materials: every card draws the same colourful tile pattern and
-    /// floats a rounded panel over it whose <see cref="UIElement.BackdropEffect"/>
-    /// filters what lies behind. Mirrors the external Gallery's
-    /// BackdropEffectsPage so the in-repo sample exercises every preset and
-    /// every colour-pipeline parameter (grayscale / sepia / invert / hue).
-    /// </summary>
-    public static UIElement BuildEffectsSection() => Section(
-        "Backdrop Effects",
-        "Blur and material effects applied to the content behind an element (IBackdropEffect).",
-        BackdropCard("BackdropBlurEffect (20px)", new BackdropBlurEffect(20f)),
-        BackdropCard("AcrylicEffect (blue tint, alpha 200)",
-            new AcrylicEffect(Color.FromArgb(200, 30, 30, 40), tintOpacity: 0.6f, blurRadius: 30f)),
-        BackdropCard("MicaEffect", new MicaEffect()),
-        BackdropCard("FrostedGlassEffect (15px, noise 0.04)",
-            new FrostedGlassEffect(blurRadius: 15f, noiseIntensity: 0.04f, tintColor: Color.White, tintOpacity: 0.3f)),
-        BackdropCard("ColorAdjustmentEffect - Grayscale", ColorAdjustmentEffect.CreateGrayscale(1f)),
-        BackdropCard("ColorAdjustmentEffect - Sepia", ColorAdjustmentEffect.CreateSepia(0.8f)),
-        BackdropCard("ColorAdjustmentEffect - Invert", ColorAdjustmentEffect.CreateInvert(1f)),
-        BackdropCard("ColorAdjustmentEffect - Hue Rotate 90°", ColorAdjustmentEffect.CreateHueRotate(90f)),
-        BackdropCard("Box kernel + Opacity 0.5", new BackdropBlurEffect(24f, BackdropBlurType.Box) { Opacity = 0.5f }));
+    public static UIElement BuildEffectsSection() => new GallerySampleEffectsSection();
+}
 
-    private static readonly Color[] s_tileRows =
+public sealed record GallerySampleBackdropExample(string Title, IBackdropEffect Effect);
+
+/// <summary>Bindable catalog of backdrop presets with a data template for each card.</summary>
+public class GallerySampleEffectsSection : GallerySampleHeader
+{
+    public static readonly DependencyProperty ExamplesProperty = DependencyProperty.Register(nameof(Examples), typeof(System.Collections.IEnumerable), typeof(GallerySampleEffectsSection), new PropertyMetadata(null));
+    public System.Collections.IEnumerable? Examples { get => (System.Collections.IEnumerable?)GetValue(ExamplesProperty); set => SetValue(ExamplesProperty, value); }
+    public GallerySampleEffectsSection()
+    {
+        DefaultStyleKey = typeof(GallerySampleEffectsSection);
+        SetCurrentValue(ExamplesProperty, new GallerySampleBackdropExample[]
+        {
+            new("BackdropBlurEffect (20px)", new BackdropBlurEffect(20f)),
+            new("AcrylicEffect (blue tint, alpha 200)", new AcrylicEffect(Color.FromArgb(200, 30, 30, 40), tintOpacity: .6f, blurRadius: 30f)),
+            new("MicaEffect", new MicaEffect()),
+            new("FrostedGlassEffect (15px, noise 0.04)", new FrostedGlassEffect(blurRadius: 15f, noiseIntensity: .04f, tintColor: Color.White, tintOpacity: .3f)),
+            new("ColorAdjustmentEffect - Grayscale", ColorAdjustmentEffect.CreateGrayscale(1f)),
+            new("ColorAdjustmentEffect - Sepia", ColorAdjustmentEffect.CreateSepia(.8f)),
+            new("ColorAdjustmentEffect - Invert", ColorAdjustmentEffect.CreateInvert(1f)),
+            new("ColorAdjustmentEffect - Hue Rotate 90°", ColorAdjustmentEffect.CreateHueRotate(90f)),
+            new("Box kernel + Opacity 0.5", new BackdropBlurEffect(24f, BackdropBlurType.Box) { Opacity = .5f }),
+        });
+    }
+}
+
+/// <summary>A material panel over twenty-four colored tiles. Its layout is fully replaceable.</summary>
+[TemplatePart(Name = "PART_EffectPanel", Type = typeof(Border))]
+public class GallerySampleBackdropDemo : GallerySampleDemo
+{
+    public static readonly DependencyProperty EffectNameProperty = DependencyProperty.Register(nameof(EffectName), typeof(string), typeof(GallerySampleBackdropDemo), new PropertyMetadata(string.Empty));
+    public static readonly DependencyProperty MaterialProperty = DependencyProperty.Register(nameof(Material), typeof(IBackdropEffect), typeof(GallerySampleBackdropDemo), new PropertyMetadata(null, (d, e) => ((GallerySampleBackdropDemo)d).SetCurrentValue(EffectNameProperty, e.NewValue?.GetType().Name ?? string.Empty)));
+    public static readonly DependencyProperty TilesProperty = DependencyProperty.Register(nameof(Tiles), typeof(System.Collections.IEnumerable), typeof(GallerySampleBackdropDemo), new PropertyMetadata(null));
+    public IBackdropEffect? Material { get => (IBackdropEffect?)GetValue(MaterialProperty); set => SetValue(MaterialProperty, value); }
+    public string EffectName { get => (string)GetValue(EffectNameProperty)!; set => SetValue(EffectNameProperty, value); }
+    public System.Collections.IEnumerable? Tiles { get => (System.Collections.IEnumerable?)GetValue(TilesProperty); set => SetValue(TilesProperty, value); }
+    public GallerySampleBackdropDemo()
+    {
+        DefaultStyleKey = typeof(GallerySampleBackdropDemo);
+        SetCurrentValue(TilesProperty, TileColors.Select(color => new SolidColorBrush(color)).ToArray());
+    }
+    private static readonly Color[] TileColors =
     [
         Color.FromRgb(0xFF, 0x00, 0x00), Color.FromRgb(0xFF, 0x7F, 0x00), Color.FromRgb(0xFF, 0xFF, 0x00),
         Color.FromRgb(0x00, 0xFF, 0x00), Color.FromRgb(0x00, 0x00, 0xFF), Color.FromRgb(0x00, 0x82, 0x2B),
@@ -40,68 +63,4 @@ internal static partial class GalleryWindow
         Color.FromRgb(0x8B, 0xC3, 0x4A), Color.FromRgb(0x79, 0x55, 0x48),
     ];
 
-    private static UIElement BackdropCard(string title, IBackdropEffect effect) =>
-        Card(title, MakeBackdropDemo(effect), width: 360);
-
-    /// <summary>
-    /// A 3×8 grid of saturated tiles with a translucent panel floating over the
-    /// middle of it. The panel is a plain <see cref="Border"/>: backdrop effects
-    /// are rendered by Border.OnRender before its own background, so the label
-    /// text stays crisp on top of the filtered backdrop.
-    /// </summary>
-    private static UIElement MakeBackdropDemo(IBackdropEffect effect)
-    {
-        const double tile = 36;
-        var tiles = new StackPanel
-        {
-            Orientation = Orientation.Vertical,
-            Spacing = 3,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        for (int row = 0; row < 3; row++)
-        {
-            var line = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 3 };
-            for (int col = 0; col < 8; col++)
-            {
-                line.Children.Add(new Border
-                {
-                    Width = tile,
-                    Height = tile,
-                    CornerRadius = new CornerRadius(4),
-                    Background = new SolidColorBrush(s_tileRows[row * 8 + col]),
-                });
-            }
-            tiles.Children.Add(line);
-        }
-
-        var panel = new Border
-        {
-            Margin = new Thickness(22, 16, 22, 16),
-            CornerRadius = new CornerRadius(14),
-            BorderBrush = new SolidColorBrush(Color.FromArgb(0x60, 0xFF, 0xFF, 0xFF)),
-            BorderThickness = new Thickness(1),
-            BackdropEffect = effect,
-            Child = new TextBlock
-            {
-                Text = effect.GetType().Name,
-                FontSize = 14,
-                FontWeight = FontWeights.SemiBold,
-                Foreground = TextPrimary,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center,
-            },
-        };
-
-        var host = new Grid { Height = 150 };
-        host.Children.Add(tiles);
-        host.Children.Add(panel);
-        return new Border
-        {
-            Background = new SolidColorBrush(Color.FromRgb(0x10, 0x10, 0x14)),
-            CornerRadius = new CornerRadius(8),
-            ClipToBounds = true,
-            Child = host,
-        };
-    }
 }

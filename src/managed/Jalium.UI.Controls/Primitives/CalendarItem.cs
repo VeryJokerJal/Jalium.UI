@@ -1,335 +1,304 @@
-using Jalium.UI.Input;
-using Jalium.UI.Interop;
-using Jalium.UI.Media;
+using System.Collections.ObjectModel;
+using System.Globalization;
+using System.Windows.Input;
 
 namespace Jalium.UI.Controls.Primitives;
-
-/// <summary>
-/// Represents the visual container for the Calendar control's current display mode.
-/// </summary>
+/// <summary>Templated navigation and date views for a Calendar.</summary>
+[TemplatePart(Name = "PART_HeaderButton", Type = typeof(Button))]
+[TemplatePart(Name = "PART_PreviousButton", Type = typeof(Button))]
+[TemplatePart(Name = "PART_NextButton", Type = typeof(Button))]
+[TemplatePart(Name = "PART_MonthView", Type = typeof(Grid))]
+[TemplatePart(Name = "PART_YearView", Type = typeof(Grid))]
+[TemplatePart(Name = "PART_DayTitles", Type = typeof(ItemsControl))]
 public class CalendarItem : Control
 {
-    private static readonly ComponentResourceKey s_dayTitleTemplateResourceKey =
-        new(typeof(CalendarItem), "DayTitleTemplate");
+    public static ComponentResourceKey DayTitleTemplateResourceKey { get; } = new(typeof(CalendarItem), "DayTitleTemplate");
 
-    /// <summary>
-    /// Gets the resource key used to locate the day-title template.
-    /// </summary>
-    public static ComponentResourceKey DayTitleTemplateResourceKey => s_dayTitleTemplateResourceKey;
+    public static readonly DependencyProperty DisplayModeProperty = DependencyProperty.Register(nameof(DisplayMode), typeof(CalendarMode), typeof(CalendarItem), new PropertyMetadata(CalendarMode.Month, OnPresentationChanged), value => value is CalendarMode.Month or CalendarMode.Year or CalendarMode.Decade);
+    public static readonly DependencyProperty DisplayDateProperty = DependencyProperty.Register(nameof(DisplayDate), typeof(DateTime), typeof(CalendarItem), new PropertyMetadata(DateTime.Today, OnPresentationChanged));
+    private static readonly DependencyPropertyKey HeaderTextPropertyKey = DependencyProperty.RegisterReadOnly(nameof(HeaderText), typeof(string), typeof(CalendarItem), new PropertyMetadata(string.Empty));
+    public static readonly DependencyProperty HeaderTextProperty = HeaderTextPropertyKey.DependencyProperty;
+    private static readonly DependencyPropertyKey CanNavigatePreviousPropertyKey = DependencyProperty.RegisterReadOnly(nameof(CanNavigatePrevious), typeof(bool), typeof(CalendarItem), new PropertyMetadata(true));
+    public static readonly DependencyProperty CanNavigatePreviousProperty = CanNavigatePreviousPropertyKey.DependencyProperty;
+    private static readonly DependencyPropertyKey CanNavigateNextPropertyKey = DependencyProperty.RegisterReadOnly(nameof(CanNavigateNext), typeof(bool), typeof(CalendarItem), new PropertyMetadata(true));
+    public static readonly DependencyProperty CanNavigateNextProperty = CanNavigateNextPropertyKey.DependencyProperty;
+    private static readonly DependencyPropertyKey DayItemsPropertyKey = DependencyProperty.RegisterReadOnly(nameof(DayItems), typeof(IReadOnlyList<CalendarDateItem>), typeof(CalendarItem), new PropertyMetadata(null));
+    public static readonly DependencyProperty DayItemsProperty = DayItemsPropertyKey.DependencyProperty;
+    private static readonly DependencyPropertyKey PeriodItemsPropertyKey = DependencyProperty.RegisterReadOnly(nameof(PeriodItems), typeof(IReadOnlyList<CalendarDateItem>), typeof(CalendarItem), new PropertyMetadata(null));
+    public static readonly DependencyProperty PeriodItemsProperty = PeriodItemsPropertyKey.DependencyProperty;
+    private CalendarDateItem[] _days = [], _periods = [];
+    private DateCommand? _dateCommand;
+    private static readonly DependencyPropertyKey DayTitleFontSizePropertyKey = DependencyProperty.RegisterReadOnly(nameof(DayTitleFontSize), typeof(double), typeof(CalendarItem), new PropertyMetadata(11.0));
+    public static readonly DependencyProperty DayTitleFontSizeProperty = DayTitleFontSizePropertyKey.DependencyProperty;
+    public double DayTitleFontSize => (double)GetValue(DayTitleFontSizeProperty)!;
 
-    /// <inheritdoc />
-    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
-        => new Jalium.UI.Automation.Peers.GenericAutomationPeer(this, Jalium.UI.Automation.Peers.AutomationControlType.Calendar);
+    private static readonly DependencyPropertyKey DayGridHeightPropertyKey = DependencyProperty.RegisterReadOnly(nameof(DayGridHeight), typeof(double), typeof(CalendarItem), new PropertyMetadata(192.0));
+    public static readonly DependencyProperty DayGridHeightProperty = DayGridHeightPropertyKey.DependencyProperty;
+    public double DayGridHeight => (double)GetValue(DayGridHeightProperty)!;
 
-    #region Static Brushes
+    private static readonly DependencyPropertyKey DayTitleHeightPropertyKey = DependencyProperty.RegisterReadOnly(nameof(DayTitleHeight), typeof(double), typeof(CalendarItem), new PropertyMetadata(24.0));
+    public static readonly DependencyProperty DayTitleHeightProperty = DayTitleHeightPropertyKey.DependencyProperty;
+    public double DayTitleHeight => (double)GetValue(DayTitleHeightProperty)!;
 
-    private static readonly SolidColorBrush s_defaultBackgroundBrush = new(Color.FromRgb(45, 45, 45));
-    private static readonly SolidColorBrush s_dayOfWeekHeaderBrush = new(Color.FromRgb(160, 160, 160));
+    private static readonly DependencyPropertyKey DisplayBodyHeightPropertyKey = DependencyProperty.RegisterReadOnly(nameof(DisplayBodyHeight), typeof(double), typeof(CalendarItem), new PropertyMetadata(216.0));
+    public static readonly DependencyProperty DisplayBodyHeightProperty = DisplayBodyHeightPropertyKey.DependencyProperty;
+    public double DisplayBodyHeight => (double)GetValue(DisplayBodyHeightProperty)!;
 
-    #endregion
-
-    #region Dependency Properties
-
-    /// <summary>
-    /// Identifies the DisplayMode dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public static readonly DependencyProperty DisplayModeProperty =
-        DependencyProperty.Register(nameof(DisplayMode), typeof(CalendarMode), typeof(CalendarItem),
-            new PropertyMetadata(CalendarMode.Month, OnDisplayModeChanged));
-
-    #endregion
-
-    #region CLR Properties
-
-    /// <summary>
-    /// Gets or sets the current display mode.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public CalendarMode DisplayMode
+    private readonly ObservableCollection<string> _dayTitles = [];
+    private Calendar? _owner;
+    private bool _partsActive, _refreshing;
+    static CalendarItem()
     {
-        get => (CalendarMode)GetValue(DisplayModeProperty)!;
-        set => SetValue(DisplayModeProperty, value);
+        DefaultStyleKeyProperty.OverrideMetadata(typeof(CalendarItem), new PropertyMetadata(typeof(CalendarItem)));
     }
 
-    /// <summary>
-    /// Gets or sets the Calendar that owns this item.
-    /// </summary>
-    public Calendar? Owner { get; internal set; }
-
-    /// <summary>
-    /// Gets the header button.
-    /// </summary>
-    public Button? HeaderButton { get; private set; }
-
-    /// <summary>
-    /// Gets the previous button.
-    /// </summary>
-    public Button? PreviousButton { get; private set; }
-
-    /// <summary>
-    /// Gets the next button.
-    /// </summary>
-    public Button? NextButton { get; private set; }
-
-    /// <summary>
-    /// Gets the month view grid.
-    /// </summary>
-    public Grid? MonthView { get; private set; }
-
-    /// <summary>
-    /// Gets the year view grid.
-    /// </summary>
-    public Grid? YearView { get; private set; }
-
-    #endregion
-
-    #region Private Fields
-
-    private const int DaysPerWeek = 7;
-    private const int RowsInMonthView = 6;
-    private const int MonthsPerRow = 4;
-    private const int RowsInYearView = 3;
-    private const double HeaderHeight = 32;
-    private const double DayHeaderHeight = 24;
-    private const double CellSize = 32;
-
-    #endregion
-
-    #region Constructor
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="CalendarItem"/> class.
-    /// </summary>
     public CalendarItem()
     {
-        CreateVisualTree();
+        ResetItems();
+        DayTitles = new ReadOnlyObservableCollection<string>(_dayTitles);
+        Refresh();
     }
 
-    private void CreateVisualTree()
+    public CalendarMode DisplayMode { get => (CalendarMode)GetValue(DisplayModeProperty)!; set => SetValue(DisplayModeProperty, value); }
+    public DateTime DisplayDate { get => (DateTime)GetValue(DisplayDateProperty)!; set => SetValue(DisplayDateProperty, value); }
+    public string HeaderText => (string)GetValue(HeaderTextProperty)!;
+    public bool CanNavigatePrevious => (bool)GetValue(CanNavigatePreviousProperty)!;
+    public bool CanNavigateNext => (bool)GetValue(CanNavigateNextProperty)!;
+    public IReadOnlyList<CalendarDateItem> DayItems => (IReadOnlyList<CalendarDateItem>)GetValue(DayItemsProperty)!;
+    public IReadOnlyList<CalendarDateItem> PeriodItems => (IReadOnlyList<CalendarDateItem>)GetValue(PeriodItemsProperty)!;
+
+    private void ResetItems()
     {
-        // Create header button
-        HeaderButton = new Button
-        {
-            HorizontalContentAlignment = HorizontalAlignment.Center,
-            VerticalContentAlignment = VerticalAlignment.Center,
-            Height = HeaderHeight,
-            Background = new SolidColorBrush(Color.Transparent)
-        };
-        HeaderButton.Click += OnHeaderButtonClick;
-
-        // Create navigation buttons
-        PreviousButton = new Button
-        {
-            Content = "<",
-            Width = 28,
-            Height = HeaderHeight,
-            Background = new SolidColorBrush(Color.Transparent)
-        };
-        PreviousButton.Click += OnPreviousButtonClick;
-
-        NextButton = new Button
-        {
-            Content = ">",
-            Width = 28,
-            Height = HeaderHeight,
-            Background = new SolidColorBrush(Color.Transparent)
-        };
-        NextButton.Click += OnNextButtonClick;
-
-        // Add as visual children
-        AddVisualChild(PreviousButton);
-        AddVisualChild(HeaderButton);
-        AddVisualChild(NextButton);
+        _dateCommand = new DateCommand(this);
+        _days = Enumerable.Range(0, 42).Select(_ => new CalendarDateItem(_dateCommand)).ToArray();
+        _periods = Enumerable.Range(0, 12).Select(_ => new CalendarDateItem(_dateCommand)).ToArray();
+        SetValue(DayItemsPropertyKey, Array.AsReadOnly(_days));
+        SetValue(PeriodItemsPropertyKey, Array.AsReadOnly(_periods));
     }
 
-    #endregion
+    public ReadOnlyObservableCollection<string> DayTitles { get; }
+    public Button? HeaderButton { get; private set; }
+    public Button? PreviousButton { get; private set; }
+    public Button? NextButton { get; private set; }
+    public Grid? MonthView { get; private set; }
+    public Grid? YearView { get; private set; }
 
-    #region Visual Children
-
-    /// <inheritdoc />
-    protected override int VisualChildrenCount
+    public Calendar? Owner
     {
-        get
+        get => _owner;
+        internal set
         {
-            var count = 3; // Header, Previous, Next buttons
-            if (MonthView != null) count++;
-            if (YearView != null) count++;
-            return count;
+            if (ReferenceEquals(_owner, value))
+                return;
+            _owner = value;
+            Refresh();
         }
     }
 
-    /// <inheritdoc />
-    protected override Visual? GetVisualChild(int index)
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer() => new Jalium.UI.Automation.Peers.GenericAutomationPeer(this, Jalium.UI.Automation.Peers.AutomationControlType.Calendar);
+    public override void OnApplyTemplate()
     {
-        return index switch
-        {
-            0 => PreviousButton,
-            1 => HeaderButton,
-            2 => NextButton,
-            3 => DisplayMode == CalendarMode.Month ? MonthView : YearView,
-            4 => DisplayMode == CalendarMode.Month ? null : MonthView,
-            _ => throw new ArgumentOutOfRangeException(nameof(index))
-        };
+        ReleaseParts();
+        ResetItems();
+        base.OnApplyTemplate();
+        HeaderButton = GetTemplateChild("PART_HeaderButton") as Button;
+        PreviousButton = GetTemplateChild("PART_PreviousButton") as Button;
+        NextButton = GetTemplateChild("PART_NextButton") as Button;
+        MonthView = GetTemplateChild("PART_MonthView") as Grid;
+        YearView = GetTemplateChild("PART_YearView") as Grid;
+        if (HeaderButton is not null)
+            HeaderButton.Click += OnHeaderClick;
+        if (PreviousButton is not null)
+            PreviousButton.Click += OnPreviousClick;
+        if (NextButton is not null)
+            NextButton.Click += OnNextClick;
+        if (GetTemplateChild("PART_DayTitles")is ItemsControl titles && TryFindResource(DayTitleTemplateResourceKey)is DataTemplate titleTemplate)
+            titles.SetCurrentValue(ItemsControl.ItemTemplateProperty, titleTemplate);
+        _partsActive = true;
+        Refresh();
     }
 
-    #endregion
+    internal override void OnTemplateContentClearing()
+    {
+        ReleaseParts();
+        base.OnTemplateContentClearing();
+    }
 
-    #region Layout
+    private void ReleaseParts()
+    {
+        _partsActive = false;
+        if (HeaderButton is not null)
+            HeaderButton.Click -= OnHeaderClick;
+        if (PreviousButton is not null)
+            PreviousButton.Click -= OnPreviousClick;
+        if (NextButton is not null)
+            NextButton.Click -= OnNextClick;
+        HeaderButton = PreviousButton = NextButton = null;
+        MonthView = YearView = null;
+    }
 
-    /// <inheritdoc />
+    public void UpdateHeader(string text) => SetValue(HeaderTextPropertyKey, text ?? string.Empty);
+    internal void Refresh()
+    {
+        if (_refreshing || _days is null)
+            return;
+        _refreshing = true;
+        try
+        {
+            var date = Owner?.DisplayDate ?? DisplayDate;
+            var mode = Owner?.DisplayMode ?? DisplayMode;
+            var culture = CultureInfo.CurrentCulture;
+            int decadeStart = Math.Max(1, date.Year - date.Year % 10);
+            SetValue(HeaderTextPropertyKey, mode switch
+            {
+                CalendarMode.Month => date.ToString("Y", culture),
+                CalendarMode.Year => date.Year.ToString(culture),
+                _ => $"{decadeStart}-{Math.Min(9999, decadeStart + 9)}"});
+            int firstDay = (int)(Owner?.FirstDayOfWeek ?? culture.DateTimeFormat.FirstDayOfWeek);
+            for (int column = 0; column < 7; column++)
+            {
+                string title = culture.DateTimeFormat.GetShortestDayName((DayOfWeek)((firstDay + column) % 7));
+                if (_dayTitles.Count <= column)
+                    _dayTitles.Add(title);
+                else if (_dayTitles[column] != title)
+                    _dayTitles[column] = title;
+            }
+
+            var first = new DateTime(date.Year, date.Month, 1);
+            int offset = ((int)first.DayOfWeek - firstDay + 7) % 7;
+            for (int index = 0; index < 42; index++)
+            {
+                bool valid = TryAddDays(first, index - offset, out var day);
+                bool blackedOut = Owner?.BlackoutDates.Contains(day) ?? false;
+                _days[index].Update(Owner, day, valid ? day.Day.ToString(culture) : string.Empty, valid ? day.ToString("D", culture) : string.Empty, valid && (Owner?.SelectedDates.Any(value => value.Date == day.Date) ?? false), valid && day.Date == DateTime.Today && (Owner?.IsTodayHighlighted ?? true), blackedOut, day.Month != date.Month || day.Year != date.Year, valid && !blackedOut && (Owner?.IsDateSelectableForInteraction(day) ?? true), Owner?.CalendarDayButtonStyle);
+            }
+
+            int firstYear = Math.Clamp(date.Year - date.Year % 10 - 1, 1, 9988);
+            for (int index = 0; index < 12; index++)
+            {
+                var period = mode == CalendarMode.Year ? new DateTime(date.Year, index + 1, 1) : new DateTime(firstYear + index, 1, 1);
+                var end = mode == CalendarMode.Year ? new DateTime(period.Year, period.Month, DateTime.DaysInMonth(period.Year, period.Month)) : new DateTime(period.Year, 12, 31);
+                bool enabled = Owner?.DisplayDateStart is not DateTime start || end.Date >= start.Date;
+                enabled &= Owner?.DisplayDateEnd is not DateTime finish || period.Date <= finish.Date;
+                bool selected = Owner?.SelectedDates.Any(value => value.Year == period.Year && (mode != CalendarMode.Year || value.Month == period.Month)) ?? false;
+                string text = mode == CalendarMode.Year ? culture.DateTimeFormat.GetAbbreviatedMonthName(period.Month) : period.Year.ToString(culture);
+                _periods[index].Update(Owner, period, text, mode == CalendarMode.Year ? period.ToString("Y", culture) : text, selected, false, false, mode == CalendarMode.Decade && (period.Year < decadeStart || period.Year > decadeStart + 9), enabled, Owner?.CalendarButtonStyle);
+            }
+
+            int Period(DateTime value) => mode == CalendarMode.Month ? (value.Year - 1) * 12 + value.Month - 1 : mode == CalendarMode.Year ? value.Year : value.Year / 10;
+            SetValue(CanNavigatePreviousPropertyKey, Period(date) > Period(Owner?.DisplayDateStart ?? DateTime.MinValue));
+            SetValue(CanNavigateNextPropertyKey, Period(date) < Period(Owner?.DisplayDateEnd ?? DateTime.MaxValue));
+            SyncTypography();
+            VisualStateManager.GoToState(this, mode.ToString(), false);
+            _dateCommand?.NotifyCanExecuteChanged();
+        }
+        finally
+        {
+            _refreshing = false;
+        }
+    }
+
+    private void SyncTypography()
+    {
+        SetValue(DayTitleFontSizePropertyKey, FontSize * (11.0 / 14.0));
+        SetValue(DayGridHeightPropertyKey, Math.Max(32, Math.Ceiling(FontSize * 1.3 + 4)) * 6);
+        SetValue(DayTitleHeightPropertyKey, Math.Max(24, Math.Ceiling(DayTitleFontSize * 1.3 + 4)));
+        SetValue(DisplayBodyHeightPropertyKey, DayGridHeight + DayTitleHeight);
+    }
+
     protected override Size MeasureOverride(Size availableSize)
     {
-        var width = CellSize * DaysPerWeek;
-        var height = HeaderHeight + DayHeaderHeight + CellSize * RowsInMonthView;
-
-        PreviousButton?.Measure(new Size(28, HeaderHeight));
-        NextButton?.Measure(new Size(28, HeaderHeight));
-        HeaderButton?.Measure(new Size(width - 56, HeaderHeight));
-        MonthView?.Measure(new Size(width, CellSize * RowsInMonthView));
-        YearView?.Measure(new Size(width, CellSize * RowsInYearView));
-
-        return new Size(width, height);
+        SyncTypography();
+        return base.MeasureOverride(availableSize);
     }
 
-    /// <inheritdoc />
-    protected override Size ArrangeOverride(Size finalSize)
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs args)
     {
-        var width = finalSize.Width;
-        var navigationButtonWidth = ControlRenderGeometry.GetAvailableLength(28, width / 2.0);
-        var headerWidth = width - navigationButtonWidth * 2.0;
-
-        PreviousButton?.Arrange(new Rect(0, 0, navigationButtonWidth, HeaderHeight));
-        HeaderButton?.Arrange(new Rect(navigationButtonWidth, 0, headerWidth, HeaderHeight));
-        NextButton?.Arrange(new Rect(width - navigationButtonWidth, 0, navigationButtonWidth, HeaderHeight));
-
-        var contentY = HeaderHeight + DayHeaderHeight;
-        MonthView?.Arrange(new Rect(0, contentY, width, CellSize * RowsInMonthView));
-        YearView?.Arrange(new Rect(0, contentY, width, CellSize * RowsInYearView));
-
-        return finalSize;
+        base.OnPropertyChanged(args);
+        if (args.Property == FontSizeProperty)
+            SyncTypography();
     }
 
-    #endregion
-
-    #region Rendering
-
-    /// <inheritdoc />
-    protected override void OnRender(DrawingContext drawingContext)
+    private static bool TryAddDays(DateTime date, int days, out DateTime result)
     {
-        var dc = drawingContext;
-
-        var rect = new Rect(RenderSize);
-
-        // Draw background
-        var bgBrush = ResolveBackgroundBrush();
-        dc.DrawRectangle(bgBrush, null, rect);
-
-        // Draw day of week headers if in month mode
-        if (DisplayMode == CalendarMode.Month)
+        try
         {
-            DrawDayOfWeekHeaders(dc);
+            result = date.AddDays(days);
+            return true;
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            result = days < 0 ? DateTime.MinValue : DateTime.MaxValue;
+            return false;
         }
     }
 
-    private void DrawDayOfWeekHeaders(DrawingContext dc)
+    private void OnHeaderClick(object sender, RoutedEventArgs args)
     {
-        var fgBrush = ResolveDayOfWeekHeaderBrush();
-        var dayNames = new[] { "Su", "Mo", "Tu", "We", "Th", "Fr", "Sa" };
+        if (!IsEnabled || !_partsActive)
+            return;
+        var next = (Owner?.DisplayMode ?? DisplayMode) == CalendarMode.Month ? CalendarMode.Year : CalendarMode.Decade;
+        if (Owner is { } owner)
+            owner.SetCurrentValue(Calendar.DisplayModeProperty, next);
+        else
+            SetCurrentValue(DisplayModeProperty, next);
+    }
 
-        for (var i = 0; i < DaysPerWeek; i++)
+    private void OnPreviousClick(object sender, RoutedEventArgs args)
+    {
+        if (IsEnabled && _partsActive && CanNavigatePrevious)
+            Navigate(-1);
+    }
+
+    private void OnNextClick(object sender, RoutedEventArgs args)
+    {
+        if (IsEnabled && _partsActive && CanNavigateNext)
+            Navigate(1);
+    }
+
+    private void Navigate(int direction)
+    {
+        if (Owner is { } owner)
         {
-            var formattedText = new FormattedText(dayNames[i], FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, 12)
+            if (direction < 0)
+                owner.NavigateToPreviousPeriod();
+            else
+                owner.NavigateToNextPeriod();
+        }
+        else
+        {
+            try
             {
-                Foreground = fgBrush
-            };
-            TextMeasurement.MeasureText(formattedText);
-
-            var x = i * CellSize + (CellSize - formattedText.Width) / 2;
-            var y = HeaderHeight + (DayHeaderHeight - formattedText.Height) / 2;
-            dc.DrawText(formattedText, new Point(x, y));
+                SetCurrentValue(DisplayDateProperty, DisplayMode == CalendarMode.Month ? DisplayDate.AddMonths(direction) : DisplayDate.AddYears(direction * (DisplayMode == CalendarMode.Year ? 1 : 10)));
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+            }
         }
     }
 
-    private Brush ResolveBackgroundBrush()
+    private bool CanSelect(object? parameter) => IsEnabled && _partsActive && parameter is CalendarDateItem cell && cell.IsEnabled && ((Owner?.DisplayMode ?? DisplayMode) == CalendarMode.Month ? _days.Contains(cell) : _periods.Contains(cell));
+    private void Select(object? parameter)
     {
-        return Background
-            ?? ResolveThemeBrush("SurfaceBackground", s_defaultBackgroundBrush, "ControlBackground");
-    }
-
-    private Brush ResolveDayOfWeekHeaderBrush()
-    {
-        if (HasLocalValue(Control.ForegroundProperty) && Foreground != null)
+        if (!CanSelect(parameter))
+            return;
+        var cell = (CalendarDateItem)parameter!;
+        if (Owner is { } owner)
+            owner.ActivateDate(cell.Date);
+        else if (DisplayMode != CalendarMode.Month)
         {
-            return Foreground;
-        }
-
-        return ResolveThemeBrush("TextSecondary", s_dayOfWeekHeaderBrush, "TextFillColorSecondaryBrush");
-    }
-
-    private Brush ResolveThemeBrush(string resourceKey, Brush fallback, string? secondaryResourceKey = null)
-    {
-        if (TryFindResource(resourceKey) is Brush brush)
-        {
-            return brush;
-        }
-
-        if (secondaryResourceKey != null && TryFindResource(secondaryResourceKey) is Brush secondaryBrush)
-        {
-            return secondaryBrush;
-        }
-
-        return fallback;
-    }
-
-    #endregion
-
-    #region Event Handlers
-
-    private void OnHeaderButtonClick(object sender, RoutedEventArgs e)
-    {
-        // Toggle between month and year view
-        DisplayMode = DisplayMode == CalendarMode.Month
-            ? CalendarMode.Year
-            : CalendarMode.Month;
-    }
-
-    private void OnPreviousButtonClick(object sender, RoutedEventArgs e)
-    {
-        // Navigate to previous period - would be implemented by Calendar
-        InvalidateVisual();
-    }
-
-    private void OnNextButtonClick(object sender, RoutedEventArgs e)
-    {
-        // Navigate to next period - would be implemented by Calendar
-        InvalidateVisual();
-    }
-
-    private static void OnDisplayModeChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        if (d is CalendarItem item)
-        {
-            item.InvalidateMeasure();
-            item.InvalidateVisual();
+            SetCurrentValue(DisplayDateProperty, cell.Date);
+            SetCurrentValue(DisplayModeProperty, DisplayMode == CalendarMode.Decade ? CalendarMode.Year : CalendarMode.Month);
         }
     }
 
-    #endregion
-
-    #region Public Methods
-
-    /// <summary>
-    /// Updates the header text.
-    /// </summary>
-    /// <param name="text">The new header text.</param>
-    public void UpdateHeader(string text)
+    private sealed class DateCommand(CalendarItem item) : ICommand
     {
-        if (HeaderButton != null)
-        {
-            HeaderButton.Content = text;
-        }
+        public bool CanExecute(object? parameter) => item.CanSelect(parameter);
+        public void Execute(object? parameter) => item.Select(parameter);
+        public event EventHandler? CanExecuteChanged;
+        internal void NotifyCanExecuteChanged() => CanExecuteChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    #endregion
+    private static void OnPresentationChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args) => ((CalendarItem)sender).Refresh();
 }

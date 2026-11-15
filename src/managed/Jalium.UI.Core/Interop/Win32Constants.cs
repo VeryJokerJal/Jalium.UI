@@ -21,6 +21,10 @@ internal static class Win32Constants
     public const uint WM_SETCURSOR = 0x0020;
     public const uint WM_MOUSEACTIVATE = 0x0021;
     public const uint WM_NCHITTEST = 0x0084;
+    public const uint WM_NCPAINT = 0x0085;
+    public const uint WM_NCACTIVATE = 0x0086;
+    public const uint WM_NCUAHDRAWCAPTION = 0x00AE;
+    public const uint WM_NCUAHDRAWFRAME = 0x00AF;
     public const uint WM_MOUSEMOVE = 0x0200;
     public const uint WM_LBUTTONDOWN = 0x0201;
     public const uint WM_LBUTTONUP = 0x0202;
@@ -66,6 +70,7 @@ internal static class Win32Constants
     public const uint SWP_NOSIZE = 0x0001;
     public const uint SWP_NOZORDER = 0x0004;
     public const uint SWP_NOACTIVATE = 0x0010;
+    public const uint SWP_NOCOPYBITS = 0x0100;
     public const uint SWP_NOOWNERZORDER = 0x0200;
     public static readonly nint HWND_TOPMOST = -1;
 
@@ -150,6 +155,7 @@ internal static class Win32Constants
     public const int DBT_DEVNODES_CHANGED = 0x0007;
     public const uint WM_MOVE = 0x0003;
     public const uint WM_SIZE = 0x0005;
+    public const uint WM_WINDOWPOSCHANGING = 0x0046;
     public const uint WM_WINDOWPOSCHANGED = 0x0047;
     public const uint WM_NCCALCSIZE = 0x0083;
     public const int WVR_ALIGNTOP = 0x0010;

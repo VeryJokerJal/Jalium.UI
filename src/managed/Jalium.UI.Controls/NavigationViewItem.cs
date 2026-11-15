@@ -806,64 +806,8 @@ public sealed class NavigationViewItemInvokedEventArgs : EventArgs
 /// </summary>
 public class NavigationViewItemHeader : ContentControl
 {
-    private static readonly SolidColorBrush s_defaultFgBrush = new(Color.FromRgb(157, 157, 157));
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="NavigationViewItemHeader"/> class.
-    /// </summary>
-    public NavigationViewItemHeader()
-    {
-        Focusable = false;
-    }
-
-    /// <summary>
-    /// Override to prevent Content from being added to visual tree.
-    /// </summary>
-    protected override void OnContentChanged(object? oldContent, object? newContent)
-    {
-        // Don't call base - we render content manually
-        InvalidateMeasure();
-        InvalidateVisual();
-    }
-
-    protected override void OnRender(DrawingContext drawingContextObj)
-    {
-        if (drawingContextObj is not DrawingContext dc)
-            return;
-
-        var text = GetContentText();
-        if (!string.IsNullOrEmpty(text))
-        {
-            var fontMetrics = TextMeasurement.GetFontMetrics("Segoe UI Semibold", 14);
-            var brush = ResolveForegroundBrush();
-            var formattedText = new FormattedText(text, "Segoe UI Semibold", 14)
-            {
-                Foreground = brush
-            };
-            var textY = (ActualHeight - fontMetrics.LineHeight) / 2;
-            dc.DrawText(formattedText, new Point(0, textY));
-        }
-    }
-
-    private string? GetContentText()
-    {
-        if (Content == null) return null;
-        if (Content is string str) return str;
-        if (Content is TextBlock textBlock) return textBlock.Text;
-        return Content.ToString();
-    }
-
-    private Brush ResolveForegroundBrush()
-    {
-        if (HasLocalValue(Control.ForegroundProperty) && Foreground != null)
-        {
-            return Foreground;
-        }
-
-        return TryFindResource("TextSecondary") as Brush
-            ?? Foreground
-            ?? s_defaultFgBrush;
-    }
+    /// <summary>Initializes a template-based section heading.</summary>
+    public NavigationViewItemHeader() { DefaultStyleKey = typeof(NavigationViewItemHeader); Focusable = false; }
 }
 
 /// <summary>
@@ -875,33 +819,6 @@ public class NavigationViewItemSeparator : Control
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
         => new Jalium.UI.Automation.Peers.GenericAutomationPeer(this, Jalium.UI.Automation.Peers.AutomationControlType.Separator);
 
-    private static readonly SolidColorBrush s_defaultBackgroundBrush = new(Color.FromRgb(60, 60, 60));
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="NavigationViewItemSeparator"/> class.
-    /// </summary>
-    public NavigationViewItemSeparator()
-    {
-        Focusable = false;
-    }
-
-    protected override void OnRender(DrawingContext drawingContextObj)
-    {
-        var dc = drawingContextObj;
-
-        var brush = ResolveBackgroundBrush();
-        dc.DrawRectangle(brush, null, new Rect(0, 0, ActualWidth, 1));
-    }
-
-    private Brush ResolveBackgroundBrush()
-    {
-        if (HasLocalValue(Control.BackgroundProperty) && Background != null)
-        {
-            return Background;
-        }
-
-        return TryFindResource("ControlBorder") as Brush
-            ?? Background
-            ?? s_defaultBackgroundBrush;
-    }
+    /// <summary>Initializes a template-based navigation separator.</summary>
+    public NavigationViewItemSeparator() { DefaultStyleKey = typeof(NavigationViewItemSeparator); Focusable = false; }
 }

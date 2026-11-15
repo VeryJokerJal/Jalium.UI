@@ -7,6 +7,8 @@ public partial class ScrollViewer
     private void HandleDirectionalMouseWheel(MouseWheelEventArgs e)
     {
         PrepareMacOSWheelGesture(e);
+        if (((e.Phase | e.MomentumPhase) & MouseWheelPhase.Cancelled) != 0)
+            return;
         double horizontal = double.IsFinite(e.HorizontalDelta) ? e.HorizontalDelta : 0;
         double vertical = double.IsFinite(e.VerticalDelta) ? e.VerticalDelta : 0;
         bool hasHorizontal = horizontal != 0;

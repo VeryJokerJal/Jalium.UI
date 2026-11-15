@@ -47,8 +47,9 @@ typedef enum {
     JALIUM_VS_KIND_BGRA8_CPU       = 0,
 
     /// Windows: ID3D11Texture2D shared via NT handle (CreateSharedHandle).
-    /// handle0 = NT HANDLE returned by IDXGIResource1::CreateSharedHandle.
-    /// Implemented in stage 3.
+    /// handle0 = borrowed NT HANDLE from IDXGIResource1::CreateSharedHandle.
+    /// handle1 = owner PID (0 means current process). Vulkan/D3D12 require
+    /// IMMUTABLE_READY; reusable keyed-mutex textures are not this contract.
     JALIUM_VS_KIND_D3D11_SHARED    = 1,
 
     /// Cross-platform: VkImage imported via external memory extension
@@ -57,7 +58,9 @@ typedef enum {
     JALIUM_VS_KIND_VK_IMAGE        = 2,
 
     /// Android AMediaCodec output surface backed by AHardwareBuffer.
-    /// handle0 = (AHardwareBuffer*). Stage 4.
+    /// handle0 = borrowed AHardwareBuffer*. A reusable decoder image must
+    /// carry an acquire sync_file and producer lifetime callbacks. The AImage
+    /// stays acquired until the consumer's final render fence.
     JALIUM_VS_KIND_AHARDWAREBUFFER = 3,
 
     /// Apple IOSurface (CoreVideo IOSurface from VTDecompressionSession).
@@ -74,13 +77,13 @@ typedef enum {
     /// JaliumVideoSurfaceDescriptor carries one borrowed fd per plane plus its
     /// stride, offset and DRM modifier. The backend duplicates any fd it needs
     /// to retain; the caller remains responsible for the descriptor fds. The
-    /// current Vulkan backend imports only single-plane packed RGB; YUV,
-    /// DMA_DRM and multi-plane descriptors are rejected for CPU fallback.
+    /// Vulkan backend samples packed RGB and progressive SDR NV12/P010 with
+    /// supported layouts and color metadata; other layouts use CPU fallback.
     JALIUM_VS_KIND_LINUX_DMABUF    = 7,
 } JaliumVideoSurfaceKind;
 
-/// Format hints for create / wrap. v1 supports only BGRA8; NV12 / P010 etc.
-/// are reserved for direct-from-decoder paths (stage 3+).
+/// Format hints for create / wrap. CPU creation uses BGRA8; external imports
+/// can sample packed RGB and supported decoder YCbCr formats.
 typedef enum {
     JALIUM_VS_FORMAT_BGRA8         = 0,
     JALIUM_VS_FORMAT_NV12          = 1,
@@ -92,17 +95,32 @@ typedef enum {
 
 #define JALIUM_VIDEO_SURFACE_MAX_PLANES 4u
 
-// For D3D11 shared imports: all producer writes are complete and the allocation
+// For external imports: all producer writes are complete and the allocation
 // is immutable until every consumer releases it. An unfenced, reusable texture
-// cannot be sampled safely by D3D12 merely because OpenSharedHandle succeeded.
+// cannot be sampled safely merely because an external-memory import succeeded.
 #define JALIUM_VS_FLAG_IMMUTABLE_READY (1u << 16)
+
+// YCbCr sampling metadata. Zero range/chroma flags mean studio range
+// and midpoint chroma. Unknown matrices are rejected rather than guessed.
+typedef enum {
+    JALIUM_VS_COLOR_UNSPECIFIED = 0,
+    JALIUM_VS_COLOR_BT601 = 1,
+    JALIUM_VS_COLOR_BT709 = 2,
+    JALIUM_VS_COLOR_BT2020 = 3,
+} JaliumVideoColorSpace;
+#define JALIUM_VS_FLAG_FULL_RANGE (1u << 0)
+#define JALIUM_VS_FLAG_CHROMA_COSITED_X (1u << 1)
+#define JALIUM_VS_FLAG_CHROMA_COSITED_Y (1u << 2)
+// PQ/HLG requires tone mapping beyond sampler YCbCr conversion. Unsupported
+// renderers must fail the import so the decoder can use its fallback path.
+#define JALIUM_VS_FLAG_HDR_TRANSFER (1u << 3)
 
 typedef struct {
     int32_t  fd;             ///< Borrowed dma-buf fd; -1 when unused.
     uint32_t stride_bytes;   ///< Row pitch for this plane.
     uint32_t offset_bytes;   ///< Byte offset in fd to plane origin.
     uint32_t reserved;
-    uint64_t modifier;       ///< DRM format modifier; 0 means linear/unspecified.
+    uint64_t modifier;       ///< DRM format modifier; 0 is DRM_FORMAT_MOD_LINEAR.
     uint64_t size_bytes;     ///< Allocation size when known; 0 lets Vulkan query.
 } JaliumVideoSurfacePlaneDescriptor;
 
@@ -115,8 +133,8 @@ typedef struct {
     uint64_t               handle1;       ///< Secondary handle (VkDeviceMemory, NT-owner PID, ...).
     uint32_t               format_hint;   ///< JaliumVideoSurfaceFormat. 0 = BGRA8.
     uint32_t               reserved;
-    // v2 Linux dma-buf extension. The v1 prefix above intentionally remains
-    // ABI-stable for D3D11/AHardwareBuffer/IOSurface producers.
+    // v2 plane, synchronization and producer-lifetime extension. The v1
+    // prefix above intentionally remains ABI-stable on every platform.
     uint32_t               plane_count;
     uint32_t               drm_fourcc;
     uint32_t               descriptor_flags;

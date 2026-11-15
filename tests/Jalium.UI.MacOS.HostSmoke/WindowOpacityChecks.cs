@@ -56,7 +56,7 @@ internal static class WindowOpacityChecks
         int scenario = index / 2;
         bool allowsTransparency = index % 2 == 1;
         JaliumMacApplication.Initialize();
-        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Prohibited;
+        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Accessory;
         RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
         Window window = scenario == 13 ? new DerivedWindow() : new Window();
         window.Title = $"Opacity {index}";

@@ -1,4 +1,5 @@
 using Jalium.UI.Media;
+using Jalium.UI.Controls.Themes;
 
 namespace Jalium.UI.Controls.DevTools;
 
@@ -8,7 +9,7 @@ namespace Jalium.UI.Controls.DevTools;
 /// Design language: "Instrument" — a precision laboratory instrument / oscilloscope
 /// for inspecting a GPU rendering engine. Near-black graphite ground, a single warm
 /// "signal amber" accent (like a needle / phosphor trace), hairline rules, Bahnschrift
-/// uppercase technical labels and Cascadia Code for every piece of live data. Depth is
+/// uppercase technical labels and the platform's monospace font for live data. Depth is
 /// expressed through tonal layering and hairlines, never drop shadows.
 ///
 /// All panels pull their brushes/fonts/metrics from here, so a single edit re-skins the
@@ -53,7 +54,7 @@ internal static class DevToolsTheme
     public static readonly Color ErrorColor   = Color.FromRgb(0xF2, 0x65, 0x5C);
     public static readonly Color InfoColor    = Color.FromRgb(0x5F, 0xB7, 0xCB); // muted gauge cyan
 
-    // --- Syntax-ish tokens (Cascadia Code data) ---------------------------
+    // --- Syntax tokens for live data ------------------------------------
     // Warm-tuned for graphite so values harmonize with the amber signal rather
     // than fighting it (no stock VS Code Dark+ blues).
     public static readonly Color TokenStringColor   = Color.FromRgb(0xD7, 0xA2, 0x6B);
@@ -103,10 +104,9 @@ internal static class DevToolsTheme
 
     // --- Type scale --------------------------------------------------------
     // Body stays on the proven system UI font. Character comes from the display
-    // and mono families, which both ship with Windows 11 (graceful family-name
-    // fallback if absent).
+    // family and the configured platform monospace family.
     public static readonly FontFamily UiFont          = new(FrameworkElement.DefaultFontFamilyName);
-    public static readonly FontFamily MonoFont         = new("Cascadia Code"); // all live data / values / REPL / tree
+    public static readonly FontFamily MonoFont         = new(ThemeManager.CurrentMonospaceFontFamily);
     public static readonly FontFamily DisplayFont      = new("Bahnschrift SemiBold"); // uppercase technical labels
     public static readonly FontFamily DisplayFontLight = new("Bahnschrift");           // large light readouts
 

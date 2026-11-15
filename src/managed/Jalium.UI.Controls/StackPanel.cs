@@ -188,6 +188,7 @@ public class StackPanel : Panel, IScrollInfo
     {
         if (rectangle.IsEmpty || visual == null)
             return Rect.Empty;
+        if (Jalium.UI.Styling.CssPositionedLayout.EscapesScrollport(visual, this)) return rectangle;
 
         // Find the child that contains this visual
         var child = visual as UIElement;
@@ -207,10 +208,10 @@ public class StackPanel : Panel, IScrollInfo
         var spacing = EffectiveSpacing;
         var sawFirstVisible = false;
 
-        foreach (UIElement c in Children)
+        foreach (UIElement c in CssLayoutChildren)
         {
             if (c == child) break;
-            if (c.Visibility == Visibility.Collapsed) continue;
+            if (c.Visibility == Visibility.Collapsed || IsCssAbsolute(c)) continue;
             if (sawFirstVisible)
             {
                 childOffset += spacing;
@@ -381,6 +382,8 @@ public class StackPanel : Panel, IScrollInfo
                 var childSize = child.DesiredSize;
                 var arrangeWidth = isVertical && _canHorizontallyScroll ? Math.Max(finalSize.Width, _extent.Width) : finalSize.Width;
                 var arrangeHeight = !isVertical && _canVerticallyScroll ? Math.Max(finalSize.Height, _extent.Height) : finalSize.Height;
+                var childArrangeWidth = double.IsFinite(arrangeWidth) ? arrangeWidth : childSize.Width;
+                var childArrangeHeight = double.IsFinite(arrangeHeight) ? arrangeHeight : childSize.Height;
 
                 Rect childRect;
                 if (isVertical)
@@ -392,7 +395,7 @@ public class StackPanel : Panel, IScrollInfo
                     childRect = new Rect(
                         SnapLayoutValue(scrollOffsetX),
                         snappedY,
-                        SnapLayoutValue(arrangeWidth),
+                        SnapLayoutValue(childArrangeWidth),
                         Math.Max(0, snappedBottom - snappedY));
                     offset += childSize.Height;
                 }
@@ -406,7 +409,7 @@ public class StackPanel : Panel, IScrollInfo
                         snappedX,
                         SnapLayoutValue(scrollOffsetY),
                         Math.Max(0, snappedRight - snappedX),
-                        SnapLayoutValue(arrangeHeight));
+                        SnapLayoutValue(childArrangeHeight));
                     offset += childSize.Width;
                 }
 
@@ -440,12 +443,12 @@ public class StackPanel : Panel, IScrollInfo
         }
         else
         {
-            snapshot = new List<UIElement>(Children.Count);
+            snapshot = new List<UIElement>(CssLayoutChildren.Count);
         }
 
-        for (int index = 0; index < Children.Count; index++)
+        for (int index = 0; index < CssLayoutChildren.Count; index++)
         {
-            snapshot.Add(Children[index]);
+            snapshot.Add(CssLayoutChildren[index]);
         }
 
         return snapshot;

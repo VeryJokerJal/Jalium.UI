@@ -181,6 +181,12 @@ public class ImageSourceLoaderTests
         Assert.Equal(3, substitute!.FrameCount);
         Assert.Equal(new[] { 40, 80, 120 }, substitute.FrameDelays);
 
+        var firstGeneration = bitmap.ContentGeneration;
+        substitute.Pause();
+        substitute.CurrentFrameIndex = 1;
+        Assert.True(bitmap.ContentGeneration > firstGeneration,
+            "the outer BitmapImage cache stamp did not follow its animated substitute");
+
         // The framework never writes to the application's source: the instance the converter
         // handed back is still a BitmapImage, and it still reports its own pixel geometry.
         Assert.Equal(8, bitmap.PixelWidth);

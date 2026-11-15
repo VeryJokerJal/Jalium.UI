@@ -4,6 +4,9 @@ using Jalium.UI.Controls;
 using Jalium.UI.Controls.DevTools;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Diagnostics;
+using Jalium.UI.Input;
+using Jalium.UI.Automation;
+using Jalium.UI.Automation.Provider;
 using Jalium.UI.Media;
 using Jalium.UI.Threading;
 
@@ -56,6 +59,73 @@ public class DevToolsWindowTests
     }
 
     [Fact]
+    public void UiaTreeKeepsReadableDevToolsInkInALightApplication()
+    {
+        ResetApplicationState();
+        _ = new Application();
+        ThemeManager.ApplyTheme(ThemeVariant.Light);
+        var host = new Window { Title = "Host", Content = new Button { Content = "Target action" } };
+        host.Measure(new Size(420, 400)); host.Arrange(new Rect(0, 0, 420, 400));
+        var devTools = new DevToolsWindow(host);
+        try
+        {
+            var workspace = Assert.IsType<DevToolsWorkspace>(devTools.Content);
+            workspace.SelectedPage = DevToolsPage.Automation;
+            var view = Assert.IsType<DevToolsAutomationView>(workspace.AutomationContent);
+            for (int pass = 0; view.IsBuilding && pass < 1000; pass++) InvokePrivate(devTools, "OnUiaBuildTimerTick", null, EventArgs.Empty);
+            Assert.False(view.IsBuilding);
+            view.Measure(new Size(420, 400)); view.Arrange(new Rect(0, 0, 420, 400)); view.UpdateLayout();
+            var tree = Assert.IsType<TreeView>(view.FindName("PART_PeerTree"));
+            var root = Assert.IsAssignableFrom<TreeViewItem>(tree.ItemContainerGenerator.ContainerFromIndex(0));
+            Assert.Equal(Color.FromRgb(0xDD, 0xE2, 0xE9), Assert.IsType<SolidColorBrush>(root.Foreground).Color);
+            Assert.NotEmpty(root.Items);
+            Assert.All(root.Items.OfType<TreeViewItem>(), child =>
+                Assert.Equal(Color.FromRgb(0xDD, 0xE2, 0xE9), Assert.IsType<SolidColorBrush>(child.Foreground).Color));
+        }
+        finally { devTools.CloseDevTools(); ResetApplicationState(); }
+    }
+
+    [Fact]
+    public void ReplUsesNativeTextEditorAndReadOnlyTerminalThroughItsDefaultTemplate()
+    {
+        ResetApplicationState();
+        _ = new Application();
+        var devTools = new DevToolsWindow(new Window { Title = "Host" });
+        try
+        {
+            var workspace = Assert.IsType<DevToolsWorkspace>(devTools.Content);
+            workspace.SelectedPage = DevToolsPage.Repl;
+            devTools.Measure(new Size(1040, 860)); devTools.Arrange(new Rect(0, 0, 1040, 860)); devTools.UpdateLayout();
+            var view = Assert.IsType<DevToolsReplView>(workspace.ReplContent);
+            var terminal = Assert.IsType<Terminal>(view.FindName("PART_Terminal"));
+            var editor = Assert.IsType<TextBox>(view.FindName("PART_InputTextBox"));
+            Assert.True(terminal.Focusable);
+            Assert.True(terminal.IsReadOnly);
+            Assert.False(terminal.AutoStartShell);
+            Assert.False(editor.IsReadOnly);
+            var input = new TextCompositionEventArgs(UIElement.TextInputEvent, "1", 0);
+            editor.RaiseEvent(input);
+            Assert.True(input.Handled);
+            Assert.Equal("1", view.InputText);
+            var enter = new KeyEventArgs(Keyboard.PrimaryDevice, new ReplKeySource { RootVisual = editor }, 1, Key.Enter)
+                { RoutedEvent = UIElement.PreviewKeyDownEvent, Source = editor };
+            editor.RaiseEvent(enter);
+            Assert.True(enter.Handled);
+            var text = Assert.IsAssignableFrom<ITextProvider>(terminal.GetAutomationPeer()!.GetPattern(PatternInterface.Text));
+            Assert.Contains("=> 1", text.DocumentRange.GetText(-1));
+            Assert.Equal(new[] { "1" }, view.History);
+        }
+        finally { Keyboard.ClearFocus(); devTools.CloseDevTools(); ResetApplicationState(); }
+    }
+
+    private sealed class ReplKeySource : PresentationSource
+    {
+        public override Visual? RootVisual { get; set; }
+        public override bool IsDisposed => false;
+        protected override CompositionTarget? GetCompositionTargetCore() => null;
+    }
+
+    [Fact]
     public void ScreenshotCrop_UsesPhysicalDpiAndClipsToBackBuffer()
     {
         Assert.True(DevToolsWindow.TryCalculateScreenshotCrop(
@@ -71,6 +141,38 @@ public class DevToolsWindowTests
             new Rect(100, 100, 10, 10), 1.0, 80, 60, out _));
         Assert.False(DevToolsWindow.TryCalculateScreenshotCrop(
             new Rect(0, 0, 10, 10), 0.0, 80, 60, out _));
+    }
+
+    [Fact]
+    public void InspectorAutomationNamesAndExpansionFollowTheFlattenedModels()
+    {
+        ResetApplicationState();
+        _ = new Application();
+        try
+        {
+            var host = new Window { Title = "Inspector host", Content = new StackPanel { Children = { new Button { Content = "Child" } } } };
+            var devTools = new DevToolsWindow(host);
+            try
+            {
+                var list = Assert.IsAssignableFrom<ListBox>(GetPrivateFieldOrNull(devTools, "_visualTreeView"));
+                var peer = UIElementAutomationPeer.CreatePeerForElement(list)!;
+                Assert.Equal(AutomationControlType.Tree, peer.GetAutomationControlType());
+                var root = peer.GetChildren()[0];
+                Assert.Contains("Inspector host", root.GetName());
+                Assert.Equal(AutomationControlType.TreeItem, root.GetAutomationControlType());
+                var expansion = Assert.IsAssignableFrom<IExpandCollapseProvider>(root.GetPattern(PatternInterface.ExpandCollapse));
+                Assert.Equal(ExpandCollapseState.Expanded, expansion.ExpandCollapseState);
+                expansion.Collapse();
+                Assert.Single(GetRows(devTools));
+                var replacementRoot = peer.GetChildren()[0];
+                var replacementExpansion = Assert.IsAssignableFrom<IExpandCollapseProvider>(replacementRoot.GetPattern(PatternInterface.ExpandCollapse));
+                replacementExpansion.Expand();
+                Assert.True(GetRows(devTools).Count > 1);
+                Assert.Throws<InvalidOperationException>(expansion.Expand);
+            }
+            finally { devTools.CloseDevTools(); }
+        }
+        finally { ResetApplicationState(); }
     }
 
     [Fact]
@@ -108,6 +210,10 @@ public class DevToolsWindowTests
                 Assert.Same(host, RowVisual(rows[0]!));
                 Assert.True(RowExpanded(rows[0]!));
                 Assert.True(rows.Count > 1, "the expanded root's children should be emitted");
+                var inspector = Assert.IsType<DevToolsInspector>(GetPrivateFieldOrNull(devTools, "_inspector"));
+                Assert.Equal(DevToolsInspectorView.Visual, inspector.SelectedView);
+                Assert.False(inspector.CanDelete);
+                Assert.False(inspector.CanUndo);
             }
             finally
             {
@@ -242,7 +348,7 @@ public class DevToolsWindowTests
             {
                 InvokePrivate(devTools, "UpdatePropertiesPanel", button);
 
-                var propertiesPanel = GetPrivateField<StackPanel>(devTools, "_propertiesPanel");
+                var propertiesPanel = GetPrivateField<DevToolsDetailsList>(devTools, "_propertiesPanel");
                 var headerTexts = EnumerateVisuals(propertiesPanel)
                     .OfType<TextBlock>()
                     .Select(textBlock => NormalizeHeaderText(textBlock.Text))
@@ -320,7 +426,7 @@ public class DevToolsWindowTests
     }
 
     [Fact]
-    public void OnDevToolsClosing_ShouldStopOverlayHighlightAnimation()
+    public void ClosingViaWindowStopsOverlayHighlightAnimation()
     {
         ResetApplicationState();
         var app = new Application();
@@ -342,14 +448,13 @@ public class DevToolsWindowTests
             var animationTimer = GetPrivateField<DispatcherTimer>(overlay, "_animationTimer");
             Assert.True(RenderingHasSubscriberTarget(animationTimer));
 
-            // Act: drive the Closing handler directly. This is the close-via-OS
-            // (window X button) route, which fires Closing without ever going
-            // through CloseDevTools, so it must independently stop the animation.
-            InvokePrivate(devTools, "OnDevToolsClosing", null, EventArgs.Empty);
+            // Use the same accepted close lifecycle as the window close button,
+            // without going through the DevTools command helper.
+            devTools.Close();
 
             Assert.False(
                 RenderingHasSubscriberTarget(animationTimer),
-                "OnDevToolsClosing must unsubscribe the overlay animation timer from CompositionTarget.Rendering.");
+                "An accepted close must unsubscribe the overlay animation timer from CompositionTarget.Rendering.");
             Assert.False(animationTimer.IsEnabled);
             Assert.Null(GetPrivateFieldOrNull(overlay, "_animationTimer"));
             Assert.Null(GetPrivateFieldOrNull(overlay, "_highlightedElement"));
@@ -451,28 +556,26 @@ public class DevToolsWindowTests
             var devTools = new DevToolsWindow(host);
             try
             {
-                var tabs = (TabControl)GetPrivateFieldOrNull(devTools, "_rootTabs")!;
-                var perfTab = (TabItem)GetPrivateFieldOrNull(devTools, "_perfTab")!;
-                var inspectorTab = tabs.Items.Cast<TabItem>().First(t => !ReferenceEquals(t, perfTab));
+                var workspace = Assert.IsType<DevToolsWorkspace>(devTools.Content);
 
-                tabs.SelectedItem = perfTab;
+                workspace.SelectedPage = DevToolsPage.Performance;
                 Assert.True(RenderDiagnostics.ApiStatsEnabled);
                 Assert.Same(host, RenderDiagnostics.StatsOwner);
                 var timer = (DispatcherTimer?)GetPrivateFieldOrNull(devTools, "_perfRefreshTimer");
                 Assert.NotNull(timer);
                 Assert.True(timer!.IsEnabled);
 
-                tabs.SelectedItem = inspectorTab;
+                workspace.SelectedPage = DevToolsPage.Inspector;
                 Assert.False(RenderDiagnostics.ApiStatsEnabled);
                 Assert.Null(RenderDiagnostics.StatsOwner);
                 Assert.False(timer.IsEnabled);
 
                 // Re-entering must arm it again — stopping on leave must not be one-way.
-                tabs.SelectedItem = perfTab;
+                workspace.SelectedPage = DevToolsPage.Performance;
                 Assert.True(RenderDiagnostics.ApiStatsEnabled);
                 Assert.True(timer.IsEnabled);
 
-                InvokePrivate(devTools, "OnDevToolsClosing", null, EventArgs.Empty);
+                devTools.Close();
                 Assert.False(RenderDiagnostics.ApiStatsEnabled);
                 Assert.Null(RenderDiagnostics.StatsOwner);
                 Assert.False(timer.IsEnabled);
@@ -526,9 +629,12 @@ public class DevToolsWindowTests
             if (ReferenceEquals(d.Target, target))
                 return true;
 
+            if (d.Target?.GetType().DeclaringType != typeof(DispatcherTimer))
+                return false;
+
             // Frame-rate timers bind the handler to their active generation so
             // a callback already snapshotted by Rendering cannot tick a restart.
-            var owner = d.Target?.GetType().GetProperty("Owner",
+            var owner = d.Target.GetType().GetProperty("Owner",
                 BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
             return ReferenceEquals(owner?.GetValue(d.Target), target);
         });

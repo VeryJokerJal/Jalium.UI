@@ -639,19 +639,7 @@ bool D3D12GlyphAtlas::Initialize()
         return false;
     atlasTexture_->SetName(L"JaliumGlyphAtlas");  // [JALIUM-921 diag]
 
-    // Upload buffer for atlas updates — size = width * height * 4 (RGBA = 4 bytes per pixel)
-    // Add row alignment padding (D3D12 requires 256-byte row pitch alignment)
-    UINT rowPitch = (atlasW_ * 4 + 255) & ~255u;
-    UINT64 uploadSize = (UINT64)rowPitch * atlasH_;
-    auto uploadHeap = MakeHeapProps(D3D12_HEAP_TYPE_UPLOAD);
-    auto uploadDesc = MakeBufferDesc(uploadSize);
-
-    if (FAILED(device_->CreateCommittedResource(
-            &uploadHeap, D3D12_HEAP_FLAG_NONE, &uploadDesc,
-            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-            IID_PPV_ARGS(&uploadBuffer_))))
-        return false;
-    uploadBuffer_->SetName(L"JaliumGlyphAtlasUpload");
+    // Staging is allocated on the first dirty flush, for that flush's row span.
 
     // Create GDI-compatible bitmap render target for glyph rasterization
     ComPtr<IDWriteGdiInterop> gdiInterop;
@@ -735,12 +723,15 @@ bool D3D12GlyphAtlas::Initialize()
     return true;
 }
 
-bool D3D12GlyphAtlas::EnsureUploadBuffer()
+bool D3D12GlyphAtlas::EnsureUploadBuffer(uint32_t rowCount)
 {
-    if (uploadBuffer_) return true;
-
     const UINT rowPitch = (atlasW_ * 4 + 255) & ~255u;
-    const UINT64 uploadSize = static_cast<UINT64>(rowPitch) * atlasH_;
+    const UINT64 uploadSize = static_cast<UINT64>(rowPitch) * rowCount;
+    if (uploadBuffer_ && uploadBuffer_->GetDesc().Width >= uploadSize) return true;
+    // A retained buffer has not been referenced by CopyTextureRegion yet
+    // (for example, Map failed). Submitted copies move it into the keepalive
+    // list immediately, so replacing this unused allocation is safe.
+    uploadBuffer_.Reset();
     auto uploadHeap = MakeHeapProps(D3D12_HEAP_TYPE_UPLOAD);
     auto uploadDesc = MakeBufferDesc(uploadSize);
     if (FAILED(device_->CreateCommittedResource(
@@ -864,22 +855,6 @@ bool D3D12GlyphAtlas::GrowAtlas(uint32_t reqW, uint32_t reqH)
     }
     newTex->SetName(L"JaliumGlyphAtlas");  // [JALIUM-921 diag]
 
-    UINT rowPitch = (newW * 4 + 255) & ~255u;
-    UINT64 uploadSize = (UINT64)rowPitch * newH;
-    auto uploadHeap = MakeHeapProps(D3D12_HEAP_TYPE_UPLOAD);
-    auto uploadDesc = MakeBufferDesc(uploadSize);
-    ComPtr<ID3D12Resource> newUpload;
-    HRESULT growUpHr = device_->CreateCommittedResource(
-            &uploadHeap, D3D12_HEAP_FLAG_NONE, &uploadDesc,
-            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-            IID_PPV_ARGS(&newUpload));
-    if (FAILED(growUpHr)) {
-        AtlasTraceLog("[atlas] grow upload FAIL hr=0x%08lX %ux%u\n",
-                      (unsigned long)growUpHr, newW, newH);
-        return false;
-    }
-    newUpload->SetName(L"JaliumGlyphAtlasUpload");
-
     // Hand the old atlas / upload buffers to the backend's fence-tracked
     // graveyard before swapping in the new ones. The previous-frame GPU
     // commands (running on the OTHER frame slot) still reference the old
@@ -897,7 +872,6 @@ bool D3D12GlyphAtlas::GrowAtlas(uint32_t reqW, uint32_t reqH)
     }
 
     atlasTexture_ = newTex;
-    uploadBuffer_ = newUpload;
     atlasBitmap_ = std::move(newBitmap);
     atlasW_ = newW;
     atlasH_ = newH;
@@ -3004,15 +2978,7 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
 bool D3D12GlyphAtlas::FlushToGpu(ID3D12GraphicsCommandList* cmdList)
 {
     if (!dirty_ || !cmdList) return false;
-    if (!atlasTexture_ || !EnsureUploadBuffer()) return false;
-
-    // Transition atlas to copy dest
-    if (atlasState_ != D3D12_RESOURCE_STATE_COPY_DEST) {
-        auto barrier = MakeTransitionBarrier(atlasTexture_.Get(),
-            atlasState_, D3D12_RESOURCE_STATE_COPY_DEST);
-        cmdList->ResourceBarrier(1, &barrier);
-        atlasState_ = D3D12_RESOURCE_STATE_COPY_DEST;
-    }
+    if (!atlasTexture_) return false;
 
     // Only upload the dirty region (dirtyMinY_ to dirtyMaxY_) instead of the full atlas.
     // This reduces upload bandwidth from ~16MB to just the modified rows.
@@ -3024,6 +2990,19 @@ bool D3D12GlyphAtlas::FlushToGpu(ID3D12GraphicsCommandList* cmdList)
         uploadMaxY = atlasH_;
     }
     UINT uploadHeight = uploadMaxY - uploadMinY;
+    // Interleaved paths/text can flush many times while the atlas is large.
+    // Keep each one-shot staging allocation proportional to its dirty rows,
+    // rather than allocating a full atlas for every small update. Offset zero
+    // satisfies placement alignment; the destination keeps the atlas row Y.
+    if (!EnsureUploadBuffer(uploadHeight)) return false;
+
+    // Transition atlas to copy dest
+    if (atlasState_ != D3D12_RESOURCE_STATE_COPY_DEST) {
+        auto barrier = MakeTransitionBarrier(atlasTexture_.Get(),
+            atlasState_, D3D12_RESOURCE_STATE_COPY_DEST);
+        cmdList->ResourceBarrier(1, &barrier);
+        atlasState_ = D3D12_RESOURCE_STATE_COPY_DEST;
+    }
 
     UINT rowPitch = (atlasW_ * 4 + 255) & ~255u;  // RGBA = 4 bytes per pixel
     void* mapped = nullptr;
@@ -3033,9 +3012,8 @@ bool D3D12GlyphAtlas::FlushToGpu(ID3D12GraphicsCommandList* cmdList)
         return false;
     }
     // Only copy the dirty rows to the upload buffer
-    UINT64 uploadRowOffset = (UINT64)uploadMinY * rowPitch;
     for (UINT y = 0; y < uploadHeight; y++) {
-        memcpy((uint8_t*)mapped + uploadRowOffset + y * rowPitch,
+        memcpy((uint8_t*)mapped + static_cast<UINT64>(y) * rowPitch,
                atlasBitmap_.data() + ((size_t)uploadMinY + y) * atlasW_ * 4,
                atlasW_ * 4);
     }
@@ -3053,15 +3031,15 @@ bool D3D12GlyphAtlas::FlushToGpu(ID3D12GraphicsCommandList* cmdList)
     src.PlacedFootprint.Offset = 0;
     src.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     src.PlacedFootprint.Footprint.Width = atlasW_;
-    src.PlacedFootprint.Footprint.Height = atlasH_;
+    src.PlacedFootprint.Footprint.Height = uploadHeight;
     src.PlacedFootprint.Footprint.Depth = 1;
     src.PlacedFootprint.Footprint.RowPitch = rowPitch;
 
     D3D12_BOX srcBox = {};
     srcBox.left = 0;
-    srcBox.top = uploadMinY;
+    srcBox.top = 0;
     srcBox.right = atlasW_;
-    srcBox.bottom = uploadMaxY;
+    srcBox.bottom = uploadHeight;
     srcBox.front = 0;
     srcBox.back = 1;
 

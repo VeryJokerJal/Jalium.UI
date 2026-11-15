@@ -34,8 +34,19 @@ internal static class XamlBuilderInitializer
                 SourceAssembly = source.SourceAssembly,
                 CodeBehindInstance = source.CodeBehindInstance,
                 ParentResourceDictionary = source.ParentResourceDictionary,
+                DesignerOptions = source.DesignerOptions,
                 IsRestrictive = source.IsRestrictive,
             });
+        };
+
+        XamlBuilder.BeginTemplateImpl = static context =>
+        {
+            var parent = CtxOf(context);
+            var inner = XamlReader.CreateBuilderContext(parent.CodeBehindInstance, parent.BaseUri, parent.SourceAssembly);
+            inner.DesignerOptions = parent.DesignerOptions;
+            inner.IsRestrictive = parent.IsRestrictive;
+            inner.ParentResourceDictionary = parent.ParentResourceDictionary;
+            return new XamlBuildContext(inner);
         };
 
         XamlBuilder.PushParentImpl = static (parent, ctx) =>
@@ -178,7 +189,10 @@ internal static class XamlBuilderInitializer
     private static XamlParserContext CtxOf(XamlBuildContext ctx)
     {
         if (ctx.Inner is XamlParserContext inner)
+        {
+            inner.CompiledMarkupNamespaces = ctx.NamespaceMappings;
             return inner;
+        }
         throw new InvalidOperationException("XamlBuildContext was not produced by Jalium.UI.Xaml.");
     }
 }

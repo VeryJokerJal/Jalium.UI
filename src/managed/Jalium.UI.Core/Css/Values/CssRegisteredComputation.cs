@@ -57,7 +57,7 @@ internal sealed class CssRegisteredComputation : IReadOnlyDictionary<string, str
         AddOrdinaryDependencies(FontNode, "FontSize", font);
         AddOrdinaryDependencies(ColorNode, "Foreground", color);
         AddOrdinaryDependencies(LineNode, "LineHeight", line);
-        foreach (var name in new[] { "font-family", "font-weight", "font-style" })
+        foreach (var name in FontProperties)
             AddOrdinaryDependencies("@" + name, NativeFontName(name), _faces.GetValueOrDefault(name));
         _cyclic.UnionWith(CssCustomProperties.CyclicNames(_dependencies));
     }
@@ -81,7 +81,7 @@ internal sealed class CssRegisteredComputation : IReadOnlyDictionary<string, str
 
     private void AddOrdinaryDependencies(string name, string propertyName, CssCompiledValue? value)
     {
-        var property = CssDependencyPropertyLookup.Find(_element.GetType(), propertyName);
+        var property = FontProperty(propertyName);
         _dependencies[name] = value is CssPendingSubstitution pending && (property is null || !_element.HasLocalOrAnimatedValue(property))
             ? CssCustomProperties.References(pending.RawValue).ToHashSet(StringComparer.Ordinal) : [];
     }
@@ -177,7 +177,7 @@ internal sealed class CssRegisteredComputation : IReadOnlyDictionary<string, str
         AttrTaintedProperties.Remove(name);
         _registrations.TryGetValue(name, out var registration);
         if (invalidLocal && registration is null) return null;
-        if (!initial && (explicitInherit || registration?.Inherits != false) && _inherited is not null && _inherited.TryGetValue(name, out var inherited))
+        if (!initial && (explicitInherit || registration?.Inherits != false || CssSelection.IsProjection(_element)) && _inherited is not null && _inherited.TryGetValue(name, out var inherited))
         {
             _computed[name] = inherited;
             if (_inheritedTainted?.Contains(name) == true ||
@@ -196,25 +196,55 @@ internal sealed class CssRegisteredComputation : IReadOnlyDictionary<string, str
         => new(_lengths, FontSize, ReferenceEquals(CssMatcher.Root(_element), _element), initial, baseUri, LineHeight, Font)
             { CurrentColor = Foreground };
 
-    private static string NativeFontName(string name) => name == "font-family" ? "FontFamily" : name == "font-weight" ? "FontWeight" : "FontStyle";
+    private static readonly string[] FontProperties = ["font-family", "font-weight", "font-style", "font-stretch", "font-variation-settings", "font-optical-sizing", "font-size-adjust"];
+    private static string NativeFontName(string name) => name switch
+    {
+        "font-family" => "FontFamily", "font-weight" => "FontWeight", "font-stretch" => "FontStretch",
+        "font-variation-settings" => "CssFontVariationSettings", "font-optical-sizing" => "CssFontOpticalSizing",
+        "font-size-adjust" => "CssFontSizeAdjust", _ => "FontStyle",
+    };
+    private DependencyProperty? FontProperty(string name) => name switch
+    {
+        "CssFontSizeAdjust" => CssFontSizeAdjust.ValueProperty,
+        "CssFontVariationSettings" => CssFontVariationSettings.SettingsProperty,
+        "CssFontOpticalSizing" => CssFontOpticalSizing.AutoProperty,
+        _ => CssDependencyPropertyLookup.Find(_element.GetType(), name),
+    };
 
     private CssFontInfo Font()
     {
         var result = (_lengths.Fonts ?? CssFontContext.Initial).Element;
-        foreach (var name in new[] { "font-family", "font-weight", "font-style" })
+        foreach (var name in FontProperties)
         {
             var node = "@" + name;
             AddImplicitDependency(node);
-            if (_faceValues.TryGetValue(name, out var cached)) { result = result.With(NativeFontName(name), cached); continue; }
+            if (_faceValues.TryGetValue(name, out var cached))
+            {
+                result = result.With(NativeFontName(name), cached);
+                if (name == "font-stretch") result = result with { Width = CssFontStretchValue.Computed(_element) };
+                continue;
+            }
             if (_visiting.Contains(node)) { MarkCycle(node); continue; }
-            var property = CssDependencyPropertyLookup.Find(_element.GetType(), NativeFontName(name));
+            var property = FontProperty(NativeFontName(name));
             if (!_faces.TryGetValue(name, out var declaration) || property is not null && _element.HasLocalOrAnimatedValue(property)) continue;
             _visiting.Add(node);
             var sink = new ProbeSink();
-            try { declaration.TryApply(new CssApplyContext(_element, _lengths, new()), sink); }
+            try
+            {
+                var lengths = _lengths;
+                if (name == "font-size-adjust")
+                {
+                    var fonts = lengths.Fonts ?? CssFontContext.Initial;
+                    lengths = lengths.WithElementFontSize(FontSize()).WithFonts(fonts with { Element = result, Root = fonts.IsRoot ? result : fonts.Root });
+                }
+                declaration.TryApply(new CssApplyContext(_element, lengths, new()), sink);
+            }
             finally { _visiting.RemoveAt(_visiting.Count - 1); }
             if (property is not null && !_cyclic.Contains(node) && sink.Values.TryGetValue(property, out var value))
-            { _faceValues[name] = value; result = result.With(property.Name, value); }
+            {
+                _faceValues[name] = value; result = result.With(property.Name, value);
+                if (name == "font-stretch") result = result with { Width = CssFontStretchValue.Computed(_element) };
+            }
         }
         return result;
     }

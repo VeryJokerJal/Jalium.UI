@@ -5,8 +5,8 @@ namespace Jalium.UI.Styling;
 /// <c>Css.Style</c> — an inline declaration block ("background-color: red; margin: 4px 8px"),
 /// <c>Css.Class</c> — space-separated class names for style-sheet selectors,
 /// <c>Css.StyleSheet</c> — style-sheet text scoped to the element's subtree (the markup
-/// equivalent of HTML's &lt;style&gt;), <c>Css.StyleSheets</c> — the same scope as a collection
-/// of pre-parsed sheets.
+/// equivalent of HTML's &lt;style&gt;), <c>Css.StyleSheetSource</c> — a CSS resource URI,
+/// <c>Css.StyleSheets</c> — the same scope as a collection of pre-parsed sheets.
 /// </summary>
 public static partial class Css
 {
@@ -20,11 +20,14 @@ public static partial class Css
             "Class", typeof(string), typeof(Css),
             new PropertyMetadata(string.Empty, OnClassChanged));
 
-    /// <summary>Reserved: template-internal parts never participate in page-level CSS matching (v1).</summary>
+    /// <summary>
+    /// Allows this owner's authored template elements to participate in CSS.
+    /// Nested controls retain their own template boundaries. Defaults to false.
+    /// </summary>
     public static readonly DependencyProperty IncludeTemplatePartsProperty =
         DependencyProperty.RegisterAttached(
             "IncludeTemplateParts", typeof(bool), typeof(Css),
-            new PropertyMetadata(false));
+            new PropertyMetadata(false, OnIncludeTemplatePartsChanged));
 
     public static string GetStyle(DependencyObject element)
         => (string)(element.GetValue(StyleProperty) ?? string.Empty);
@@ -43,6 +46,16 @@ public static partial class Css
 
     public static void SetIncludeTemplateParts(DependencyObject element, bool value)
         => element.SetValue(IncludeTemplatePartsProperty, value);
+
+    private static void OnIncludeTemplatePartsChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (CssEngine.IsActive && d is FrameworkElement or FrameworkContentElement)
+        {
+            var element = CssNode.Get(d);
+            CssEngine.InvalidateSelectorDependents(element);
+            CssEvaluationScheduler.InvalidateSubtree(element);
+        }
+    }
 
     /// <summary>Style sheets scoped to this element's subtree. Created on demand.</summary>
     public static CssStyleSheetCollection GetStyleSheets(DependencyObject element)

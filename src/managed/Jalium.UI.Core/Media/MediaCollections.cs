@@ -258,7 +258,7 @@ public sealed class GeometryCollection : Animatable, IList<Geometry>, IList
         _items.AddRange(collection);
     }
 
-    public Geometry this[int index] { get => _items[index]; set => _items[index] = value; }
+    public Geometry this[int index] { get => _items[index]; set => _items.SetItem(index, value); }
     object? IList.this[int index] { get => this[index]; set => this[index] = AnimatableListStorage<Geometry>.Cast(value); }
     public int Count => _items.Count;
     bool ICollection<Geometry>.IsReadOnly => _items.IsReadOnly;
@@ -294,13 +294,7 @@ public sealed class GeometryCollection : Animatable, IList<Geometry>, IList
     protected override void GetAsFrozenCore(Freezable source) { base.GetAsFrozenCore(source); _items.CopyFrom(((GeometryCollection)source)._items, AnimatableListCloneMode.GetAsFrozen); }
     protected override void GetCurrentValueAsFrozenCore(Freezable source) { base.GetCurrentValueAsFrozenCore(source); _items.CopyFrom(((GeometryCollection)source)._items, AnimatableListCloneMode.GetCurrentValueAsFrozen); }
 
-    private AnimatableListStorage<Geometry> CreateStorage(int capacity = 0) => new(
-        () => ReadPreamble(),
-        () => WritePreamble(),
-        () => WritePostscript(),
-        (oldValue, newValue) => OnFreezablePropertyChanged(oldValue, newValue),
-        () => IsFrozen,
-        capacity);
+    private AnimatableListStorage<Geometry> CreateStorage(int capacity = 0) => new(this, capacity);
 }
 
 /// <summary>Represents an animatable collection of path figures.</summary>
@@ -317,7 +311,7 @@ public sealed class PathFigureCollection : Animatable, IList<PathFigure>, IList,
         _items.AddRange(collection);
     }
 
-    public PathFigure this[int index] { get => _items[index]; set => _items[index] = value; }
+    public PathFigure this[int index] { get => _items[index]; set => _items.SetItem(index, value); }
     object? IList.this[int index] { get => this[index]; set => this[index] = AnimatableListStorage<PathFigure>.Cast(value); }
     public int Count => _items.Count;
     bool ICollection<PathFigure>.IsReadOnly => _items.IsReadOnly;
@@ -366,13 +360,7 @@ public sealed class PathFigureCollection : Animatable, IList<PathFigure>, IList,
     public string ToString(IFormatProvider? provider) => string.Join(" ", this.Select(figure => figure.ToString(provider)));
     string IFormattable.ToString(string? format, IFormatProvider? provider) => ToString(provider);
 
-    private AnimatableListStorage<PathFigure> CreateStorage(int capacity = 0) => new(
-        () => ReadPreamble(),
-        () => WritePreamble(),
-        () => WritePostscript(),
-        (oldValue, newValue) => OnFreezablePropertyChanged(oldValue, newValue),
-        () => IsFrozen,
-        capacity);
+    private AnimatableListStorage<PathFigure> CreateStorage(int capacity = 0) => new(this, capacity);
 }
 
 /// <summary>Represents an animatable collection of path segments.</summary>
@@ -389,7 +377,7 @@ public sealed class PathSegmentCollection : Animatable, IList<PathSegment>, ILis
         _items.AddRange(collection);
     }
 
-    public PathSegment this[int index] { get => _items[index]; set => _items[index] = value; }
+    public PathSegment this[int index] { get => _items[index]; set => _items.SetItem(index, value); }
     object? IList.this[int index] { get => this[index]; set => this[index] = AnimatableListStorage<PathSegment>.Cast(value); }
     public int Count => _items.Count;
     bool ICollection<PathSegment>.IsReadOnly => _items.IsReadOnly;
@@ -425,13 +413,7 @@ public sealed class PathSegmentCollection : Animatable, IList<PathSegment>, ILis
     protected override void GetAsFrozenCore(Freezable source) { base.GetAsFrozenCore(source); _items.CopyFrom(((PathSegmentCollection)source)._items, AnimatableListCloneMode.GetAsFrozen); }
     protected override void GetCurrentValueAsFrozenCore(Freezable source) { base.GetCurrentValueAsFrozenCore(source); _items.CopyFrom(((PathSegmentCollection)source)._items, AnimatableListCloneMode.GetCurrentValueAsFrozen); }
 
-    private AnimatableListStorage<PathSegment> CreateStorage(int capacity = 0) => new(
-        () => ReadPreamble(),
-        () => WritePreamble(),
-        () => WritePostscript(),
-        (oldValue, newValue) => OnFreezablePropertyChanged(oldValue, newValue),
-        () => IsFrozen,
-        capacity);
+    private AnimatableListStorage<PathSegment> CreateStorage(int capacity = 0) => new(this, capacity);
 }
 
 /// <summary>Represents an animatable collection of two-dimensional points.</summary>
@@ -449,7 +431,7 @@ public sealed class PointCollection : Freezable, IList<Point>, IList, IFormattab
         _items.AddRange(collection);
     }
 
-    public Point this[int index] { get => _items[index]; set => _items[index] = value; }
+    public Point this[int index] { get => _items[index]; set => _items.SetItem(index, value); }
     object? IList.this[int index] { get => this[index]; set => this[index] = AnimatableListStorage<Point>.Cast(value); }
     public int Count => _items.Count;
     bool ICollection<Point>.IsReadOnly => _items.IsReadOnly;
@@ -501,13 +483,7 @@ public sealed class PointCollection : Freezable, IList<Point>, IList, IFormattab
     protected override void GetAsFrozenCore(Freezable source) { base.GetAsFrozenCore(source); _items.CopyFrom(((PointCollection)source)._items, AnimatableListCloneMode.GetAsFrozen); }
     protected override void GetCurrentValueAsFrozenCore(Freezable source) { base.GetCurrentValueAsFrozenCore(source); _items.CopyFrom(((PointCollection)source)._items, AnimatableListCloneMode.GetCurrentValueAsFrozen); }
 
-    private AnimatableListStorage<Point> CreateStorage(int capacity = 0) => new(
-        () => ReadPreamble(),
-        () => WritePreamble(),
-        () => WritePostscript(),
-        (oldValue, newValue) => OnFreezablePropertyChanged(oldValue, newValue),
-        () => IsFrozen,
-        capacity);
+    private AnimatableListStorage<Point> CreateStorage(int capacity = 0) => new(this, capacity);
 
     public override string ToString() => ToString(CultureInfo.CurrentCulture);
     public string ToString(IFormatProvider? provider) => string.Join(" ", this.Select(point =>
@@ -961,7 +937,7 @@ public sealed class TransformCollection : Animatable, IList<Transform>, IList
         _items.AddRange(collection);
     }
 
-    public Transform this[int index] { get => _items[index]; set => _items[index] = value; }
+    public Transform this[int index] { get => _items[index]; set => _items.SetItem(index, value); }
     object? IList.this[int index] { get => this[index]; set => this[index] = AnimatableListStorage<Transform>.Cast(value); }
     public int Count => _items.Count;
     bool ICollection<Transform>.IsReadOnly => _items.IsReadOnly;
@@ -1019,13 +995,7 @@ public sealed class TransformCollection : Animatable, IList<Transform>, IList
         }
     }
 
-    private AnimatableListStorage<Transform> CreateStorage(int capacity = 0) => new(
-        () => ReadPreamble(),
-        () => WritePreamble(),
-        () => WritePostscript(),
-        (oldValue, newValue) => OnFreezablePropertyChanged(oldValue, newValue),
-        () => IsFrozen,
-        capacity);
+    private AnimatableListStorage<Transform> CreateStorage(int capacity = 0) => new(this, capacity);
 }
 
 /// <summary>

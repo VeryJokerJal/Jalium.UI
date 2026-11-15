@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Jalium.UI;
 using Jalium.UI.Diagnostics;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Interop;
 
@@ -182,9 +183,23 @@ public sealed class RenderTarget : IDisposable
     public PresentInfo? GetPresentInfo()
     {
         if (!IsValid) return null;
-        if (NativeGpuMethods.RenderTargetGetPresentInfo(_handle, out var info) == 0)
+        if (_native.GetPresentInfo(_handle, out var info) == 0)
             return info;
         return null;
+    }
+
+    /// <summary>
+    /// Predicts whether <see cref="Resize"/> with this size keeps queued-but-
+    /// unretired presents paired with their swap-chain retire signals. True
+    /// only when the backend guarantees that pending presents survive. Keeping
+    /// the swap-chain allocation is insufficient when the resize also restarts
+    /// the present queue.
+    /// Returns false when the native runtime cannot answer (conservative).
+    /// </summary>
+    internal bool ResizePreservesPendingPresents(int width, int height)
+    {
+        if (_disposed || _handle == nint.Zero) return false;
+        return _native.ResizePreservesPendingPresents(_handle, width, height);
     }
 
     /// <summary>
@@ -291,7 +306,7 @@ public sealed class RenderTarget : IDisposable
             beforeBytes - afterBytes >= MinimumReleasedBytes;
     }
 
-    internal RenderTarget(RenderContext context, NativeSurfaceDescriptor surface, int width, int height, bool useComposition = false)
+    internal RenderTarget(RenderContext context, NativeSurfaceDescriptor surface, int width, int height, bool useComposition = false, bool offscreen = false)
         : this(
             context.Backend,
             context.Handle,
@@ -300,7 +315,8 @@ public sealed class RenderTarget : IDisposable
             height,
             useComposition,
             native: null,
-            ownerContext: context)
+            ownerContext: context,
+            offscreen: offscreen)
     {
     }
 
@@ -313,7 +329,8 @@ public sealed class RenderTarget : IDisposable
         bool useComposition,
         IRenderTargetNative? native = null,
         RenderContext? ownerContext = null,
-        IRenderTargetMemoryPressure? memoryPressure = null)
+        IRenderTargetMemoryPressure? memoryPressure = null,
+        bool offscreen = false)
     {
         _memoryPressure = memoryPressure
             ?? (native == null
@@ -342,7 +359,7 @@ public sealed class RenderTarget : IDisposable
         }
         try
         {
-            _handle = useComposition
+            _handle = offscreen ? _native.CreateOffscreen(contextHandle, width, height) : useComposition
                 ? _native.CreateForCompositionSurface(contextHandle, surface, width, height)
                 : _native.CreateForSurface(contextHandle, surface, width, height);
             if (_handle == nint.Zero)
@@ -585,7 +602,7 @@ public sealed class RenderTarget : IDisposable
     public nint GetFrameLatencyWaitable()
     {
         if (_disposed || _handle == nint.Zero) return nint.Zero;
-        return NativeMethods.RenderTargetGetFrameLatencyWaitable(_handle);
+        return _native.GetFrameLatencyWaitable(_handle);
     }
 
     /// <summary>
@@ -848,9 +865,14 @@ public sealed class RenderTarget : IDisposable
     /// <param name="brush">Brush to fill with.</param>
     /// <param name="fillRule">Fill rule: 0 = EvenOdd, 1 = NonZero.</param>
     public void FillPolygon(float[] points, NativeBrush brush, int fillRule = 0)
+        => FillPolygon(points.AsSpan(), brush, fillRule);
+
+    // Only the active coordinates are pinned; callers can borrow a stack or
+    // pooled buffer without submitting its unused capacity to the backend.
+    internal void FillPolygon(ReadOnlySpan<float> points, NativeBrush brush, int fillRule = 0)
     {
         ThrowIfDisposed();
-        if (brush == null || !brush.IsValid || points == null || points.Length < 6) return;
+        if (brush == null || !brush.IsValid || points.Length < 6) return;
         long t0 = ApiStart();
         unsafe
         {
@@ -870,9 +892,12 @@ public sealed class RenderTarget : IDisposable
     /// <param name="strokeWidth">Width of stroke.</param>
     /// <param name="closed">Whether to close the polygon.</param>
     public void DrawPolygon(float[] points, NativeBrush brush, float strokeWidth = 1.0f, bool closed = true, int lineJoin = 0, float miterLimit = 10.0f)
+        => DrawPolygon(points.AsSpan(), brush, strokeWidth, closed, lineJoin, miterLimit);
+
+    internal void DrawPolygon(ReadOnlySpan<float> points, NativeBrush brush, float strokeWidth = 1.0f, bool closed = true, int lineJoin = 0, float miterLimit = 10.0f)
     {
         ThrowIfDisposed();
-        if (brush == null || !brush.IsValid || points == null || points.Length < 4) return;
+        if (brush == null || !brush.IsValid || points.Length < 4) return;
         long t0 = ApiStart();
         unsafe
         {
@@ -1089,10 +1114,10 @@ public sealed class RenderTarget : IDisposable
         }
     }
 
-    internal bool DrawParagraphLine(NativeTextParagraph.Line line, float x, float y)
+    internal bool DrawParagraphLine(NativeTextParagraph.Line line, float x, float y, NativeBrush? brush = null)
     {
         ThrowIfDisposed();
-        return line.DrawLine(_handle, x, y);
+        return line.DrawLine(_handle, x, y, brush);
     }
 
     /// <summary>
@@ -2114,6 +2139,49 @@ public sealed class RenderTarget : IDisposable
         catch (EntryPointNotFoundException) { return false; }
     }
 
+    internal bool SupportsAlphaMasks()
+    {
+        ThrowIfDisposed();
+        try { return NativeMethods.SupportsAlphaMasks(_handle) != 0; }
+        catch (EntryPointNotFoundException) { return false; }
+    }
+
+    internal bool SupportsBlendModes()
+    {
+        ThrowIfDisposed();
+        try { return NativeMethods.SupportsBlendModes(_handle) != 0; }
+        catch (EntryPointNotFoundException) { return false; }
+    }
+
+    internal void CompositeBlendCapture(CssBlendMode mode, Rect bounds)
+    {
+        ThrowIfDisposed();
+        var result = NativeMethods.DrawBlendEffect(_handle, (uint)mode,
+            (float)bounds.X, (float)bounds.Y, (float)bounds.Width, (float)bounds.Height);
+        if (result != JaliumResult.Ok)
+            throw new InvalidOperationException($"CSS blend composite failed: {result}");
+    }
+
+    internal void ApplyAlphaMask(byte[] pixels, int width, int height, Rect mask, Rect capture)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(pixels);
+        if (width <= 0 || height <= 0 || (long)width * height > pixels.Length)
+            throw new ArgumentException("Invalid alpha mask dimensions.", nameof(pixels));
+        var result = NativeMethods.DrawAlphaMaskEffect(_handle, pixels, (uint)pixels.Length,
+            (uint)width, (uint)height, (uint)width,
+            (float)mask.X, (float)mask.Y, (float)mask.Width, (float)mask.Height,
+            (float)capture.X, (float)capture.Y, (float)capture.Width, (float)capture.Height);
+        if (result != JaliumResult.Ok) throw new InvalidOperationException($"Alpha mask composite failed: {result}");
+    }
+
+    internal void BeginAlphaMaskCapture(float x, float y, float w, float h)
+    {
+        ThrowIfDisposed();
+        var result = NativeMethods.BeginAlphaMaskCapture(_handle, x, y, w, h);
+        if (result != JaliumResult.Ok) throw new InvalidOperationException($"Alpha mask capture failed: {result}");
+    }
+
     internal bool TryPaintCssInnerShadowLayerElliptical(float x, float y, float w, float h,
         float blurRadius, float offsetX, float offsetY, float spreadRadius,
         float r, float g, float b, float a,
@@ -2675,6 +2743,7 @@ internal sealed class NoopRenderTargetMemoryPressure : IRenderTargetMemoryPressu
 
 internal interface IRenderTargetNative
 {
+    nint CreateOffscreen(nint context, int width, int height) => throw new NotSupportedException();
     nint CreateForSurface(nint context, NativeSurfaceDescriptor surface, int width, int height);
     nint CreateForCompositionSurface(nint context, NativeSurfaceDescriptor surface, int width, int height);
     int GetContextLastError(nint context);
@@ -2698,6 +2767,13 @@ internal interface IRenderTargetNative
     RenderingEngine GetEngine(nint renderTarget);
     void SetVSyncEnabled(nint renderTarget, bool enabled);
     void SetExternalPresentPacing(nint renderTarget, bool enabled);
+    nint GetFrameLatencyWaitable(nint renderTarget) => nint.Zero;
+    int GetPresentInfo(nint renderTarget, out PresentInfo info)
+    {
+        info = default;
+        return (int)JaliumResult.NotSupported;
+    }
+    bool ResizePreservesPendingPresents(nint renderTarget, int width, int height) => false;
     void SetPathMsaaSampleCount(nint renderTarget, uint sampleCount);
     void SetFullInvalidation(nint renderTarget);
     bool SupportsPartialPresentation(nint renderTarget);
@@ -2713,6 +2789,9 @@ internal sealed class DefaultRenderTargetNative : IRenderTargetNative
     private DefaultRenderTargetNative()
     {
     }
+
+    public nint CreateOffscreen(nint context, int width, int height)
+        => NativeMethods.RenderTargetCreateOffscreen(context, width, height);
 
     public nint CreateForSurface(nint context, NativeSurfaceDescriptor surface, int width, int height)
         => NativeMethods.RenderTargetCreateForSurface(context, in surface, width, height);
@@ -2791,6 +2870,28 @@ internal sealed class DefaultRenderTargetNative : IRenderTargetNative
 
     public void SetExternalPresentPacing(nint renderTarget, bool enabled)
         => NativeMethods.RenderTargetSetExternalPresentPacing(renderTarget, enabled ? 1 : 0);
+
+    public nint GetFrameLatencyWaitable(nint renderTarget)
+        => NativeMethods.RenderTargetGetFrameLatencyWaitable(renderTarget);
+
+    public int GetPresentInfo(nint renderTarget, out PresentInfo info)
+        => NativeGpuMethods.RenderTargetGetPresentInfo(renderTarget, out info);
+
+    public bool ResizePreservesPendingPresents(nint renderTarget, int width, int height)
+    {
+        try
+        {
+            return NativeMethods.RenderTargetResizePreservesPendingPresents(
+                renderTarget, width, height) != 0;
+        }
+        catch (EntryPointNotFoundException)
+        {
+            // A newer managed assembly deployed next to an older native core:
+            // assume the resize discards pending presents (the conservative
+            // branch — dropping handshake serials, never mislabeling them).
+            return false;
+        }
+    }
 
     public void SetPathMsaaSampleCount(nint renderTarget, uint sampleCount)
         => NativeMethods.RenderTargetSetPathMsaa(renderTarget, sampleCount);

@@ -354,6 +354,9 @@ internal sealed partial class WritingToolsDocumentFragment
     }
 
     internal TextPointer Insert(FlowDocument document, int start, int length, Func<bool> current)
+        => Insert(document, start, length, current, null);
+
+    internal TextPointer Insert(FlowDocument document, int start, int length, Func<bool> current, TextPointer? insertionHint)
     {
         if (_wholeInlineSource is null && HasPreparedSource) return InsertPrepared(document, current);
         string original = document.GetText();
@@ -361,7 +364,7 @@ internal sealed partial class WritingToolsDocumentFragment
             throw new ArgumentOutOfRangeException(nameof(start));
         if (!current()) return document.ContentStart;
         if (!(start == 0 && length == original.Length) &&
-            document.GetPositionAtOffset(start, LogicalDirection.Forward) is { } insertion &&
+            (insertionHint ?? document.GetPositionAtOffset(start, LogicalDirection.Forward)) is { } insertion &&
             DocumentTextEditing.HasNonMergeableAncestor(insertion))
             throw new InvalidOperationException("A formatted fragment cannot split a non-mergeable inline.");
         if (start == 0 && length == original.Length)
@@ -382,7 +385,7 @@ internal sealed partial class WritingToolsDocumentFragment
             { SourceRetired = true; return document.ContentStart; }
             return document.ContentEnd;
         }
-        TextPointer position = DocumentTextEditing.Replace(document, start, length, string.Empty);
+        TextPointer position = DocumentTextEditing.Replace(document, start, length, string.Empty, insertionHint);
         if (!current() || Blocks.Count == 0) return position;
         Paragraph prefix = position.Paragraph ?? throw new InvalidOperationException("No insertion paragraph.");
         BlockCollection collection = prefix.OwnerCollection ?? throw new InvalidOperationException("Detached insertion paragraph.");

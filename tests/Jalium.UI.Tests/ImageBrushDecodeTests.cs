@@ -2,6 +2,7 @@ using Jalium.UI.Diagnostics;
 using Jalium.UI.Interop;
 using Jalium.UI.Media.Imaging;
 using Jalium.UI.Media.Rendering;
+using Jalium.UI.Styling;
 
 // Jalium.UI.Media.Imaging carries a same-named type; the GPU choke point under test is the
 // Interop one.
@@ -34,6 +35,66 @@ namespace Jalium.UI.Tests;
 [Collection("Application")]
 public sealed class ImageBrushDecodeTests
 {
+    [RequiresWindowsBackendFact(RenderBackend.Software)]
+    public void ResizingAnImageBrush_RequestsAnUpgradeEvenWithACachedNativeUpload()
+    {
+        var decoder = new RecordingImageDecoder { NaturalWidth = 512, NaturalHeight = 512, Fill = 0xFF };
+        BitmapImage.SetDecoder(decoder);
+        using var file = new TempImageFile();
+        using var bitmap = file.CreateDeferredImage();
+        using var surface = new GpuSurface();
+        var brush = new ImageBrush(bitmap);
+        surface.DrawFrame(dc => dc.DrawRectangle(brush, null, SmallPaintRect));
+        Assert.True(ImagePipelineTestHarness.SpinUntil(() => bitmap.TryGetPixelSnapshot(out var p) && p is not null,
+            ImagePipelineTestHarness.DecodeTimeout));
+        surface.DrawFrame(dc => dc.DrawRectangle(brush, null, SmallPaintRect));
+        Assert.True(bitmap.TryGetPixelSnapshot(out var before));
+        var firstWidth = before!.Width;
+        surface.DrawFrame(dc => dc.DrawRectangle(brush, null, PaintRect));
+        Assert.True(ImagePipelineTestHarness.SpinUntil(() => bitmap.TryGetPixelSnapshot(out var p) && p is not null && p.Width > firstWidth,
+            ImagePipelineTestHarness.DecodeTimeout), "The cached brush upload suppressed its larger decode request.");
+    }
+
+    [RequiresWindowsBackendFact(RenderBackend.Software)]
+    public void CssBackgroundSize_LargerThanPaintBoundsRequestsEnoughSourcePixels()
+    {
+        BitmapImage.SetDecoder(new RecordingImageDecoder
+        {
+            NaturalWidth = 512,
+            NaturalHeight = 512,
+            Fill = 0xFF,
+        });
+        using var ordinaryFile = new TempImageFile();
+        using var sizedFile = new TempImageFile();
+        using var ordinaryBitmap = ordinaryFile.CreateDeferredImage();
+        using var sizedBitmap = sizedFile.CreateDeferredImage();
+        using var surface = new GpuSurface();
+        var size = new CssBackgroundSize(new CssLength(400, CssUnit.Px), new CssLength(400, CssUnit.Px));
+        var ordinaryBrush = new ImageBrush(ordinaryBitmap);
+        var sizedBrush = new ImageBrush(sizedBitmap)
+        {
+            CssBackgroundLayout = new CssBackgroundImageLayout(size, CssBackgroundRepeat.Both),
+        };
+
+        void DrawBoth() => surface.DrawFrame(dc =>
+        {
+            dc.DrawRectangle(ordinaryBrush, null, SmallPaintRect);
+            dc.DrawRectangle(sizedBrush, null, SmallPaintRect);
+        });
+
+        DrawBoth();
+        Assert.True(ImagePipelineTestHarness.SpinUntil(
+            () => ordinaryBitmap.TryGetPixelSnapshot(out var ordinaryPixels) && ordinaryPixels is not null &&
+                  sizedBitmap.TryGetPixelSnapshot(out var sizedPixels) && sizedPixels is not null,
+            ImagePipelineTestHarness.DecodeTimeout));
+        DrawBoth();
+        Assert.True(ImagePipelineTestHarness.SpinUntil(
+            () => ImagePipelineTestHarness.PublishedBucket(sizedBitmap).Width >
+                  ImagePipelineTestHarness.PublishedBucket(ordinaryBitmap).Width,
+            ImagePipelineTestHarness.DecodeTimeout),
+            "CSS background-size did not request more pixels than an ordinary brush in the same paint bounds.");
+    }
+
     private const int SurfaceWidth = 256;
     private const int SurfaceHeight = 128;
 

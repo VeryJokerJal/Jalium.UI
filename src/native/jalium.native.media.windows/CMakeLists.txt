@@ -36,6 +36,7 @@ target_link_libraries(${PROJECT_NAME}
     PRIVATE
         jalium.native.media.core
         windowscodecs
+        d3d11
         mfplat
         mfreadwrite
         mf

@@ -1,0 +1,83 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:dev="clr-namespace:Jalium.UI.Controls.DevTools"
+                    xmlns:automation="clr-namespace:Jalium.UI.Automation">
+    <Style TargetType="dev:DevToolsHeading">
+        <Setter Property="Foreground" Value="{DynamicResource DevTools.Accent}" /><Setter Property="FontSize" Value="10" /><Setter Property="Margin" Value="8,12,4,5" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsHeading"><TextBlock Text="{TemplateBinding DisplayText}" Foreground="{TemplateBinding Foreground}" FontSize="{TemplateBinding FontSize}" TextWrapping="Wrap" /></ControlTemplate></Setter>
+    </Style>
+    <Style TargetType="dev:DevToolsDetailRow">
+        <Setter Property="Foreground" Value="{DynamicResource DevTools.TextPrimary}" /><Setter Property="Margin" Value="8,1,4,1" /><Setter Property="Padding" Value="4,5" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsDetailRow">
+            <Grid>
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup Name="LayoutStates"><VisualState Name="Wide" /><VisualState Name="Compact"><VisualState.Setters>
+                        <Setter TargetName="PART_Name" Property="Grid.ColumnSpan" Value="2" /><Setter TargetName="PART_ValuePanel" Property="Grid.Column" Value="0" /><Setter TargetName="PART_ValuePanel" Property="Grid.Row" Value="1" /><Setter TargetName="PART_ValuePanel" Property="Grid.ColumnSpan" Value="2" />
+                    </VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="DetailStates"><VisualState Name="Detailed" /><VisualState Name="Plain"><VisualState.Setters><Setter TargetName="PART_Detail" Property="Visibility" Value="Collapsed" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="PreviewStates"><VisualState Name="Swatch" /><VisualState Name="Typed"><VisualState.Setters><Setter TargetName="PART_Swatch" Property="Visibility" Value="Collapsed" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="RowStates"><VisualState Name="Regular" /><VisualState Name="Alternate"><VisualState.Setters><Setter TargetName="PART_Background" Property="Background" Value="{DynamicResource DevTools.RowAlt}" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="CommonStates"><VisualState Name="Normal" /><VisualState Name="Disabled"><VisualState.Setters><Setter TargetName="PART_Content" Property="Opacity" Value="0.55" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="ValueStates">
+                        <VisualState Name="Object" /><VisualState Name="Brush" /><VisualState Name="Reference" /><VisualState Name="Thickness" />
+                        <VisualState Name="Null"><VisualState.Setters><Setter TargetName="PART_Value" Property="Foreground" Value="{DynamicResource DevTools.TextSecondary}" /></VisualState.Setters></VisualState>
+                        <VisualState Name="String"><VisualState.Setters><Setter TargetName="PART_Value" Property="Foreground" Value="{DynamicResource DevTools.TokenString}" /></VisualState.Setters></VisualState>
+                        <VisualState Name="Color"><VisualState.Setters><Setter TargetName="PART_Value" Property="Foreground" Value="{DynamicResource DevTools.TokenString}" /></VisualState.Setters></VisualState>
+                        <VisualState Name="Number"><VisualState.Setters><Setter TargetName="PART_Value" Property="Foreground" Value="{DynamicResource DevTools.TokenNumber}" /></VisualState.Setters></VisualState>
+                        <VisualState Name="Boolean"><VisualState.Setters><Setter TargetName="PART_Value" Property="Foreground" Value="{DynamicResource DevTools.Info}" /></VisualState.Setters></VisualState>
+                        <VisualState Name="Enum"><VisualState.Setters><Setter TargetName="PART_Value" Property="Foreground" Value="{DynamicResource DevTools.TokenEnum}" /></VisualState.Setters></VisualState>
+                        <VisualState Name="Style"><VisualState.Setters><Setter TargetName="PART_Value" Property="Foreground" Value="{DynamicResource DevTools.TokenType}" /></VisualState.Setters></VisualState>
+                        <VisualState Name="Template"><VisualState.Setters><Setter TargetName="PART_Value" Property="Foreground" Value="{DynamicResource DevTools.TokenType}" /></VisualState.Setters></VisualState>
+                    </VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <Border Name="PART_Background" Background="Transparent" CornerRadius="3" />
+                <Grid Name="PART_Content" Margin="{TemplateBinding Padding}" MaxWidth="{TemplateBinding AvailableContentWidth}">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                    <TextBlock Name="PART_Name" Width="{TemplateBinding EffectiveNameColumnWidth}" Text="{TemplateBinding Label}" Foreground="{DynamicResource DevTools.TokenProperty}" FontSize="11" TextWrapping="Wrap" Padding="0,0,8,0" VerticalAlignment="Top" />
+                    <StackPanel Name="PART_ValuePanel" Grid.Column="1">
+                        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                            <Border Name="PART_Swatch" Width="12" Height="12" CornerRadius="2" Background="{TemplateBinding SwatchBrush}" BorderBrush="{DynamicResource DevTools.BorderStrong}" BorderThickness="1" Margin="0,1,6,0" VerticalAlignment="Top" />
+                            <TextBlock Name="PART_Value" Grid.Column="1" Text="{TemplateBinding ValueText}" Foreground="{TemplateBinding Foreground}" FontSize="11" TextWrapping="Wrap" />
+                        </Grid>
+                        <TextBlock Name="PART_Detail" Text="{TemplateBinding DetailText}" Foreground="{DynamicResource DevTools.TextSecondary}" FontSize="10" TextWrapping="Wrap" Margin="0,3,0,0" />
+                    </StackPanel>
+                </Grid>
+            </Grid>
+        </ControlTemplate></Setter>
+    </Style>
+    <Style x:Key="DevTools.DetailHeading" TargetType="dev:DevToolsActionButton" BasedOn="{StaticResource DevTools.PropertyGroupHeader}">
+        <Setter Property="Foreground" Value="{DynamicResource DevTools.Accent}" />
+    </Style>
+    <Style TargetType="dev:DevToolsDetailSection">
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" /><Setter Property="AlternationCount" Value="2" />
+        <Setter Property="ItemsPanel"><ItemsPanelTemplate><StackPanel /></ItemsPanelTemplate></Setter>
+        <Setter Property="ItemContainerStyle"><Style TargetType="ContentPresenter"><Setter Property="HorizontalAlignment" Value="Stretch" /></Style></Setter>
+        <Setter Property="ItemTemplate"><DataTemplate>
+            <dev:DevToolsDetailRow Label="{Binding Name}" ValueText="{Binding ValueText}" DetailText="{Binding DetailText}" ValueKind="{Binding ValueKind}" SwatchBrush="{Binding SwatchBrush}"
+                IsAlternate="{Binding (ItemsControl.AlternationIndex), RelativeSource={RelativeSource AncestorType=ContentPresenter}, Converter={StaticResource DevTools.PropertyGroupAlternation}}" />
+        </DataTemplate></Setter>
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsDetailSection">
+            <StackPanel>
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup Name="ExpansionStates"><VisualState Name="Expanded" /><VisualState Name="Collapsed"><VisualState.Setters><Setter TargetName="PART_Body" Property="Visibility" Value="Collapsed" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="ActionStates"><VisualState Name="ActionVisible" /><VisualState Name="ActionHidden"><VisualState.Setters><Setter TargetName="PART_Action" Property="Visibility" Value="Collapsed" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="DataStates"><VisualState Name="DetailsAvailable" /><VisualState Name="DetailsEmpty"><VisualState.Setters><Setter TargetName="PART_Header" Property="Visibility" Value="Collapsed" /><Setter TargetName="PART_StaticHeading" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState></VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <dev:DevToolsActionButton Name="PART_Header" Label="{TemplateBinding Heading}" IsToggle="True" IsActive="{Binding IsExpanded, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}" Style="{StaticResource DevTools.DetailHeading}" />
+                <TextBlock Name="PART_StaticHeading" Text="{TemplateBinding Heading}" Foreground="{DynamicResource DevTools.Accent}" FontSize="10" Margin="8,12,4,5" TextWrapping="Wrap" Visibility="Collapsed" />
+                <StackPanel Name="PART_Body"><ItemsPresenter />
+                    <dev:DevToolsActionButton Name="PART_Action" Label="{TemplateBinding ActionLabel}" Command="{TemplateBinding ActionCommand}" CommandParameter="{TemplateBinding ActionCommandParameter}" Margin="8,4" HorizontalAlignment="Left" />
+                </StackPanel>
+            </StackPanel>
+        </ControlTemplate></Setter>
+    </Style>
+    <Style TargetType="dev:DevToolsXamlView">
+        <Setter Property="Background" Value="{DynamicResource DevTools.Surface}" /><Setter Property="Foreground" Value="{DynamicResource DevTools.TextPrimary}" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsXamlView">
+            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
+                <TextBox Name="PART_Editor" Text="{TemplateBinding Text}" AcceptsReturn="True" IsReadOnly="True" VerticalContentAlignment="Top" HorizontalContentAlignment="Left" FontSize="12" FontFamily="{ThemeResource MonoFontFamily}" Foreground="{TemplateBinding Foreground}" Background="{TemplateBinding Background}" BorderBrush="{DynamicResource DevTools.Border}" BorderThickness="1" Padding="8" Margin="6" automation:AutomationProperties.Name="XAML" />
+            </ScrollViewer>
+        </ControlTemplate></Setter>
+    </Style>
+</ResourceDictionary>

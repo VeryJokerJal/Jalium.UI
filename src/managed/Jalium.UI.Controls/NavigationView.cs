@@ -9,6 +9,17 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Represents a container that enables navigation of app content with WinUI-style appearance.
 /// </summary>
+[TemplatePart(Name = "PART_PaneContainer", Type = typeof(Panel))]
+[TemplatePart(Name = "PART_ContentContainer", Type = typeof(Panel))]
+[TemplatePart(Name = "PART_PaneHeaderHost", Type = typeof(ContentPresenter))]
+[TemplatePart(Name = "PART_PaneFooterHost", Type = typeof(ContentPresenter))]
+[TemplatePart(Name = "PART_PaneFooterRegion", Type = typeof(Panel))]
+[TemplatePart(Name = "PART_MenuItemsHost", Type = typeof(StackPanel))]
+[TemplatePart(Name = "PART_FooterItemsHost", Type = typeof(StackPanel))]
+[TemplatePart(Name = "PART_PaneScrollViewer", Type = typeof(ScrollViewer))]
+[TemplateVisualState(Name = "PaneOpen", GroupName = "PaneStates")]
+[TemplateVisualState(Name = "PaneCompact", GroupName = "PaneStates")]
+[TemplateVisualState(Name = "PaneHidden", GroupName = "PaneStates")]
 public class NavigationView : ContentControl
 {
     /// <inheritdoc />
@@ -28,8 +39,8 @@ public class NavigationView : ContentControl
     private ContentPresenter? _paneHeaderHost;
     private ContentPresenter? _paneFooterHost;
     private Panel? _paneFooterRegion;
-    private Grid? _rootGrid;
     private ScrollViewer? _paneScrollViewer;
+    private bool _hasTemplate;
 
     // Phase-A diagnostic gate (see project_render_arch_damage_driven_bsrc): opt the
     // content region into compositor-boundary caching. Hovering a nav item only
@@ -100,7 +111,7 @@ public class NavigationView : ContentControl
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty OpenPaneLengthProperty =
         DependencyProperty.Register(nameof(OpenPaneLength), typeof(double), typeof(NavigationView),
-            new PropertyMetadata(280.0, OnOpenPaneLengthChanged));
+            new PropertyMetadata(280.0, OnPaneLengthChanged), IsValidPaneLength);
 
     /// <summary>
     /// Identifies the CompactPaneLength dependency property.
@@ -108,7 +119,13 @@ public class NavigationView : ContentControl
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty CompactPaneLengthProperty =
         DependencyProperty.Register(nameof(CompactPaneLength), typeof(double), typeof(NavigationView),
-            new PropertyMetadata(48.0));
+            new PropertyMetadata(48.0, OnPaneLengthChanged), IsValidPaneLength);
+
+    private static readonly DependencyPropertyKey PaneWidthPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(PaneWidth), typeof(double), typeof(NavigationView), new PropertyMetadata(280d));
+
+    /// <summary>Identifies the current pane width used by replaceable templates.</summary>
+    public static readonly DependencyProperty PaneWidthProperty = PaneWidthPropertyKey.DependencyProperty;
 
     /// <summary>
     /// Identifies the PaneTitle dependency property.
@@ -222,6 +239,9 @@ public class NavigationView : ContentControl
         set => SetValue(CompactPaneLengthProperty, value);
     }
 
+    /// <summary>Gets the open or compact width for the current pane state.</summary>
+    public double PaneWidth => (double)GetValue(PaneWidthProperty)!;
+
     /// <summary>
     /// Gets or sets the title of the navigation pane.
     /// </summary>
@@ -328,8 +348,6 @@ public class NavigationView : ContentControl
         // Handle mouse clicks
         AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnNavigationViewMouseDown));
 
-        // Ensure a template is available even before visual-tree attach (test/runtime parity).
-        EnsureDefaultTemplateIfMissing();
     }
 
     #region Events
@@ -419,8 +437,8 @@ public class NavigationView : ContentControl
             _paneFooterRegion.SizeChanged -= OnPaneRegionSizeChanged;
 
         base.OnApplyTemplate();
+        _hasTemplate = true;
 
-        _rootGrid = GetTemplateChild("PART_RootGrid") as Grid;
         _paneContainer = GetTemplateChild("PART_PaneContainer") as Panel;
         _contentContainer = GetTemplateChild("PART_ContentContainer") as Panel;
         _paneHeaderHost = GetTemplateChild("PART_PaneHeaderHost") as ContentPresenter;
@@ -444,6 +462,23 @@ public class NavigationView : ContentControl
     }
 
     /// <inheritdoc />
+    protected override void OnTemplateChanging()
+    {
+        _hasTemplate = false;
+        if (_paneHeaderHost != null)
+        {
+            _paneHeaderHost.SizeChanged -= OnPaneRegionSizeChanged;
+            _paneHeaderHost.Content = null;
+        }
+        if (_paneFooterRegion != null)
+            _paneFooterRegion.SizeChanged -= OnPaneRegionSizeChanged;
+        if (_paneFooterHost != null) _paneFooterHost.Content = null;
+        _menuItemsPanel?.Children.Clear();
+        _footerItemsPanel?.Children.Clear();
+        base.OnTemplateChanging();
+    }
+
+    /// <inheritdoc />
     internal override void OnTemplateContentClearing()
     {
         base.OnTemplateContentClearing();
@@ -456,7 +491,6 @@ public class NavigationView : ContentControl
         if (_paneFooterRegion != null)
             _paneFooterRegion.SizeChanged -= OnPaneRegionSizeChanged;
 
-        _rootGrid = null;
         _paneContainer = null;
         _contentContainer = null;
         _paneHeaderHost = null;
@@ -548,13 +582,13 @@ public class NavigationView : ContentControl
             // Deselect previous item
             if (_selectedItem != null)
             {
-                _selectedItem.IsSelected = false;
+                _selectedItem.SetCurrentValue(NavigationViewItem.IsSelectedProperty, false);
             }
 
             // Select new item
             _selectedItem = item;
-            _selectedItem.IsSelected = true;
-            SelectedItem = item;
+            _selectedItem.SetCurrentValue(NavigationViewItem.IsSelectedProperty, true);
+            SetCurrentValue(SelectedItemProperty, item);
 
             // Fire events
             item.Invoke();
@@ -643,11 +677,9 @@ public class NavigationView : ContentControl
 
     private void UpdatePaneWidth()
     {
-        if (_rootGrid != null && _rootGrid.ColumnDefinitions.Count > 0)
-        {
-            var paneWidth = IsPaneOpen ? OpenPaneLength : CompactPaneLength;
-            _rootGrid.ColumnDefinitions[0].Width = new GridLength(paneWidth, GridUnitType.Pixel);
-        }
+        SetValue(PaneWidthPropertyKey, IsPaneOpen ? OpenPaneLength : CompactPaneLength);
+        if (_hasTemplate)
+            VisualStateManager.GoToState(this, PaneWidth <= 0 ? "PaneHidden" : IsPaneOpen ? "PaneOpen" : "PaneCompact", false);
     }
 
     private void UpdatePaneHeader()
@@ -710,83 +742,10 @@ public class NavigationView : ContentControl
         if (_menuItemsPanel != null && _footerItemsPanel != null)
             return;
 
-        EnsureDefaultTemplateIfMissing();
+        if (Template == null) UpdateDefaultStyle();
         ApplyTemplate();
     }
 
-    private void EnsureDefaultTemplateIfMissing()
-    {
-        if (Template != null)
-            return;
-
-        var activeStyle = GetEffectiveStyle();
-        if (TryGetTemplateFromStyle(activeStyle, out var activeStyleTemplate) && activeStyleTemplate != null)
-        {
-            Template = activeStyleTemplate;
-            return;
-        }
-
-        var appResources = Jalium.UI.Application.Current?.Resources;
-        if (appResources == null)
-            return;
-
-        var themeStyle = FindMergedStyle(appResources.MergedDictionaries, typeof(NavigationView));
-        if (themeStyle == null && appResources.TryGetValue(typeof(NavigationView), out var styleObj))
-            themeStyle = styleObj as Style;
-        if (themeStyle == null)
-            return;
-
-        if (!TryGetTemplateFromStyle(themeStyle, out var template) || template == null)
-            return;
-
-        // Keep style-driven brushes/typography while restoring core visual structure.
-        Template = template;
-    }
-
-    private Style? GetEffectiveStyle()
-    {
-        if (Style != null)
-            return Style;
-
-        return TryFindResource(typeof(NavigationView)) as Style;
-    }
-
-    private static Style? FindMergedStyle(IList<ResourceDictionary> dictionaries, object key)
-    {
-        for (int i = dictionaries.Count - 1; i >= 0; i--)
-        {
-            var dictionary = dictionaries[i];
-
-            if (dictionary.TryGetValue(key, out var styleValue) && styleValue is Style style)
-                return style;
-
-            var nested = FindMergedStyle(dictionary.MergedDictionaries, key);
-            if (nested != null)
-                return nested;
-        }
-
-        return null;
-    }
-
-    private static bool TryGetTemplateFromStyle(Style? style, out ControlTemplate? template)
-    {
-        while (style != null)
-        {
-            foreach (var setter in style.Setters.OfType<Setter>())
-            {
-                if (setter.Property == TemplateProperty && setter.Value is ControlTemplate controlTemplate)
-                {
-                    template = controlTemplate;
-                    return true;
-                }
-            }
-
-            style = style.BasedOn;
-        }
-
-        template = null;
-        return false;
-    }
 
     #endregion
 
@@ -820,25 +779,26 @@ public class NavigationView : ContentControl
         }
     }
 
-    private static void OnOpenPaneLengthChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        if (d is NavigationView nav)
-        {
-            nav.UpdatePaneWidth();
-            // Refresh items to update their widths
-            nav.RefreshMenuItems();
-            nav.RefreshFooterItems();
-        }
-    }
+    private static void OnPaneLengthChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
+        ((NavigationView)d).UpdatePaneWidth();
+
+    private static bool IsValidPaneLength(object? value) => value is double width && double.IsFinite(width) && width >= 0;
 
     private static void OnSelectedItemChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is NavigationView nav && !nav._isUpdatingSelection && e.NewValue is NavigationViewItem item)
+        if (d is not NavigationView nav || nav._isUpdatingSelection) return;
+        if (e.NewValue is NavigationViewItem item)
         {
             if (nav._selectedItem != item)
             {
                 nav.SelectItem(item);
             }
+        }
+        else if (e.NewValue == null && nav._selectedItem is { } previous)
+        {
+            nav._selectedItem = null;
+            previous.SetCurrentValue(NavigationViewItem.IsSelectedProperty, false);
+            nav.SelectionChanged?.Invoke(nav, new NavigationViewSelectionChangedEventArgs(null, previous));
         }
     }
 

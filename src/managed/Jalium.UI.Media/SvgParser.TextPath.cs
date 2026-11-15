@@ -145,14 +145,7 @@ internal static partial class SvgParser
                 if (ParseTransform(target) is { } transform)
                     geometry = BakeTransform(geometry.GetFlattenedPathGeometry(
                         0.15, ToleranceType.Absolute), transform);
-                if (target.Attribute("pathLength") is { } pathLengthAttribute)
-                {
-                    if (!double.TryParse(pathLengthAttribute.Value, NumberStyles.Float,
-                            CultureInfo.InvariantCulture, out var declaredLength) ||
-                        !double.IsFinite(declaredLength) || declaredLength < 0)
-                        return false;
-                    authoredPathLength = declaredLength;
-                }
+                authoredPathLength = AuthoredPathLength(target);
             }
             catch (FormatException) { return false; }
             catch (ArgumentException) { return false; }

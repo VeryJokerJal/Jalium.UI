@@ -6,12 +6,23 @@ using Jalium.UI.Input.StylusPlugIns;
 
 namespace Jalium.UI.Tests;
 
-public class WindowStylusPipelineTests
+[Collection("Application")]
+public class WindowStylusPipelineTests : IDisposable
 {
+    private Window? _window;
+
+    private Window CreateWindow() => _window = new DisplayedTestWindow();
+
+    public void Dispose()
+    {
+        try { _window?.Close(); }
+        finally { Tablet.CurrentStylusDevice = null; }
+    }
+
     [Fact]
     public void CleanupPointerSession_ShouldRemoveStylusDeviceAndResetCurrentStylusDevice()
     {
-        var window = new Window();
+        var window = CreateWindow();
         var stylusDevice = new PointerStylusDevice(1001);
         Dictionary<uint, StylusDevice> activeStylusDevices =
             GetField<Dictionary<uint, StylusDevice>>(window, "_activeStylusDevices");
@@ -27,7 +38,7 @@ public class WindowStylusPipelineTests
     [Fact]
     public void DispatchStylusSourcePipeline_ShouldRunPlugInBeforePreviewAndBubbleEvents()
     {
-        var window = new Window();
+        var window = CreateWindow();
         var order = new List<string>();
         window.GetStylusPlugIns(createIfMissing: true)!.Add(new OrderedStylusPlugIn(() => order.Add("plugin")));
         window.AddHandler(UIElement.PreviewStylusDownEvent, new RoutedEventHandler((_, _) => order.Add("preview")));
@@ -46,7 +57,7 @@ public class WindowStylusPipelineTests
     [Fact]
     public void DispatchStylusSourcePipeline_WhenPlugInCancels_ShouldSetSourceCanceled()
     {
-        var window = new Window();
+        var window = CreateWindow();
         window.GetStylusPlugIns(createIfMissing: true)!.Add(new CancelingStylusPlugIn());
 
         object pointerData = CreatePenPointerData(pointerId: 2002, inContact: true, inRange: true, isCanceled: false);
@@ -142,7 +153,7 @@ public class WindowStylusPipelineTests
 
     private static T GetField<T>(object instance, string fieldName)
     {
-        FieldInfo field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic)
+        FieldInfo field = typeof(Window).GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException($"Field {fieldName} not found.");
         return (T)(field.GetValue(instance) ?? throw new InvalidOperationException($"Field {fieldName} value is null."));
     }

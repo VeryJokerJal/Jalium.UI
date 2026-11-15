@@ -14,20 +14,21 @@ internal static class CssEvaluationScheduler
 {
     private sealed class DispatcherState
     {
-        public HashSet<CssNode> SubtreeRoots = new();
-        public HashSet<CssNode> SelfElements = new();
+        public ConditionalWeakTable<CssNode, object> SubtreeRoots = new();
+        public ConditionalWeakTable<CssNode, object> SelfElements = new();
         public bool Scheduled;
     }
 
     private const int MaxChainDepth = 4096;
 
     private static readonly ConditionalWeakTable<Dispatcher, DispatcherState> s_states = new();
+    private static readonly object s_pendingMarker = new();
 
     public static void InvalidateSubtree(CssNode root)
     {
         var dispatcher = root.Dispatcher;
         var state = s_states.GetValue(dispatcher, static _ => new DispatcherState());
-        state.SubtreeRoots.Add(root);
+        state.SubtreeRoots.GetValue(root, static _ => s_pendingMarker);
         Schedule(dispatcher, state);
     }
 
@@ -36,20 +37,26 @@ internal static class CssEvaluationScheduler
     {
         var dispatcher = element.Dispatcher;
         var state = s_states.GetValue(dispatcher, static _ => new DispatcherState());
-        state.SelfElements.Add(element);
+        state.SelfElements.GetValue(element, static _ => s_pendingMarker);
         Schedule(dispatcher, state);
     }
 
     /// <summary>Runs any pending evaluation synchronously (layout entry, tests).</summary>
     internal static bool HasPending(Dispatcher dispatcher)
-        => s_states.TryGetValue(dispatcher, out var state) && state.Scheduled;
+        => s_states.TryGetValue(dispatcher, out var state) && state.Scheduled || CssCounters.HasPending(dispatcher) || CssFirstLine.HasPending(dispatcher);
 
     public static void FlushIfPending(Dispatcher dispatcher)
     {
         CssFontFaces.FlushNotifications(dispatcher);
         if (s_states.TryGetValue(dispatcher, out var state) && state.Scheduled)
         {
-            Run(state);
+            Run(dispatcher, state);
+        }
+        CssCounters.Flush(dispatcher);
+        CssFirstLine.FlushLayout(dispatcher);
+        if (s_states.TryGetValue(dispatcher, out state) && state.Scheduled)
+        {
+            Run(dispatcher, state);
         }
     }
 
@@ -61,10 +68,10 @@ internal static class CssEvaluationScheduler
         }
 
         state.Scheduled = true;
-        dispatcher.BeginInvoke(DispatcherPriority.Render, () => Run(state));
+        dispatcher.BeginInvoke(DispatcherPriority.Render, () => Run(dispatcher, state));
     }
 
-    private static void Run(DispatcherState state)
+    private static void Run(Dispatcher dispatcher, DispatcherState state)
     {
         if (!state.Scheduled)
         {
@@ -72,15 +79,17 @@ internal static class CssEvaluationScheduler
         }
 
         state.Scheduled = false;
-        var roots = state.SubtreeRoots;
-        var selfElements = state.SelfElements;
+        // A pending dispatcher pass must not own detached templates or data.
+        // Hold only the nodes still alive when the actual evaluation begins.
+        var roots = state.SubtreeRoots.Select(static pending => pending.Key).ToHashSet();
+        var selfElements = state.SelfElements.Select(static pending => pending.Key).ToHashSet();
         if (roots.Count == 0 && selfElements.Count == 0)
         {
             return;
         }
 
-        state.SubtreeRoots = new HashSet<CssNode>();
-        state.SelfElements = new HashSet<CssNode>();
+        state.SubtreeRoots = new();
+        state.SelfElements = new();
 
         foreach (var root in roots)
         {
@@ -101,6 +110,7 @@ internal static class CssEvaluationScheduler
 
             CssEngine.EvaluateElement(element);
         }
+        CssCounters.Flush(dispatcher);
     }
 
     private static bool HasAncestorIn(CssNode element, HashSet<CssNode> roots)

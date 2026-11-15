@@ -1,6 +1,32 @@
+#include "jalium_color_interpolation.h"
 #include "d3d12_resources.h"
 
 namespace jalium {
+
+JaliumResult D3D12LinearGradientBrush::SetColorInterpolationMode(uint32_t mode) {
+    if (mode > 1) return JALIUM_ERROR_INVALID_ARGUMENT;
+    if (interpolationSource_.empty()) {
+        for (const auto& stop : stops_) interpolationSource_.push_back({stop.position,stop.color.r,stop.color.g,stop.color.b,stop.color.a});
+    }
+    auto prepared=PrepareSrgbGradientStops(interpolationSource_,mode);
+    std::vector<GradStop> result; result.reserve(prepared.size());
+    for (const auto& stop : prepared) result.push_back({stop.position,{stop.r,stop.g,stop.b,stop.a}});
+    stops_.swap(result);
+    colorInterpolationMode=mode; return JALIUM_OK;
+}
+
+JaliumResult D3D12RadialGradientBrush::SetColorInterpolationMode(uint32_t mode) {
+    if (mode > 1) return JALIUM_ERROR_INVALID_ARGUMENT;
+    if (interpolationSource_.empty()) {
+        for (const auto& stop : stops_) interpolationSource_.push_back({stop.position,stop.color.r,stop.color.g,stop.color.b,stop.color.a});
+    }
+    auto prepared=PrepareSrgbGradientStops(interpolationSource_,mode);
+    std::vector<GradStop> result; result.reserve(prepared.size());
+    for (const auto& stop : prepared) result.push_back({stop.position,{stop.r,stop.g,stop.b,stop.a}});
+    stops_.swap(result);
+    colorInterpolationMode=mode; return JALIUM_OK;
+}
+
 
 // ============================================================================
 // D3D12SolidBrush

@@ -9,6 +9,7 @@ namespace Jalium.UI.Tests;
 [Collection("Application")]
 public class InfoBarThemeTests
 {
+    public InfoBarThemeTests() => Jalium.UI.Markup.ThemeLoader.Initialize();
     private static void ResetApplicationState()
     {
         var currentField = typeof(Application).GetField("_current",
@@ -71,20 +72,10 @@ public class InfoBarThemeTests
             Assert.True(app.Resources.TryGetValue("InfoBarWarningBackground", out var bgObj));
             Assert.True(app.Resources.TryGetValue("InfoBarWarningBrush", out var iconObj));
 
-            var getSeverityBrushes = typeof(InfoBar).GetMethod("GetSeverityBrushes",
-                BindingFlags.Instance | BindingFlags.NonPublic);
-            Assert.NotNull(getSeverityBrushes);
-
-            var tuple = getSeverityBrushes!.Invoke(infoBar, null);
-            Assert.NotNull(tuple);
-
-            var backgroundField = tuple!.GetType().GetField("Item1");
-            var iconField = tuple.GetType().GetField("Item2");
-            Assert.NotNull(backgroundField);
-            Assert.NotNull(iconField);
-
-            Assert.Same(bgObj, backgroundField!.GetValue(tuple));
-            Assert.Same(iconObj, iconField!.GetValue(tuple));
+            var host = new StackPanel(); host.Children.Add(infoBar);
+            host.Measure(new Size(360, 120)); host.Arrange(new Rect(0, 0, 360, 120));
+            Assert.Same(bgObj, Assert.IsType<Border>(infoBar.FindName("PART_SeverityBackground")).Background);
+            Assert.Same(iconObj, Assert.IsType<Jalium.UI.Shapes.Path>(infoBar.FindName("PART_DefaultIcon")).Stroke);
         }
         finally
         {

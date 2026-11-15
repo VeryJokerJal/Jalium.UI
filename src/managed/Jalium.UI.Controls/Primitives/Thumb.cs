@@ -142,6 +142,22 @@ public class Thumb : Control
     private Point _dragStartPosition;
     private Point _dragStartWindowPosition;
     private Point _previousDragWindowPosition;
+    private Orientation _visualCompressionOrientation;
+    private double _visualCompression;
+
+    // The owning ScrollBar can compress the indicator without changing this
+    // control's layout slot, hit target, or pointer-to-value mapping.
+    internal void SetVisualCompression(Orientation orientation, double compression)
+    {
+        compression = double.IsFinite(compression) ? compression : 0;
+        if (_visualCompressionOrientation == orientation && _visualCompression == compression)
+            return;
+
+        _visualCompressionOrientation = orientation;
+        _visualCompression = compression;
+        InvalidateArrange();
+        InvalidateVisual();
+    }
 
     #endregion
 
@@ -420,6 +436,43 @@ public class Thumb : Control
             double.IsPositiveInfinity(availableSize.Height) ? height : Math.Min(height, availableSize.Height));
     }
 
+    /// <inheritdoc />
+    protected override Size ArrangeOverride(Size finalSize)
+    {
+        if (_visualCompression != 0 && TemplateRootInternal is { } root)
+        {
+            root.Arrange(GetCompressedVisualRect(finalSize));
+            return finalSize;
+        }
+
+        return base.ArrangeOverride(finalSize);
+    }
+
+    private Rect GetCompressedVisualRect(Size size)
+    {
+        if (_visualCompression == 0)
+            return new Rect(size);
+
+        bool vertical = _visualCompressionOrientation == Orientation.Vertical;
+        double length = vertical ? size.Height : size.Width;
+        double axisPadding = vertical ? Padding.Top + Padding.Bottom : Padding.Left + Padding.Right;
+        double contentLength = Math.Max(0, length - axisPadding);
+        double thickness = vertical
+            ? size.Width - Padding.Left - Padding.Right
+            : size.Height - Padding.Top - Padding.Bottom;
+        double minimum = Math.Min(contentLength, Math.Max(2, thickness));
+        // Approach a visible dot smoothly, including when the hit target has
+        // already reached its minimum length. Use the same signed displacement
+        // as the content spring so the pulled edge stays pinned during return.
+        double compressedLength = minimum + (contentLength - minimum) /
+            (1 + Math.Abs(_visualCompression) / Math.Max(1, contentLength));
+        double inset = contentLength - compressedLength;
+        double start = _visualCompression < 0 ? inset : 0;
+        return vertical
+            ? new Rect(0, start, size.Width, Math.Max(0, size.Height - inset))
+            : new Rect(start, 0, Math.Max(0, size.Width - inset), size.Height);
+    }
+
     #endregion
 
     #region Rendering
@@ -435,7 +488,7 @@ public class Thumb : Control
 
         var dc = drawingContext;
 
-        var rect = new Rect(RenderSize);
+        var rect = GetCompressedVisualRect(RenderSize);
         var cornerRadius = CornerRadius;
         var cssRadius = CssBorderRadiusProperties.Get(this);
         var backgroundLayer = GetEffectiveValueLayer(BackgroundProperty);
@@ -453,8 +506,8 @@ public class Thumb : Control
                 dc.DrawRoundedRectangle(bgBrush, null, rect, cornerRadius);
             else
             {
-                var radii = cssRadius?.Resolve(RenderSize) ??
-                    CssBackgroundPainter.CircularRadii(cornerRadius).Normalize(RenderSize);
+                var radii = cssRadius?.Resolve(rect.Size) ??
+                    CssBackgroundPainter.CircularRadii(cornerRadius).Normalize(rect.Size);
                 var shape = new CssRoundedRectangleGeometry(rect, radii);
                 var (border, padding) = CssBoxMetrics.BackgroundInsets(this,
                     CssLayout?.ContainingWidthCache ?? RenderSize.Width);
@@ -503,7 +556,8 @@ public class Thumb : Control
             (CssBorderPaintProperties.Get(this) is not null ||
              CssBorderStyleProperties.Get(this) is not null ||
              CssBorderRadiusProperties.Get(this) is not null))
-            CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter, drawNative: true);
+            CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter,
+                bounds: GetCompressedVisualRect(RenderSize), drawNative: true);
     }
 
     private Brush ResolveDefaultBackgroundBrush()

@@ -20,11 +20,13 @@ struct Fixture {
     uint32_t windowFlags = 0;
     int32_t childRole = 0;
     uint32_t childFlags = JALIUM_AX_ENABLED | JALIUM_AX_PRESSABLE;
+    double childValue = 0;
     NSString* stylePayload = nil;
+    NSString* valueDescription = nil;
     bool oversizedStyles = false;
     int childCount = 1;
-    int childEnumerations = 0;
-    int snapshotReleases = 0;
+    bool childBatch = false, rejectBatch = false, growBatch = false, alwaysGrowBatch = false, malformedBatch = false;
+    int batchCalls = 0, indexedChildCalls = 0;
     std::function<void(JaliumAccessibilityRequest*)> duringQuery;
 };
 static int32_t Query(JaliumAccessibilityRequest* request, void* context)
@@ -40,27 +42,38 @@ static int32_t Query(JaliumAccessibilityRequest* request, void* context)
             request->parentId = request->nodeId == 1 ? 0 : 1;
             request->childCount = request->nodeId == 1 ? fixture.childCount : 0;
             request->flags = request->nodeId == 1 ? JALIUM_AX_ENABLED : fixture.childFlags;
-            if (request->nodeId == 1) request->flags |= fixture.windowFlags;
+            request->value = fixture.childValue;
+            if (request->nodeId == 1) {
+                request->flags |= fixture.windowFlags;
+                if (fixture.childBatch) request->flags |= JALIUM_AX_CHILD_BATCH;
+            }
             request->x = 20; request->y = 30; request->width = 100; request->height = 40;
             request->textCount = 4;
             return 1;
-        case JALIUM_AX_BEGIN_CHILDREN:
-            fixture.childEnumerations++;
-            request->resultId = 1;
-            request->childCount = request->nodeId == 1 ? fixture.childCount : 0;
-            return 1;
-        case JALIUM_AX_READ_CHILDREN:
-            if (request->textCapacity < request->childCount) return 0;
-            for (int i = 0; i < request->childCount; ++i) {
-                const uint64_t id = (uint64_t)i + 2;
-                std::memcpy(request->text + i * 4, &id, sizeof(id));
-            }
-            return 1;
-        case JALIUM_AX_RELEASE_CHILDREN: fixture.snapshotReleases++; return 1;
+        case JALIUM_AX_READ_CHILDREN: {
+            fixture.batchCalls++;
+            if (!fixture.childBatch || fixture.rejectBatch || request->nodeId != 1) return 0;
+            if (fixture.growBatch || fixture.alwaysGrowBatch) { fixture.childCount++; fixture.growBatch = false; }
+            request->childCount = fixture.childCount; request->textCount = -1;
+            if (request->textCapacity < fixture.childCount) return 1;
+            if (fixture.malformedBatch) { request->textCount = request->textCapacity + 1; return 1; }
+            if (fixture.childCount && !request->text) return 0;
+            uint64_t* output = reinterpret_cast<uint64_t*>(request->text);
+            for (int index = 0; index < fixture.childCount; index++) output[index] = (uint64_t)index + 2;
+            request->textCount = fixture.childCount; return 1;
+        }
         case JALIUM_AX_CHILD:
+            fixture.indexedChildCalls++;
             if (request->nodeId != 1 || request->index < 0 || request->index >= fixture.childCount) return 0;
             request->resultId = (uint64_t)request->index + 2; return 1;
         case JALIUM_AX_STRING: {
+            if (request->index == JALIUM_AX_VALUE_DESCRIPTION) {
+                request->textCount = (int32_t)fixture.valueDescription.length;
+                if (!request->text) return 1;
+                if (request->textCapacity < request->textCount) return 0;
+                [fixture.valueDescription getCharacters:request->text range:NSMakeRange(0, request->textCount)];
+                return 1;
+            }
             constexpr char16_t label[] = u"中文🙂";
             request->textCount = 4;
             if (!request->text) return 1;
@@ -71,6 +84,7 @@ static int32_t Query(JaliumAccessibilityRequest* request, void* context)
         case JALIUM_AX_ACTION:
             if (request->index != JALIUM_AX_PRESS) return 0;
             fixture.presses++;
+            if (fixture.childFlags & JALIUM_AX_TOGGLE) fixture.childValue = fixture.childValue ? 0 : 1;
             if (fixture.closeOnPress) { jalium_window_destroy(fixture.window); fixture.window = nullptr; }
             return 1;
         case JALIUM_AX_HIT_TEST: request->resultId = 2; return 1;
@@ -138,9 +152,9 @@ static int RunReadLifecycleCases(int onlyCase)
                     fixture.duringQuery = [&](JaliumAccessibilityRequest* request) {
                         const int32_t operation = path <= 2 ? JALIUM_AX_HIT_TEST : path == 3 ? JALIUM_AX_WINDOW_BUTTON
                             : path == 4 ? JALIUM_AX_INFO : path <= 6 ? JALIUM_AX_STRING
-                            : path <= 8 ? JALIUM_AX_TEXT_STYLES : JALIUM_AX_READ_CHILDREN;
+                            : path <= 8 ? JALIUM_AX_TEXT_STYLES : JALIUM_AX_CHILD;
                         if (fired || request->operation != operation ||
-                            ((path == 6 || path == 8) && !request->text) || (path == 9 && !request->text)) return;
+                            ((path == 6 || path == 8) && !request->text) || (path == 9 && request->index != 1)) return;
                         fired = true;
                         if (mutation == 0) { jalium_window_destroy(fixture.window); fixture.window = nullptr; }
                         else if (mutation == 1) jalium_window_hide(fixture.window);
@@ -398,6 +412,53 @@ static void RunTableSelectionCases()
 
 #include "platform_apple_selection_collection_tests.inc"
 
+static void RunChildBatchCases()
+{
+    static_assert(JALIUM_AX_READ_CHILDREN == 66 && JALIUM_AX_SET_SELECTED_ITEMS == 65,
+        "optional child batches preserve existing operation values");
+    JaliumWindowParams params{};
+    params.title = reinterpret_cast<const uint16_t*>(u"Child batch protocol tests");
+    params.x = params.y = JALIUM_DEFAULT_POS; params.width = 320; params.height = 220;
+    Fixture fixture{jalium_window_create(&params)};
+    Check(fixture.window != nullptr, "create separate child batch fixture");
+    NSView* view = (__bridge NSView*)reinterpret_cast<void*>(jalium_window_get_native_handle(fixture.window));
+    jalium_apple_window_set_accessibility(fixture.window, Query, &fixture);
+    jalium_window_show(fixture.window);
+    NSAccessibilityElement* root = view.accessibilityChildren.firstObject;
+    NSAccessibilityElement* first = root.accessibilityChildren.firstObject;
+    Check(root && first, "child batch fixture initially supports legacy providers");
+
+    fixture.childBatch = true; fixture.childCount = 129;
+    fixture.batchCalls = fixture.indexedChildCalls = 0;
+    NSArray* children = root.accessibilityChildren;
+    Check(children.count == 129 && fixture.batchCalls == 1 && fixture.indexedChildCalls == 0,
+        "advertised batch copies129 current children with one callback and no indexed scans");
+    Check(children.firstObject == first && [NSSet setWithArray:children].count == 129,
+        "batch preserves native identities and distinct current children");
+    Check([root.accessibilityChildren isEqualToArray:children], "repeated batch reads retain order and identity");
+
+    fixture.batchCalls = fixture.indexedChildCalls = 0; fixture.growBatch = true;
+    Check(root.accessibilityChildren.count == 130 && fixture.batchCalls == 2 && fixture.indexedChildCalls == 0,
+        "one growth between INFO and copy retries safely with current capacity");
+    fixture.childCount = 3; fixture.batchCalls = fixture.indexedChildCalls = 0; fixture.rejectBatch = true;
+    Check(root.accessibilityChildren.count == 3 && fixture.batchCalls == 1 && fixture.indexedChildCalls == 3,
+        "advertised but unsupported batch falls back to original indexed provider");
+    fixture.rejectBatch = false; fixture.malformedBatch = true; fixture.batchCalls = 0;
+    Check(root.accessibilityChildren.count == 0 && fixture.batchCalls == 1,
+        "invalid batch length fails closed without reading beyond buffer");
+    fixture.malformedBatch = false; fixture.alwaysGrowBatch = true; fixture.batchCalls = 0;
+    Check(root.accessibilityChildren.count == 0 && fixture.batchCalls == 2,
+        "repeated growth remains bounded and never returns a partial batch");
+    fixture.alwaysGrowBatch = false; fixture.childCount = 0; fixture.batchCalls = 0;
+    Check(root.accessibilityChildren.count == 0 && fixture.batchCalls == 1,
+        "empty batch supports a zero-sized caller buffer");
+    fixture.childBatch = false; fixture.childCount = 2; fixture.batchCalls = fixture.indexedChildCalls = 0;
+    Check(root.accessibilityChildren.count == 2 && fixture.batchCalls == 0 && fixture.indexedChildCalls == 2,
+        "old non-advertising providers retain the exact indexed protocol");
+    jalium_window_destroy(fixture.window); fixture.window = nullptr;
+    std::puts("PASS: optional child batch, indexed compatibility, identity, growth and buffer contracts");
+}
+
 int main(int argc, const char** argv)
 {
     @autoreleasepool {
@@ -417,6 +478,7 @@ int main(int argc, const char** argv)
             jalium_platform_shutdown();
             return result;
         }
+        RunChildBatchCases();
         JaliumWindowParams params{};
         params.title = reinterpret_cast<const uint16_t*>(u"Accessibility protocol tests");
         params.x = params.y = JALIUM_DEFAULT_POS; params.width = 640; params.height = 480;
@@ -440,16 +502,28 @@ int main(int argc, const char** argv)
         Check([child.accessibilityLabel isEqual:@"中文🙂"], "UTF-16 name and surrogate pair survive ABI");
         Check(child.accessibilityParent == root && root.accessibilityParent == view.window, "accessible ancestry reaches native Window");
         Check(root.accessibilityChildren.firstObject == child, "repeated queries retain native AX identity");
-        fixture.childCount = 4096;
-        const int enumerationsBefore = fixture.childEnumerations;
-        const int releasesBefore = fixture.snapshotReleases;
-        NSArray* bulkChildren = root.accessibilityChildren;
-        Check(bulkChildren.count == 4096 && bulkChildren.firstObject == child,
-            "large child snapshots preserve IDs and order");
-        Check(fixture.childEnumerations == enumerationsBefore + 1 && fixture.snapshotReleases == releasesBefore + 1,
-            "one native children request enumerates once and releases its snapshot");
-        fixture.childCount = 1;
-
+        NSSwitch* stockSwitch = [NSSwitch new];
+        fixture.childRole = 25; // AutomationControlType.Custom with IToggleProvider.
+        fixture.childFlags = JALIUM_AX_ENABLED | JALIUM_AX_PRESSABLE | JALIUM_AX_TOGGLE;
+        std::printf("Switch roles: custom=%s/%s stock=%s/%s\n", child.accessibilityRole.UTF8String,
+            child.accessibilitySubrole.UTF8String, stockSwitch.accessibilityRole.UTF8String,
+            stockSwitch.accessibilitySubrole.UTF8String);
+        std::fflush(stdout);
+        Check([child.accessibilityRole isEqual:stockSwitch.accessibilityRole],
+            "custom toggle exposes the same actionable role as NSSwitch");
+        Check([child.accessibilitySubrole isEqual:stockSwitch.accessibilitySubrole],
+            "custom toggle exposes the AppKit switch subrole");
+        Check([child.accessibilityValue isEqual:@0] && [child accessibilityPerformPress]
+            && [child.accessibilityValue isEqual:@1], "accessible switch press updates its binary value");
+        fixture.childFlags &= ~JALIUM_AX_ENABLED;
+        Check([child.accessibilityRole isEqual:stockSwitch.accessibilityRole]
+            && [child.accessibilityValue isEqual:@1] && ![child accessibilityPerformPress],
+            "disabled switch keeps its role and value without accepting a press");
+        fixture.childRole = 25; fixture.childFlags = JALIUM_AX_ENABLED;
+        Check([child.accessibilityRole isEqual:NSAccessibilityGroupRole] && child.accessibilitySubrole == nil,
+            "ordinary custom content does not become a switch");
+        fixture.childRole = 0; fixture.childFlags = JALIUM_AX_ENABLED | JALIUM_AX_PRESSABLE;
+        fixture.childValue = 0; fixture.presses = 0;
         Check([root respondsToSelector:@selector(accessibilityNotifiesWhenDestroyed)]
             && [child respondsToSelector:@selector(accessibilityNotifiesWhenDestroyed)]
             && [root accessibilityNotifiesWhenDestroyed] && [child accessibilityNotifiesWhenDestroyed],
@@ -461,6 +535,24 @@ int main(int argc, const char** argv)
                 Check(![element isAccessibilitySelectorAllowed:NSSelectorFromString(name)],
                     "ordinary content must not advertise selection, disclosure, range or value properties");
         }
+        fixture.childFlags |= JALIUM_AX_HAS_VALUE_DESCRIPTION;
+        fixture.valueDescription = @"已选中 中文🙂";
+        Check([child isAccessibilitySelectorAllowed:@selector(accessibilityValueDescription)]
+            && [child.accessibilityValueDescription isEqual:@"已选中 中文🙂"],
+            "custom button exposes its localized current item state independently of its label");
+        fixture.valueDescription = @"未选中";
+        fixture.childFlags &= ~JALIUM_AX_ENABLED;
+        Check([child.accessibilityValueDescription isEqual:@"未选中"] && ![child accessibilityPerformPress],
+            "disabled custom button retains its current readable state without accepting actions");
+        fixture.childFlags |= JALIUM_AX_PASSWORD;
+        Check(![child isAccessibilitySelectorAllowed:@selector(accessibilityValueDescription)]
+            && child.accessibilityValueDescription == nil,
+            "protected content does not expose a descriptive value");
+        fixture.childFlags = JALIUM_AX_ENABLED | JALIUM_AX_PRESSABLE;
+        fixture.valueDescription = nil;
+        Check(![child isAccessibilitySelectorAllowed:@selector(accessibilityValueDescription)]
+            && child.accessibilityValueDescription == nil,
+            "removing an item state or using an old provider does not advertise an empty description");
         fixture.childRole = 24;
         fixture.childFlags |= JALIUM_AX_SELECTABLE;
         Check([child isAccessibilitySelectorAllowed:@selector(isAccessibilitySelected)]

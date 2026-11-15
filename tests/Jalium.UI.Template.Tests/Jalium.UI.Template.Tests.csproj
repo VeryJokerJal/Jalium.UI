@@ -18,5 +18,9 @@
                       OutputItemType="Analyzer" ReferenceOutputAssembly="true" Aliases="sg" />
     <AdditionalFiles Include="GeneratedTemplateLifetimeView.jalxaml" />
     <AdditionalFiles Include="GeneratedWindowThemeView.jalxaml" />
+    <AdditionalFiles Include="GeneratedGridResourceView.jalxaml" />
+    <AdditionalFiles Include="GeneratedResourceKeysView.jalxaml" />
+    <Content Include="GeneratedResourceKeysView.jalxaml" CopyToOutputDirectory="PreserveNewest" />
+    <AdditionalFiles Include="Themes/*.jalxaml" />
   </ItemGroup>
 </Project>

@@ -16,6 +16,9 @@ internal static class DocumentTextEditing
     ];
 
     internal static TextPointer Replace(FlowDocument document, int start, int length, string text)
+        => Replace(document, start, length, text, null);
+
+    internal static TextPointer Replace(FlowDocument document, int start, int length, string text, TextPointer? insertionHint)
     {
         ArgumentNullException.ThrowIfNull(text);
         var originalLength = document.GetText().Length;
@@ -51,7 +54,8 @@ internal static class DocumentTextEditing
         int firstOffset = Math.Clamp(start - paragraphs[first].Start, 0, paragraphs[first].Length);
         int lastOffset = Math.Clamp(start + length - paragraphs[last].Start, 0, paragraphs[last].Length);
         start = paragraphs[first].Start + firstOffset;
-        var insertion = document.GetPositionAtOffset(start, LogicalDirection.Forward)!;
+        var insertion = insertionHint is { } hint && ReferenceEquals(hint.Document, document) && hint.DocumentOffset == start
+            ? hint : document.GetPositionAtOffset(start, LogicalDirection.Forward)!;
         var typingFormat = CaptureCharacterFormatting(insertion.Parent as TextElement ?? paragraphs[first].Paragraph);
         var keep = insertion.Parent as Run;
 

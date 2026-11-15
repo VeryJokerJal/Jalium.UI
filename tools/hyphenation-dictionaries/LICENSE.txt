@@ -1,0 +1,6 @@
+Hyphenation Pattern Dictionaries
+================================
+The hyphenation pattern files in this directory are derived from the
+upstream TeX hyph-utf8 and LibreOffice/Hunspell libhyphen repositories
+(Knuth-Liang hyphenation patterns and non-standard spelling-change rules).
+Licenses: Public Domain (hyph-en-us), LPPL-1.3c / MIT / MPL-2.0 / BSD-3-Clause.

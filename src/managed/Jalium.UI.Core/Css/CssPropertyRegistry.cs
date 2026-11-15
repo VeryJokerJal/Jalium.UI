@@ -51,6 +51,7 @@ internal static class CssPropertyRegistry
     {
         ["word-wrap"] = "overflow-wrap",
         ["font-width"] = "font-stretch",
+        ["-webkit-background-clip"] = "background-clip",
     };
 
     /// <summary>Bumped on every public registration; compiled-declaration caches key on it.</summary>
@@ -60,6 +61,7 @@ internal static class CssPropertyRegistry
 
     private static readonly List<Action> s_extensions = new();
     private static bool s_initialized;
+    private static bool s_initializing;
     private static readonly object s_initLock = new();
 
     public static void Register(CssPropertyDescriptor descriptor)
@@ -83,6 +85,13 @@ internal static class CssPropertyRegistry
 
     public static CssPropertyDescriptor? Lookup(string cssName)
         => LookupForCompile(cssName, out _);
+
+    internal static IReadOnlyList<string> GetAuthoringNames()
+    {
+        EnsureInitialized();
+        return s_table.Keys.Concat(s_userTable.Keys).Concat(s_aliases.Keys)
+            .Concat(s_builtinAliases.Keys).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+    }
 
     /// <summary>
     /// Compile-time lookup with the full precedence chain: user registrations &gt; aliases
@@ -163,25 +172,27 @@ internal static class CssPropertyRegistry
 
     private static void EnsureInitialized()
     {
-        if (s_initialized)
+        if (Volatile.Read(ref s_initialized))
         {
             return;
         }
 
         lock (s_initLock)
         {
-            if (s_initialized)
+            if (s_initialized || s_initializing)
             {
                 return;
             }
 
-            CssCoreProperties.RegisterAll();
-            foreach (var extension in s_extensions)
+            s_initializing = true;
+            try
             {
-                extension();
+                CssCoreProperties.RegisterAll();
+                for (var i = 0; i < s_extensions.Count; i++)
+                    s_extensions[i]();
+                Volatile.Write(ref s_initialized, true);
             }
-
-            s_initialized = true;
+            finally { s_initializing = false; }
         }
     }
 
@@ -205,6 +216,25 @@ internal static class CssPropertyRegistry
         };
     }
 
+    internal static CssAuthoringProperty[] GetAuthoringProperties()
+    {
+        EnsureInitialized();
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var key in s_table.Keys) names.Add(key);
+        foreach (var key in s_userTable.Keys) names.Add(key);
+        foreach (var key in s_builtinAliases.Keys) names.Add(key);
+        foreach (var key in s_aliases.Keys) names.Add(key);
+        return names.Select(CssAuthoring.GetProperty).ToArray();
+    }
+
+    internal static DependencyProperty[] GetInheritedStorageProperties()
+    {
+        EnsureInitialized();
+        return s_table.Values.Concat(s_userTable.Values)
+            .Where(property => CssPropertyMetadata.IsInherited(property.Name))
+            .Select(property => property.StorageProperty).OfType<DependencyProperty>().Distinct().ToArray();
+    }
+
     internal static void ResetForTests()
     {
         lock (s_initLock)
@@ -220,3 +250,4 @@ internal static class CssPropertyRegistry
         CssEngine.OnMappingsChanged();
     }
 }
+

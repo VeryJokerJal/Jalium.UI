@@ -24,10 +24,19 @@
     <ProjectReference Include="..\..\managed\Jalium.UI.Controls\Jalium.UI.Controls.csproj" />
     <ProjectReference Include="..\..\managed\Jalium.UI.Xaml\Jalium.UI.Xaml.csproj" />
     <ProjectReference Include="..\..\managed\Jalium.UI.Gpu\Jalium.UI.Gpu.csproj" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Build\Jalium.UI.Build.csproj"
+                      BuildReference="false" ReferenceOutputAssembly="false"
+                      TreatAsPackageReference="true" JaliumPackOnlyDependency="true"
+                      PrivateAssets="none" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Xaml.SourceGenerator\Jalium.UI.Xaml.SourceGenerator.csproj"
+                      BuildReference="false" ReferenceOutputAssembly="false"
+                      TreatAsPackageReference="true" JaliumPackOnlyDependency="true"
+                      PrivateAssets="none"
+                      UndefineProperties="PublishAot;PublishTrimmed;PublishSingleFile;PublishReadyToRun;SelfContained;RuntimeIdentifier;RuntimeIdentifiers;IsTrimmable;IsAotCompatible" />
   </ItemGroup>
   <ItemGroup Condition="Exists('$(JaliumMacNativeRoot)/.jalium-native-complete')">
-    <Content Include="$(JaliumMacNativeRoot)/*.dylib" Pack="true"
-             PackagePath="runtimes/$(RuntimeIdentifier)/native" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"  PublishFolderType="Assembly" />
+    <Content Include="$(JaliumMacNativeRoot)/*.dylib" PublishFolderType="Assembly" Pack="true"
+             PackagePath="runtimes/$(RuntimeIdentifier)/native" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"  />
     <Content Include="$(JaliumMacNativeRoot)/*.metallib" Pack="true"
              PackagePath="runtimes/$(RuntimeIdentifier)/native"  PublishFolderType="Resource" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="$(JaliumMacNativeRoot)/jalium_metal_manifest.json" Pack="true"
@@ -45,8 +54,8 @@
     <!-- Re-evaluate globs after completion: the stamp may have been absent at
          project evaluation, and CMake may have produced previously missing files. -->
     <ItemGroup Condition="'$(_JaliumMacPayloadWasIncomplete)' == 'true'">
-      <Content Include="$(JaliumMacNativeRoot)/*.dylib" Exclude="@(Content)" Pack="true"
-               PackagePath="runtimes/$(RuntimeIdentifier)/native" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"  PublishFolderType="Assembly" />
+      <Content Include="$(JaliumMacNativeRoot)/*.dylib" Exclude="@(Content)" PublishFolderType="Assembly" Pack="true"
+               PackagePath="runtimes/$(RuntimeIdentifier)/native" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"  />
       <Content Include="$(JaliumMacNativeRoot)/*.metallib" Exclude="@(Content)" Pack="true"
                PackagePath="runtimes/$(RuntimeIdentifier)/native"  PublishFolderType="Resource" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
       <Content Include="$(JaliumMacNativeRoot)/jalium_metal_manifest.json" Exclude="@(Content)" Pack="true"

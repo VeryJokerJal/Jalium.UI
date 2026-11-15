@@ -59,7 +59,7 @@ public partial class TextBlock
 
         var height = Math.Max(1, line.Height);
         var bounds = new Rect(0, lineY - height,
-            Math.Max(1, RenderSize.Width), 3 * height);
+            Math.Max(1, TextContentSize.Width), 3 * height);
         foreach (var segment in segments)
         {
             if (segment.Effect?.HasEffect != true) continue;

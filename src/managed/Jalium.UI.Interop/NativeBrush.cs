@@ -78,6 +78,38 @@ public sealed class NativeBrush : IDisposable
     public float B { get; }
     public float A { get; }
 
+    internal void SetColorInterpolationMode(ColorInterpolationMode mode)
+    {
+        if (!IsValid) return;
+        var result = NativeMethods.BrushSetColorInterpolationMode(_handle, (uint)mode);
+        if (result != JaliumResult.Ok)
+        {
+            Dispose();
+            throw new NotSupportedException($"Native gradient color interpolation is unavailable: {result}");
+        }
+    }
+
+    internal void SetRadialGeometry(double focalRadius, uint flags)
+    {
+        if (!IsValid) return;
+        var result = NativeMethods.BrushSetRadialGeometry(_handle, (float)focalRadius, flags);
+        if (result == JaliumResult.Ok) return;
+        Dispose();
+        throw new NotSupportedException($"Native radial circle geometry is unavailable: {result}");
+    }
+
+    internal bool SetPaintTransform(Matrix transform)
+    {
+        if (!IsValid) return false;
+        var values = new[] { (float)transform.M11, (float)transform.M12, (float)transform.M21,
+            (float)transform.M22, (float)transform.OffsetX, (float)transform.OffsetY };
+        var result = NativeMethods.BrushSetPaintTransform(_handle, values);
+        if (result == JaliumResult.Ok) return true;
+        Dispose();
+        if (result == JaliumResult.InvalidArgument) return false;
+        throw new NotSupportedException($"Native gradient paint transforms are unavailable: {result}");
+    }
+
     internal NativeBrush(RenderContext context, float r, float g, float b, float a)
     {
         R = r;

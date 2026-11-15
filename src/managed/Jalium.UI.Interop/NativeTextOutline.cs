@@ -25,6 +25,8 @@ internal static partial class NativeTextOutline
         width = baseline = 0;
         if (text.Length == 0 || text.Length > 4096 || family.Length is 0 or > 256 ||
             !float.IsFinite(fontSize) || fontSize <= 0 || fontSize > 35791) return false;
+        if (OperatingSystem.IsMacOS())
+            return TryApple(text, family, fontSize, fontWeight, fontStyle, out path, out width, out baseline);
         if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux() &&
             !OperatingSystem.IsAndroid()) return false;
 

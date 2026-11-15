@@ -41,6 +41,31 @@ public class BindingTests
     }
 
     [Fact]
+    public void Binding_OneTime_ShouldIgnoreNestedNotificationsAndResolveAReplacedContext()
+    {
+        var source = new TestViewModel { Name = "Initial" };
+        var target = new TestFrameworkElement();
+        target.SetBinding(TestFrameworkElement.TextProperty, new Binding("Child.Name") { Mode = BindingMode.OneTime });
+        target.DataContext = new { Child = source };
+        Assert.Equal("Initial", target.GetValue(TestFrameworkElement.TextProperty));
+        source.Name = "Changed";
+        Assert.Equal("Initial", target.GetValue(TestFrameworkElement.TextProperty));
+        target.DataContext = new { Child = new TestViewModel { Name = "Replacement" } };
+        Assert.Equal("Replacement", target.GetValue(TestFrameworkElement.TextProperty));
+    }
+
+    [Fact]
+    public void Binding_OneTime_ShouldIgnoreDependencyPropertySourceChanges()
+    {
+        var source = new TestFrameworkElement();
+        source.SetValue(TestFrameworkElement.TextProperty, "Initial");
+        var target = new TestFrameworkElement();
+        target.SetBinding(TestFrameworkElement.TextProperty, new Binding("Text") { Source = source, Mode = BindingMode.OneTime });
+        source.SetValue(TestFrameworkElement.TextProperty, "Changed");
+        Assert.Equal("Initial", target.GetValue(TestFrameworkElement.TextProperty));
+    }
+
+    [Fact]
     public void Binding_TwoWay_ShouldUpdateSource()
     {
         // Arrange
@@ -144,6 +169,11 @@ public class BindingTests
         public static readonly DependencyProperty TextProperty =
             DependencyProperty.Register("Text", typeof(string), typeof(TestFrameworkElement),
                 new PropertyMetadata(string.Empty));
+        public string? Text
+        {
+            get => (string?)GetValue(TextProperty);
+            set => SetValue(TextProperty, value);
+        }
     }
 
     private class IntToStringConverter : IValueConverter

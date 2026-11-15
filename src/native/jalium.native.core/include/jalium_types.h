@@ -269,8 +269,39 @@ typedef struct JaliumTextSpan {
     float r, g, b, a;
 } JaliumTextSpan;
 
+// Source typographic units for immutable, post-shaping letter spacing.
+// Flags: 1 invisible formatting unit; 2 cursive letter (do not break joins).
+// Units cover the complete UTF-16 input, in logical order.
+typedef struct JaliumTextSpacingUnit {
+    uint32_t textPosition;
+    uint32_t length;
+    float spacing;
+    uint32_t flags;
+} JaliumTextSpacingUnit;
+
+// Post-shaping advances, in logical order. Leading/trailing belong to the
+// unit (e.g. half word-spacing on either side of a separator); spacing is
+// shared with adjacent units and suppressed at line edges. Flags 1/2 retain
+// the spacing-unit meaning; 4 suppresses own advances on zero-width units.
+// This additive type leaves JaliumTextSpacingUnit and its entry points intact.
+typedef struct JaliumTextAdvanceUnit {
+    uint32_t textPosition;
+    uint32_t length;
+    float spacing;
+    float leading;
+    float trailing;
+    uint32_t flags;
+} JaliumTextAdvanceUnit;
+
+
 /// Inclusive Unicode scalar interval for optional font-character capabilities.
 typedef struct JaliumUnicodeRange { uint32_t first; uint32_t last; } JaliumUnicodeRange;
+
+/// OpenType tag in big-endian character order (e.g. 'tnum' = 0x746e756d).
+typedef struct JaliumFontFeature { uint32_t tag; uint32_t value; } JaliumFontFeature;
+
+/// Finite, unclamped OpenType axis coordinate. Tags are big-endian ASCII.
+typedef struct JaliumFontVariation { uint32_t tag; double value; } JaliumFontVariation;
 
 /// Ready faces carry format. Waiting faces have null format and flag 1;
 /// flag 2 also makes their fallback glyphs invisible during the block period.
@@ -351,6 +382,15 @@ typedef struct JaliumGradientStop {
     float b;           ///< Blue component (sRGB gamma)
     float a;           ///< Alpha component (linear)
 } JaliumGradientStop;
+
+/// CSS font-face descriptors. Percentages are ratios; -1 means normal.
+/// The second axis applies to upright vertical typography. structSize is 64.
+typedef struct JaliumFontFaceMetrics {
+    uint32_t structSize;
+    double sizeAdjust;
+    double ascent, descent, lineGap;
+    double verticalAscent, verticalDescent, verticalLineGap;
+} JaliumFontFaceMetrics;
 
 /// Represents text metrics for layout measurement.
 typedef struct JaliumTextMetrics {

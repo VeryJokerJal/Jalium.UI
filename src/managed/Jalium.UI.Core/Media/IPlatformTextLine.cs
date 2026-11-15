@@ -8,3 +8,9 @@ internal interface IPlatformTextLine
 {
     object CreateRenderSnapshot();
 }
+
+/// <summary>Repaints retained shaping without changing glyphs, positions, or source ownership.</summary>
+internal interface IPlatformTextPaintLine
+{
+    object CreatePaintSnapshot(Brush? foreground);
+}

@@ -23,6 +23,7 @@ internal sealed class CssCompileContext
     internal ICssResourceResolver? ResourceResolver;
     internal CssNamespaceContext? Namespaces;
     internal CssLengthContext? NumericLengths;
+    internal double InitialFontSize = CssLengthContext.DefaultFontSize;
 
     public static readonly CssCompileContext Default = new();
 }
@@ -42,7 +43,7 @@ internal readonly struct CssApplyContext
     public readonly CssSlotAccumulator Slots;
     public readonly int? MathDepth;
     public Jalium.UI.Media.Brush CurrentColor => Slots.ForegroundBrush ??
-        (CssDependencyPropertyLookup.Find(Element.GetType(), "Foreground") is { } dp && Element.GetValue(dp) is Jalium.UI.Media.SolidColorBrush brush
+        (CssUsedForeground.Get(Element.Target, Element) is Jalium.UI.Media.SolidColorBrush brush
             ? brush : s_black);
 
     public Jalium.UI.Media.Color CurrentColorValue =>
@@ -52,11 +53,11 @@ internal readonly struct CssApplyContext
     {
         get
         {
+            if (CssSelection.IsProjection(Element)) return CssSelection.CurrentColorSource(Element);
             for (var ancestor = CssMatcher.CssAncestor(Element); ancestor is not null;
                  ancestor = CssMatcher.CssAncestor(ancestor))
             {
-                if (CssDependencyPropertyLookup.Find(ancestor.GetType(), "Foreground") is { } dp &&
-                    ancestor.GetValue(dp) is Jalium.UI.Media.SolidColorBrush brush)
+                if (CssUsedForeground.Get(ancestor.Target, Element) is Jalium.UI.Media.SolidColorBrush brush)
                     return brush;
             }
             return null;
@@ -567,6 +568,7 @@ internal sealed class CssContextualColorValue(string property, string expression
         var source = property == "color" ? context.InheritedColorBrush :
             context.CurrentColor as Jalium.UI.Media.SolidColorBrush;
         CssColorBrushObserver.Observe(context.Element, source);
+        if (property == "color" && expression.Equals("currentColor", StringComparison.OrdinalIgnoreCase)) CssSelection.MarkCurrentColor(context.Element);
         var baseColor = source?.Color ?? Jalium.UI.Media.Colors.Black;
         if (!CssColorParser.TryResolveCurrentColor(expression, baseColor, out var color)) return false;
         var cached = _brushes.GetValue(context.Element, static _ => new CachedBrush());
@@ -598,9 +600,22 @@ internal sealed class CssContextualColorValue(string property, string expression
             Remember(context.Element, property, this);
             return true;
         }
+        if (property == "text-emphasis-color")
+        {
+            sink.Set(CssTextEmphasis.ColorProperty, resolved);
+            sink.Set(CssTextEmphasis.ColorExpressionProperty,expression);
+            Remember(context.Element, property, this);
+            return true;
+        }
         if (property == "caret-color")
         {
             sink.Set(CssCaretColorProperties.ValueProperty, resolved);
+            Remember(context.Element, property, this);
+            return true;
+        }
+        if (property == "column-rule-color")
+        {
+            sink.Set(CssMultiColumnProperties.RuleColorProperty, resolved);
             Remember(context.Element, property, this);
             return true;
         }

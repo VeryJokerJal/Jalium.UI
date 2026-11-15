@@ -74,7 +74,7 @@ internal static class WindowNativeQuitChecks
             if (nativeEntry) TerminateNative(native.Handle, Selector.GetHandle("terminate:"), 0);
             else native.Terminate(null);
         }
-        native.ActivationPolicy = NSApplicationActivationPolicy.Prohibited;
+        native.ActivationPolicy = NSApplicationActivationPolicy.Accessory;
         RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
         var first = CreateWindow("Actual Terminate Closing", style);
         var other = CreateWindow("Actual Terminate remaining", style);

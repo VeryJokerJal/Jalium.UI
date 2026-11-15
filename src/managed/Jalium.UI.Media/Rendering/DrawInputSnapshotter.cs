@@ -6,44 +6,19 @@ using Jalium.UI.Media.Imaging;
 namespace Jalium.UI.Media.Rendering;
 
 /// <summary>
-/// Snapshots mutable live draw inputs at whole-frame record time so a later
-/// UI-thread mutation cannot corrupt an in-flight replay on the render thread
-/// (the JALIUM_RENDER_THREAD path). Used ONLY on the whole-frame capture path;
-/// the default per-visual cache and direct render never call it.
+/// Snapshots mutable draw inputs before retained or whole-frame publication.
+/// Solid brushes use the frozen value pool. Gradients use current-value frozen
+/// clones, memoised by content and CSS used-size layout identity so unchanged
+/// frames continue to hit the native brush cache. Mutable image resources still
+/// require direct rendering. All snapshots are made on the recording thread.
 /// </summary>
-/// <remarks>
-/// <para>
-/// Strategy is snapshot-by-value, NOT Freeze(): in this codebase
-/// <see cref="Brush"/>, <see cref="Pen"/> and <see cref="Transform"/> are not
-/// Freezable, so a value copy is the only safe option. The dominant inputs —
-/// <see cref="SolidColorBrush"/>, simple <see cref="Pen"/>, and
-/// <see cref="FormattedText"/> — are ALREADY value-snapshotted by
-/// <see cref="DrawingObjectPool"/>, so they pass through untouched here.
-/// </para>
-/// <para>
-/// To preserve the backend's <c>Dictionary&lt;Brush, NativeBrush&gt;</c>
-/// identity cache, gradient snapshots are memoised per source brush keyed by
-/// <see cref="GradientBrush.ComputeContentHash"/>: an unchanged gradient returns
-/// the SAME snapshot instance every frame (native-cache hit), and only a genuine
-/// mutation produces a fresh snapshot. The cache is written on the UI thread
-/// during record and only dereferenced (never mutated) on the render thread, so
-/// the published Drawing carries immutable snapshots.
-/// </para>
-/// <para>
-/// Per-frame-mutating GPU resources (a <see cref="WriteableBitmap"/> or
-/// <see cref="D3DImage"/> used as an image or image-brush source — e.g. video)
-/// cannot be cheaply value-copied, so they trip
-/// <see cref="DrawingContext.MarkCurrentFrameUnrecordable"/> and the frame falls
-/// back to a direct render. Mutable <see cref="Geometry"/> instances are cloned
-/// at their current value and frozen before publication so collection reads on
-/// the render worker never cross a dispatcher boundary.
-/// </para>
-/// </remarks>
 internal static class DrawInputSnapshotter
 {
     private sealed class GradientEntry
     {
         public long Hash;
+        public long LayoutHash;
+        public Jalium.UI.Styling.CssImageLayout? Layout;
         public Brush Snapshot = null!;
     }
 
@@ -59,6 +34,12 @@ internal static class DrawInputSnapshotter
     {
         switch (brush)
         {
+            case CssLayeredBackgroundBrush layers:
+                return new CssLayeredBackgroundBrush
+                {
+                    Bottom = SnapshotBrush(layers.Bottom), Top = SnapshotBrush(layers.Top),
+                    Opacity = layers.Opacity, SnapshotBlendMode = layers.BlendMode,
+                };
             case null:
             case SolidColorBrush:
                 return brush;                       // immutable in practice (pooled value copy)
@@ -77,68 +58,48 @@ internal static class DrawInputSnapshotter
         }
     }
 
-    private static Brush SnapshotGradient(GradientBrush g)
+    private static Brush SnapshotGradient(GradientBrush brush)
     {
-        // Use ComputeContentHashCore (UNCACHED) — NOT ComputeContentHash: the
-        // gradient scalar setters (StartPoint/EndPoint/Center/Radius/Opacity/
-        // SpreadMethod/MappingMode) do not call InvalidateContentHash, so the
-        // memoised ComputeContentHash returns a STALE hash and would freeze an
-        // animated gradient on the render-thread path (the memo below would keep
-        // handing back the first frame's snapshot). Fold the brush Transform in
-        // too — it is not part of the content hash, but an animated brush
-        // Transform must also re-snapshot.
-        long h = g.ComputeContentHashCore() ^ TransformVersion(g.Transform);
+        var hash = brush.ComputeContentHash();
+        var layout = brush.CssImageLayout;
+        long layoutHash = 0;
+        var capturedLayout = layout is Jalium.UI.Styling.CssGradientLayout css
+            ? css.CaptureForRendering(out layoutHash) : layout;
+        if (brush.IsFrozen && ReferenceEquals(layout, capturedLayout)) return brush;
         lock (s_lock)
         {
-            if (s_gradientCache.TryGetValue(g, out var entry) && entry.Hash == h)
+            if (s_gradientCache.TryGetValue(brush, out var entry) && entry.Hash == hash && entry.LayoutHash == layoutHash &&
+                ReferenceEquals(entry.Layout, layout))
                 return entry.Snapshot;
 
-            var snap = CopyGradient(g);
-            s_gradientCache.AddOrUpdate(g, new GradientEntry { Hash = h, Snapshot = snap });
-            return snap;
+            // Freezable captures current animation values, nested stops,
+            // transforms and brush metadata without sharing mutable children.
+            var snapshot = brush.CloneCurrentValue();
+            snapshot.CssImageLayout = capturedLayout;
+            snapshot.Freeze();
+            _ = snapshot.ComputeContentHash();
+            s_gradientCache.AddOrUpdate(brush, new GradientEntry { Hash = hash, LayoutHash = layoutHash, Layout = layout, Snapshot = snapshot });
+            return snapshot;
         }
     }
 
-    private static long TransformVersion(Transform? t)
+    public static FormattedText SnapshotText(FormattedText text)
     {
-        if (t is null) return 0;
-        var m = t.Value;
-        return m.M11.GetHashCode()
-             ^ (m.M12.GetHashCode() << 1) ^ (m.M21.GetHashCode() << 2)
-             ^ (m.M22.GetHashCode() << 3) ^ (m.OffsetX.GetHashCode() << 4)
-             ^ (m.OffsetY.GetHashCode() << 5);
+        // Keep the common scalar solid-text path in the existing value pool.
+        if (text.Foreground is null or SolidColorBrush && !text.HasCharacterFormats)
+            return text;
+        return text.CreateRenderSnapshot(SnapshotTextBrush(text.Foreground), SnapshotTextBrush);
     }
 
-    private static Brush CopyGradient(GradientBrush src)
+    private static Brush? SnapshotTextBrush(Brush? brush)
     {
-        GradientBrush dst;
-        switch (src)
-        {
-            case LinearGradientBrush l:
-                dst = new LinearGradientBrush { StartPoint = l.StartPoint, EndPoint = l.EndPoint };
-                break;
-            case RadialGradientBrush r:
-                dst = new RadialGradientBrush
-                {
-                    Center = r.Center,
-                    GradientOrigin = r.GradientOrigin,
-                    RadiusX = r.RadiusX,
-                    RadiusY = r.RadiusY,
-                };
-                break;
-            default:
-                return src;                         // unknown gradient subtype — can't copy safely
-        }
-
-        dst.SpreadMethod = src.SpreadMethod;
-        dst.MappingMode = src.MappingMode;
-        dst.Opacity = src.Opacity;
-        // Value-snapshot the brush transform too (folded into the memo key above)
-        // so a transformed/animated gradient brush is race-free on the render thread.
-        dst.Transform = src.Transform is null ? null : SnapshotTransform(src.Transform);
-        foreach (var stop in src.GradientStops)
-            dst.GradientStops.Add(new GradientStop(stop.Color, stop.Offset));
-        return dst;
+        if (brush is null or SolidColorBrush)
+            return DrawingObjectPool.CanonicalizeBrush(brush);
+        if (brush is GradientBrush)
+            return SnapshotBrush(brush);
+        // Native text does not yet paint image/custom foregrounds consistently.
+        DrawingContext.MarkCurrentFrameUnrecordable();
+        return brush;
     }
 
     /// <summary>
@@ -146,14 +107,19 @@ internal static class DrawInputSnapshotter
     /// (value-copying the pen and its brush); simple/solid pens pass through
     /// (already pooled).
     /// </summary>
-    public static Pen? SnapshotPen(Pen? pen)
+    public static Pen? SnapshotPen(Pen? pen, Rect? paintBounds = null)
     {
         if (pen?.Brush is not GradientBrush)
             return pen;
 
-        var snappedBrush = SnapshotBrush(pen.Brush)!;
+        var brush = pen.Brush;
+        if (paintBounds is { Width: > 0, Height: > 0 } bounds)
+            brush = Jalium.UI.Styling.CssImageLayout.ResolveBrush(brush, bounds.Width, bounds.Height);
+        if (brush is null) return null;
+        var snappedBrush = SnapshotBrush(brush)!;
         return new Pen(snappedBrush, pen.Thickness)
         {
+            SvgViewportStroke = pen.SvgViewportStroke,
             StartLineCap = pen.StartLineCap,
             EndLineCap = pen.EndLineCap,
             DashCap = pen.DashCap,
@@ -165,13 +131,19 @@ internal static class DrawInputSnapshotter
 
     /// <summary>
     /// Returns a value snapshot of <paramref name="transform"/>. The backend
-    /// reads only <see cref="Transform.Value"/> (a value-type <see cref="Matrix"/>),
-    /// so a fresh <see cref="MatrixTransform"/> over the current matrix is fully
-    /// race-free; transforms are not identity-cached so per-frame allocation here
-    /// has no native-cache cost.
+    /// uses a managed-offset path for <see cref="TranslateTransform"/>. Preserve
+    /// that representation so cached text uses the same pixel placement as direct
+    /// rendering. Frozen snapshots remain readable on the render worker.
     /// </summary>
     public static Transform SnapshotTransform(Transform transform)
-        => new MatrixTransform(transform.Value);
+    {
+        var value = transform.Value;
+        Transform snapshot = transform is TranslateTransform
+            ? new TranslateTransform(value.OffsetX, value.OffsetY)
+            : new MatrixTransform(value);
+        snapshot.Freeze();
+        return snapshot;
+    }
 
     /// <summary>
     /// Returns a render-thread-readable geometry. Frozen geometries are already
@@ -188,13 +160,12 @@ internal static class DrawInputSnapshotter
         }
 
         var snapshot = geometry.CloneCurrentValue();
-        if (!snapshot.CanFreeze)
+        if (!snapshot.TryFreeze())
         {
             DrawingContext.MarkCurrentFrameUnrecordable();
             return geometry;
         }
 
-        snapshot.Freeze();
         return snapshot;
     }
 

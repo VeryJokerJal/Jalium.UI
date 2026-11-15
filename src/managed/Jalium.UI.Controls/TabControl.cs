@@ -1,10 +1,9 @@
-﻿using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Controls.Primitives;
 using System.Collections.Specialized;
-using Jalium.UI.Controls.Themes;
+using Jalium.UI.Automation.Peers;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
-using Jalium.UI.Styling;
 
 namespace Jalium.UI.Controls;
 
@@ -24,6 +23,15 @@ public enum Dock
 /// </summary>
 [StyleTypedProperty(Property = nameof(ItemContainerStyle), StyleTargetType = typeof(TabItem))]
 [TemplatePart(Name = "PART_SelectedContentHost", Type = typeof(ContentPresenter))]
+[TemplatePart(Name = "PART_ItemsPresenter", Type = typeof(ItemsPresenter))]
+[TemplateVisualState(Name = "Top", GroupName = "PlacementStates")]
+[TemplateVisualState(Name = "Bottom", GroupName = "PlacementStates")]
+[TemplateVisualState(Name = "Left", GroupName = "PlacementStates")]
+[TemplateVisualState(Name = "Right", GroupName = "PlacementStates")]
+[TemplateVisualState(Name = "Normal", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Disabled", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Focused", GroupName = "FocusStates")]
+[TemplateVisualState(Name = "Unfocused", GroupName = "FocusStates")]
 public class TabControl : Selector
 {
     /// <inheritdoc />
@@ -32,12 +40,6 @@ public class TabControl : Selector
         return new Jalium.UI.Automation.Peers.TabControlAutomationPeer(this);
     }
 
-    // Cached brushes for OnRender fallback paths
-    private static readonly SolidColorBrush s_tabStripBackgroundBrush = new(ThemeColors.TabStripBackground);
-    private static readonly SolidColorBrush s_tabStripBorderBrush = new(ThemeColors.TabStripBorder);
-    private Pen? _borderPenCached;
-    private Brush? _borderPenBrush;
-    private Border? _cssBorderPainter;
     private bool _isSynchronizingContainerSelection;
     private readonly HashSet<TabItem> _directTabItems = new();
 
@@ -74,6 +76,20 @@ public class TabControl : Selector
     /// <summary>Identifies the read-only <see cref="SelectedContentStringFormat"/> dependency property.</summary>
     public static readonly DependencyProperty SelectedContentStringFormatProperty =
         SelectedContentStringFormatPropertyKey.DependencyProperty;
+
+    private static readonly DependencyPropertyKey SelectedContentHorizontalAlignmentPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(SelectedContentHorizontalAlignment), typeof(HorizontalAlignment), typeof(TabControl),
+            new PropertyMetadata(HorizontalAlignment.Stretch));
+
+    /// <summary>Identifies the alignment used by the selected-content presenter.</summary>
+    public static readonly DependencyProperty SelectedContentHorizontalAlignmentProperty = SelectedContentHorizontalAlignmentPropertyKey.DependencyProperty;
+
+    private static readonly DependencyPropertyKey SelectedContentVerticalAlignmentPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(SelectedContentVerticalAlignment), typeof(VerticalAlignment), typeof(TabControl),
+            new PropertyMetadata(VerticalAlignment.Stretch));
+
+    /// <summary>Identifies the alignment used by the selected-content presenter.</summary>
+    public static readonly DependencyProperty SelectedContentVerticalAlignmentProperty = SelectedContentVerticalAlignmentPropertyKey.DependencyProperty;
 
     /// <summary>Identifies the <see cref="ContentTemplate"/> dependency property.</summary>
     public static readonly DependencyProperty ContentTemplateProperty =
@@ -125,6 +141,12 @@ public class TabControl : Selector
     #endregion
 
     #region Properties
+
+    /// <summary>Gets the selected tab's horizontal content alignment.</summary>
+    public HorizontalAlignment SelectedContentHorizontalAlignment => (HorizontalAlignment)GetValue(SelectedContentHorizontalAlignmentProperty)!;
+
+    /// <summary>Gets the selected tab's vertical content alignment.</summary>
+    public VerticalAlignment SelectedContentVerticalAlignment => (VerticalAlignment)GetValue(SelectedContentVerticalAlignmentProperty)!;
 
     /// <summary>
     /// Gets the content of the selected tab.
@@ -266,7 +288,9 @@ public class TabControl : Selector
 
     private void OnKeyDownHandler(object sender, KeyEventArgs e)
     {
-        if (e.Handled) return;
+        if (e.Handled || !IsEnabled) return;
+
+        if (!(e.Key == Key.Tab && e.IsControlDown) && !IsHeaderKeySource(e.OriginalSource)) return;
 
         var tabCount = Items.Count;
         if (tabCount == 0) return;
@@ -277,52 +301,63 @@ public class TabControl : Selector
             {
                 // Ctrl+Shift+Tab = previous, Ctrl+Tab = next
                 var direction = e.IsShiftDown ? -1 : 1;
-                SelectAdjacentTab(direction);
+                SelectAdjacentTab(direction, focusHeader: true);
                 e.Handled = true;
                 break;
             }
             case Key.Left:
             case Key.Up:
-                SelectAdjacentTab(-1);
+                SelectAdjacentTab(e.Key == Key.Left && FlowDirection == FlowDirection.RightToLeft ? 1 : -1, focusHeader: true);
                 e.Handled = true;
                 break;
             case Key.Right:
             case Key.Down:
-                SelectAdjacentTab(1);
+                SelectAdjacentTab(e.Key == Key.Right && FlowDirection == FlowDirection.RightToLeft ? -1 : 1, focusHeader: true);
                 e.Handled = true;
                 break;
             case Key.Home:
-                if (tabCount > 0) SelectedIndex = 0;
+                SelectAvailableTab(0, 1, focusHeader: true);
                 e.Handled = true;
                 break;
             case Key.End:
-                if (tabCount > 0) SelectedIndex = tabCount - 1;
+                SelectAvailableTab(tabCount - 1, -1, focusHeader: true);
                 e.Handled = true;
                 break;
         }
     }
 
-    private void SelectAdjacentTab(int direction)
+    private bool IsHeaderKeySource(object? source)
+    {
+        if (ReferenceEquals(source, this) || source == null) return true;
+        for (var element = source as Visual; element != null; element = element.VisualParent)
+        {
+            if (element is TabItem item) return ReferenceEquals(item.TabControl, this);
+            if (ReferenceEquals(element, this)) break;
+        }
+        return false;
+    }
+
+    private void SelectAdjacentTab(int direction, bool focusHeader = false)
     {
         var tabCount = Items.Count;
         if (tabCount == 0) return;
 
         var current = SelectedIndex;
-        var next = (current + direction + tabCount) % tabCount;
-        SelectedIndex = next;
+        var next = current < 0 ? (direction > 0 ? 0 : tabCount - 1) : (current + direction + tabCount) % tabCount;
+        SelectAvailableTab(next, direction, focusHeader);
     }
 
-    /// <summary>
-    /// Creates the panel that hosts the tab items.
-    /// Uses horizontal orientation for Top/Bottom placement, vertical for Left/Right.
-    /// </summary>
-    protected override Panel CreateItemsPanel()
+    private void SelectAvailableTab(int start, int direction, bool focusHeader = false)
     {
-        var orientation = (TabStripPlacement == Dock.Top || TabStripPlacement == Dock.Bottom)
-            ? Orientation.Horizontal
-            : Orientation.Vertical;
-
-        return new StackPanel { Orientation = orientation };
+        bool moveFocus = focusHeader || IsKeyboardFocused || Keyboard.FocusedElement != null && IsHeaderKeySource(Keyboard.FocusedElement);
+        for (int attempt = 0, index = start; attempt < Items.Count; attempt++, index = (index + direction + Items.Count) % Items.Count)
+        {
+            var item = GetTabItemAt(index);
+            if (item is { IsEnabled: false } || item is { Visibility: not Visibility.Visible }) continue;
+            SetCurrentValue(SelectedIndexProperty, index);
+            if (moveFocus) item?.Focus();
+            return;
+        }
     }
 
     /// <inheritdoc />
@@ -470,7 +505,7 @@ public class TabControl : Selector
         }
 
         var itemCount = GetItemCount();
-        if (itemCount == 0)
+        if (itemCount == 0 && !HasDeferredSelectedIndex)
         {
             SelectedIndex = -1;
         }
@@ -491,7 +526,7 @@ public class TabControl : Selector
                     : Math.Clamp(SelectedIndex, 0, itemCount - 1);
                 SelectedItem = GetItemAt(replacementIndex);
             }
-            else if (SelectedIndex < 0 || SelectedIndex >= itemCount)
+            else if (!HasDeferredSelectedIndex && (SelectedIndex < 0 || SelectedIndex >= itemCount))
             {
                 SelectedIndex = 0;
             }
@@ -508,11 +543,11 @@ public class TabControl : Selector
         {
             for (var i = 0; i < tabControl.GetItemCount(); i++)
             {
-                tabControl.GetTabItemAt(i)?.CoerceValue(TabItem.TabStripPlacementProperty);
+                tabControl.GetTabItemAt(i)?.UpdateTabStripPlacement();
             }
 
+            tabControl.UpdateVisualStates();
             tabControl.InvalidateMeasure();
-            tabControl.InvalidateVisual();
         }
     }
 
@@ -697,45 +732,52 @@ public class TabControl : Selector
         SetValue(SelectedContentTemplateSelectorPropertyKey, contentTemplateSelector);
         SetValue(SelectedContentStringFormatPropertyKey, contentStringFormat);
 
-        if (content == null)
-        {
-            RemoveSelectedContentPresenter();
-            return;
-        }
-
-        var presenter = EnsureSelectedContentPresenter();
-        presenter.HorizontalAlignment = selectedTabItem?.HorizontalContentAlignment ?? HorizontalAlignment.Stretch;
-        presenter.VerticalAlignment = selectedTabItem?.VerticalContentAlignment ?? VerticalAlignment.Stretch;
-
-        presenter.Content = content;
-        presenter.ContentTemplate = contentTemplate;
-        presenter.ContentTemplateSelector = contentTemplateSelector;
-        presenter.ContentStringFormat = contentStringFormat;
+        SetValue(SelectedContentHorizontalAlignmentPropertyKey,
+            selectedTabItem?.HorizontalContentAlignment ?? HorizontalContentAlignment);
+        SetValue(SelectedContentVerticalAlignmentPropertyKey,
+            selectedTabItem?.VerticalContentAlignment ?? VerticalContentAlignment);
+        NotifySelectedContentAutomation();
     }
 
-    private ContentPresenter EnsureSelectedContentPresenter()
+    private void NotifySelectedContentAutomation()
     {
-        if (_selectedContentPresenter != null)
-        {
-            return _selectedContentPresenter;
-        }
-
-        _selectedContentPresenter = new ContentPresenter();
-        AddVisualChild(_selectedContentPresenter);
-        return _selectedContentPresenter;
+        if (UIElementAutomationPeer.FromElement(this) is TabControlAutomationPeer peer)
+            peer.OnSelectedContentChanged();
     }
 
-    private void RemoveSelectedContentPresenter()
-    {
-        if (_selectedContentPresenter == null)
-        {
-            return;
-        }
+    internal ContentPresenter? SelectedContentAutomationRoot => SelectedContent == null ? null : _selectedContentPresenter;
 
-        var presenter = _selectedContentPresenter;
+    private ContentPresenter? _selectedContentPresenter;
+
+    public override void OnApplyTemplate()
+    {
+        base.OnApplyTemplate();
+        _selectedContentPresenter = GetTemplateChild("PART_SelectedContentHost") as ContentPresenter;
+        UpdateSelectedContent();
+        UpdateVisualStates();
+    }
+
+    protected override void OnTemplateChanging()
+    {
         _selectedContentPresenter = null;
-        presenter.Content = null;
-        RemoveVisualChild(presenter);
+        base.OnTemplateChanging();
+    }
+
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        if (e.Property == IsEnabledProperty || e.Property == IsKeyboardFocusWithinProperty)
+            UpdateVisualStates();
+        if (e.Property == HorizontalContentAlignmentProperty || e.Property == VerticalContentAlignmentProperty)
+            UpdateSelectedContent();
+    }
+
+    private void UpdateVisualStates()
+    {
+        if (TemplateRootInternal == null) return;
+        VisualStateManager.GoToState(this, TabStripPlacement.ToString(), false);
+        VisualStateManager.GoToState(this, IsEnabled ? "Normal" : "Disabled", false);
+        VisualStateManager.GoToState(this, IsEnabled && IsKeyboardFocusWithin ? "Focused" : "Unfocused", false);
     }
 
     internal void OnSelectedTabContentChanged(TabItem tabItem, object? _)
@@ -754,259 +796,32 @@ public class TabControl : Selector
         }
     }
 
-    protected override Size MeasureOverride(Size availableSize)
-    {
-        // Ensure ItemsHost is created
-        if (ItemsHost == null)
-        {
-            RefreshItems();
-        }
 
-        // The border and padding occupy the outer box; children use the content box.
-        var contentInsets = CssBoxMetrics.ContentInsets(this,
-            CssLayout?.ContainingWidthCache ?? availableSize.Width);
-        var innerAvailable = CssBoxMetrics.InnerSize(availableSize, contentInsets);
-
-        // Calculate tab strip dimensions
-        double tabStripWidth = innerAvailable.Width;
-        double tabStripHeight = TabStripHeight;
-        double verticalTabStripWidth = 120;
-
-        if (TabStripPlacement == Dock.Left || TabStripPlacement == Dock.Right)
-        {
-            tabStripWidth = verticalTabStripWidth;
-            tabStripHeight = innerAvailable.Height;
-        }
-
-        // Measure ItemsHost (contains tab headers)
-        if (ItemsHost != null)
-        {
-            ItemsHost.Measure(new Size(tabStripWidth, tabStripHeight));
-        }
-
-        // Measure tab items based on orientation
-        bool isVertical = TabStripPlacement == Dock.Left || TabStripPlacement == Dock.Right;
-        foreach (var item in Items)
-        {
-            if (item is TabItem tabItem)
-            {
-                if (isVertical)
-                {
-                    // Vertical: full width of tab strip, height based on content
-                    tabItem.Measure(new Size(verticalTabStripWidth, TabStripHeight));
-                }
-                else
-                {
-                    // Horizontal: width based on content, height is TabStripHeight
-                    tabItem.Measure(new Size(200, TabStripHeight));
-                }
-            }
-        }
-
-        // Calculate content area dimensions
-        double contentWidth = innerAvailable.Width;
-        double contentHeight = double.IsPositiveInfinity(innerAvailable.Height)
-            ? double.PositiveInfinity
-            : Math.Max(0, innerAvailable.Height - TabStripHeight);
-
-        if (TabStripPlacement == Dock.Left || TabStripPlacement == Dock.Right)
-        {
-            contentWidth = double.IsPositiveInfinity(innerAvailable.Width)
-                ? double.PositiveInfinity
-                : Math.Max(0, innerAvailable.Width - verticalTabStripWidth);
-            contentHeight = innerAvailable.Height;
-        }
-
-        // Measure content
-        if (_selectedContentPresenter != null)
-        {
-            _selectedContentPresenter.Measure(new Size(contentWidth, contentHeight));
-        }
-
-        return availableSize;
-    }
-
-    protected override Size ArrangeOverride(Size finalSize)
-    {
-        GetTabLayoutRects(GetInnerLayoutRect(finalSize), out var tabStripRect, out var contentRect);
-
-        // Arrange ItemsHost (the panel containing tab headers)
-        // StackPanel will automatically arrange its children (TabItems) based on orientation
-        if (ItemsHost != null)
-        {
-            ItemsHost.Arrange(tabStripRect);
-            // Note: Do NOT call SetVisualBounds here - ArrangeCore already handles margin
-        }
-
-        // Arrange content
-        if (_selectedContentPresenter != null)
-        {
-            _selectedContentPresenter.Arrange(contentRect);
-            // Note: Do NOT call SetVisualBounds here - ArrangeCore already handles margin
-        }
-
-        return finalSize;
-    }
-
-    private Rect GetInnerLayoutRect(Size outerSize)
-    {
-        var insets = CssBoxMetrics.ContentInsets(this,
-            CssLayout?.ContainingWidthCache ?? outerSize.Width);
-        var innerSize = CssBoxMetrics.InnerSize(outerSize, insets);
-        return new Rect(insets.Left, insets.Top, innerSize.Width, innerSize.Height);
-    }
-
-    private void GetTabLayoutRects(Rect inner, out Rect tabStripRect, out Rect contentRect)
-    {
-        var stripHeight = ControlRenderGeometry.GetAvailableLength(TabStripHeight, inner.Height);
-        var stripWidth = ControlRenderGeometry.GetAvailableLength(120, inner.Width);
-
-        switch (TabStripPlacement)
-        {
-            case Dock.Bottom:
-                tabStripRect = new Rect(inner.Left, inner.Bottom - stripHeight, inner.Width, stripHeight);
-                contentRect = new Rect(inner.Left, inner.Top, inner.Width, inner.Height - stripHeight);
-                break;
-            case Dock.Left:
-                tabStripRect = new Rect(inner.Left, inner.Top, stripWidth, inner.Height);
-                contentRect = new Rect(inner.Left + stripWidth, inner.Top, inner.Width - stripWidth, inner.Height);
-                break;
-            case Dock.Right:
-                tabStripRect = new Rect(inner.Right - stripWidth, inner.Top, stripWidth, inner.Height);
-                contentRect = new Rect(inner.Left, inner.Top, inner.Width - stripWidth, inner.Height);
-                break;
-            default: // Top
-                tabStripRect = new Rect(inner.Left, inner.Top, inner.Width, stripHeight);
-                contentRect = new Rect(inner.Left, inner.Top + stripHeight, inner.Width, inner.Height - stripHeight);
-                break;
-        }
-    }
-
-    #region Visual Children
-
-    private ContentPresenter? _selectedContentPresenter;
-
-    /// <summary>
-    /// Gets the number of visual children.
-    /// TabControl has up to 2 visual children: ItemsHost (for tab headers) and selected content element.
-    /// </summary>
-    protected override int VisualChildrenCount
-    {
-        get
-        {
-            int count = 0;
-            if (ItemsHost != null) count++;
-            if (_selectedContentPresenter != null) count++;
-            return count;
-        }
-    }
-
-    /// <summary>
-    /// Gets the visual child at the specified index.
-    /// Index 0: ItemsHost (tab header panel)
-    /// Index 1: Selected content element (if exists)
-    /// </summary>
-    protected override Visual? GetVisualChild(int index)
-    {
-        if (index == 0 && ItemsHost != null)
-            return ItemsHost;
-        if (index == 1 && _selectedContentPresenter != null)
-            return _selectedContentPresenter;
-        if (index == 0 && ItemsHost == null && _selectedContentPresenter != null)
-            return _selectedContentPresenter;
-        throw new ArgumentOutOfRangeException(nameof(index));
-    }
-
-    #endregion
-
-    protected override void OnRender(DrawingContext drawingContextObj)
-    {
-        var dc = drawingContextObj;
-
-        var bounds = new Rect(RenderSize);
-        var inner = GetInnerLayoutRect(RenderSize);
-        GetTabLayoutRects(inner, out var tabStripRect, out _);
-
-        // Draw background (content area)
-        if (Background != null)
-        {
-            if (!CssBackgroundPainter.TryDraw(this, BackgroundProperty, Background, dc,
-                    bounds, default, BorderThickness, Padding,
-                    brush => dc.DrawRectangle(brush, null, bounds)))
-                dc.DrawRectangle(Background, null, bounds);
-        }
-
-        // Draw tab strip background
-        var tabStripBrush = ResolveTabStripBackground();
-        dc.DrawRectangle(tabStripBrush, null, tabStripRect);
-
-        // Draw border line
-        var borderBrush = ResolveTabStripBorderBrush();
-        if (_borderPenCached == null || _borderPenBrush != borderBrush)
-        {
-            _borderPenBrush = borderBrush;
-            _borderPenCached = new Pen(borderBrush, 1);
-        }
-        var borderPen = _borderPenCached;
-        switch (TabStripPlacement)
-        {
-            case Dock.Bottom:
-                dc.DrawLine(borderPen, new Point(inner.Left, tabStripRect.Top), new Point(inner.Right, tabStripRect.Top));
-                break;
-            case Dock.Left:
-                dc.DrawLine(borderPen, new Point(tabStripRect.Right, inner.Top), new Point(tabStripRect.Right, inner.Bottom));
-                break;
-            case Dock.Right:
-                dc.DrawLine(borderPen, new Point(tabStripRect.Left, inner.Top), new Point(tabStripRect.Left, inner.Bottom));
-                break;
-            default: // Top
-                dc.DrawLine(borderPen, new Point(inner.Left, tabStripRect.Bottom), new Point(inner.Right, tabStripRect.Bottom));
-                break;
-        }
-
-        base.OnRender(drawingContextObj);
-    }
-
-    /// <inheritdoc />
-    protected override void OnPostRender(DrawingContext drawingContext)
-    {
-        base.OnPostRender(drawingContext);
-        CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter);
-    }
-
-    private Brush ResolveTabStripBackground()
-    {
-        return TabStripBackground
-            ?? TryFindResource("TabStripBackground") as Brush
-            ?? s_tabStripBackgroundBrush;
-    }
-
-    private Brush ResolveTabStripBorderBrush()
-    {
-        return TabStripBorderBrush
-            ?? TryFindResource("TabStripBorder") as Brush
-            ?? s_tabStripBorderBrush;
-    }
 }
 
 /// <summary>
 /// Represents an item in a TabControl.
 /// </summary>
+[TemplatePart(Name = "PART_HeaderPresenter", Type = typeof(ContentPresenter))]
+[TemplateVisualState(Name = "Selected", GroupName = "SelectionStates")]
+[TemplateVisualState(Name = "Unselected", GroupName = "SelectionStates")]
+[TemplateVisualState(Name = "Normal", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "MouseOver", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Disabled", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Focused", GroupName = "FocusStates")]
+[TemplateVisualState(Name = "Unfocused", GroupName = "FocusStates")]
+[TemplateVisualState(Name = "Top", GroupName = "PlacementStates")]
+[TemplateVisualState(Name = "Bottom", GroupName = "PlacementStates")]
+[TemplateVisualState(Name = "Left", GroupName = "PlacementStates")]
+[TemplateVisualState(Name = "Right", GroupName = "PlacementStates")]
 public class TabItem : HeaderedContentControl
 {
+    static TabItem() => FocusableProperty.OverrideMetadata(typeof(TabItem), new PropertyMetadata(true));
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
         return new Jalium.UI.Automation.Peers.TabItemAutomationPeer(this);
     }
-
-    // Cached brushes for OnRender fallback paths
-    private static readonly SolidColorBrush s_selectedBackgroundBrush = new(ThemeColors.TabItemSelectedBackground);
-    private static readonly SolidColorBrush s_hoverBackgroundBrush = new(ThemeColors.TabItemHoverBackground);
-    private static readonly SolidColorBrush s_transparentBrush = new(Color.Transparent);
-    private static readonly SolidColorBrush s_textPrimaryBrush = new(ThemeColors.TextPrimary);
-    private static readonly SolidColorBrush s_textSecondaryBrush = new(ThemeColors.TextSecondary);
-    private static readonly SolidColorBrush s_indicatorBrush = new(ThemeColors.TabItemIndicator);
 
     private TabControl? _tabControl;
 
@@ -1021,7 +836,7 @@ public class TabItem : HeaderedContentControl
             }
 
             _tabControl = value;
-            CoerceValue(TabStripPlacementProperty);
+            UpdateTabStripPlacement();
         }
     }
 
@@ -1041,7 +856,7 @@ public class TabItem : HeaderedContentControl
 
     private static readonly DependencyPropertyKey TabStripPlacementPropertyKey =
         DependencyProperty.RegisterReadOnly(nameof(TabStripPlacement), typeof(Dock), typeof(TabItem),
-            new PropertyMetadata(Dock.Top, null, CoerceTabStripPlacement));
+            new PropertyMetadata(Dock.Top, OnVisualStatePropertyChanged));
 
     /// <summary>Identifies the read-only <see cref="TabStripPlacement"/> dependency property.</summary>
     public static readonly DependencyProperty TabStripPlacementProperty =
@@ -1140,7 +955,7 @@ public class TabItem : HeaderedContentControl
 
     public TabItem()
     {
-        // TabItem renders only its header. Its Content remains logical content and is
+        // The template presents only Header. Content remains logical content and is
         // presented by the owning TabControl instead of becoming a TabItem visual child.
         UseTemplateContentManagement();
         AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
@@ -1192,19 +1007,6 @@ public class TabItem : HeaderedContentControl
         TabControl?.OnSelectedTabContentPresentationChanged(this);
     }
 
-    /// <summary>
-    /// TabItem has no visual children (Content is handled by TabControl).
-    /// </summary>
-    protected override int VisualChildrenCount => 0;
-
-    /// <summary>
-    /// TabItem has no visual children.
-    /// </summary>
-    protected override Visual? GetVisualChild(int index)
-    {
-        throw new ArgumentOutOfRangeException(nameof(index));
-    }
-
     private static new void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is TabItem tabItem)
@@ -1215,6 +1017,8 @@ public class TabItem : HeaderedContentControl
 
     private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
+        if (!IsEnabled || e.ChangedButton != MouseButton.Left) return;
+        Focus();
         TabControl?.SelectTab(this);
         e.Handled = true;
     }
@@ -1234,12 +1038,15 @@ public class TabItem : HeaderedContentControl
             }
 
             tabItem.TabControl?.OnContainerSelectionChanged(tabItem, isSelected);
-            tabItem.InvalidateVisual();
+            tabItem.UpdateVisualStates();
         }
     }
 
-    private static object? CoerceTabStripPlacement(DependencyObject d, object? baseValue) =>
-        ((TabItem)d).TabControl?.TabStripPlacement ?? baseValue ?? Dock.Top;
+    internal void UpdateTabStripPlacement() =>
+        SetValue(TabStripPlacementPropertyKey, TabControl?.TabStripPlacement ?? Dock.Top);
+
+    private static void OnVisualStatePropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
+        ((TabItem)d).UpdateVisualStates();
 
     /// <summary>Raises the attached <see cref="Selector.SelectedEvent"/> event.</summary>
     protected virtual void OnSelected(RoutedEventArgs e) => RaiseEvent(e);
@@ -1247,142 +1054,36 @@ public class TabItem : HeaderedContentControl
     /// <summary>Raises the attached <see cref="Selector.UnselectedEvent"/> event.</summary>
     protected virtual void OnUnselected(RoutedEventArgs e) => RaiseEvent(e);
 
-    protected override Size MeasureOverride(Size availableSize)
+    public override void OnApplyTemplate()
     {
-        // Measure based on header content
-        var headerText = Header?.ToString() ?? "";
-        var charWidth = FontSize * 0.6;
-        var textWidth = headerText.Length * charWidth;
-
-        // Calculate desired width based on text
-        var desiredWidth = Math.Max(textWidth + Padding.Left + Padding.Right, 60);
-
-        // If available width is constrained (e.g., vertical tabs), use that width
-        var width = double.IsInfinity(availableSize.Width) ? desiredWidth : Math.Min(desiredWidth, availableSize.Width);
-
-        // Use availableSize.Width for vertical tabs to fill the strip width
-        if (availableSize.Width > 0 && availableSize.Width < desiredWidth)
-        {
-            width = availableSize.Width;
-        }
-
-        return new Size(width, availableSize.Height);
+        base.OnApplyTemplate();
+        UpdateVisualStates();
     }
 
-    protected override Size ArrangeOverride(Size finalSize)
+    protected override void OnGotKeyboardFocus(KeyboardFocusChangedEventArgs e)
     {
-        return finalSize;
+        base.OnGotKeyboardFocus(e);
+        if (ReferenceEquals(e.NewFocus, this) && IsEnabled) TabControl?.SelectTab(this);
     }
 
-    protected override void OnIsMouseOverChanged(bool oldValue, bool newValue)
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
     {
-        InvalidateVisual();
+        base.OnPropertyChanged(e);
+        if (e.Property == IsEnabledProperty || e.Property == IsMouseOverProperty || e.Property == IsKeyboardFocusedProperty)
+            UpdateVisualStates();
+        if (e.Property == HorizontalContentAlignmentProperty || e.Property == VerticalContentAlignmentProperty)
+            TabControl?.OnSelectedTabContentPresentationChanged(this);
     }
 
-    protected override void OnRender(DrawingContext drawingContextObj)
+    private void UpdateVisualStates()
     {
-        var dc = drawingContextObj;
-
-        var bounds = new Rect(0, 0, ActualWidth, ActualHeight);
-
-        // Determine background based on state
-        Brush bgBrush;
-        if (IsSelected)
-        {
-            bgBrush = ResolveSelectedBackground();
-        }
-        else if (IsMouseOver)
-        {
-            bgBrush = ResolveHoverBackground();
-        }
-        else
-        {
-            bgBrush = Background ?? s_transparentBrush;
-        }
-
-        dc.DrawRectangle(bgBrush, null, bounds);
-
-        // Draw header text
-        var headerText = Header?.ToString() ?? "";
-        if (!string.IsNullOrEmpty(headerText) && FontSize > 0)
-        {
-            // Determine text color based on state
-            Brush textBrush;
-            if (IsSelected || IsMouseOver)
-            {
-                textBrush = ResolvePrimaryTextBrush();
-            }
-            else
-            {
-                textBrush = ResolveSecondaryTextBrush();
-            }
-
-            var fontSize = FontSize;
-            var fontFamily = !string.IsNullOrEmpty(FontFamily?.GetRenderingSource(this)) ? FontFamily.GetRenderingSource(this) : FrameworkElement.DefaultFontFamilyName;
-
-            var text = new FormattedText(headerText, fontFamily, fontSize)
-            {
-                Foreground = textBrush
-            };
-
-            // Measure text to get accurate Width/Height
-            TextMeasurement.MeasureText(text);
-
-            var textX = (ActualWidth - text.Width) / 2;
-            var textY = (ActualHeight - text.Height) / 2;
-
-            dc.DrawText(text, new Point(textX, textY));
-        }
-
-        // Draw selection indicator
-        if (IsSelected)
-        {
-            var indicatorBrush = ResolveIndicatorBrush();
-            var indicatorHeight = IndicatorHeight;
-            var indicatorRect = new Rect(0, ActualHeight - indicatorHeight, ActualWidth, indicatorHeight);
-            dc.DrawRectangle(indicatorBrush, null, indicatorRect);
-        }
-
-        // Don't call base - we handle all rendering
+        if (TemplateRootInternal == null) return;
+        VisualStateManager.GoToState(this, TabStripPlacement.ToString(), false);
+        VisualStateManager.GoToState(this, IsSelected ? "Selected" : "Unselected", false);
+        VisualStateManager.GoToState(this, !IsEnabled ? "Disabled" : IsMouseOver ? "MouseOver" : "Normal", false);
+        VisualStateManager.GoToState(this, IsEnabled && IsKeyboardFocused ? "Focused" : "Unfocused", false);
     }
 
-    private Brush ResolveSelectedBackground()
-    {
-        return SelectedBackground
-            ?? TryFindResource("TabItemSelectedBackground") as Brush
-            ?? s_selectedBackgroundBrush;
-    }
-
-    private Brush ResolveHoverBackground()
-    {
-        return HoverBackground
-            ?? TryFindResource("TabItemHoverBackground") as Brush
-            ?? s_hoverBackgroundBrush;
-    }
-
-    private Brush ResolvePrimaryTextBrush()
-    {
-        return TryFindResource("TextPrimary") as Brush ?? s_textPrimaryBrush;
-    }
-
-    private Brush ResolveSecondaryTextBrush()
-    {
-        if (HasLocalValue(Control.ForegroundProperty) && Foreground != null)
-        {
-            return Foreground;
-        }
-
-        return TryFindResource("TextSecondary") as Brush
-            ?? Foreground
-            ?? s_textSecondaryBrush;
-    }
-
-    private Brush ResolveIndicatorBrush()
-    {
-        return IndicatorBrush
-            ?? TryFindResource("TabItemIndicator") as Brush
-            ?? s_indicatorBrush;
-    }
 }
 
 /// <summary>

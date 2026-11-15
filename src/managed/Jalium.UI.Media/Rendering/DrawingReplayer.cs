@@ -1,3 +1,5 @@
+using Jalium.UI.Styling;
+
 namespace Jalium.UI.Media.Rendering;
 
 /// <summary>
@@ -5,7 +7,7 @@ namespace Jalium.UI.Media.Rendering;
 /// The observable effect of <c>Replay(drawing, target)</c> is indistinguishable
 /// from re-running the original <c>OnRender</c> body against <paramref name="target"/>,
 /// except that no user code runs, no temporary brushes / pens / geometries
-/// are allocated, and the command list is iterated as a dense array.
+/// are allocated, and the command buffer is iterated in order.
 /// </summary>
 /// <remarks>
 /// Replay never invokes the base-class fallback paths on <see cref="DrawingContext"/>
@@ -17,6 +19,16 @@ namespace Jalium.UI.Media.Rendering;
 internal static class DrawingReplayer
 {
     public static void Replay(RecordedDrawing drawing, DrawingContext target)
+    {
+        // Custom draw targets can invalidate/release their visual cache from a
+        // callback. Borrow the root until replay is complete; it owns every
+        // nested drawing, so recursive replay needs no additional references.
+        drawing.Retain();
+        try { ReplayCore(drawing, target); }
+        finally { drawing.Release(); }
+    }
+
+    private static void ReplayCore(RecordedDrawing drawing, DrawingContext target)
     {
         if (drawing.Count == 0)
         {
@@ -66,7 +78,29 @@ internal static class DrawingReplayer
 
         var cmds = drawing.Commands;
         var count = drawing.Count;
+        IAlphaMaskDrawingContext? completedMask = null;
+        IBlendDrawingContext? completedBlend = null;
+        Stack<(DrawCommandKind Kind, object? Target)>? captureScopes = null;
+        object? EndCapture(DrawCommandKind kind)
+        {
+            if (captureScopes is not { Count: > 0 }) return null;
+            if (captureScopes.Peek().Kind != kind)
+                throw new InvalidOperationException("Unbalanced compositing capture commands.");
+            var scope = captureScopes.Pop();
+            switch (scope.Kind)
+            {
+                case DrawCommandKind.BeginBlendCapture:
+                    (scope.Target as IBlendDrawingContext)?.EndBlendCapture(); break;
+                case DrawCommandKind.BeginAlphaMaskCapture:
+                    (scope.Target as IAlphaMaskDrawingContext)?.EndAlphaMaskCapture(); break;
+                case DrawCommandKind.BeginEffectCapture:
+                    (scope.Target as IEffectDrawingContext)?.EndEffectCapture(); break;
+            }
+            return scope.Target;
+        }
 
+        try
+        {
         for (int i = 0; i < count; i++)
         {
             ref readonly var c = ref cmds[i];
@@ -199,18 +233,45 @@ internal static class DrawingReplayer
                     break;
 
                 case DrawCommandKind.BeginEffectCapture:
-                    if (target is IEffectDrawingContext beginEffectSink)
-                    {
-                        beginEffectSink.BeginEffectCapture(
-                            (float)c.V0, (float)c.V1, (float)c.V2, (float)c.V3);
-                    }
+                    var effectTarget = target as IEffectDrawingContext;
+                    effectTarget?.BeginEffectCapture((float)c.V0, (float)c.V1, (float)c.V2, (float)c.V3);
+                    (captureScopes ??= new()).Push((DrawCommandKind.BeginEffectCapture, effectTarget));
                     break;
 
                 case DrawCommandKind.EndEffectCapture:
-                    if (target is IEffectDrawingContext endEffectSink)
+                    EndCapture(DrawCommandKind.BeginEffectCapture);
+                    break;
+
+                case DrawCommandKind.BeginBlendCapture:
+                    var blendTarget=target is IBlendDrawingContext{SupportsBlendModes:true} blendSupported?blendSupported:null;
+                    if(blendTarget is null)CssDiagnostics.Report("mix-blend-mode",CssDiagnosticReason.LossyConversion,null,"Replay target does not support isolated blending groups");
+                    else blendTarget.BeginBlendCapture(new(c.V0,c.V1,c.V2,c.V3));
+                    (captureScopes??=new()).Push((DrawCommandKind.BeginBlendCapture,blendTarget));break;
+                case DrawCommandKind.EndBlendCapture:
+                    completedBlend=EndCapture(DrawCommandKind.BeginBlendCapture) as IBlendDrawingContext;break;
+                case DrawCommandKind.CompositeBlendCapture:
+                    completedBlend?.CompositeBlendCapture((CssBlendMode)(int)c.V4,new(c.V0,c.V1,c.V2,c.V3));completedBlend=null;break;
+
+                case DrawCommandKind.BeginAlphaMaskCapture:
+                    var maskTarget = target is IAlphaMaskDrawingContext { SupportsAlphaMasks: true } supported ? supported : null;
+                    if (maskTarget is null)
+                        CssDiagnostics.Report("mask-image", CssDiagnosticReason.LossyConversion, null, "Replay target does not support grouped alpha masks");
+                    else maskTarget.BeginAlphaMaskCapture(new(c.V0, c.V1, c.V2, c.V3));
+                    (captureScopes ??= new()).Push((DrawCommandKind.BeginAlphaMaskCapture,maskTarget));
+                    break;
+
+                case DrawCommandKind.EndAlphaMaskCapture:
+                    completedMask = EndCapture(DrawCommandKind.BeginAlphaMaskCapture) as IAlphaMaskDrawingContext;
+                    break;
+
+                case DrawCommandKind.ApplyAlphaMask:
+                    if (completedMask is not null)
                     {
-                        endEffectSink.EndEffectCapture();
+                        var mask = (DrawCommand.AlphaMaskData)c.A!;
+                        completedMask.ApplyAlphaMask(mask.Coverage, mask.Width, mask.Height,
+                            new(c.V0, c.V1, c.V2, c.V3), new(c.V4, c.V5, c.V6, c.V7));
                     }
+                    completedMask = null;
                     break;
 
                 case DrawCommandKind.ApplyElementEffect:
@@ -262,10 +323,21 @@ internal static class DrawingReplayer
                     // transform state was emitted immediately before this node.
                     // The nested drawing is immutable and can be replayed directly
                     // without rebuilding or copying its command list on the UI thread.
-                    Replay((RecordedDrawing)c.A!, target);
+                    ReplayCore((RecordedDrawing)c.A!, target);
                     break;
 
             }
+        }
+        }
+        finally
+        {
+            Exception? cleanup = null;
+            while(captureScopes?.Count>0)
+            {
+                try{EndCapture(captureScopes.Peek().Kind);}
+                catch(Exception error){cleanup??=error;}
+            }
+            if (cleanup is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(cleanup).Throw();
         }
     }
 

@@ -40,8 +40,8 @@ namespace Jalium.UI.Media.Imaging;
 /// filled silhouette in the software renderer.
 /// </para>
 /// </remarks>
-internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
-    IOffsetDrawingContext, IClipDrawingContext, IOpacityDrawingContext, ITransformDrawingContext
+internal sealed partial class SoftwareDrawingContext : DrawingContextAdapter,
+    IOffsetDrawingContext, IClipDrawingContext, IOpacityDrawingContext, ITransformDrawingContext, IAlphaMaskDrawingContext
 {
     private enum StateKind
     {
@@ -301,6 +301,8 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
 
         var start = new Point(point0.X + Offset.X, point0.Y + Offset.Y);
         var end = new Point(point1.X + Offset.X, point1.Y + Offset.Y);
+        Rect? svgBounds = pen.Brush is GradientBrush gradient && GradientPaintCoordinates.UsesUnitBox(gradient)
+            ? new Rect(Math.Min(start.X, end.X), Math.Min(start.Y, end.Y), Math.Abs(end.X - start.X), Math.Abs(end.Y - start.Y)) : null;
         if (TryGetDashPattern(pen, out var pattern, out var dashOffset))
         {
             var half = pen.Thickness / 2;
@@ -308,7 +310,7 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
                 Math.Min(start.Y, end.Y) - half,
                 Math.Abs(end.X - start.X) + pen.Thickness,
                 Math.Abs(end.Y - start.Y) + pen.Thickness);
-            var sampler = BrushSampler.Create(pen.Brush, bounds, Offset, _opacity, DeviceScale);
+            var sampler = BrushSampler.Create(pen.Brush, svgBounds ?? bounds, Offset, _opacity, DeviceScale);
             var mask = CreateDashMask(bounds);
             if (sampler is not null && mask is not null)
             {
@@ -320,7 +322,7 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
         }
 
         FillShape(ShapeDesc.FromStrokeSegment(start, end, pen.Thickness / 2,
-            pen.StartLineCap, pen.EndLineCap), pen.Brush, 0);
+            pen.StartLineCap, pen.EndLineCap), pen.Brush, 0, svgBounds);
     }
 
     /// <inheritdoc />
@@ -328,12 +330,20 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
     {
         if (_closed || geometry == null) return;
 
+        if (pen is { SvgViewportStroke: true })
+        {
+            if (brush is not null) DrawGeometry(brush, null, geometry);
+            DrawSvgViewportStroke(pen, geometry);
+            return;
+        }
+
         // Analytic primitives keep their SDF: it antialiases better than a flattened
         // polygon and covers the overwhelmingly common case (layout clips, Border
         // decoration, Shape parts).
         var geometryTransform = geometry.Transform;
         var dashed = TryGetDashPattern(pen, out var dashPattern, out var dashOffset);
-        if (!dashed && (geometryTransform == null || geometryTransform.Value.IsIdentity))
+        var uniform = IsUniformTransform(_matrix);
+        if (!dashed && uniform && (geometryTransform == null || geometryTransform.Value.IsIdentity))
         {
             switch (geometry)
             {
@@ -371,7 +381,13 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
             }
         }
 
-        var flattened = geometry.GetFlattenedPathGeometry();
+        // One SDF distance scale is valid for similarities. Nonuniform scale
+        // and skew use the existing polygon coverage path, preserving sharp
+        // pixel-aligned edges on both axes (including SVG marker viewBoxes).
+        var flattened = dashed
+            ? geometry.GetFlattenedPathGeometry(.0001 / Math.Max(DeviceScale, 1e-6), ToleranceType.Absolute)
+            : !uniform ? geometry.GetFlattenedPathGeometry(.01 / Math.Max(GeometryComposition.Scale(_matrix), 1e-6), ToleranceType.Absolute)
+            : geometry.GetFlattenedPathGeometry();
         var figures = BuildFigurePolylines(flattened, geometryTransform);
         if (figures.Count == 0) return;
 
@@ -421,10 +437,22 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
             if (mask is null) return;
             foreach (var figure in figures)
                 StrokeFigure(figure, pen, dashed ? dashPattern : null, dashOffset, mask);
-            var sampler = BrushSampler.Create(pen.Brush, mask.BrushBounds,
+            var paintBounds = pen.Brush is GradientBrush gradient && (GradientPaintCoordinates.UsesUnitBox(gradient) ||
+                GradientPaintCoordinates.IsCssImage(gradient) && geometry is not LineGeometry)
+                ? Translate(GradientPaintCoordinates.StrokeBounds(pen.Brush, geometry.Bounds, pen.Thickness)) : mask.BrushBounds;
+            var sampler = BrushSampler.Create(pen.Brush, paintBounds,
                 Offset, _opacity, DeviceScale);
             if (sampler is not null) CompositeDashMask(mask, sampler);
         }
+    }
+
+    private static bool IsUniformTransform(Matrix matrix)
+    {
+        var largest = Math.Max(Math.Max(Math.Abs(matrix.M11), Math.Abs(matrix.M12)), Math.Max(Math.Abs(matrix.M21), Math.Abs(matrix.M22)));
+        if (largest == 0 || !double.IsFinite(largest)) return false;
+        var a = matrix.M11 / largest; var b = matrix.M12 / largest;
+        var c = matrix.M21 / largest; var d = matrix.M22 / largest;
+        return Math.Abs(a * a + b * b - c * c - d * d) < 1e-12 && Math.Abs(a * c + b * d) < 1e-12;
     }
 
     /// <summary>
@@ -482,7 +510,7 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
         var snapshot = ImageBrushSampler.GetPixels(imageSource,
             Math.Clamp((int)Math.Ceiling(deviceBounds.Width), 1, 16384),
             Math.Clamp((int)Math.Ceiling(deviceBounds.Height), 1, 16384),
-            cover: false);
+            cover: false, svgViewportSize: imageSource is SvgImage ? new Size(rect.Width, rect.Height) : null);
         if (snapshot is null || snapshot.Width <= 0 || snapshot.Height <= 0) return;
         var x0 = Math.Max(0, (int)Math.Floor(deviceBounds.X));
         var y0 = Math.Max(0, (int)Math.Floor(deviceBounds.Y));
@@ -533,6 +561,12 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
     public override void PushClip(Geometry clipGeometry)
     {
         if (_closed || clipGeometry == null) return;
+
+        if (clipGeometry is GeometryGroup or CombinedGeometry || clipGeometry.Transform is { Value.IsIdentity: false })
+        {
+            var captured = GeometryComposition.FlattenChild(clipGeometry, .25 / Math.Max(DeviceScale, 1e-6));
+            captured.Freeze(); clipGeometry = captured;
+        }
 
         if (clipGeometry is Jalium.UI.Styling.CssRoundedRectangleGeometry cssRounded)
         {
@@ -1160,7 +1194,7 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
     {
         if (brush == null || _opacity <= 0) return;
 
-        var brushBounds = strokeBrushBounds ?? (strokeHalfWidth > 0
+        var brushBounds = strokeBrushBounds ?? (strokeHalfWidth > 0 && !(brush is GradientBrush gradient && (GradientPaintCoordinates.UsesUnitBox(gradient) || GradientPaintCoordinates.IsCssImage(gradient)))
             ? new Rect(shape.Rect.X - strokeHalfWidth, shape.Rect.Y - strokeHalfWidth,
                 shape.Rect.Width + strokeHalfWidth * 2,
                 shape.Rect.Height + strokeHalfWidth * 2)
@@ -1441,6 +1475,13 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
 
     #region Brushes
 
+    internal static Func<double, double, (double R, double G, double B, double A)>? CssMaskSampler(
+        Brush brush, Rect bounds, double deviceScale)
+    {
+        var sampler = BrushSampler.Create(brush, bounds, default, 1, deviceScale);
+        return sampler is null ? null : sampler.Sample;
+    }
+
     /// <summary>
     /// Evaluates a brush in offset space. Solid colours, gradients and image brushes
     /// are supported; drawing/visual brushes return <see langword="null"/> and
@@ -1456,10 +1497,10 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
 
         public static BrushSampler? Create(Brush brush, Rect bounds, Point offset, double ambientOpacity, double deviceScale = 1)
         {
-            if (brush.CssGradientLayout is { } cssLayout &&
+            if (brush.CssImageLayout is { } cssLayout &&
                 bounds.Width > 0 && bounds.Height > 0)
             {
-                if (cssLayout.Resolve(bounds.Width, bounds.Height) is not { } resolved) return null;
+                if (Jalium.UI.Styling.CssImageLayout.ResolveBrush(brush, bounds.Width, bounds.Height) is not { } resolved) return null;
                 brush = resolved;
             }
             var opacity = ambientOpacity * Math.Clamp(brush.Opacity, 0.0, 1.0);
@@ -1474,7 +1515,7 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
                     var top = layers.Top is { } over
                         ? Create(over, bounds, offset, 1, deviceScale) : null;
                     return bottom is null && top is null
-                        ? null : new CompositeSampler(bottom, top, opacity);
+                        ? null : new CompositeSampler(bottom, top, opacity, layers.BlendMode);
                 }
                 case ImageBrush image:
                     return ImageBrushSampler.Create(image, bounds, offset, opacity, deviceScale) is { } sampler ? new ImageSampler(sampler) : null;
@@ -1486,28 +1527,27 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
 
                 case LinearGradientBrush linear:
                 {
-                    var stops = GradientRamp.Build(linear);
+                    var stops = GradientColorRamp.Build(linear);
                     if (stops == null) return null;
 
-                    var start = MapPoint(linear.StartPoint, linear.MappingMode, bounds, offset);
-                    var end = MapPoint(linear.EndPoint, linear.MappingMode, bounds, offset);
-                    return new LinearGradientSampler(stops, start, end, opacity);
+                    if (!GradientPaintCoordinates.TryInvert(GradientPaintCoordinates.GradientToTarget(linear, bounds, offset), out var inverse)) return null;
+                    var start = GradientPaintCoordinates.MapPoint(linear, linear.StartPoint, bounds, offset);
+                    var end = GradientPaintCoordinates.MapPoint(linear, linear.EndPoint, bounds, offset);
+                    return new TransformedSampler(new LinearGradientSampler(stops, start, end, opacity), inverse);
                 }
 
                 case RadialGradientBrush radial:
                 {
-                    var stops = GradientRamp.Build(radial);
+                    var stops = GradientColorRamp.Build(radial);
                     if (stops == null) return null;
 
-                    var center = MapPoint(radial.Center, radial.MappingMode, bounds, offset);
-                    var origin = MapPoint(radial.GradientOrigin, radial.MappingMode, bounds, offset);
-                    var radiusX = radial.MappingMode == BrushMappingMode.RelativeToBoundingBox
-                        ? radial.RadiusX * Math.Max(bounds.Width, 1e-6)
-                        : radial.RadiusX;
-                    var radiusY = radial.MappingMode == BrushMappingMode.RelativeToBoundingBox
-                        ? radial.RadiusY * Math.Max(bounds.Height, 1e-6)
-                        : radial.RadiusY;
-                    return new RadialGradientSampler(stops, center, origin, radiusX, radiusY, opacity);
+                    if (!GradientPaintCoordinates.TryInvert(GradientPaintCoordinates.GradientToTarget(radial, bounds, offset), out var inverse)) return null;
+                    var center = GradientPaintCoordinates.MapPoint(radial, radial.Center, bounds, offset);
+                    var origin = GradientPaintCoordinates.MapPoint(radial, radial.GradientOrigin, bounds, offset);
+                    var radiusX = GradientPaintCoordinates.MapRadius(radial, radial.RadiusX, bounds.Width);
+                    var radiusY = GradientPaintCoordinates.MapRadius(radial, radial.RadiusY, bounds.Height);
+                    return new TransformedSampler(new RadialGradientSampler(stops, center, origin, radiusX, radiusY,
+                        GradientPaintCoordinates.MapRadius(radial, radial.SvgFocalRadius, bounds.Width), radial.UsesSvgRadialInterpolation, opacity), inverse);
                 }
 
                 default:
@@ -1515,14 +1555,14 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
             }
         }
 
-        /// <summary>
-        /// Relative points scale with the fill bounds (offset cancels out); absolute points are in
-        /// the element's own local space, so the ambient offset has to be added back.
-        /// </summary>
-        private static Point MapPoint(Point point, BrushMappingMode mode, Rect bounds, Point offset) =>
-            mode == BrushMappingMode.RelativeToBoundingBox
-                ? new Point(bounds.X + (point.X * bounds.Width), bounds.Y + (point.Y * bounds.Height))
-                : new Point(point.X + offset.X, point.Y + offset.Y);
+        private sealed class TransformedSampler(BrushSampler sampler, Matrix inverse) : BrushSampler(1)
+        {
+            public override (double R, double G, double B, double A) Sample(double x, double y)
+            {
+                var point = inverse.Transform(new Point(x, y));
+                return sampler.Sample(point.X, point.Y);
+            }
+        }
 
         private sealed class ImageSampler(ImageBrushSampler sampler) : BrushSampler(1)
         {
@@ -1530,19 +1570,14 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
         }
 
         private sealed class CompositeSampler(
-            BrushSampler? bottom, BrushSampler? top, double opacity) : BrushSampler(opacity)
+            BrushSampler? bottom, BrushSampler? top, double opacity, CssBlendMode mode) : BrushSampler(opacity)
         {
             public override (double R, double G, double B, double A) Sample(double x, double y)
             {
                 var under = bottom?.Sample(x, y) ?? default;
                 var over = top?.Sample(x, y) ?? default;
-                var alpha = over.A + under.A * (1.0 - over.A);
-                if (alpha <= 0) return default;
-                var underWeight = under.A * (1.0 - over.A);
-                return ((over.R * over.A + under.R * underWeight) / alpha,
-                    (over.G * over.A + under.G * underWeight) / alpha,
-                    (over.B * over.A + under.B * underWeight) / alpha,
-                    alpha * Opacity);
+                var result = CssBlend.Composite(over, under, mode);
+                return (result.R, result.G, result.B, result.A * Opacity);
             }
         }
 
@@ -1568,13 +1603,13 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
 
         private sealed class LinearGradientSampler : BrushSampler
         {
-            private readonly GradientRamp _ramp;
+            private readonly GradientColorRamp _ramp;
             private readonly Point _start;
             private readonly double _dx;
             private readonly double _dy;
             private readonly double _lengthSquared;
 
-            public LinearGradientSampler(GradientRamp ramp, Point start, Point end, double opacity)
+            public LinearGradientSampler(GradientColorRamp ramp, Point start, Point end, double opacity)
                 : base(opacity)
             {
                 _ramp = ramp;
@@ -1595,131 +1630,21 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
 
         private sealed class RadialGradientSampler : BrushSampler
         {
-            private readonly GradientRamp _ramp;
-            private readonly Point _center;
-            private readonly double _radiusX;
-            private readonly double _radiusY;
-            private readonly double _focusX;
-            private readonly double _focusY;
+            private readonly GradientColorRamp _ramp;
+            private readonly RadialGradientGeometry _geometry;
 
-            public RadialGradientSampler(
-                GradientRamp ramp, Point center, Point origin, double radiusX, double radiusY, double opacity)
-                : base(opacity)
+            public RadialGradientSampler(GradientColorRamp ramp, Point center, Point origin,
+                double radiusX, double radiusY, double focalRadius, bool svg, double opacity) : base(opacity)
             {
                 _ramp = ramp;
-                _center = center;
-                _radiusX = Math.Abs(radiusX);
-                _radiusY = Math.Abs(radiusY);
-
-                // Work in the unit circle the ellipse maps to, and keep the focus strictly inside
-                // it so the ray/circle solve always has a real root.
-                var fx = _radiusX > 1e-12 ? (origin.X - center.X) / _radiusX : 0.0;
-                var fy = _radiusY > 1e-12 ? (origin.Y - center.Y) / _radiusY : 0.0;
-                var length = Math.Sqrt((fx * fx) + (fy * fy));
-                if (length > 0.99)
-                {
-                    fx *= 0.99 / length;
-                    fy *= 0.99 / length;
-                }
-
-                _focusX = fx;
-                _focusY = fy;
+                _geometry = new(center, origin, radiusX, radiusY, focalRadius, svg);
             }
 
-            public override (double R, double G, double B, double A) Sample(double x, double y)
-            {
-                if (_radiusX <= 1e-12 || _radiusY <= 1e-12) return _ramp.Evaluate(1.0, Opacity);
-
-                var px = (x - _center.X) / _radiusX;
-                var py = (y - _center.Y) / _radiusY;
-                var dx = px - _focusX;
-                var dy = py - _focusY;
-
-                // Solve |focus + s*d| = 1; t = 1/s puts the boundary at 1.
-                var a = (dx * dx) + (dy * dy);
-                if (a <= 1e-12) return _ramp.Evaluate(0.0, Opacity);
-
-                var b = 2.0 * ((_focusX * dx) + (_focusY * dy));
-                var c = (_focusX * _focusX) + (_focusY * _focusY) - 1.0;
-                var discriminant = Math.Max((b * b) - (4.0 * a * c), 0.0);
-                var s = (-b + Math.Sqrt(discriminant)) / (2.0 * a);
-                return _ramp.Evaluate(s > 1e-12 ? 1.0 / s : 0.0, Opacity);
-            }
+            public override (double R, double G, double B, double A) Sample(double x, double y) =>
+                _ramp.EvaluateRadial(_geometry.Evaluate(x, y), Opacity);
         }
     }
 
-    /// <summary>A gradient's stops, sorted once and evaluated per pixel.</summary>
-    private sealed class GradientRamp
-    {
-        private readonly double[] _offsets;
-        private readonly Color[] _colors;
-        private readonly GradientSpreadMethod _spread;
-
-        private GradientRamp(double[] offsets, Color[] colors, GradientSpreadMethod spread)
-        {
-            _offsets = offsets;
-            _colors = colors;
-            _spread = spread;
-        }
-
-        public static GradientRamp? Build(GradientBrush brush)
-        {
-            var stops = brush.GradientStops;
-            if (stops == null || stops.Count == 0) return null;
-
-            var sorted = stops.OrderBy(static stop => stop.Offset).ToArray();
-            var offsets = new double[sorted.Length];
-            var colors = new Color[sorted.Length];
-            for (var i = 0; i < sorted.Length; i++)
-            {
-                offsets[i] = sorted[i].Offset;
-                colors[i] = sorted[i].Color;
-            }
-
-            return new GradientRamp(offsets, colors, brush.SpreadMethod);
-        }
-
-        public (double R, double G, double B, double A) Evaluate(double t, double opacity)
-        {
-            t = _spread switch
-            {
-                GradientSpreadMethod.Repeat => t - Math.Floor(t),
-                GradientSpreadMethod.Reflect => ReflectT(t),
-                _ => Math.Clamp(t, 0.0, 1.0),
-            };
-
-            if (t <= _offsets[0]) return Pack(_colors[0], opacity);
-            if (t >= _offsets[^1]) return Pack(_colors[^1], opacity);
-
-            for (var i = 1; i < _offsets.Length; i++)
-            {
-                if (t > _offsets[i]) continue;
-
-                var span = _offsets[i] - _offsets[i - 1];
-                var local = span > 1e-12 ? (t - _offsets[i - 1]) / span : 0.0;
-                var from = _colors[i - 1];
-                var to = _colors[i];
-                return (
-                    Lerp(from.R, to.R, local),
-                    Lerp(from.G, to.G, local),
-                    Lerp(from.B, to.B, local),
-                    Lerp(from.A, to.A, local) * opacity);
-            }
-
-            return Pack(_colors[^1], opacity);
-        }
-
-        private static double ReflectT(double t)
-        {
-            var wrapped = Math.Abs(t) % 2.0;
-            return wrapped > 1.0 ? 2.0 - wrapped : wrapped;
-        }
-
-        private static (double R, double G, double B, double A) Pack(Color color, double opacity) =>
-            (color.R / 255.0, color.G / 255.0, color.B / 255.0, color.A / 255.0 * opacity);
-
-        private static double Lerp(byte from, byte to, double t) => (from + ((to - from) * t)) / 255.0;
-    }
 
     #endregion
 }

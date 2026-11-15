@@ -21,7 +21,7 @@ public:
     JaliumBrushType GetType() const override { return JALIUM_BRUSH_SOLID; }
 };
 
-class MetalLinearGradientBrush final : public Brush {
+class MetalLinearGradientBrush final : public Brush, public GradientColorInterpolationState {
 public:
     float startX, startY, endX, endY;
     uint32_t spreadMethod;
@@ -32,7 +32,7 @@ public:
     JaliumBrushType GetType() const override { return JALIUM_BRUSH_LINEAR_GRADIENT; }
 };
 
-class MetalRadialGradientBrush final : public Brush {
+class MetalRadialGradientBrush final : public Brush, public GradientColorInterpolationState, public RadialGradientGeometryState {
 public:
     float centerX, centerY, radiusX, radiusY, originX, originY;
     uint32_t spreadMethod;
@@ -52,7 +52,7 @@ public:
     uint32_t GetHeight() const override;
 
 private:
-    void* EnsureTexture(void* deviceHandle);
+    void* EnsureTexture(void* deviceHandle, void* commandQueueHandle);
     struct Impl;
     std::unique_ptr<Impl> impl_;
     friend class MetalRenderTarget;
@@ -83,11 +83,11 @@ private:
 
 class MetalBackend;
 
-class MetalRenderTarget final : public RenderTarget, public TextParagraphRenderProvider, public TextGlyphRangeRenderProvider,
+class MetalRenderTarget final : public RenderTarget, public TextParagraphRenderProvider, public TextParagraphSliceRenderProvider, public TextParagraphBrushRenderProvider, public TextGlyphRangeRenderProvider,
     public EllipticalClipProvider, public EllipticalEffectProvider,
     public SpreadShadowProvider, public CssBoxShadowProvider,
     public CssShadowLayerProvider, public FilterDropShadowProvider,
-    public CssTextShadowProvider, public ColorMatrixChainProvider,
+    public CssTextShadowProvider, public ColorMatrixChainProvider, public AlphaMaskEffectProvider, public BlendEffectProvider,
     public InsetShadowLayerProvider, public ShaderEffectStatusProvider,
     public BlurKernelProvider, public PathClipProvider, public StrokePathClipProvider {
 public:
@@ -149,6 +149,10 @@ public:
     JaliumResult SetTextGlyphRanges(const uint32_t* pairs, uint32_t count, int32_t mode) override;
     void RenderParagraphLine(TextParagraph* paragraph, uint32_t line,
         float x, float y, float opacity) override;
+    JaliumResult RenderParagraphSlice(TextParagraph* paragraph, uint32_t line,
+        float x, float y, uint32_t start, uint32_t length, const float* rgba) override;
+    JaliumResult RenderParagraphBrush(TextParagraph* paragraph, uint32_t line,
+        float x, float y, uint32_t start, uint32_t length, Brush* brush) override;
     void RenderText(const wchar_t* text, uint32_t textLength, TextFormat* format,
         float x, float y, float w, float h, Brush* brush) override;
 
@@ -300,6 +304,11 @@ public:
     JaliumResult DrawCssTextShadows(float x,float y,float w,float h,
         float captureX,float captureY,float captureW,float captureH,
         const float* layers,uint32_t layerCount,bool compositeSource) override;
+    JaliumResult BeginAlphaMaskCapture(float x, float y, float w, float h) override;
+    bool SupportsBlendModes() const override;
+    JaliumResult DrawBlendEffect(uint32_t mode, float x, float y, float w, float h) override;
+    JaliumResult DrawAlphaMaskEffect(const uint8_t* pixels,uint32_t bytes,uint32_t width,uint32_t height,uint32_t stride,
+        float maskX,float maskY,float maskW,float maskH,float captureX,float captureY,float captureW,float captureH) override;
     JaliumResult DrawColorMatrixChainEffect(float x,float y,float w,float h,
         const float* matrices,uint32_t matrixCount) override;
 
@@ -321,6 +330,8 @@ public:
 
 private:
     struct Impl;
+    void RenderParagraphCore(TextParagraph* paragraph, uint32_t line, float x, float y,
+        float opacity, const float* paintColor, uint32_t ownerStart, uint32_t ownerLength, Brush* maskBrush = nullptr);
     std::unique_ptr<Impl> impl_;
 };
 

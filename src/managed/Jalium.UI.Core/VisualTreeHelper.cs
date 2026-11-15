@@ -251,40 +251,78 @@ public static class VisualTreeHelper
         {
             return null;
         }
+        if (!Styling.CssTransform3D.IsActivePlane(reference) &&
+            reference is UIElement backfaceRef &&
+            Styling.CssTransform3D.IsBackfaceCulled(backfaceRef))
+        {
+            return null;
+        }
         if (reference is UIElement clippedElement &&
-            Styling.CssClipPathProperties.GetGeometry(clippedElement) is { } cssClip &&
-            !cssClip.FillContains(point))
+            (!clippedElement.IsPointInsideLayoutClip(point) ||
+             Styling.CssClipPathProperties.GetGeometry(clippedElement) is { } cssClip && !cssClip.FillContains(point)))
             return null;
 
-        // Walk the visual tree from top to bottom (reverse child order)
-        // Use incremental coordinate transform instead of TransformToVisual per child
-        for (int i = reference.InternalVisualChildrenCount - 1; i >= 0; i--)
+        if (!Styling.CssTransform3D.IsActivePlane(reference) &&
+            reference is UIElement root3D &&
+            Styling.CssTransform3D.IsEffectivePreserve3D(root3D))
         {
-            var child = reference.InternalGetVisualChild(i);
-            if (child == null) continue;
-
-            // Compute child offset directly instead of TransformToVisual + Inverse
-            var childPoint = point;
-            if (child is UIElement uiChild)
+            var hit3D = Styling.CssTransform3D.HitTest3DContext(
+                root3D,
+                point,
+                inRootLocalSpace: true,
+                static (plane, localPt) => HitTest(plane, localPt));
+            if (hit3D != null)
+                return hit3D;
+        }
+        else if (!Styling.CssTransform3D.SuppressesChildrenOf(reference))
+        {
+            // Walk the visual tree from top to bottom (reverse child order)
+            var positionedChildren = Styling.CssPositionedLayout.PaintChildren(reference);
+            for (int i = (positionedChildren?.Count ?? reference.InternalVisualChildrenCount) - 1; i >= 0; i--)
             {
-                var bounds = uiChild.VisualBounds;
-                var ro = uiChild.RenderOffset;
-                childPoint = new Point(
-                    point.X - bounds.X - ro.X,
-                    point.Y - bounds.Y - ro.Y);
-            }
+                var promoted = positionedChildren is not null && positionedChildren[i].Promoted;
+                var child = positionedChildren is not null ? positionedChildren[i].Visual : reference.InternalGetVisualChild(i);
+                if (child == null) continue;
+                if (!promoted && Styling.CssPositionedLayout.DefersPaint(child) ||
+                    promoted && !Styling.CssPositionedLayout.PathIsVisible(child, reference, true, point)) continue;
 
-            var result = HitTest(child, childPoint);
-            if (result != null)
-                return result;
+                var childPoint = point;
+                if (child is UIElement uiChild)
+                {
+                    var origin = promoted ? positionedChildren![i].ParentOrigin : default;
+                    var parentPoint = new Point(point.X - origin.X, point.Y - origin.Y);
+                    if (Styling.CssTransform3D.IsEffectivePreserve3D(uiChild))
+                    {
+                        var res3D = Styling.CssTransform3D.HitTest3DContext(
+                            uiChild,
+                            parentPoint,
+                            inRootLocalSpace: false,
+                            static (plane, localPt) => HitTest(plane, localPt));
+                        if (res3D != null)
+                            return res3D;
+                        continue;
+                    }
+
+                    if (!Styling.CssTransform3D.TryMapParentPointToChildLocal(uiChild, parentPoint, out childPoint))
+                        continue;
+                }
+
+                var result = HitTest(child, childPoint);
+                if (result != null)
+                    return result;
+            }
         }
 
+        if (reference is Styling.ICssStyledBox or Jalium.UI.Controls.FlowDocumentPresentation { PassThroughSelfHit: true } ||
+            Styling.CssContentsLayout.IsContents(reference) || Styling.CssContentsLayout.Suppressed(reference)) return null;
         if (reference is UIElement cssElement &&
             (Styling.CssDisplayProperties.EffectiveVisibility(cssElement) != Visibility.Visible ||
              Styling.CssPointerEventsProperties.Effective(cssElement) == Styling.CssPointerEventsMode.None))
             return null;
 
-        HitTestResult? customResult = reference.HitTestPointCore(new PointHitTestParameters(point));
+        HitTestResult? customResult = Styling.CssTransform3D.WithSuppressedChildren(
+            reference,
+            () => reference.HitTestPointCore(new PointHitTestParameters(point)));
         if (customResult != null)
         {
             return customResult;
@@ -295,7 +333,10 @@ public static class VisualTreeHelper
         {
             if (point.X >= 0 && point.Y >= 0 &&
                 point.X <= element.RenderSize.Width &&
-                point.Y <= element.RenderSize.Height)
+                point.Y <= element.RenderSize.Height &&
+                (element is not Styling.ICssAnonymousBox anonymous || anonymous.Contains(point)) &&
+                (element is not FrameworkElement frame || frame.CssInlineFrameContains(point)) &&
+                (element is not Jalium.UI.Controls.TextBlock text || text.CssInlineContains(point)))
             {
                 return new HitTestResult(reference);
             }
@@ -351,9 +392,15 @@ public static class VisualTreeHelper
         {
             return HitTestFilterBehavior.Continue;
         }
+        if (!Styling.CssTransform3D.IsActivePlane(visual) &&
+            visual is UIElement backfaceVis &&
+            Styling.CssTransform3D.IsBackfaceCulled(backfaceVis))
+        {
+            return HitTestFilterBehavior.Continue;
+        }
         if (visual is UIElement clippedElement &&
-            Styling.CssClipPathProperties.GetGeometry(clippedElement) is { } cssClip &&
-            !cssClip.FillContains(point))
+            (!clippedElement.IsPointInsideLayoutClip(point) ||
+             Styling.CssClipPathProperties.GetGeometry(clippedElement) is { } cssClip && !cssClip.FillContains(point)))
             return HitTestFilterBehavior.Continue;
 
         bool skipSelf = false;
@@ -380,27 +427,57 @@ public static class VisualTreeHelper
             }
         }
 
-        // Test children (reverse order for z-order)
-        // Use incremental coordinate transform instead of TransformToVisual per child
-        for (int i = visual.InternalVisualChildrenCount - 1; i >= 0; i--)
+        if (!Styling.CssTransform3D.IsActivePlane(visual) &&
+            visual is UIElement root3D &&
+            Styling.CssTransform3D.IsEffectivePreserve3D(root3D))
         {
-            var child = visual.InternalGetVisualChild(i);
-            if (child == null) continue;
-
-            // Compute child offset directly
-            var childPoint = point;
-            if (child is UIElement uiChild)
+            if (Styling.CssTransform3D.HitTest3DContextWithFilter(
+                root3D,
+                point,
+                inRootLocalSpace: true,
+                (plane, localPt) => HitTestWithFilter(plane, filterCallback, resultCallback, localPt)) == HitTestFilterBehavior.Stop)
             {
-                var bounds = uiChild.VisualBounds;
-                var ro = uiChild.RenderOffset;
-                childPoint = new Point(
-                    point.X - bounds.X - ro.X,
-                    point.Y - bounds.Y - ro.Y);
-            }
-
-            var result = HitTestWithFilter(child, filterCallback, resultCallback, childPoint);
-            if (result == HitTestFilterBehavior.Stop)
                 return HitTestFilterBehavior.Stop;
+            }
+        }
+        else if (!Styling.CssTransform3D.SuppressesChildrenOf(visual))
+        {
+            // Test children (reverse order for z-order)
+            var positionedChildren = Styling.CssPositionedLayout.PaintChildren(visual);
+            for (int i = (positionedChildren?.Count ?? visual.InternalVisualChildrenCount) - 1; i >= 0; i--)
+            {
+                var promoted = positionedChildren is not null && positionedChildren[i].Promoted;
+                var child = positionedChildren is not null ? positionedChildren[i].Visual : visual.InternalGetVisualChild(i);
+                if (child == null) continue;
+                if (!promoted && Styling.CssPositionedLayout.DefersPaint(child) ||
+                    promoted && !Styling.CssPositionedLayout.PathIsVisible(child, visual, true, point)) continue;
+
+                var childPoint = point;
+                if (child is UIElement uiChild)
+                {
+                    var origin = promoted ? positionedChildren![i].ParentOrigin : default;
+                    var parentPoint = new Point(point.X - origin.X, point.Y - origin.Y);
+                    if (Styling.CssTransform3D.IsEffectivePreserve3D(uiChild))
+                    {
+                        if (Styling.CssTransform3D.HitTest3DContextWithFilter(
+                            uiChild,
+                            parentPoint,
+                            inRootLocalSpace: false,
+                            (plane, localPt) => HitTestWithFilter(plane, filterCallback, resultCallback, localPt)) == HitTestFilterBehavior.Stop)
+                        {
+                            return HitTestFilterBehavior.Stop;
+                        }
+                        continue;
+                    }
+
+                    if (!Styling.CssTransform3D.TryMapParentPointToChildLocal(uiChild, parentPoint, out childPoint))
+                        continue;
+                }
+
+                var result = HitTestWithFilter(child, filterCallback, resultCallback, childPoint);
+                if (result == HitTestFilterBehavior.Stop)
+                    return HitTestFilterBehavior.Stop;
+            }
         }
 
         // Test self (unless filter said to skip)
@@ -415,12 +492,15 @@ public static class VisualTreeHelper
 
     private static HitTestResultBehavior TestSelf(Visual visual, HitTestResultCallback resultCallback, Point point)
     {
+        if (Styling.CssContentsLayout.IsContents(visual) || Styling.CssContentsLayout.Suppressed(visual)) return HitTestResultBehavior.Continue;
         if (visual is UIElement cssElement &&
             (Styling.CssDisplayProperties.EffectiveVisibility(cssElement) != Visibility.Visible ||
              Styling.CssPointerEventsProperties.Effective(cssElement) == Styling.CssPointerEventsMode.None))
             return HitTestResultBehavior.Continue;
 
-        HitTestResult? customResult = visual.HitTestPointCore(new PointHitTestParameters(point));
+        HitTestResult? customResult = Styling.CssTransform3D.WithSuppressedChildren(
+            visual,
+            () => visual.HitTestPointCore(new PointHitTestParameters(point)));
         if (customResult != null)
         {
             return resultCallback(customResult);
@@ -431,7 +511,10 @@ public static class VisualTreeHelper
             element.Visibility == Visibility.Visible &&
             point.X >= 0 && point.Y >= 0 &&
             point.X <= element.RenderSize.Width &&
-            point.Y <= element.RenderSize.Height)
+            point.Y <= element.RenderSize.Height &&
+            (element is not Styling.ICssAnonymousBox anonymous || anonymous.Contains(point)) &&
+            (element is not FrameworkElement frame || frame.CssInlineFrameContains(point)) &&
+            (element is not Jalium.UI.Controls.TextBlock text || text.CssInlineContains(point)))
         {
             var hitResult = new HitTestResult(visual);
             return resultCallback(hitResult);

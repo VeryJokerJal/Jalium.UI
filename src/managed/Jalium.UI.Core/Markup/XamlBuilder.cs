@@ -59,7 +59,30 @@ public static class XamlBuilder
 
     /// <summary>Creates an independent template build scope without names or mutable parse state.</summary>
     public static XamlBuildContext CreateTemplateContext(XamlBuildContext context)
-        => Required(CreateTemplateContextImpl, nameof(CreateTemplateContextImpl))(context);
+    {
+        var template = Required(CreateTemplateContextImpl, nameof(CreateTemplateContextImpl))(context);
+        template.NamespaceMappings = context.NamespaceMappings;
+        return template;
+    }
+
+    /// <summary>Enters a generated element's XML namespace scope, returning the previous snapshot.</summary>
+    public static IReadOnlyDictionary<string, string>? PushNamespaces(XamlBuildContext context, string[] prefixes, string[] namespaceUris)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        if (prefixes.Length != namespaceUris.Length) throw new ArgumentException("Namespace arrays must have equal lengths.");
+        var previous = context.NamespaceMappings;
+        var next = previous == null ? new Dictionary<string, string>(StringComparer.Ordinal) : new Dictionary<string, string>(previous, StringComparer.Ordinal);
+        for (var index = 0; index < prefixes.Length; index++) next[prefixes[index]] = namespaceUris[index];
+        context.NamespaceMappings = next;
+        return previous;
+    }
+
+    /// <summary>Restores the namespace scope after building a generated element.</summary>
+    public static void PopNamespaces(XamlBuildContext context, IReadOnlyDictionary<string, string>? previous)
+        => context.NamespaceMappings = previous;
+
+    /// <summary>Registered by Jalium.UI.Xaml: creates an isolated context for one template instance.</summary>
+    public static Func<XamlBuildContext, XamlBuildContext>? BeginTemplateImpl { get; set; }
 
     /// <summary>Registered by Jalium.UI.Xaml: pushes an element onto the build context's parent stack.</summary>
     public static Action<object, XamlBuildContext>? PushParentImpl { get; set; }
@@ -208,6 +231,10 @@ public static class XamlBuilder
     /// <summary>Begin a build session — see assembly-level documentation for invariants.</summary>
     public static XamlBuildContext BeginComponent(object component, Uri? baseUri = null, Assembly? sourceAssembly = null)
         => Required(BeginComponentImpl, nameof(BeginComponentImpl))(component, baseUri, sourceAssembly);
+
+    /// <summary>Begin one template instance without sharing its names or parent stack with other instances.</summary>
+    public static XamlBuildContext BeginTemplate(XamlBuildContext parent)
+        => Required(BeginTemplateImpl, nameof(BeginTemplateImpl))(parent);
 
     /// <summary>Push <paramref name="parent"/> onto the build context's parent stack.</summary>
     public static void PushParent(object parent, XamlBuildContext ctx)
@@ -462,6 +489,9 @@ public static class XamlBuilder
 /// </summary>
 public sealed class XamlBuildContext
 {
+    /// <summary>Immutable namespace snapshot copied into deferred template scopes.</summary>
+    public IReadOnlyDictionary<string, string>? NamespaceMappings { get; internal set; }
+
     /// <summary>
     /// Internal state set by the implementing assembly. Not part of the stable API —
     /// access only from within <c>Jalium.UI.Xaml</c>.

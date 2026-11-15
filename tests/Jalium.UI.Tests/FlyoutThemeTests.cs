@@ -6,35 +6,35 @@ using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Tests;
-
 [Collection("Application")]
 public class FlyoutThemeTests
 {
     private static void ResetApplicationState()
     {
-        var currentField = typeof(Application).GetField("_current",
-            BindingFlags.NonPublic | BindingFlags.Static);
+        var currentField = typeof(Application).GetField("_current", BindingFlags.NonPublic | BindingFlags.Static);
         currentField?.SetValue(null, null);
-
-        var resetMethod = typeof(ThemeManager).GetMethod("Reset",
-            BindingFlags.NonPublic | BindingFlags.Static);
+        var resetMethod = typeof(ThemeManager).GetMethod("Reset", BindingFlags.NonPublic | BindingFlags.Static);
         resetMethod?.Invoke(null, null);
     }
 
     [Fact]
-    public void FlyoutBase_InternalResolvers_ShouldUseThemeResources()
+    public void FlyoutPresenter_ThemeValuesRemainOwnedByTheStyle()
     {
         ResetApplicationState();
         var app = new Application();
-
         try
         {
-            var popupBackground = Assert.IsAssignableFrom<Brush>(app.Resources["MenuFlyoutPresenterBackground"]);
-            var popupBorder = Assert.IsAssignableFrom<Brush>(app.Resources["MenuFlyoutPresenterBorderBrush"]);
-            var flyout = new CommandBarFlyout();
-
-            Assert.Same(popupBackground, InvokePrivateBrushResolver(flyout, "ResolvePopupBackgroundBrush"));
-            Assert.Same(popupBorder, InvokePrivateBrushResolver(flyout, "ResolvePopupBorderBrush"));
+            var frame = new FlyoutPresenter
+            {
+                Style = (Style)app.Resources[typeof(FlyoutPresenter)]
+            };
+            frame.ApplyTemplate();
+            var chrome = Assert.IsType<Border>(frame.FindName("PART_Root"));
+            Assert.Same(app.Resources["MenuFlyoutPresenterBackground"], chrome.Background);
+            Assert.Same(app.Resources["MenuFlyoutPresenterBorderBrush"], chrome.BorderBrush);
+            Assert.False(frame.HasLocalValue(Control.BackgroundProperty));
+            Assert.False(frame.HasLocalValue(Control.BorderBrushProperty));
+            Assert.False(frame.HasLocalValue(Control.PaddingProperty));
         }
         finally
         {
@@ -47,21 +47,19 @@ public class FlyoutThemeTests
     {
         ResetApplicationState();
         var app = new Application();
-
         try
         {
             var popupBackground = Assert.IsAssignableFrom<Brush>(app.Resources["MenuFlyoutPresenterBackground"]);
             var popupBorder = Assert.IsAssignableFrom<Brush>(app.Resources["MenuFlyoutPresenterBorderBrush"]);
             var flyout = new CommandBarFlyout();
             var anchor = new Border();
-
             flyout.ShowAt(anchor);
-
             var popupField = typeof(FlyoutBase).GetField("_popup", BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.NotNull(popupField);
             var popup = Assert.IsType<Popup>(popupField!.GetValue(flyout));
-            var chrome = Assert.IsType<Border>(popup.Child);
-
+            var presenter = Assert.IsType<FlyoutPresenter>(popup.Child);
+            presenter.ApplyTemplate();
+            var chrome = Assert.IsType<Border>(presenter.FindName("PART_Root"));
             Assert.Same(popupBackground, chrome.Background);
             Assert.Same(popupBorder, chrome.BorderBrush);
         }
@@ -69,12 +67,5 @@ public class FlyoutThemeTests
         {
             ResetApplicationState();
         }
-    }
-
-    private static Brush InvokePrivateBrushResolver(FlyoutBase flyout, string methodName)
-    {
-        var method = typeof(FlyoutBase).GetMethod(methodName, BindingFlags.Instance | BindingFlags.NonPublic);
-        Assert.NotNull(method);
-        return Assert.IsAssignableFrom<Brush>(method!.Invoke(flyout, null));
     }
 }

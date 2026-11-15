@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Controls.Themes;
+using Jalium.UI.Controls.Themes;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
@@ -10,27 +10,42 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Internal splitter bar used between panes in a <see cref="DockSplitPanel"/>.
 /// </summary>
+[TemplateVisualState(Name = "Normal", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "PointerOver", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Pressed", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Disabled", GroupName = "CommonStates")]
 public sealed class Split : Control
 {
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
         => new Jalium.UI.Automation.Peers.GenericAutomationPeer(this, Jalium.UI.Automation.Peers.AutomationControlType.Pane);
 
-    private static readonly SolidColorBrush s_fallbackDraggingBrush = new(ThemeColors.Accent);
-    private static readonly SolidColorBrush s_fallbackHoverBrush = new(ThemeColors.DockSplitterHover);
-    private static readonly SolidColorBrush s_fallbackBackgroundBrush = new(ThemeColors.DockSplitterBackground);
+    /// <summary>Identifies the pointer-over brush used by the default template.</summary>
+    public static readonly DependencyProperty HoverBrushProperty = DependencyProperty.Register(nameof(HoverBrush), typeof(Brush), typeof(Split), new PropertyMetadata(null));
+    /// <summary>Identifies the brush used while resizing panes.</summary>
+    public static readonly DependencyProperty DraggingBrushProperty = DependencyProperty.Register(nameof(DraggingBrush), typeof(Brush), typeof(Split), new PropertyMetadata(null));
+    private static readonly DependencyPropertyKey IsDraggingPropertyKey = DependencyProperty.RegisterReadOnly(nameof(IsDragging), typeof(bool), typeof(Split), new PropertyMetadata(false));
+    /// <summary>Identifies the read-only drag state.</summary>
+    public static readonly DependencyProperty IsDraggingProperty = IsDraggingPropertyKey.DependencyProperty;
+    /// <summary>Gets or sets the pointer-over brush.</summary>
+    public Brush? HoverBrush { get => (Brush?)GetValue(HoverBrushProperty); set => SetValue(HoverBrushProperty, value); }
+    /// <summary>Gets or sets the active drag brush.</summary>
+    public Brush? DraggingBrush { get => (Brush?)GetValue(DraggingBrushProperty); set => SetValue(DraggingBrushProperty, value); }
+    /// <summary>Gets whether this splitter is resizing its owner panes.</summary>
+    public bool IsDragging => (bool)GetValue(IsDraggingProperty)!;
 
     internal DockSplitPanel? Owner { get; set; }
     internal int PaneIndex1 { get; set; }
     internal int PaneIndex2 { get; set; }
 
-    private bool _isDragging;
     private Point _dragStartPoint; // In Owner's coordinate space
     private double _originalSize1;
     private double _originalSize2;
 
-    internal Split()
+    /// <summary>Initializes a reusable splitter with template-owned chrome.</summary>
+    public Split()
     {
+        DefaultStyleKey = typeof(Split);
         Focusable = false;
 
         AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
@@ -52,7 +67,7 @@ public sealed class Split : Control
     {
         if (e.ChangedButton == MouseButton.Left)
         {
-            if (_isDragging)
+            if (IsDragging)
                 FinishDrag();
             e.Handled = true;
         }
@@ -60,7 +75,7 @@ public sealed class Split : Control
 
     private void OnMouseMoveHandler(object sender, MouseEventArgs e)
     {
-        if (_isDragging)
+        if (IsDragging)
         {
             UpdateDrag(e.GetPosition(Owner ?? (UIElement)this));
             e.Handled = true;
@@ -70,7 +85,7 @@ public sealed class Split : Control
     protected override void OnLostMouseCapture()
     {
         base.OnLostMouseCapture();
-        if (_isDragging)
+        if (IsDragging)
             FinishDrag();
     }
 
@@ -79,7 +94,8 @@ public sealed class Split : Control
         if (Owner == null) return;
 
         CaptureMouse();
-        _isDragging = true;
+        SetValue(IsDraggingPropertyKey, true);
+        UpdateStates();
         _dragStartPoint = positionInOwner;
 
         Owner.GetPaneSizes(PaneIndex1, PaneIndex2, out _originalSize1, out _originalSize2);
@@ -101,7 +117,8 @@ public sealed class Split : Control
     private void FinishDrag()
     {
         ReleaseMouseCapture();
-        _isDragging = false;
+        SetValue(IsDraggingPropertyKey, false);
+        UpdateStates();
         InvalidateVisual();
     }
 
@@ -113,6 +130,7 @@ public sealed class Split : Control
 
     protected override Size MeasureOverride(Size availableSize)
     {
+        base.MeasureOverride(availableSize);
         var splitterSize = Owner?.SplitterSize ?? 6.0;
         if (Owner?.Orientation == Orientation.Horizontal)
             return new Size(splitterSize, availableSize.Height);
@@ -120,61 +138,24 @@ public sealed class Split : Control
             return new Size(availableSize.Width, splitterSize);
     }
 
-    protected override Size ArrangeOverride(Size finalSize)
-    {
-        return finalSize;
-    }
+    protected override Size ArrangeOverride(Size finalSize) => base.ArrangeOverride(finalSize);
 
+    /// <inheritdoc />
+    public override void OnApplyTemplate() { base.OnApplyTemplate(); UpdateStates(); }
+
+    /// <inheritdoc />
     protected override void OnIsMouseOverChanged(bool oldValue, bool newValue)
     {
-        InvalidateVisual();
+        base.OnIsMouseOverChanged(oldValue, newValue); UpdateStates();
     }
 
-    protected override void OnRender(DrawingContext drawingContextObj)
+    /// <inheritdoc />
+    protected override void OnIsEnabledChanged(bool oldValue, bool newValue)
     {
-        var dc = drawingContextObj;
-
-        var bounds = new Rect(0, 0, ActualWidth, ActualHeight);
-        var isVerticalBar = Owner?.Orientation == Orientation.Horizontal;
-
-        Brush bgBrush;
-        if (_isDragging)
-            bgBrush = ResolveDraggingBrush();
-        else if (IsMouseOver)
-            bgBrush = ResolveHoverBrush();
-        else
-            bgBrush = ResolveBackgroundBrush();
-
-        dc.DrawRectangle(bgBrush, null, bounds);
+        base.OnIsEnabledChanged(oldValue, newValue);
+        if (!newValue && IsDragging) FinishDrag(); UpdateStates();
     }
 
-    private Brush ResolveDraggingBrush()
-    {
-        return ResolveBrush("OneTabActiveBorder", "AccentBrush", s_fallbackDraggingBrush);
-    }
-
-    private Brush ResolveHoverBrush()
-    {
-        return ResolveBrush("OneSurfaceHover", "DockSplitterHover", s_fallbackHoverBrush);
-    }
-
-    private Brush ResolveBackgroundBrush()
-    {
-        if (TryFindResource("OneBorderSubtle") is Brush primary)
-            return primary;
-        if (Background != null)
-            return Background;
-        if (TryFindResource("DockSplitterBackground") is Brush secondary)
-            return secondary;
-        return s_fallbackBackgroundBrush;
-    }
-
-    private Brush ResolveBrush(string primaryKey, string secondaryKey, Brush fallback)
-    {
-        if (TryFindResource(primaryKey) is Brush primary)
-            return primary;
-        if (TryFindResource(secondaryKey) is Brush secondary)
-            return secondary;
-        return fallback;
-    }
+    private void UpdateStates() => VisualStateManager.GoToState(this,
+        !IsEnabled ? "Disabled" : IsDragging ? "Pressed" : IsMouseOver ? "PointerOver" : "Normal", false);
 }

@@ -158,7 +158,7 @@ public class WrapPanel : Panel
         int itemsOnLine = 0;
         int lineCount = 0;
 
-        foreach (UIElement child in Children.EnumerateStruct())
+        foreach (UIElement child in CssLayoutChildren.EnumerateStruct())
         {
             if (child is not FrameworkElement fe) continue;
 
@@ -284,9 +284,9 @@ public class WrapPanel : Panel
         double lineThickness = 0;
         double secondaryOffset = 0;
 
-        for (int childIndex = 0; childIndex < Children.Count; childIndex++)
+        for (int childIndex = 0; childIndex < CssLayoutChildren.Count; childIndex++)
         {
-            if (Children[childIndex] is not FrameworkElement fe) continue;
+            if (CssLayoutChildren[childIndex] is not FrameworkElement fe) continue;
             if (IsCssAbsolute(fe)) continue;
 
             var childWidth = hasFixedWidth ? itemWidth : fe.DesiredSize.Width;
@@ -336,7 +336,7 @@ public class WrapPanel : Panel
         {
             ArrangeLine(
                 lineStartIndex,
-                Children.Count,
+                CssLayoutChildren.Count,
                 secondaryOffset,
                 lineThickness,
                 orientation,
@@ -369,7 +369,7 @@ public class WrapPanel : Panel
 
         for (int childIndex = startIndex; childIndex < endIndex; childIndex++)
         {
-            if (Children[childIndex] is not FrameworkElement element) continue;
+            if (CssLayoutChildren[childIndex] is not FrameworkElement element) continue;
             if (IsCssAbsolute(element)) continue;
 
             var width = hasFixedWidth ? itemWidth : element.DesiredSize.Width;

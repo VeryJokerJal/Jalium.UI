@@ -36,6 +36,12 @@ internal enum DrawCommandKind : byte
     PaintCssShadowLayers,
     SetShapeType,                // SuperEllipse shape-type state (V0=type, V1=exponent)
     DrawRecordedDrawing,         // whole-frame scene graph: immutable per-visual command list
+    BeginAlphaMaskCapture,
+    EndAlphaMaskCapture,
+    ApplyAlphaMask,
+    BeginBlendCapture,
+    EndBlendCapture,
+    CompositeBlendCapture,
 }
 
 /// <summary>
@@ -210,6 +216,25 @@ internal readonly struct DrawCommand
     public static DrawCommand EndEffectCaptureCmd() =>
         new(DrawCommandKind.EndEffectCapture, null, null, null,
             0, 0, 0, 0, 0, 0, 0, 0);
+
+    internal sealed record AlphaMaskData(byte[] Coverage, int Width, int Height);
+    public static DrawCommand BeginAlphaMaskCaptureCmd(Rect bounds) =>
+        new(DrawCommandKind.BeginAlphaMaskCapture, null, null, null, bounds.X, bounds.Y, bounds.Width, bounds.Height, 0, 0, 0, 0);
+    public static DrawCommand BeginBlendCaptureCmd(Rect bounds)=>
+        new(DrawCommandKind.BeginBlendCapture,null,null,null,bounds.X,bounds.Y,bounds.Width,bounds.Height,0,0,0,0);
+    public static DrawCommand EndBlendCaptureCmd()=>new(DrawCommandKind.EndBlendCapture,null,null,null,0,0,0,0,0,0,0,0);
+    public static DrawCommand CompositeBlendCaptureCmd(CssBlendMode mode,Rect bounds)=>
+        new(DrawCommandKind.CompositeBlendCapture,null,null,null,bounds.X,bounds.Y,bounds.Width,bounds.Height,(int)mode,0,0,0);
+    public static DrawCommand EndAlphaMaskCaptureCmd() =>
+        new(DrawCommandKind.EndAlphaMaskCapture, null, null, null, 0, 0, 0, 0, 0, 0, 0, 0);
+    public static DrawCommand ApplyAlphaMaskCmd(byte[] coverage, int width, int height, Rect mask, Rect capture)
+    {
+        ArgumentNullException.ThrowIfNull(coverage);
+        if (width <= 0 || height <= 0 || (long)width * height > coverage.Length)
+            throw new ArgumentException("Invalid alpha mask dimensions.", nameof(coverage));
+        return new(DrawCommandKind.ApplyAlphaMask, new AlphaMaskData((byte[])coverage.Clone(), width, height), null, null,
+            mask.X, mask.Y, mask.Width, mask.Height, capture.X, capture.Y, capture.Width, capture.Height);
+    }
 
     public static DrawCommand ApplyCssTextShadowsOnlyCmd(IEffect shadows,
         float x, float y, float w, float h, float captureOriginX, float captureOriginY) =>

@@ -53,41 +53,26 @@ public class TimePickerThemeTests
     }
 
     [Fact]
-    public void TimePicker_InternalResolvers_ShouldUseThemeResources()
+    public void TimePicker_DefaultTemplatePartsShouldUseTheCurrentThemeResources()
     {
         ResetApplicationState();
         var app = new Application();
-
         try
         {
-            Assert.True(app.Resources.TryGetValue("TextPlaceholder", out var placeholderObj));
-            Assert.True(app.Resources.TryGetValue("TextSecondary", out var secondaryObj));
-            Assert.True(app.Resources.TryGetValue("AccentBrush", out var accentObj));
-            Assert.True(app.Resources.TryGetValue("ControlBorderFocused", out var focusedObj));
-
-            var timePicker = new TimePicker();
-
-            var placeholderMethod = typeof(TimePicker).GetMethod("ResolvePlaceholderBrush",
-                BindingFlags.Instance | BindingFlags.NonPublic);
-            var secondaryMethod = typeof(TimePicker).GetMethod("ResolveSecondaryTextBrush",
-                BindingFlags.Instance | BindingFlags.NonPublic);
-            var selectedMethod = typeof(TimePicker).GetMethod("ResolveSelectedItemBackground",
-                BindingFlags.Instance | BindingFlags.NonPublic);
-            var focusedMethod = typeof(TimePicker).GetMethod("ResolveFocusedBorderBrush",
-                BindingFlags.Instance | BindingFlags.NonPublic);
-            Assert.NotNull(placeholderMethod);
-            Assert.NotNull(secondaryMethod);
-            Assert.NotNull(selectedMethod);
-            Assert.NotNull(focusedMethod);
-
-            Assert.Same(placeholderObj, placeholderMethod!.Invoke(timePicker, null));
-            Assert.Same(secondaryObj, secondaryMethod!.Invoke(timePicker, null));
-            Assert.Same(accentObj, selectedMethod!.Invoke(timePicker, null));
-            Assert.Same(focusedObj, focusedMethod!.Invoke(timePicker, null));
+            var picker = new TimePicker();
+            picker.Measure(new Size(240, 80));
+            picker.Arrange(new Rect(0, 0, 240, 80));
+            var display = Assert.IsType<TextBlock>(picker.FindName("PART_DisplayText"));
+            var input = Assert.IsType<Border>(picker.FindName("PART_InputBorder"));
+            Assert.Same(app.Resources["TextPlaceholder"], display.Foreground);
+            Assert.Same(app.Resources["SurfaceBackground"], input.Background);
+            Assert.Same(app.Resources["ControlBorder"], input.BorderBrush);
+            picker.SelectedTime = new TimeSpan(13, 30, 0);
+            Assert.Equal("1:30 PM", display.Text);
+            Assert.Same(app.Resources["TextPrimary"], display.Foreground);
+            Assert.False(picker.HasLocalValue(Control.BackgroundProperty));
+            Assert.False(picker.HasLocalValue(Control.BorderBrushProperty));
         }
-        finally
-        {
-            ResetApplicationState();
-        }
+        finally { ResetApplicationState(); }
     }
 }

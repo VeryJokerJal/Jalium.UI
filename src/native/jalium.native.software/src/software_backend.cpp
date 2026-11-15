@@ -1,4 +1,12 @@
+#include "jalium_alpha_mask.h"
+#include "jalium_css_blend.h"
 #include "software_backend.h"
+#ifdef JALIUM_HAS_TEXT_ENGINE
+#include "shared_text_paragraph.h"
+#endif
+#ifdef JALIUM_HAS_TEXT_ENGINE
+#include "shared_text_paragraph.h"
+#endif
 #ifdef __APPLE__
 #include "apple_text_format.h"
 #include "apple_text_paragraph.h"
@@ -454,6 +462,11 @@ private:
 class SoftwareRetainedLayer {
 public:
     std::unique_ptr<SoftwareBitmap> bitmap;
+    // The bitmap contains an outward-rounded physical pixel rectangle. Keep
+    // its padding and extent relative to the requested logical rectangle so
+    // compositing does not squeeze those pixels back into a fractional box.
+    double normalizedOffsetX = 0.0, normalizedOffsetY = 0.0;
+    double normalizedWidth = 1.0, normalizedHeight = 1.0;
 
     size_t ByteSize() const
     {
@@ -1878,100 +1891,29 @@ static inline float Lerp(float a, float b, float t) {
     return a + (b - a) * t;
 }
 
-// sRGB ↔ linear conversion for perceptually correct blending and gradients.
-static inline float SrgbToLinear(float s) {
-    return (s <= 0.04045f) ? s / 12.92f : std::pow((s + 0.055f) / 1.055f, 2.4f);
-}
-
-static inline float LinearToSrgb(float l) {
-    return (l <= 0.0031308f) ? l * 12.92f : 1.055f * std::pow(l, 1.0f / 2.4f) - 0.055f;
-}
-
 static void InterpolateGradientStops(const std::vector<JaliumGradientStop>& stops, float t,
-                                      float& r, float& g, float& b, float& a)
+    float& r, float& g, float& b, float& a, uint32_t mode)
 {
     if (stops.empty()) { r = g = b = a = 0; return; }
     t = std::clamp(t, 0.0f, 1.0f);
-
-    if (t <= stops.front().position) {
-        r = LinearToSrgb(stops.front().r);
-        g = LinearToSrgb(stops.front().g);
-        b = LinearToSrgb(stops.front().b);
-        a = stops.front().a;
-        return;
-    }
-    if (t >= stops.back().position) {
-        r = LinearToSrgb(stops.back().r);
-        g = LinearToSrgb(stops.back().g);
-        b = LinearToSrgb(stops.back().b);
-        a = stops.back().a;
-        return;
-    }
-
-    for (size_t i = 0; i + 1 < stops.size(); i++) {
-        if (t >= stops[i].position && t <= stops[i + 1].position) {
-            float range = stops[i + 1].position - stops[i].position;
-            float local = (range > 0) ? (t - stops[i].position) / range : 0;
-            // Stops already carry linear-light RGB, prepared once when the
-            // brush is created. Only the final conversion back to sRGB remains
-            // in the pixel loop.
-            r = LinearToSrgb(Lerp(stops[i].r, stops[i + 1].r, local));
-            g = LinearToSrgb(Lerp(stops[i].g, stops[i + 1].g, local));
-            b = LinearToSrgb(Lerp(stops[i].b, stops[i + 1].b, local));
-            a = Lerp(stops[i].a, stops[i + 1].a, local);
-            return;
-        }
-    }
-    r = LinearToSrgb(stops.back().r);
-    g = LinearToSrgb(stops.back().g);
-    b = LinearToSrgb(stops.back().b);
-    a = stops.back().a;
+    auto upper = std::upper_bound(stops.begin(), stops.end(), t,
+        [](float value, const JaliumGradientStop& stop) { return value < stop.position; });
+    const auto& left = upper == stops.begin() ? stops.front() : *(upper - 1);
+    const auto& right = upper == stops.end() ? stops.back() : *upper;
+    const float span = right.position - left.position;
+    const float local = span > 0 ? std::clamp((t - left.position) / span, 0.0f, 1.0f) : 0;
+    r = InterpolateGradientChannel(left.r, right.r, local, mode);
+    g = InterpolateGradientChannel(left.g, right.g, local, mode);
+    b = InterpolateGradientChannel(left.b, right.b, local, mode);
+    a = Lerp(left.a, right.a, local);
 }
 
-static uint8_t LinearToSrgbByte(float linear)
+static void InterpolateGradientStops8(const std::vector<JaliumGradientStop>& stops, float t,
+    uint8_t& r, uint8_t& g, uint8_t& b, float& a, uint32_t mode)
 {
-    static const std::array<uint8_t, 65536> table = [] {
-        std::array<uint8_t, 65536> result{};
-        for (size_t index = 0; index < result.size(); ++index) {
-            const float value = static_cast<float>(index) / 65535.0f;
-            result[index] = FloatToU8(LinearToSrgb(value));
-        }
-        return result;
-    }();
-    const size_t index = static_cast<size_t>(std::clamp(
-        linear * 65535.0f + 0.5f, 0.0f, 65535.0f));
-    return table[index];
-}
-
-static void InterpolateGradientStops8(
-    const std::vector<JaliumGradientStop>& stops, float t,
-    uint8_t& r, uint8_t& g, uint8_t& b, float& a)
-{
-    if (stops.empty()) { r = g = b = 0; a = 0.0f; return; }
-    t = std::clamp(t, 0.0f, 1.0f);
-
-    const JaliumGradientStop* left = &stops.front();
-    const JaliumGradientStop* right = left;
-    float local = 0.0f;
-    if (t <= stops.front().position) {
-        right = left;
-    } else if (t >= stops.back().position) {
-        left = right = &stops.back();
-    } else {
-        for (size_t index = 0; index + 1 < stops.size(); ++index) {
-            if (t < stops[index].position || t > stops[index + 1].position) continue;
-            left = &stops[index];
-            right = &stops[index + 1];
-            const float range = right->position - left->position;
-            local = range > 0.0f ? (t - left->position) / range : 0.0f;
-            break;
-        }
-    }
-
-    r = LinearToSrgbByte(Lerp(left->r, right->r, local));
-    g = LinearToSrgbByte(Lerp(left->g, right->g, local));
-    b = LinearToSrgbByte(Lerp(left->b, right->b, local));
-    a = Lerp(left->a, right->a, local);
+    float fr, fg, fb;
+    InterpolateGradientStops(stops, t, fr, fg, fb, a, mode);
+    r = FloatToU8(fr); g = FloatToU8(fg); b = FloatToU8(fb);
 }
 
 static constexpr size_t kGradientLutIntervals = 4096;
@@ -1979,7 +1921,7 @@ static constexpr size_t kGradientLutIntervals = 4096;
 static void BuildGradientLut(
     const std::vector<JaliumGradientStop>& stops,
     std::vector<uint32_t>& colors,
-    std::vector<float>& alphas)
+    std::vector<float>& alphas, uint32_t mode)
 {
     colors.resize(kGradientLutIntervals + 1u);
     alphas.resize(kGradientLutIntervals + 1u);
@@ -1989,7 +1931,7 @@ static void BuildGradientLut(
         InterpolateGradientStops8(
             stops,
             static_cast<float>(index) / static_cast<float>(kGradientLutIntervals),
-            r, g, b, a);
+            r, g, b, a, mode);
         colors[index] = static_cast<uint32_t>(r) |
             (static_cast<uint32_t>(g) << 8) |
             (static_cast<uint32_t>(b) << 16);
@@ -2039,12 +1981,8 @@ SoftwareLinearGradientBrush::SoftwareLinearGradientBrush(
     deltaY = endY - startY;
     const float lengthSquared = deltaX * deltaX + deltaY * deltaY;
     inverseLengthSquared = lengthSquared > 0.0f ? 1.0f / lengthSquared : 0.0f;
-    for (auto& stop : stops) {
-        stop.r = SrgbToLinear(stop.r);
-        stop.g = SrgbToLinear(stop.g);
-        stop.b = SrgbToLinear(stop.b);
-    }
-    BuildGradientLut(stops, colorLut, alphaLut);
+    std::stable_sort(stops.begin(), stops.end(), [](const auto& a, const auto& b) { return a.position < b.position; });
+    BuildGradientLut(stops, colorLut, alphaLut, colorInterpolationMode);
 }
 
 SoftwareRadialGradientBrush::SoftwareRadialGradientBrush(
@@ -2054,12 +1992,52 @@ SoftwareRadialGradientBrush::SoftwareRadialGradientBrush(
       originX(ox), originY(oy), spreadMethod(spread),
       stops(sourceStops, sourceStops + count)
 {
-    for (auto& stop : stops) {
-        stop.r = SrgbToLinear(stop.r);
-        stop.g = SrgbToLinear(stop.g);
-        stop.b = SrgbToLinear(stop.b);
-    }
-    BuildGradientLut(stops, colorLut, alphaLut);
+    std::stable_sort(stops.begin(), stops.end(), [](const auto& a, const auto& b) { return a.position < b.position; });
+    BuildGradientLut(stops, colorLut, alphaLut, colorInterpolationMode);
+    AverageGradientStops(stops.data(), static_cast<uint32_t>(stops.size()), colorInterpolationMode,
+        averageR, averageG, averageB, averageA);
+}
+
+JaliumResult SoftwareLinearGradientBrush::SetColorInterpolationMode(uint32_t mode)
+{
+    if (mode > 1) return JALIUM_ERROR_INVALID_ARGUMENT;
+    if (mode == colorInterpolationMode) return JALIUM_OK;
+    std::vector<uint32_t> colors; std::vector<float> alphas;
+    BuildGradientLut(stops, colors, alphas, mode);
+    std::lock_guard<std::mutex> lock(rasterCacheMutex_);
+    ReleaseSoftwareResourceCache(rasterCacheBytes_);
+    rasterCache_.clear(); rasterCacheBytes_ = 0;
+    colorInterpolationMode = mode; colorLut.swap(colors); alphaLut.swap(alphas);
+    return JALIUM_OK;
+}
+
+JaliumResult SoftwareRadialGradientBrush::SetColorInterpolationMode(uint32_t mode)
+{
+    if (mode > 1) return JALIUM_ERROR_INVALID_ARGUMENT;
+    if (mode == colorInterpolationMode) return JALIUM_OK;
+    std::vector<uint32_t> colors; std::vector<float> alphas;
+    BuildGradientLut(stops, colors, alphas, mode);
+    std::lock_guard<std::mutex> lock(rasterCacheMutex_);
+    ReleaseSoftwareResourceCache(rasterCacheBytes_);
+    rasterCache_.clear(); rasterCacheBytes_ = 0;
+    colorInterpolationMode = mode; colorLut.swap(colors); alphaLut.swap(alphas);
+    AverageGradientStops(stops.data(), static_cast<uint32_t>(stops.size()), mode,
+        averageR, averageG, averageB, averageA);
+    return JALIUM_OK;
+}
+
+JaliumResult SoftwareRadialGradientBrush::SetRadialGeometry(float radius, uint32_t flags)
+{
+    // Validate before invalidating cached pixels; invalid input preserves state.
+    RadialGradientGeometryState candidate;
+    auto result = candidate.SetRadialGeometry(radius, flags);
+    if (result != JALIUM_OK) return result;
+    if (radius == focalRadius && flags == radialFlags) return JALIUM_OK;
+    std::lock_guard<std::mutex> lock(rasterCacheMutex_);
+    ReleaseSoftwareResourceCache(rasterCacheBytes_);
+    rasterCache_.clear(); rasterCacheBytes_ = 0;
+    focalRadius = radius; radialFlags = flags;
+    return JALIUM_OK;
 }
 
 SoftwareLinearGradientBrush::~SoftwareLinearGradientBrush()
@@ -2101,6 +2079,17 @@ void SoftwareFramebuffer::BlendPixelUnchecked(
         return;
     }
     if (a == 0) return;
+
+    // Source-over on a transparent destination is the source itself. Avoid a
+    // straight/premultiplied round trip which can lose a channel value when a
+    // retained antialiased pixel is composited more than once.
+    if (pixels[idx + 3] == 0) {
+        pixels[idx + 0] = b;
+        pixels[idx + 1] = g;
+        pixels[idx + 2] = r;
+        pixels[idx + 3] = a;
+        return;
+    }
 
     if (pixels[idx + 3] == 255) {
         const uint32_t inverseAlpha = 255u - a;
@@ -2583,16 +2572,19 @@ std::shared_ptr<const SoftwareScaledBitmap> SoftwareBitmap::GetOrCreateScaled(
             const size_t i01 = (static_cast<size_t>(y1) * sourceWidth + x0) * 4u;
             const size_t i11 = (static_cast<size_t>(y1) * sourceWidth + x1) * 4u;
             const size_t destination = (static_cast<size_t>(y) * width + x) * 4u;
+            const float a00 = pixels_[i00 + 3] * w00, a10 = pixels_[i10 + 3] * w10;
+            const float a01 = pixels_[i01 + 3] * w01, a11 = pixels_[i11 + 3] * w11;
+            const float sourceAlpha = a00 + a10 + a01 + a11;
+            const float inverseAlpha = sourceAlpha > 0 ? 1.0f / sourceAlpha : 0;
             for (int channel = 0; channel < 3; ++channel) {
+                // Interpolate premultiplied colors, then store straight BGRA
+                // for BlendPixel. RGB under zero alpha must not tint an edge.
                 const float value =
-                    pixels_[i00 + channel] * w00 + pixels_[i10 + channel] * w10 +
-                    pixels_[i01 + channel] * w01 + pixels_[i11 + channel] * w11;
+                    (pixels_[i00 + channel] * a00 + pixels_[i10 + channel] * a10 +
+                    pixels_[i01 + channel] * a01 + pixels_[i11 + channel] * a11) * inverseAlpha;
                 scaled->pixels[destination + channel] = static_cast<uint8_t>(
                     std::clamp(value + 0.5f, 0.0f, 255.0f));
             }
-            const float sourceAlpha =
-                pixels_[i00 + 3] * w00 + pixels_[i10 + 3] * w10 +
-                pixels_[i01 + 3] * w01 + pixels_[i11 + 3] * w11;
             const uint8_t alpha = static_cast<uint8_t>(std::clamp(
                 sourceAlpha * opacity * coverageX * coverageY + 0.5f,
                 0.0f, 255.0f));
@@ -2675,7 +2667,7 @@ void SoftwareLinearGradientBrush::SampleColor(float px, float py,
         ? ((px - startX) * deltaX + (py - startY) * deltaY) * inverseLengthSquared
         : 0.0f;
     t = ApplyGradientSpread(t, spreadMethod);
-    InterpolateGradientStops(stops, t, outR, outG, outB, outA);
+    InterpolateGradientStops(stops, t, outR, outG, outB, outA, colorInterpolationMode);
 }
 
 void SoftwareLinearGradientBrush::SampleColor8(
@@ -2685,12 +2677,25 @@ void SoftwareLinearGradientBrush::SampleColor8(
         ? ((px - startX) * deltaX + (py - startY) * deltaY) * inverseLengthSquared
         : 0.0f;
     t = ApplyGradientSpread(t, spreadMethod);
-    SampleGradientLut(colorLut, alphaLut, t, outR, outG, outB, outA);
+    // Complex ramps can have transitions narrower than one LUT interval.
+    // Evaluate those stops directly so hard transitions remain sharp.
+    if (stops.size() != 2 || stops.front().position != 0 || stops.back().position != 1)
+        InterpolateGradientStops8(stops, t, outR, outG, outB, outA, colorInterpolationMode);
+    else SampleGradientLut(colorLut, alphaLut, t, outR, outG, outB, outA);
 }
 
 void SoftwareRadialGradientBrush::SampleColor(float px, float py,
     float& outR, float& outG, float& outB, float& outA) const
 {
+    if (radialFlags & 1) {
+        double t=SvgRadialParameter(px,py,centerX,centerY,originX,originY,radiusX,radiusY,focalRadius,radialFlags);
+        if (std::isnan(t)) { outR=outG=outB=outA=0; return; }
+        if (std::isinf(t) && spreadMethod!=0) {
+            outR=averageR;outG=averageG;outB=averageB;outA=averageA;return;
+        }
+        InterpolateGradientStops(stops, ApplyGradientSpread(float(t), spreadMethod),
+            outR,outG,outB,outA,colorInterpolationMode);return;
+    }
     // WPF focal-point semantics (GradientOrigin): t=0 at the origin, t=1 where
     // the ray origin→P crosses the center/radius ellipse. Solved in the unit
     // circle space of the ellipse; matches the managed SoftwareVectorRasterizer.
@@ -2715,12 +2720,17 @@ void SoftwareRadialGradientBrush::SampleColor(float px, float py,
         t = s > 1e-12f ? 1.0f / s : 0.0f;
     }
     t = ApplyGradientSpread(t, spreadMethod);
-    InterpolateGradientStops(stops, t, outR, outG, outB, outA);
+    InterpolateGradientStops(stops, t, outR, outG, outB, outA, colorInterpolationMode);
 }
 
 void SoftwareRadialGradientBrush::SampleColor8(
     float px, float py, uint8_t& outR, uint8_t& outG, uint8_t& outB, float& outA) const
 {
+    if (radialFlags & 1) {
+        float red,green,blue;
+        SampleColor(px,py,red,green,blue,outA);
+        outR=FloatToU8(red);outG=FloatToU8(green);outB=FloatToU8(blue);return;
+    }
     float rx = radiusX > 0 ? radiusX : 1;
     float ry = radiusY > 0 ? radiusY : 1;
     float ux = (px - centerX) / rx;
@@ -2743,13 +2753,18 @@ void SoftwareRadialGradientBrush::SampleColor8(
         t = intersection > 1e-12f ? 1.0f / intersection : 0.0f;
     }
     t = ApplyGradientSpread(t, spreadMethod);
-    SampleGradientLut(colorLut, alphaLut, t, outR, outG, outB, outA);
+    // Complex ramps can have transitions narrower than one LUT interval.
+    // Evaluate those stops directly so hard transitions remain sharp.
+    if (stops.size() != 2 || stops.front().position != 0 || stops.back().position != 1)
+        InterpolateGradientStops8(stops, t, outR, outG, outB, outA, colorInterpolationMode);
+    else SampleGradientLut(colorLut, alphaLut, t, outR, outG, outB, outA);
 }
 
 static bool GradientRasterMatches(
     const SoftwareGradientRaster& raster,
-    float left, float top, float right, float bottom, float opacity)
+    float left, float top, float right, float bottom, float opacity, const float* deviceToBrush)
 {
+    for (int i = 0; i < 6; ++i) if (raster.deviceToBrush[i] != deviceToBrush[i]) return false;
     constexpr float kTolerance = 1e-6f;
     return std::abs(raster.left - left) < kTolerance &&
         std::abs(raster.top - top) < kTolerance &&
@@ -2763,7 +2778,7 @@ static constexpr size_t kMaxGradientRasterCacheBytes = 8u * 1024u * 1024u;
 template <typename GradientBrush>
 static std::shared_ptr<SoftwareGradientRaster> BuildGradientRaster(
     const GradientBrush& brush,
-    float left, float top, float right, float bottom, float opacity)
+    float left, float top, float right, float bottom, float opacity, const float* deviceToBrush)
 {
     const int32_t x = static_cast<int32_t>(std::floor(left));
     const int32_t y = static_cast<int32_t>(std::floor(top));
@@ -2789,6 +2804,7 @@ static std::shared_ptr<SoftwareGradientRaster> BuildGradientRaster(
     raster->bottom = bottom;
     raster->opacity = opacity;
     raster->opaque = true;
+    std::copy_n(deviceToBrush, 6, raster->deviceToBrush);
     raster->pixels.resize(static_cast<size_t>(byteCount));
 
     for (int32_t row = 0; row < height; ++row) {
@@ -2798,8 +2814,10 @@ static std::shared_ptr<SoftwareGradientRaster> BuildGradientRaster(
         for (int32_t column = 0; column < width; ++column, destination += 4) {
             uint8_t red, green, blue;
             float alpha;
+            const float sampleX = static_cast<float>(x + column) + 0.5f;
             brush.SampleColor8(
-                static_cast<float>(x + column) + 0.5f, sampleY,
+                sampleX * deviceToBrush[0] + sampleY * deviceToBrush[2] + deviceToBrush[4],
+                sampleX * deviceToBrush[1] + sampleY * deviceToBrush[3] + deviceToBrush[5],
                 red, green, blue, alpha);
             const uint8_t alphaByte = FloatToU8(alpha * opacity);
             destination[0] = blue;
@@ -2814,13 +2832,13 @@ static std::shared_ptr<SoftwareGradientRaster> BuildGradientRaster(
 
 std::shared_ptr<const SoftwareGradientRaster>
 SoftwareLinearGradientBrush::GetOrCreateRaster(
-    float left, float top, float right, float bottom, float opacity) const
+    float left, float top, float right, float bottom, float opacity, const float* deviceToBrush) const
 {
     {
         std::lock_guard<std::mutex> lock(rasterCacheMutex_);
         for (size_t index = 0; index < rasterCache_.size(); ++index) {
             if (!GradientRasterMatches(
-                    *rasterCache_[index], left, top, right, bottom, opacity)) continue;
+                    *rasterCache_[index], left, top, right, bottom, opacity, deviceToBrush)) continue;
             auto hit = rasterCache_[index];
             if (index + 1u != rasterCache_.size()) {
                 rasterCache_.erase(rasterCache_.begin() + index);
@@ -2831,13 +2849,13 @@ SoftwareLinearGradientBrush::GetOrCreateRaster(
     }
 
     auto raster = BuildGradientRaster(
-        *this, left, top, right, bottom, opacity);
+        *this, left, top, right, bottom, opacity, deviceToBrush);
     if (!raster) return {};
 
     std::lock_guard<std::mutex> lock(rasterCacheMutex_);
     for (size_t index = 0; index < rasterCache_.size(); ++index) {
         if (GradientRasterMatches(
-                *rasterCache_[index], left, top, right, bottom, opacity)) {
+                *rasterCache_[index], left, top, right, bottom, opacity, deviceToBrush)) {
             return rasterCache_[index];
         }
     }
@@ -2856,13 +2874,13 @@ SoftwareLinearGradientBrush::GetOrCreateRaster(
 
 std::shared_ptr<const SoftwareGradientRaster>
 SoftwareRadialGradientBrush::GetOrCreateRaster(
-    float left, float top, float right, float bottom, float opacity) const
+    float left, float top, float right, float bottom, float opacity, const float* deviceToBrush) const
 {
     {
         std::lock_guard<std::mutex> lock(rasterCacheMutex_);
         for (size_t index = 0; index < rasterCache_.size(); ++index) {
             if (!GradientRasterMatches(
-                    *rasterCache_[index], left, top, right, bottom, opacity)) continue;
+                    *rasterCache_[index], left, top, right, bottom, opacity, deviceToBrush)) continue;
             auto hit = rasterCache_[index];
             if (index + 1u != rasterCache_.size()) {
                 rasterCache_.erase(rasterCache_.begin() + index);
@@ -2873,13 +2891,13 @@ SoftwareRadialGradientBrush::GetOrCreateRaster(
     }
 
     auto raster = BuildGradientRaster(
-        *this, left, top, right, bottom, opacity);
+        *this, left, top, right, bottom, opacity, deviceToBrush);
     if (!raster) return {};
 
     std::lock_guard<std::mutex> lock(rasterCacheMutex_);
     for (size_t index = 0; index < rasterCache_.size(); ++index) {
         if (GradientRasterMatches(
-                *rasterCache_[index], left, top, right, bottom, opacity)) {
+                *rasterCache_[index], left, top, right, bottom, opacity, deviceToBrush)) {
             return rasterCache_[index];
         }
     }
@@ -3652,7 +3670,7 @@ void SoftwareRenderTarget::FillMultiContour(const std::vector<std::vector<float>
                 for (int32_t x = xStart; x <= xEnd; x++) {
                     if (!clipStack_.empty() && IsClipped((float)x, (float)scanY)) continue;
                     uint8_t r, g, b, a;
-                    GetBrushColor(brush, (float)x, (float)scanY, r, g, b, a);
+                    GetDeviceBrushColor(brush, (float)x + .5f, (float)scanY + .5f, r, g, b, a);
                     fb_.BlendPixel(x, scanY, r, g, b, a);
                 }
             }
@@ -4499,6 +4517,7 @@ JaliumResult SoftwareRenderTarget::BeginDraw()
         }
         effectCaptureStack_.clear();
     }
+    effectCaptureAttempts_.clear();
     effectCaptureReady_ = false;
 
     // Push a root DPI scale transform so all draw calls in DIPs are
@@ -5098,6 +5117,9 @@ void SoftwareRenderTarget::GetBrushColor(Brush* brush, float px, float py,
 {
     float opacity = currentOpacity_;
 
+    if (const auto* coordinates=dynamic_cast<const GradientPaintTransformState*>(brush)) {
+        float x,y;TransformGradientPoint(coordinates->userToGradient,px,py,x,y);px=x;py=y;
+    }
     if (auto* solid = dynamic_cast<SoftwareSolidBrush*>(brush)) {
         r = FloatToU8(solid->r);
         g = FloatToU8(solid->g);
@@ -5152,7 +5174,22 @@ SoftwareRenderTarget::PreparedPaint SoftwareRenderTarget::PreparePaint(Brush* br
         default:
             break;
     }
+    if (paint.IsValid() && !paint.IsSolid() && !currentTransform_.TryInverse(paint.deviceToBrush))
+        paint.kind = PreparedPaintKind::Invalid;
+    if (paint.IsValid() && !paint.IsSolid()) {
+        if (const auto* coordinates=dynamic_cast<const GradientPaintTransformState*>(brush)) {
+            const auto& inverse=coordinates->userToGradient;
+            const SoftwareTransform userToGradient{{inverse.m11,inverse.m12,inverse.m21,inverse.m22,inverse.m31,inverse.m32}};
+            paint.deviceToBrush=userToGradient.Multiply(paint.deviceToBrush);
+        }
+    }
     return paint;
+}
+
+void SoftwareRenderTarget::GetDeviceBrushColor(
+    Brush* brush, float px, float py, uint8_t& r, uint8_t& g, uint8_t& b, uint8_t& a) const
+{
+    SamplePaint(PreparePaint(brush), px, py, r, g, b, a);
 }
 
 void SoftwareRenderTarget::SamplePaint(
@@ -5165,10 +5202,15 @@ void SoftwareRenderTarget::SamplePaint(
     }
 
     float fa = 0.0f;
+    // Raster coverage is in framebuffer pixels; gradient geometry lives in
+    // the same pre-transform user space as the path. Snapshot this inverse
+    // with each prepared paint so DPI, nesting and PopTransform stay balanced.
+    float bx, by;
+    paint.deviceToBrush.Apply(px, py, bx, by);
     if (paint.kind == PreparedPaintKind::LinearGradient && paint.linear) {
-        paint.linear->SampleColor8(px, py, r, g, b, fa);
+        paint.linear->SampleColor8(bx, by, r, g, b, fa);
     } else if (paint.kind == PreparedPaintKind::RadialGradient && paint.radial) {
-        paint.radial->SampleColor8(px, py, r, g, b, fa);
+        paint.radial->SampleColor8(bx, by, r, g, b, fa);
     } else {
         r = g = b = a = 0;
         return;
@@ -5456,10 +5498,10 @@ void SoftwareRenderTarget::FillScanlineRect(float x, float y, float w, float h, 
     std::shared_ptr<const SoftwareGradientRaster> gradientRaster;
     if (paint.kind == PreparedPaintKind::LinearGradient && paint.linear) {
         gradientRaster = paint.linear->GetOrCreateRaster(
-            left, top, right, bottom, currentOpacity_);
+            left, top, right, bottom, currentOpacity_, paint.deviceToBrush.m);
     } else if (paint.kind == PreparedPaintKind::RadialGradient && paint.radial) {
         gradientRaster = paint.radial->GetOrCreateRaster(
-            left, top, right, bottom, currentOpacity_);
+            left, top, right, bottom, currentOpacity_, paint.deviceToBrush.m);
     }
 
     if (gradientRaster) {
@@ -6571,7 +6613,21 @@ void SoftwareRenderTarget::DrawPerCornerRoundedRectangle(float x, float y, float
 
 void SoftwareRenderTarget::FillEllipse(float cx, float cy, float rx, float ry, Brush* brush)
 {
-    if (!brush) return;
+    if (!brush || !(rx > 0) || !(ry > 0)) return;
+    if (NeedsAffineRectanglePath(currentTransform_)) {
+        SoftwareTransform inverse;
+        if (!currentTransform_.TryInverse(inverse)) return;
+        float tx, ty; currentTransform_.Apply(cx, cy, tx, ty);
+        const float extentX = std::hypot(rx * currentTransform_.m[0], ry * currentTransform_.m[2]);
+        const float extentY = std::hypot(rx * currentTransform_.m[1], ry * currentTransform_.m[3]);
+        auto inside = [inverse, rx, ry](float x, float y) {
+            const float lx = (x * inverse.m[0] + y * inverse.m[2]) / rx;
+            const float ly = (x * inverse.m[1] + y * inverse.m[3]) / ry;
+            return lx * lx + ly * ly <= 1;
+        };
+        RasterizeCoverageAA(tx, ty, -extentX, -extentY, extentX, extentY, brush, inside);
+        return;
+    }
     float tx, ty, tx2, ty2;
     currentTransform_.Apply(cx, cy, tx, ty);
     currentTransform_.Apply(cx + rx, cy + ry, tx2, ty2);
@@ -6712,199 +6768,23 @@ void SoftwareRenderTarget::FillEllipse(float cx, float cy, float rx, float ry, B
 
 void SoftwareRenderTarget::DrawEllipse(float cx, float cy, float rx, float ry, Brush* brush, float strokeWidth)
 {
-    if (!brush) return;
-
-    float tx, ty, tx2, ty2;
-    currentTransform_.Apply(cx, cy, tx, ty);
-    currentTransform_.Apply(cx + rx, cy + ry, tx2, ty2);
-    float trx = tx2 - tx, try_ = ty2 - ty;
-    if (trx <= 0.0f || try_ <= 0.0f) return;
-    float s = std::min(trx / std::max(rx, 0.001f), try_ / std::max(ry, 0.001f));
-    float tsw = strokeWidth * s;
-    float innerRx = std::max(0.0f, trx - tsw);
-    float innerRy = std::max(0.0f, try_ - tsw);
-
-    PreparedPaint paint = PreparePaint(brush);
-    if (!paint.IsValid()) return;
-
-    auto insideStroke = [trx, try_, innerRx, innerRy](float lx, float ly) -> bool {
-        float exo = lx / trx, eyo = ly / try_;
-        if (exo * exo + eyo * eyo > 1.0f) return false;
-        if (innerRx > 0.0f && innerRy > 0.0f) {
-            float exi = lx / innerRx, eyi = ly / innerRy;
-            if (exi * exi + eyi * eyi <= 1.0f) return false;
-        }
-        return true;
-    };
-
-    if (!roundedClipStack_.empty()) {
-        RasterizeCoverageAA(tx, ty, -trx, -try_, trx, try_, brush, insideStroke);
-        return;
-    }
-
-    int32_t px0 = static_cast<int32_t>(std::floor(tx - trx));
-    int32_t py0 = static_cast<int32_t>(std::floor(ty - try_));
-    int32_t px1 = static_cast<int32_t>(std::ceil(tx + trx));
-    int32_t py1 = static_cast<int32_t>(std::ceil(ty + try_));
-    if (!TightenToRectClip(px0, py0, px1, py1)) return;
-
-    if (paint.IsSolid()) {
-        const int32_t maskX = static_cast<int32_t>(std::floor(tx - trx));
-        const int32_t maskY = static_cast<int32_t>(std::floor(ty - try_));
-        const int32_t maskWidth =
-            static_cast<int32_t>(std::ceil(tx + trx)) - maskX;
-        const int32_t maskHeight =
-            static_cast<int32_t>(std::ceil(ty + try_)) - maskY;
-        try {
-            if (!ellipseStrokeMaskCache_)
-                ellipseStrokeMaskCache_ = std::make_unique<SoftwareEllipseMaskCache>();
-            const float localCenterX = tx - static_cast<float>(maskX);
-            const float localCenterY = ty - static_cast<float>(maskY);
-            if (!ellipseStrokeMaskCache_->Matches(
-                    maskWidth, maskHeight, localCenterX, localCenterY,
-                    trx, try_, innerRx, innerRy, true)) {
-                ellipseStrokeMaskCache_->Build(
-                    maskWidth, maskHeight, localCenterX, localCenterY,
-                    trx, try_, innerRx, innerRy, true);
-            }
-            for (const auto& span : ellipseStrokeMaskCache_->Spans()) {
-                const int32_t destinationY = maskY + span.y;
-                if (destinationY < py0 || destinationY >= py1) continue;
-                const int32_t destinationX0 = std::max(px0, maskX + span.x);
-                const int32_t destinationX1 = std::min(
-                    px1, maskX + span.x + span.width);
-                if (destinationX1 <= destinationX0) continue;
-                const uint8_t alpha = span.hits == 16
-                    ? paint.a
-                    : static_cast<uint8_t>(
-                        static_cast<float>(paint.a) *
-                        (static_cast<float>(span.hits) / 16.0f) + 0.5f);
-                fb_.BlendSolidSpan(
-                    destinationY, destinationX0, destinationX1,
-                    paint.r, paint.g, paint.b, alpha);
-            }
-            return;
-        } catch (const std::bad_alloc&) {
-            ellipseStrokeMaskCache_.reset();
-        }
-    }
-
-    constexpr int kSub = 4;
-    constexpr float kStep = 1.0f / static_cast<float>(kSub);
-
-    for (int32_t py = py0; py < py1; ++py) {
-        float outerLeft[kSub] = {};
-        float outerRight[kSub] = {};
-        float innerLeft[kSub] = {};
-        float innerRight[kSub] = {};
-        bool outerValid[kSub] = {};
-        bool innerValid[kSub] = {};
-        const bool hasInner = innerRx > 0.0f && innerRy > 0.0f;
-        bool everySubRowHasInner = hasInner;
-        float maxInnerLeft = -innerRx;
-        float minInnerRight = innerRx;
-        for (int sy = 0; sy < kSub; ++sy) {
-            const float localY =
-                (static_cast<float>(py) + (sy + 0.5f) * kStep) - ty;
-            const float outerNy = localY / try_;
-            if (outerNy >= -1.0f && outerNy <= 1.0f) {
-                const float halfWidth = trx *
-                    std::sqrt(std::max(0.0f, 1.0f - outerNy * outerNy));
-                outerLeft[sy] = -halfWidth;
-                outerRight[sy] = halfWidth;
-                outerValid[sy] = true;
-            }
-
-            if (!hasInner) continue;
-            const float innerNy = localY / innerRy;
-            if (innerNy < -1.0f || innerNy > 1.0f) {
-                everySubRowHasInner = false;
-                continue;
-            }
-            const float innerHalfWidth = innerRx *
-                std::sqrt(std::max(0.0f, 1.0f - innerNy * innerNy));
-            innerLeft[sy] = -innerHalfWidth;
-            innerRight[sy] = innerHalfWidth;
-            innerValid[sy] = true;
-            maxInnerLeft = sy == 0
-                ? innerLeft[sy] : std::max(maxInnerLeft, innerLeft[sy]);
-            minInnerRight = sy == 0
-                ? innerRight[sy] : std::min(minInnerRight, innerRight[sy]);
-        }
-
-        int32_t leftEnd = px1;
-        int32_t rightStart = px1;
-        if (everySubRowHasInner && minInnerRight > maxInnerLeft) {
-            leftEnd = std::clamp(
-                static_cast<int32_t>(std::ceil(tx + maxInnerLeft)) + 1,
-                px0, px1);
-            rightStart = std::clamp(
-                static_cast<int32_t>(std::floor(tx + minInnerRight)) - 1,
-                px0, px1);
-        }
-
-        auto compositeRange = [&](int32_t begin, int32_t end) {
-            int32_t solidRunStart = begin;
-            int solidRunHits = -1;
-            auto flushSolidRun = [&](int32_t runEnd) {
-                if (solidRunHits <= 0 || runEnd <= solidRunStart) return;
-                const uint8_t alpha = solidRunHits == kSub * kSub
-                    ? paint.a
-                    : static_cast<uint8_t>(
-                        static_cast<float>(paint.a) *
-                        (static_cast<float>(solidRunHits) / (kSub * kSub)) + 0.5f);
-                fb_.BlendSolidSpan(
-                    py, solidRunStart, runEnd, paint.r, paint.g, paint.b, alpha);
-            };
-
-            for (int32_t px = begin; px < end; ++px) {
-                int hits = 0;
-                for (int sy = 0; sy < kSub; ++sy) {
-                    if (!outerValid[sy]) continue;
-                    for (int sx = 0; sx < kSub; ++sx) {
-                        const float localX =
-                            (static_cast<float>(px) + (sx + 0.5f) * kStep) - tx;
-                        const bool insideOuter =
-                            localX >= outerLeft[sy] && localX <= outerRight[sy];
-                        const bool insideInner = innerValid[sy] &&
-                            localX >= innerLeft[sy] && localX <= innerRight[sy];
-                        if (insideOuter && !insideInner) ++hits;
-                    }
-                }
-                if (paint.IsSolid()) {
-                    if (hits != solidRunHits) {
-                        flushSolidRun(px);
-                        solidRunStart = px;
-                        solidRunHits = hits;
-                    }
-                    continue;
-                }
-                if (hits == 0) continue;
-                uint8_t r, g, b, a;
-                SamplePaint(paint, static_cast<float>(px) + 0.5f,
-                            static_cast<float>(py) + 0.5f, r, g, b, a);
-                if (hits < kSub * kSub) {
-                    a = static_cast<uint8_t>(
-                        static_cast<float>(a) *
-                        (static_cast<float>(hits) / (kSub * kSub)) + 0.5f);
-                }
-                if (a != 0) fb_.BlendPixelUnchecked(px, py, r, g, b, a);
-            }
-            if (paint.IsSolid()) flushSolidRun(end);
-        };
-
-        if (!everySubRowHasInner || rightStart <= leftEnd) {
-            compositeRange(px0, px1);
-        } else {
-            compositeRange(px0, leftEnd);
-            compositeRange(rightStart, px1);
-        }
-    }
+    if (!brush || !(rx > 0) || !(ry > 0) || !(strokeWidth > 0)) return;
+    const float commands[] = {
+        4,cx,cy+ry,rx,ry,0,0,1,
+        4,cx-rx,cy,rx,ry,0,0,1,
+        4,cx,cy-ry,rx,ry,0,0,1,
+        4,cx+rx,cy,rx,ry,0,0,1, 5};
+    StrokePath(cx+rx,cy,commands,33,brush,strokeWidth,true);
 }
 
 void SoftwareRenderTarget::DrawLine(float x1, float y1, float x2, float y2, Brush* brush, float strokeWidth)
 {
     if (!brush) return;
+    if (brush->GetType() != JALIUM_BRUSH_SOLID) {
+        const float commands[] = {0, x2, y2};
+        StrokePath(x1, y1, commands, 3, brush, strokeWidth, false);
+        return;
+    }
     uint8_t r, g, b, a;
     GetBrushColor(brush, (x1 + x2) * 0.5f, (y1 + y2) * 0.5f, r, g, b, a);
     DrawBresenhamLine(x1, y1, x2, y2, r, g, b, a, strokeWidth);
@@ -7243,7 +7123,7 @@ void SoftwareRenderTarget::FillPath(float startX, float startY, const float* com
                 for (int32_t y = y0; y < y1; ++y) {
                     for (int32_t x = x0; x < x1; ++x) {
                         uint8_t r, g, b, a;
-                        SamplePaint(paint, static_cast<float>(x), static_cast<float>(y),
+                        SamplePaint(paint, static_cast<float>(x) + .5f, static_cast<float>(y) + .5f,
                                     r, g, b, a);
                         const uint8_t aa = static_cast<uint8_t>(
                             std::lround(static_cast<float>(a) * rect.alpha));
@@ -7258,7 +7138,7 @@ void SoftwareRenderTarget::FillPath(float startX, float startY, const float* com
             for (int32_t x = x0; x < x1; ++x) {
                 if (IsClipped((float)x, (float)y)) continue;
                 uint8_t r, g, b, a;
-                SamplePaint(paint, (float)x, (float)y, r, g, b, a);
+                SamplePaint(paint, (float)x + .5f, (float)y + .5f, r, g, b, a);
                 uint8_t aa = (uint8_t)std::lround(a * rect.alpha);
                 fb_.BlendPixelUnchecked(x, y, r, g, b, aa);
             }
@@ -7342,7 +7222,7 @@ void SoftwareRenderTarget::FillPathAliased(float startX, float startY, const flo
                     for (int32_t x = xStart; x <= xEnd; x++) {
                         if (!clipStack_.empty() && IsClipped((float)x, (float)scanY)) continue;
                         uint8_t r, g, b, a;
-                        GetBrushColor(brush, (float)x, (float)scanY, r, g, b, a);
+                        GetDeviceBrushColor(brush, (float)x + .5f, (float)scanY + .5f, r, g, b, a);
                         fb_.BlendPixel(x, scanY, r, g, b, a);
                     }
                 }
@@ -7362,7 +7242,7 @@ void SoftwareRenderTarget::FillPathAliased(float startX, float startY, const flo
                 for (int32_t x = xStart; x <= xEnd; x++) {
                     if (!clipStack_.empty() && IsClipped((float)x, (float)scanY)) continue;
                     uint8_t r, g, b, a;
-                    GetBrushColor(brush, (float)x, (float)scanY, r, g, b, a);
+                    GetDeviceBrushColor(brush, (float)x + .5f, (float)scanY + .5f, r, g, b, a);
                     fb_.BlendPixel(x, scanY, r, g, b, a);
                 }
             }
@@ -7418,8 +7298,8 @@ void SoftwareRenderTarget::StrokePath(float startX, float startY, const float* c
                     for (int32_t y = y0; y < y1; ++y) {
                         for (int32_t x = x0; x < x1; ++x) {
                             uint8_t red, green, blue, alpha;
-                            SamplePaint(paint, static_cast<float>(x),
-                                static_cast<float>(y), red, green, blue, alpha);
+                            SamplePaint(paint, static_cast<float>(x) + .5f,
+                                static_cast<float>(y) + .5f, red, green, blue, alpha);
                             const uint8_t coveredAlpha = static_cast<uint8_t>(
                                 std::lround(static_cast<float>(alpha) * rect.alpha));
                             fb_.BlendPixelUnchecked(
@@ -7434,7 +7314,7 @@ void SoftwareRenderTarget::StrokePath(float startX, float startY, const float* c
                 for (int32_t x = x0; x < x1; ++x) {
                     if (IsClipped(static_cast<float>(x), static_cast<float>(y))) continue;
                     uint8_t red, green, blue, alpha;
-                    SamplePaint(paint, static_cast<float>(x), static_cast<float>(y),
+                    SamplePaint(paint, static_cast<float>(x) + .5f, static_cast<float>(y) + .5f,
                         red, green, blue, alpha);
                     const uint8_t coveredAlpha = static_cast<uint8_t>(
                         std::lround(static_cast<float>(alpha) * rect.alpha));
@@ -7492,7 +7372,8 @@ void SoftwareRenderTarget::StrokePath(float startX, float startY, const float* c
         jalium::ExpandStrokePath<ScratchVertex>(
             scratchVerts, scratchIndices, source, pointCount,
             strokeWidth, join, miterLimit, cap, isClosed,
-            0.0f, 0.0f, 0.0f, 1.0f, &strokeContours);
+            // Cap/join arc error stays below 0.01 device pixel, including DPI.
+            0.0f, 0.0f, 0.0f, 1.0f, &strokeContours, 0.08f / maxScale);
         for (size_t i = first; i < strokeContours.size(); ++i) {
             auto& points = strokeContours[i].points;
             for (size_t j = 0; j < points.size(); j += 2) {
@@ -7515,7 +7396,9 @@ void SoftwareRenderTarget::StrokePath(float startX, float startY, const float* c
         normalizedDash.reserve((dashCount & 1u) ? dashCount * 2u : dashCount);
         const float minDashInSource = 0.05f / maxScale;
         for (uint32_t i = 0; i < dashCount; ++i) {
-            const float value = std::isfinite(dashPattern[i])
+            // WalkDashPattern handles zero on-runs as cap-only dots. Expanding
+            // zero to 0.05px made butt-capped gaps leak visible coverage.
+            const float value = dashPattern[i] == 0 ? 0 : std::isfinite(dashPattern[i])
                 ? std::max(dashPattern[i], minDashInSource) : minDashInSource;
             normalizedDash.push_back(value);
         }
@@ -7686,7 +7569,9 @@ void SoftwareRenderTarget::DrawContentBorder(float x, float y, float w, float h,
 void* SoftwareRenderTarget::RealizeLayerBegin(
     void* existingLayer, float x, float y, float w, float h)
 {
-    if (w <= 0.0f || h <= 0.0f || !effectCaptureStack_.empty()) return nullptr;
+    if (!std::isfinite(x) || !std::isfinite(y) ||
+        !std::isfinite(w) || !std::isfinite(h) ||
+        w <= 0.0f || h <= 0.0f || !effectCaptureStack_.empty()) return nullptr;
 
     constexpr float kEpsilon = 0.0001f;
     if (std::abs(currentTransform_.m[1]) > kEpsilon ||
@@ -7699,6 +7584,16 @@ void* SoftwareRenderTarget::RealizeLayerBegin(
     float x0f, y0f, x1f, y1f;
     currentTransform_.Apply(x, y, x0f, y0f);
     currentTransform_.Apply(x + w, y + h, x1f, y1f);
+    // Validate before converting to integer pixel coordinates. The existing
+    // fallback handles off-surface and nonrepresentable captures by drawing
+    // the content normally, without allocating a retained layer.
+    if (!std::isfinite(x0f) || !std::isfinite(y0f) ||
+        !std::isfinite(x1f) || !std::isfinite(y1f) ||
+        std::min(x0f, x1f) < 0.0f || std::min(y0f, y1f) < 0.0f ||
+        std::max(x0f, x1f) > width_ || std::max(y0f, y1f) > height_ ||
+        x0f == x1f || y0f == y1f) {
+        return nullptr;
+    }
     const int32_t x0 = static_cast<int32_t>(std::floor(std::min(x0f, x1f)));
     const int32_t y0 = static_cast<int32_t>(std::floor(std::min(y0f, y1f)));
     const int32_t x1 = static_cast<int32_t>(std::ceil(std::max(x0f, x1f)));
@@ -7825,6 +7720,16 @@ void* SoftwareRenderTarget::RealizeLayerBegin(
     state.y = y0;
     state.width = x1 - x0;
     state.height = y1 - y0;
+    state.mirrorX = x1f < x0f;
+    state.mirrorY = y1f < y0f;
+    const double physicalWidth = static_cast<double>(x1f) - x0f;
+    const double physicalHeight = static_cast<double>(y1f) - y0f;
+    state.normalizedOffsetX = ((state.mirrorX ? x1 : x0) -
+        static_cast<double>(x0f)) / physicalWidth;
+    state.normalizedOffsetY = ((state.mirrorY ? y1 : y0) -
+        static_cast<double>(y0f)) / physicalHeight;
+    state.normalizedWidth = state.width / std::abs(physicalWidth);
+    state.normalizedHeight = state.height / std::abs(physicalHeight);
     state.savedFramebuffer = std::move(fb_);
     state.savedClips = std::move(clipStack_);
     state.savedRoundedClips = std::move(roundedClipStack_);
@@ -7856,10 +7761,20 @@ void SoftwareRenderTarget::RealizeLayerEnd(void* layer)
     const size_t rowBytes = static_cast<size_t>(state.width) * 4u;
     for (int32_t row = 0; row < state.height; ++row) {
         const uint8_t* source = captured.pixels.data() +
-            (static_cast<size_t>(state.y + row) * captured.width + state.x) * 4u;
+            (static_cast<size_t>(state.y + (state.mirrorY ? state.height - 1 - row : row)) *
+                captured.width + state.x) * 4u;
         uint8_t* destination = state.capturedPixels.data() +
             static_cast<size_t>(row) * rowBytes;
-        std::memcpy(destination, source, rowBytes);
+        // The capture already contains the current transform. Normalize its
+        // axes before DrawBitmap applies a mirrored destination transform.
+        if (state.mirrorX) {
+            for (int32_t column = 0; column < state.width; ++column) {
+                std::memcpy(destination + static_cast<size_t>(column) * 4u,
+                    source + static_cast<size_t>(state.width - 1 - column) * 4u, 4u);
+            }
+        } else {
+            std::memcpy(destination, source, rowBytes);
+        }
     }
 
     const size_t oldBytes = state.layer->ByteSize();
@@ -7872,6 +7787,10 @@ void SoftwareRenderTarget::RealizeLayerEnd(void* layer)
             24u * 1024u * 1024u,
             false);
         state.layer->bitmap = std::move(bitmap);
+        state.layer->normalizedOffsetX = state.normalizedOffsetX;
+        state.layer->normalizedOffsetY = state.normalizedOffsetY;
+        state.layer->normalizedWidth = state.normalizedWidth;
+        state.layer->normalizedHeight = state.normalizedHeight;
         retainedLayerBytes_ = retainedLayerBytes_ - oldBytes + state.layer->ByteSize();
     } catch (const std::bad_alloc&) {
         // Keep the previous snapshot valid; managed will retry realization on
@@ -7883,7 +7802,9 @@ void SoftwareRenderTarget::RealizeLayerEnd(void* layer)
 void SoftwareRenderTarget::CompositeLayer(
     void* layer, float x, float y, float w, float h, float opacity)
 {
-    if (!layer || w <= 0.0f || h <= 0.0f || opacity <= 0.0f) return;
+    if (!layer || !std::isfinite(x) || !std::isfinite(y) ||
+        !std::isfinite(w) || !std::isfinite(h) || !std::isfinite(opacity) ||
+        w <= 0.0f || h <= 0.0f || opacity <= 0.0f) return;
     SoftwareRetainedLayer* retained = nullptr;
     for (const auto& candidate : retainedLayers_) {
         if (candidate.get() == layer) {
@@ -7892,7 +7813,24 @@ void SoftwareRenderTarget::CompositeLayer(
         }
     }
     if (!retained || !retained->bitmap) return;
-    DrawBitmap(retained->bitmap.get(), x, y, w, h, opacity);
+    const float drawX = static_cast<float>(x + retained->normalizedOffsetX * w);
+    const float drawY = static_cast<float>(y + retained->normalizedOffsetY * h);
+    const float drawWidth = static_cast<float>(retained->normalizedWidth * w);
+    const float drawHeight = static_cast<float>(retained->normalizedHeight * h);
+    float x0, y0, x1, y1;
+    currentTransform_.Apply(drawX, drawY, x0, y0);
+    currentTransform_.Apply(drawX + drawWidth, drawY + drawHeight, x1, y1);
+    const bool samePixelGrid =
+        std::abs(currentTransform_.m[1]) < 1.0e-6f &&
+        std::abs(currentTransform_.m[2]) < 1.0e-6f &&
+        std::abs(x0 - std::round(x0)) < 1.0e-4f &&
+        std::abs(y0 - std::round(y0)) < 1.0e-4f &&
+        std::abs(std::abs(x1 - x0) - retained->bitmap->width_) < 1.0e-4f &&
+        std::abs(std::abs(y1 - y0) - retained->bitmap->height_) < 1.0e-4f;
+    // Exact texel addressing also preserves mirrored 1:1 captures; filtering
+    // their inverse UV arithmetic would introduce a second antialiasing pass.
+    DrawBitmap(retained->bitmap.get(), drawX, drawY, drawWidth, drawHeight,
+        opacity, samePixelGrid ? 3 : 0);
 
     // Transformed snapshots are useful for fractional animation phases, but
     // multiple retained layers must not each grow an independent cache toward
@@ -7930,23 +7868,12 @@ void SoftwareRenderTarget::DestroyRetainedLayer(void* layer)
     }
 }
 
-#ifdef __APPLE__
 JaliumResult SoftwareRenderTarget::SetTextGlyphRanges(const uint32_t* pairs, uint32_t count, int32_t mode)
 {
-    std::vector<std::pair<uint32_t, uint32_t>> sorted;
-    for (uint32_t i = 0; i < count; ++i)
-        if (pairs[2 * i + 1]) sorted.emplace_back(pairs[2 * i], pairs[2 * i] + pairs[2 * i + 1]);
-    std::sort(sorted.begin(), sorted.end());
-    std::vector<uint32_t> merged;
-    for (const auto& span : sorted) {
-        if (!merged.empty() && span.first <= merged[merged.size() - 2] + merged.back())
-            merged.back() = std::max(merged.back(), span.second - merged[merged.size() - 2]);
-        else { merged.push_back(span.first); merged.push_back(span.second - span.first); }
-    }
-    glyphRanges_.swap(merged); glyphVisibility_ = mode;
-    return JALIUM_OK;
+    return textGlyphRanges_.Set(pairs, count, mode) ? JALIUM_OK : JALIUM_ERROR_INVALID_ARGUMENT;
 }
 
+#ifdef __APPLE__
 void SoftwareRenderTarget::CompositeAppleGlyphs(const std::vector<uint8_t>& pixels,
     uint32_t width, uint32_t height, float x, float y)
 {
@@ -7960,23 +7887,174 @@ void SoftwareRenderTarget::CompositeAppleGlyphs(const std::vector<uint8_t>& pixe
         // straight BGRA and its common compositor performs the alpha blend.
         auto straight = [&](int c) { return static_cast<uint8_t>(std::min(255u, (pixels[i + c] * 255u + alpha / 2) / alpha)); };
         const size_t destination = (static_cast<size_t>(dy) * width_ + dx) * 4;
-        if (fb_.pixels[destination + 3] == 0)
+        if (glyphBrush_.active)
+            BlendTextPixel(dx, dy, straight(2), straight(1), straight(0), static_cast<uint8_t>(alpha));
+        else if (fb_.pixels[destination + 3] == 0)
             fb_.SetPixel(dx, dy, straight(2), straight(1), straight(0), static_cast<uint8_t>(alpha));
         else
             fb_.BlendPixel(dx, dy, straight(2), straight(1), straight(0), static_cast<uint8_t>(alpha));
     }
 }
 
+#endif
+
 void SoftwareRenderTarget::RenderParagraphLine(TextParagraph* paragraph, uint32_t line, float x, float y, float opacity)
 {
-    auto* apple = dynamic_cast<AppleTextParagraph*>(paragraph);
-    if (!apple || opacity <= 0 || !isDrawing_) return;
-    std::vector<uint8_t> pixels; uint32_t width = 0, height = 0; float left = 0, top = 0;
-    if (apple->RasterizeLine(line, x, y, opacity * currentOpacity_, currentTransform_.m, width_, height_,
-        pixels, width, height, left, top, glyphRanges_.data(), static_cast<uint32_t>(glyphRanges_.size() / 2), glyphVisibility_))
-        CompositeAppleGlyphs(pixels, width, height, left, top);
-}
+#ifdef __APPLE__
+    if (auto* apple = dynamic_cast<AppleTextParagraph*>(paragraph)) {
+        if (opacity <= 0 || !isDrawing_) return;
+        std::vector<uint8_t> pixels; uint32_t width = 0, height = 0; float left = 0, top = 0;
+        if (apple->RasterizeLine(line, x, y, opacity * currentOpacity_, currentTransform_.m, width_, height_,
+            pixels, width, height, left, top, textGlyphRanges_.Data(), textGlyphRanges_.Count(), textGlyphRanges_.Mode()))
+            CompositeAppleGlyphs(pixels, width, height, left, top);
+        return;
+    }
 #endif
+#ifdef JALIUM_HAS_TEXT_ENGINE
+    auto* shared = dynamic_cast<SharedTextParagraph*>(paragraph);
+    JaliumParagraphLineMetrics metrics{};
+    if (!shared || opacity <= 0 || !isDrawing_ || shared->GetLine(line, &metrics) != JALIUM_OK) return;
+    auto runs = shared->PaintRuns(line, metrics.line.textPosition, metrics.line.length, textGlyphRanges_);
+    struct Restore { TextGlyphRanges& target; TextGlyphRanges saved; ~Restore() { target = std::move(saved); } } restore{textGlyphRanges_, textGlyphRanges_};
+    for (const auto& run : runs) {
+        if (!textGlyphRanges_.Set(run.ranges.data(), static_cast<uint32_t>(run.ranges.size()/2), 1)) continue;
+        SoftwareSolidBrush brush(run.r, run.g, run.b, run.a * opacity);
+        RenderText(shared->Text(), shared->TextLength(), shared->DrawingFormat(), x + metrics.line.x, y - metrics.line.y,
+            shared->Width(), shared->Height(), &brush);
+    }
+#endif
+}
+JaliumResult SoftwareRenderTarget::RenderParagraphSlice(TextParagraph* paragraph, uint32_t line,
+    float x, float y, uint32_t start, uint32_t length, const float* rgba)
+{
+#ifdef __APPLE__
+    if (auto* apple = dynamic_cast<AppleTextParagraph*>(paragraph)) {
+        if (!isDrawing_) return JALIUM_ERROR_INVALID_ARGUMENT;
+        std::vector<uint8_t> pixels; uint32_t width = 0, height = 0; float left = 0, top = 0;
+        if (apple->RasterizeLine(line, x, y, currentOpacity_, currentTransform_.m, width_, height_,
+            pixels, width, height, left, top, textGlyphRanges_.Data(), textGlyphRanges_.Count(),
+            textGlyphRanges_.Mode(), rgba, start, length)) CompositeAppleGlyphs(pixels, width, height, left, top);
+        return JALIUM_OK;
+    }
+#endif
+#ifdef JALIUM_HAS_TEXT_ENGINE
+    auto* shared = dynamic_cast<SharedTextParagraph*>(paragraph);
+    if (!shared) return JALIUM_ERROR_NOT_SUPPORTED;
+    JaliumParagraphLineMetrics metrics{};
+    if (!isDrawing_ || shared->GetLine(line, &metrics) != JALIUM_OK) return JALIUM_ERROR_INVALID_ARGUMENT;
+    auto runs = shared->PaintRuns(line, start, length, textGlyphRanges_, rgba);
+    struct Restore { TextGlyphRanges& target; TextGlyphRanges saved; ~Restore() { target = std::move(saved); } } restore{textGlyphRanges_, textGlyphRanges_};
+    for (const auto& run : runs) {
+        if (!textGlyphRanges_.Set(run.ranges.data(), static_cast<uint32_t>(run.ranges.size()/2), 1)) return JALIUM_ERROR_INVALID_ARGUMENT;
+        SoftwareSolidBrush brush(run.r, run.g, run.b, run.a);
+        RenderText(shared->Text(), shared->TextLength(), shared->DrawingFormat(), x + metrics.line.x, y - metrics.line.y,
+            shared->Width(), shared->Height(), &brush);
+    }
+    return JALIUM_OK;
+#else
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
+JaliumResult SoftwareRenderTarget::RenderParagraphBrush(TextParagraph* paragraph, uint32_t line,
+    float x, float y, uint32_t start, uint32_t length, Brush* brush)
+{
+    if (!brush || !isDrawing_) return JALIUM_ERROR_INVALID_ARGUMENT;
+    if (auto* solid = dynamic_cast<SoftwareSolidBrush*>(brush)) {
+        float rgba[]{solid->r, solid->g, solid->b, solid->a};
+        return RenderParagraphSlice(paragraph, line, x, y, start, length, rgba);
+    }
+#ifdef __APPLE__
+    if (auto* apple = dynamic_cast<AppleTextParagraph*>(paragraph)) {
+        const auto paint = PreparePaint(brush);
+        if (!paint.IsValid()) return JALIUM_ERROR_NOT_SUPPORTED;
+        struct Restore { GlyphBrushState& target; GlyphBrushState saved; ~Restore() { target = saved; } } restore{glyphBrush_, glyphBrush_};
+        glyphBrush_ = {paint, currentOpacity_, true};
+        const float white[]{1, 1, 1, 1};
+        std::vector<uint8_t> pixels; uint32_t width = 0, height = 0; float left = 0, top = 0;
+        // Rasterize opaque coverage. Brush alpha and group opacity are sampled
+        // once by CompositeAppleGlyphs, including at overlapping color seams.
+        if (apple->RasterizeLine(line, x, y, 1, currentTransform_.m, width_, height_,
+            pixels, width, height, left, top, textGlyphRanges_.Data(), textGlyphRanges_.Count(),
+            textGlyphRanges_.Mode(), white, start, length)) CompositeAppleGlyphs(pixels, width, height, left, top);
+        return JALIUM_OK;
+    }
+#endif
+#ifdef JALIUM_HAS_TEXT_ENGINE
+    auto* shared = dynamic_cast<SharedTextParagraph*>(paragraph);
+    if (!shared) return JALIUM_ERROR_NOT_SUPPORTED;
+    JaliumParagraphLineMetrics metrics{};
+    if (shared->GetLine(line, &metrics) != JALIUM_OK) return JALIUM_ERROR_INVALID_ARGUMENT;
+    const auto paint = PreparePaint(brush);
+    if (!paint.IsValid()) return JALIUM_ERROR_NOT_SUPPORTED;
+    // Merge glyph coverage before applying translucent paint. In particular,
+    // the two rows of a fractional-baseline sample are coverage contributions,
+    // not two independently translucent brush draws.
+    const float pad = std::max(1.0f, metrics.line.height) * 2;
+    float left = float(width_), top = float(height_), right = 0, bottom = 0;
+    for (float px : {x + metrics.line.x - pad, x + metrics.line.x + metrics.line.width + pad})
+        for (float py : {y - pad, y + metrics.line.height + pad}) {
+            float dx, dy; currentTransform_.Apply(px, py, dx, dy);
+            if (!std::isfinite(dx) || !std::isfinite(dy)) return JALIUM_OK;
+            left = std::min(left, dx); right = std::max(right, dx);
+            top = std::min(top, dy); bottom = std::max(bottom, dy);
+        }
+    const int32_t l = static_cast<int32_t>(std::clamp(std::floor(left), 0.0f, float(width_)));
+    const int32_t t = static_cast<int32_t>(std::clamp(std::floor(top), 0.0f, float(height_)));
+    const int32_t r = static_cast<int32_t>(std::clamp(std::ceil(right), 0.0f, float(width_)));
+    const int32_t b = static_cast<int32_t>(std::clamp(std::ceil(bottom), 0.0f, float(height_)));
+    if (r <= l || b <= t) return JALIUM_OK;
+    if (uint64_t(r - l) * uint64_t(b - t) > 16'777'216u) return JALIUM_ERROR_NOT_SUPPORTED;
+    SoftwareRenderTarget mask(backend_, r - l, b - t);
+    if (mask.BeginDraw() != JALIUM_OK) return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
+    mask.Clear(0, 0, 0, 0);
+    mask.currentTransform_ = currentTransform_;
+    mask.currentTransform_.m[4] -= l; mask.currentTransform_.m[5] -= t;
+    mask.textGlyphRanges_ = textGlyphRanges_;
+    const float white[]{1, 1, 1, 1};
+    const auto result = mask.RenderParagraphSlice(paragraph, line, x, y, start, length, white);
+    mask.EndDraw();
+    if (result != JALIUM_OK) return result;
+    for (int32_t row = 0; row < b - t; ++row) for (int32_t col = 0; col < r - l; ++col) {
+        const auto coverage = mask.fb_.pixels[(size_t(row) * (r - l) + col) * 4u + 3];
+        const int32_t dx = l + col, dy = t + row;
+        if (!coverage || IsClipped(dx + .5f, dy + .5f)) continue;
+        uint8_t red, green, blue, alpha;
+        SamplePaint(paint, dx + .5f, dy + .5f, red, green, blue, alpha);
+        const auto effective = FloatToU8(coverage / 255.0f * (alpha / 255.0f) * currentOpacity_);
+        if (effective) fb_.BlendPixel(dx, dy, red, green, blue, effective);
+    }
+    return JALIUM_OK;
+#else
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
+void SoftwareRenderTarget::BlendTextPixel(int32_t x, int32_t y,
+    uint8_t r, uint8_t g, uint8_t b, uint8_t a)
+{
+    if (a == 0) return;
+    if (glyphBrush_.active) {
+        uint8_t paintAlpha;
+        SamplePaint(glyphBrush_.paint, x + .5f, y + .5f, r, g, b, paintAlpha);
+        a = FloatToU8((a / 255.0f) * (paintAlpha / 255.0f) * glyphBrush_.opacity);
+    }
+    if (a) fb_.BlendPixel(x, y, r, g, b, a);
+}
+
+void SoftwareRenderTarget::BlendTextPixelSubpixel(int32_t x, int32_t y,
+    uint8_t r, uint8_t g, uint8_t b, uint8_t ar, uint8_t ag, uint8_t ab)
+{
+    if (glyphBrush_.active) {
+        uint8_t paintAlpha;
+        SamplePaint(glyphBrush_.paint, x + .5f, y + .5f, r, g, b, paintAlpha);
+        const float alpha = (paintAlpha / 255.0f) * glyphBrush_.opacity;
+        ar = FloatToU8((ar / 255.0f) * alpha);
+        ag = FloatToU8((ag / 255.0f) * alpha);
+        ab = FloatToU8((ab / 255.0f) * alpha);
+    }
+    fb_.BlendPixelSubpixel(x, y, r, g, b, ar, ag, ab);
+}
 
 void SoftwareRenderTarget::RenderText(
     const wchar_t* text, uint32_t textLength,
@@ -7986,15 +8064,34 @@ void SoftwareRenderTarget::RenderText(
 {
     if (!text || textLength == 0 || !format || !brush) return;
 
+    const auto previousBrush = glyphBrush_;
+    const float previousOpacity = currentOpacity_;
+    struct RestoreGlyphBrush {
+        GlyphBrushState& current;
+        float& opacity;
+        GlyphBrushState previous;
+        float previousOpacity;
+        ~RestoreGlyphBrush() { current = previous; opacity = previousOpacity; }
+    } restore{glyphBrush_, currentOpacity_, previousBrush, previousOpacity};
+    glyphBrush_ = {};
+    SoftwareSolidBrush coverage(1, 1, 1, 1);
     auto* solid = dynamic_cast<SoftwareSolidBrush*>(brush);
-    if (!solid) return;
+    if (!solid) {
+        const auto paint = PreparePaint(brush);
+        if (!paint.IsValid() || currentOpacity_ <= 0) return;
+        glyphBrush_ = {paint, currentOpacity_, true};
+        // Rasterizers produce coverage exactly as for opaque white text. Paint
+        // alpha and the surrounding opacity are applied once at composition.
+        currentOpacity_ = 1;
+        solid = &coverage;
+    }
 
 #ifdef __APPLE__
     if (auto* apple = dynamic_cast<AppleTextFormat*>(format)) {
         std::vector<uint8_t> pixels; uint32_t width = 0, height = 0; float left = 0, top = 0;
         if (apple->Rasterize(text, textLength, x, y, w, h, currentTransform_.m, 0, 0, width_, height_,
             solid->r, solid->g, solid->b, solid->a * currentOpacity_, pixels, width, height, left, top,
-            glyphRanges_.data(), static_cast<uint32_t>(glyphRanges_.size() / 2), glyphVisibility_))
+            textGlyphRanges_.Data(), textGlyphRanges_.Count(), textGlyphRanges_.Mode()))
             CompositeAppleGlyphs(pixels, width, height, left, top);
         return;
     }
@@ -8068,17 +8165,17 @@ void SoftwareRenderTarget::RenderTextWithGlyphAtlas(
     std::vector<TextGlyphQuad> quads;
     if (matrixIsIdentity) {
         // Fast path: quads are generated directly in screen space.
-        ftFormat->GenerateGlyphQuads(
+        ftFormat->GenerateGlyphQuadsForEngine(backend_->GetTextEngine(),
             text, textLength, w, h,
             brush->r, brush->g, brush->b, textAlpha,
-            tx, ty, quads, 1.0f);
+            tx, ty, quads, 1.0f, -1, textGlyphRanges_.Data(), textGlyphRanges_.Count(), textGlyphRanges_.Mode());
     } else {
         // Layout in local space at the matrix's physical resolution; each quad
         // is then mapped through the residual matrix R = M / renderScale below.
-        ftFormat->GenerateGlyphQuads(
+        ftFormat->GenerateGlyphQuadsForEngine(backend_->GetTextEngine(),
             text, textLength, w, h,
             brush->r, brush->g, brush->b, textAlpha,
-            0.0f, 0.0f, quads, textRenderScale);
+            0.0f, 0.0f, quads, textRenderScale, -1, textGlyphRanges_.Data(), textGlyphRanges_.Count(), textGlyphRanges_.Mode());
     }
 
     if (quads.empty()) return;
@@ -8174,19 +8271,19 @@ void SoftwareRenderTarget::RenderTextWithGlyphAtlas(
                             255u, static_cast<unsigned>(atlasData[atlasIdx + 2]) * 255u / sourceA));
                         const uint8_t alpha = static_cast<uint8_t>(
                             std::clamp(textAlpha * verticalWeight * sourceA + 0.5f, 0.0f, 255.0f));
-                        fb_.BlendPixel(dx, destinationY, sourceR, sourceG, sourceB, alpha);
+                        BlendTextPixel(dx, destinationY, sourceR, sourceG, sourceB, alpha);
                     } else if (lcdGlyph) {
                         const auto channelCoverage = [&](int channel) {
                             return static_cast<uint8_t>(std::clamp(
                                 textAlpha * verticalWeight * atlasData[atlasIdx + channel] + 0.5f,
                                 0.0f, 255.0f));
                         };
-                        fb_.BlendPixelSubpixel(dx, destinationY, textR, textG, textB,
+                        BlendTextPixelSubpixel(dx, destinationY, textR, textG, textB,
                                                channelCoverage(0), channelCoverage(1), channelCoverage(2));
                     } else {
                         const uint8_t alpha = static_cast<uint8_t>(std::clamp(
                             textAlpha * verticalWeight * coverage + 0.5f, 0.0f, 255.0f));
-                        fb_.BlendPixel(dx, destinationY, textR, textG, textB, alpha);
+                        BlendTextPixel(dx, destinationY, textR, textG, textB, alpha);
                     }
                 };
 
@@ -8302,13 +8399,13 @@ void SoftwareRenderTarget::RenderTransformedGlyphQuads(
                     uint8_t cb = static_cast<uint8_t>(std::clamp(sample[2] * inv, 0.0f, 255.0f));
                     uint8_t alpha = static_cast<uint8_t>(
                         std::clamp(textAlpha * coverage + 0.5f, 0.0f, 255.0f));
-                    fb_.BlendPixel(px, py, cr, cg, cb, alpha);
+                    BlendTextPixel(px, py, cr, cg, cb, alpha);
                 } else {
                     // LCD stripes cannot survive an arbitrary transform, so both
                     // mask and LCD glyphs blend with max-channel (alpha) coverage.
                     uint8_t alpha = static_cast<uint8_t>(
                         std::clamp(textAlpha * coverage + 0.5f, 0.0f, 255.0f));
-                    fb_.BlendPixel(px, py, textR, textG, textB, alpha);
+                    BlendTextPixel(px, py, textR, textG, textB, alpha);
                 }
             }
         }
@@ -8376,7 +8473,7 @@ void SoftwareRenderTarget::RenderTextWithGDI(
     // in a 1500x920 slot into 1.38M pixel visits per DrawText call.
     int fontHeight = -(std::max)(1, (int)(stf->fontSize * axisScaleY + 0.5f));
     SoftwareTextMaskCache::Key textMaskKey;
-    bool cacheTextMask = residualIsAxisAligned;
+    bool cacheTextMask = residualIsAxisAligned && !glyphBrush_.active;
     if (cacheTextMask) {
         try {
             if (!textMaskCache_)
@@ -8776,7 +8873,7 @@ void SoftwareRenderTarget::RenderTextWithGDI(
                     if (lum <= 0.0f) continue;
                     uint8_t sa = static_cast<uint8_t>(std::clamp((lum / 255.0f) * a + 0.5f, 0.0f, 255.0f));
                     if (sa == 0) continue;
-                    fb_.BlendPixel(dxx, dyy, r, g, b, sa);
+                    BlendTextPixel(dxx, dyy, r, g, b, sa);
                 }
             }
         } else {
@@ -8824,7 +8921,7 @@ void SoftwareRenderTarget::RenderTextWithGDI(
                         if (lum <= 0.0f) continue;
                         uint8_t sa = static_cast<uint8_t>(std::clamp((lum / 255.0f) * a + 0.5f, 0.0f, 255.0f));
                         if (sa == 0) continue;
-                        fb_.BlendPixel(px, py, r, g, b, sa);
+                        BlendTextPixel(px, py, r, g, b, sa);
                     }
                 }
             }
@@ -8861,7 +8958,7 @@ void SoftwareRenderTarget::RenderTextPlaceholder(
     float textWidth = std::min(textLength * charWidth, w);
 
     for (int32_t col = 0; col < (int32_t)textWidth; col++) {
-        fb_.BlendPixel((int32_t)tx + col, (int32_t)ty, cr, cg, cb, ca);
+        BlendTextPixel((int32_t)tx + col, (int32_t)ty, cr, cg, cb, ca);
     }
 }
 
@@ -9395,7 +9492,13 @@ void SoftwareRenderTarget::DrawBitmap(Bitmap* bitmap, float x, float y, float w,
         }
     }
     if (fastPixels && globalOpacity > 0.0f) {
-        int32_t fastX0 = px0, fastY0 = py0, fastX1 = px1, fastY1 = py1;
+        // A pixel-aligned transform can lie a few ULPs below its integer
+        // destination. floor(left) then precedes round(left), yielding a
+        // negative sourceX and incorrectly dropping every row of the bitmap.
+        int32_t fastX0 = std::max(px0, fastDestinationLeft);
+        int32_t fastY0 = std::max(py0, fastDestinationTop);
+        int32_t fastX1 = std::min(px1, fastDestinationLeft + fastWidth);
+        int32_t fastY1 = std::min(py1, fastDestinationTop + fastHeight);
         if (!TightenToRectClip(fastX0, fastY0, fastX1, fastY1)) return;
         const bool hasRoundedClip = !roundedClipStack_.empty();
 
@@ -9639,10 +9742,11 @@ void SoftwareRenderTarget::DrawBitmap(Bitmap* bitmap, float x, float y, float w,
             texel(u1, v1, b11, g11, r11, a11);
             float w00 = (1.0f - fu) * (1.0f - fv), w10 = fu * (1.0f - fv);
             float w01 = (1.0f - fu) * fv,          w11 = fu * fv;
-            float sbb = b00 * w00 + b10 * w10 + b01 * w01 + b11 * w11;
-            float sg  = g00 * w00 + g10 * w10 + g01 * w01 + g11 * w11;
-            float sr  = r00 * w00 + r10 * w10 + r01 * w01 + r11 * w11;
             float sa  = a00 * w00 + a10 * w10 + a01 * w01 + a11 * w11;
+            const float inverseAlpha = sa > 0 ? 1.0f / sa : 0;
+            float sbb = (b00*a00*w00 + b10*a10*w10 + b01*a01*w01 + b11*a11*w11)*inverseAlpha;
+            float sg  = (g00*a00*w00 + g10*a10*w10 + g01*a01*w01 + g11*a11*w11)*inverseAlpha;
+            float sr  = (r00*a00*w00 + r10*a10*w10 + r01*a01*w01 + r11*a11*w11)*inverseAlpha;
 
             float alpha = sa * globalOpacity * coverage;
             uint8_t fa = (uint8_t)std::clamp(alpha + 0.5f, 0.0f, 255.0f);
@@ -10092,40 +10196,39 @@ void SoftwareRenderTarget::FillEllipseBatch(const float* data, uint32_t count)
 
 void SoftwareRenderTarget::BeginEffectCapture(float x, float y, float w, float h)
 {
-    float tx, ty;
-    currentTransform_.Apply(x, y, tx, ty);
-
-    EffectCaptureState state;
-    state.x = tx;
-    state.y = ty;
-    state.width = w;
-    state.height = h;
-
-    // Clear the capture region so we render effect content in isolation
-    int32_t ix = (int32_t)tx, iy = (int32_t)ty;
-    int32_t iw = (int32_t)(w + 0.5f), ih = (int32_t)(h + 0.5f);
-    state.pixelX = ix;
-    state.pixelY = iy;
-    CopyRegion(fb_, state.savedRegion, ix, iy, iw, ih);
-    effectCaptureStack_.push_back(std::move(state));
-    effectCaptureReady_ = false;
-
-    const int32_t clearLeft = std::max(0, ix);
-    const int32_t clearTop = std::max(0, iy);
-    const int32_t clearRight = std::min(fb_.width, ix + iw);
-    const int32_t clearBottom = std::min(fb_.height, iy + ih);
-    const size_t rowBytes = clearRight > clearLeft
-        ? static_cast<size_t>(clearRight - clearLeft) * 4u
-        : 0u;
-    for (int32_t row = clearTop; row < clearBottom; ++row) {
-        uint8_t* destination = fb_.pixels.data() +
-            (static_cast<size_t>(row) * fb_.width + clearLeft) * 4u;
-        std::memset(destination, 0, rowBytes);
+    effectCaptureAttempts_.push_back(false);
+    if (!isDrawing_ || !std::isfinite(x) || !std::isfinite(y) ||
+        !std::isfinite(w) || !std::isfinite(h) || w <= 0 || h <= 0) return;
+    // A capture is a group: parent clipping and opacity apply once when its
+    // result is composited. Its dimensions must cover all four transformed
+    // corners, including rotation/shear and DPI.
+    float left=std::numeric_limits<float>::infinity(),top=left,right=-left,bottom=-left;
+    for(float cy:{y,y+h})for(float cx:{x,x+w}) {
+        float px,py;currentTransform_.Apply(cx,cy,px,py);
+        if(!std::isfinite(px)||!std::isfinite(py))return;
+        left=std::min(left,px);top=std::min(top,py);right=std::max(right,px);bottom=std::max(bottom,py);
     }
+    left=std::clamp(std::floor(left),0.f,float(fb_.width));top=std::clamp(std::floor(top),0.f,float(fb_.height));
+    right=std::clamp(std::ceil(right),left,float(fb_.width));bottom=std::clamp(std::ceil(bottom),top,float(fb_.height));
+    int32_t ix=int32_t(left),iy=int32_t(top),iw=int32_t(right-left),ih=int32_t(bottom-top);
+    EffectCaptureState state;
+    state.x=left;state.y=top;state.width=right-left;state.height=bottom-top;state.pixelX=ix;state.pixelY=iy;
+    state.savedClips=clipStack_;state.savedRoundedClips=roundedClipStack_;state.savedPathClips=pathClipStack_;state.savedOpacity=currentOpacity_;
+    CopyRegion(fb_,state.savedRegion,ix,iy,iw,ih);
+    effectCaptureStack_.push_back(std::move(state));
+    effectCaptureAttempts_.back() = true;
+    clipStack_={};roundedClipStack_.clear();pathClipStack_.clear();currentOpacity_=1;
+    clipStack_.push({left,top,right-left,bottom-top});effectCaptureReady_=false;
+    for(int32_t row=iy;row<iy+ih;++row)
+        std::memset(fb_.pixels.data()+(size_t(row)*fb_.width+ix)*4,0,size_t(iw)*4);
 }
 
 void SoftwareRenderTarget::EndEffectCapture()
 {
+    if (effectCaptureAttempts_.empty()) return;
+    const bool captured = effectCaptureAttempts_.back();
+    effectCaptureAttempts_.pop_back();
+    if (!captured) { effectCaptureReady_ = false; return; }
     if (effectCaptureStack_.empty()) {
         effectCaptureReady_ = false;
         return;
@@ -10143,6 +10246,8 @@ void SoftwareRenderTarget::EndEffectCapture()
     // capture never moved or copied; nested captures therefore restore into the
     // ancestor's in-progress image exactly as before.
     RestoreRegion(state.savedRegion, state.pixelX, state.pixelY);
+    clipStack_=std::move(state.savedClips);roundedClipStack_=std::move(state.savedRoundedClips);
+    pathClipStack_=std::move(state.savedPathClips);currentOpacity_=state.savedOpacity;
     lastEffectCaptureX_ = state.x;
     lastEffectCaptureY_ = state.y;
     lastEffectCaptureW_ = state.width;
@@ -10952,6 +11057,50 @@ void SoftwareRenderTarget::DrawColorMatrixEffect(float x, float y, float w, floa
 
     BlitBuffer(result, (int32_t)lastEffectCaptureX_,
         (int32_t)lastEffectCaptureY_, currentOpacity_);
+}
+
+JaliumResult SoftwareRenderTarget::BeginAlphaMaskCapture(float x,float y,float w,float h)
+{
+    if(!isDrawing_)return JALIUM_ERROR_INVALID_STATE;
+    BeginEffectCapture(x,y,w,h);
+    if(effectCaptureAttempts_.empty()||!effectCaptureAttempts_.back()){
+        EndEffectCapture();return JALIUM_ERROR_INVALID_ARGUMENT;
+    }
+    return JALIUM_OK;
+}
+
+JaliumResult SoftwareRenderTarget::DrawBlendEffect(uint32_t mode, float, float, float, float)
+{
+    if (!isDrawing_ || !effectCaptureReady_) return JALIUM_ERROR_INVALID_STATE;
+    if (mode > 16) return JALIUM_ERROR_INVALID_ARGUMENT;
+    const int left = int(lastEffectCaptureX_), top = int(lastEffectCaptureY_);
+    for (int row = 0; row < effectCaptureFb_.height; ++row) {
+        const int y = top + row;
+        if (y < 0 || y >= fb_.height) continue;
+        for (int col = 0; col < effectCaptureFb_.width; ++col) {
+            const int x = left + col;
+            if (x < 0 || x >= fb_.width || IsClipped(x+.5f, y+.5f)) continue;
+            css_blend::Composite(effectCaptureFb_.pixels.data() + (size_t(row)*effectCaptureFb_.width+col)*4,
+                fb_.pixels.data() + (size_t(y)*fb_.width+x)*4, mode, currentOpacity_);
+        }
+    }
+    return JALIUM_OK;
+}
+
+JaliumResult SoftwareRenderTarget::DrawAlphaMaskEffect(const uint8_t* pixels,uint32_t bytes,
+    uint32_t width,uint32_t height,uint32_t stride,float maskX,float maskY,float maskW,float maskH,
+    float,float,float,float)
+{
+    if(!effectCaptureReady_)return JALIUM_ERROR_INVALID_STATE;
+    if(effectCaptureFb_.pixels.empty())return JALIUM_OK;
+    if(!AlphaMaskSampler::Valid(pixels,bytes,width,height,stride,maskX,maskY,maskW,maskH))return JALIUM_ERROR_INVALID_ARGUMENT;
+    AlphaMaskSampler sample(pixels,width,height,stride,maskX,maskY,maskW,maskH,currentTransform_.m);
+    auto result=effectCaptureFb_;
+    for(int y=0;y<result.height;++y)for(int x=0;x<result.width;++x){
+        auto& alpha=result.pixels[(size_t(y)*result.width+x)*4+3];
+        alpha=uint8_t((unsigned(alpha)*sample.At(lastEffectCaptureX_+x+.5,lastEffectCaptureY_+y+.5)+127)/255);
+    }
+    BlitBuffer(result,int32_t(lastEffectCaptureX_),int32_t(lastEffectCaptureY_),currentOpacity_);return JALIUM_OK;
 }
 
 JaliumResult SoftwareRenderTarget::DrawColorMatrixChainEffect(

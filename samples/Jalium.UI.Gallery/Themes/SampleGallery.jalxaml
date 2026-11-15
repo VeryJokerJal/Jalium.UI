@@ -1,0 +1,1596 @@
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:sample="clr-namespace:Jalium.UI.Gallery"
+    xmlns:charts="clr-namespace:Jalium.UI.Controls.Charts;assembly=Jalium.UI.Controls">
+    <SolidColorBrush x:Key="SampleGallery.PageBackground" Color="#1B1B1B" />
+    <SolidColorBrush x:Key="SampleGallery.CardBackground" Color="#2B2B2B" />
+    <SolidColorBrush x:Key="SampleGallery.CardStroke" Color="#3A3A3A" />
+    <SolidColorBrush x:Key="SampleGallery.HeaderBackground" Color="#161616" />
+    <SolidColorBrush x:Key="SampleGallery.TextPrimary" Color="#F4F4F4" />
+    <SolidColorBrush x:Key="SampleGallery.TextSecondary" Color="#A8A8A8" />
+    <SolidColorBrush x:Key="SampleGallery.Accent" Color="#4CC27A" />
+    <Style TargetType="sample:GallerySampleSurface">
+        <Setter Property="ItemsPanel">
+            <Setter.Value>
+                <ItemsPanelTemplate>
+                    <StackPanel Spacing="8" Margin="28,20,28,40" />
+                </ItemsPanelTemplate>
+            </Setter.Value>
+        </Setter>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySampleSurface">
+                    <ScrollViewer x:Name="PART_ScrollViewer" CanContentScroll="False" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <ItemsPresenter x:Name="PART_ItemsPresenter" />
+                    </ScrollViewer>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySampleSection">
+        <Setter Property="Margin" Value="0,18,0,6" />
+        <Setter Property="Foreground" Value="{DynamicResource SampleGallery.TextPrimary}" />
+        <Setter Property="ItemsPanel">
+            <Setter.Value>
+                <ItemsPanelTemplate>
+                    <WrapPanel HorizontalSpacing="12" VerticalSpacing="12" />
+                </ItemsPanelTemplate>
+            </Setter.Value>
+        </Setter>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySampleSection">
+                    <StackPanel Spacing="10">
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                            <VisualStateGroup x:Name="DescriptionStates">
+                                <VisualState x:Name="HasDescription" />
+                                <VisualState x:Name="NoDescription" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="4" />
+                                <ColumnDefinition Width="10" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Border Background="{DynamicResource SampleGallery.Accent}" CornerRadius="2" />
+                            <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                                <TextBlock Text="{TemplateBinding Title}" FontSize="20" FontWeight="SemiBold" Foreground="{TemplateBinding Foreground}" TextWrapping="Wrap" />
+                                <TextBlock
+                                    x:Name="PART_Description"
+                                    Text="{TemplateBinding Description}"
+                                    FontSize="12"
+                                    Foreground="{DynamicResource SampleGallery.TextSecondary}"
+                                    TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Grid>
+                        <ItemsPresenter x:Name="PART_ItemsPresenter" />
+                    </StackPanel>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="Description" Value="">
+                            <Setter TargetName="PART_Description" Property="Visibility" Value="Collapsed" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySampleCard">
+        <Setter Property="Background" Value="{DynamicResource SampleGallery.CardBackground}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource SampleGallery.CardStroke}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="8" />
+        <Setter Property="Padding" Value="14" />
+        <Setter Property="Foreground" Value="{DynamicResource SampleGallery.TextPrimary}" />
+        <Setter Property="HeaderTemplate">
+            <Setter.Value>
+                <DataTemplate>
+                    <TextBlock Text="{Binding}" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource SampleGallery.TextPrimary}" TextWrapping="Wrap" />
+                </DataTemplate>
+            </Setter.Value>
+        </Setter>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySampleCard">
+                    <Border
+                        Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}"
+                        CornerRadius="{TemplateBinding CornerRadius}"
+                        Padding="{TemplateBinding Padding}">
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <StackPanel Spacing="8">
+                            <ContentPresenter
+                                x:Name="PART_HeaderPresenter"
+                                Content="{TemplateBinding Header}"
+                                ContentTemplate="{TemplateBinding HeaderTemplate}"
+                                ContentTemplateSelector="{TemplateBinding HeaderTemplateSelector}"
+                                ContentStringFormat="{TemplateBinding HeaderStringFormat}" />
+                            <ScrollViewer HorizontalScrollBarVisibility="{TemplateBinding ContentScrollBarVisibility}" VerticalScrollBarVisibility="Disabled" CanContentScroll="False">
+                                <ContentPresenter
+                                    x:Name="PART_ContentPresenter"
+                                    Content="{TemplateBinding Content}"
+                                    ContentTemplate="{TemplateBinding ContentTemplate}"
+                                    ContentTemplateSelector="{TemplateBinding ContentTemplateSelector}"
+                                    ContentStringFormat="{TemplateBinding ContentStringFormat}" />
+                            </ScrollViewer>
+                        </StackPanel>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySampleHeader">
+        <Setter Property="Margin" Value="0,0,0,12" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySampleHeader">
+                    <StackPanel Spacing="4">
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <TextBlock Text="{TemplateBinding Title}" FontSize="30" FontWeight="Bold" Foreground="{DynamicResource SampleGallery.TextPrimary}" TextWrapping="Wrap" />
+                        <TextBlock Text="{TemplateBinding Description}" FontSize="14" Foreground="{DynamicResource SampleGallery.TextSecondary}" TextWrapping="Wrap" />
+                    </StackPanel>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySamplePlaceholder">
+        <Setter Property="MaxWidth" Value="260" />
+        <Setter Property="Background" Value="{DynamicResource SampleGallery.HeaderBackground}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource SampleGallery.CardStroke}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="6" />
+        <Setter Property="Padding" Value="12" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySamplePlaceholder">
+                    <Border
+                        Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}"
+                        CornerRadius="{TemplateBinding CornerRadius}"
+                        Padding="{TemplateBinding Padding}">
+                        <StackPanel Spacing="6" MinHeight="92" VerticalAlignment="Center">
+                            <TextBlock
+                                Text="{TemplateBinding Title}"
+                                FontSize="14"
+                                FontWeight="SemiBold"
+                                Foreground="{DynamicResource SampleGallery.TextPrimary}"
+                                TextWrapping="Wrap" />
+                            <TextBlock Text="{TemplateBinding Description}" FontSize="12" Foreground="{DynamicResource SampleGallery.TextSecondary}" TextWrapping="Wrap" />
+                            <TextBlock Text="Shown live when running inside your app." FontSize="11" Foreground="{DynamicResource SampleGallery.Accent}" TextWrapping="Wrap" />
+                        </StackPanel>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySampleStatus">
+        <Setter Property="Margin" Value="0,6,0,0" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySampleStatus">
+                    <TextBlock Text="{TemplateBinding Text}" FontSize="12" Foreground="{DynamicResource SampleGallery.TextSecondary}" TextWrapping="Wrap" />
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySampleButtonsSection">
+        <Setter Property="Title" Value="Buttons &amp; Commands" />
+        <Setter Property="Description" Value="Click-to-invoke controls: standard, toggle, repeat, split, hyperlink and app-bar buttons." />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySampleButtonsSection">
+                    <sample:GallerySampleSection Title="{TemplateBinding Title}" Description="{TemplateBinding Description}">
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <sample:GallerySampleCard Header="Button">
+                            <StackPanel Spacing="8">
+                                <Button x:Name="PART_StandardButton" Content="Standard" Padding="16,8" HorizontalAlignment="Left" />
+                                <Button x:Name="PART_DefaultButton" Content="Default (accent)" IsDefault="True" Padding="16,8" HorizontalAlignment="Left" />
+                                <Button x:Name="PART_DisabledButton" Content="Disabled" IsEnabled="False" Padding="16,8" HorizontalAlignment="Left" />
+                            </StackPanel>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="ToggleButton">
+                            <StackPanel Spacing="8">
+                                <ToggleButton x:Name="PART_ToggleOff" Content="Toggle (off)" Padding="16,8" HorizontalAlignment="Left" />
+                                <ToggleButton x:Name="PART_ToggleOn" Content="Toggle (on)" IsChecked="True" Padding="16,8" HorizontalAlignment="Left" />
+                            </StackPanel>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="RepeatButton">
+                            <RepeatButton x:Name="PART_RepeatButton" Content="Hold to repeat" Padding="16,8" HorizontalAlignment="Left" />
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="SplitButton">
+                            <SplitButton x:Name="PART_SplitButton" Content="Split action" Padding="16,8" HorizontalAlignment="Left" />
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="HyperlinkButton">
+                            <HyperlinkButton x:Name="PART_HyperlinkButton" Content="Visit jalium.dev" NavigateUri="https://jalium.dev" HorizontalAlignment="Left" />
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="AppBarButton">
+                            <StackPanel Orientation="Horizontal" Spacing="16" HorizontalAlignment="Left">
+                                <AppBarButton x:Name="PART_AppBarAdd" Label="Add">
+                                    <AppBarButton.Icon>
+                                        <SymbolIcon Symbol="Add" />
+                                    </AppBarButton.Icon>
+                                </AppBarButton>
+                                <AppBarButton x:Name="PART_AppBarEdit" Label="Edit">
+                                    <AppBarButton.Icon>
+                                        <SymbolIcon Symbol="Edit" />
+                                    </AppBarButton.Icon>
+                                </AppBarButton>
+                                <AppBarToggleButton x:Name="PART_AppBarPin" Label="Pin" IsChecked="True">
+                                    <AppBarToggleButton.Icon>
+                                        <SymbolIcon Symbol="Pin" />
+                                    </AppBarToggleButton.Icon>
+                                </AppBarToggleButton>
+                            </StackPanel>
+                        </sample:GallerySampleCard>
+                    </sample:GallerySampleSection>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySampleSelectionSection">
+        <Setter Property="Title" Value="Selection &amp; Toggles" />
+        <Setter Property="Description" Value="Boolean and ranged input: checkboxes, radio buttons, switches and sliders." />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySampleSelectionSection">
+                    <sample:GallerySampleSection Title="{TemplateBinding Title}" Description="{TemplateBinding Description}">
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <sample:GallerySampleCard Header="CheckBox">
+                            <StackPanel Spacing="10">
+                                <CheckBox Content="Checked" IsChecked="True" HorizontalAlignment="Left" />
+                                <CheckBox Content="Unchecked" IsChecked="False" HorizontalAlignment="Left" />
+                                <CheckBox Content="Indeterminate" IsThreeState="True" IsChecked="{x:Null}" HorizontalAlignment="Left" />
+                            </StackPanel>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="RadioButton">
+                            <StackPanel Spacing="10">
+                                <RadioButton
+                                    x:Name="PART_RadioLow"
+                                    Content="Low"
+                                    GroupName="{Binding RadioGroupName, RelativeSource={RelativeSource AncestorType=sample:GallerySampleSelectionSection}}"
+                                    HorizontalAlignment="Left" />
+                                <RadioButton
+                                    x:Name="PART_RadioMedium"
+                                    Content="Medium"
+                                    GroupName="{Binding RadioGroupName, RelativeSource={RelativeSource AncestorType=sample:GallerySampleSelectionSection}}"
+                                    HorizontalAlignment="Left"
+                                    IsChecked="True" />
+                                <RadioButton
+                                    x:Name="PART_RadioHigh"
+                                    Content="High"
+                                    GroupName="{Binding RadioGroupName, RelativeSource={RelativeSource AncestorType=sample:GallerySampleSelectionSection}}"
+                                    HorizontalAlignment="Left" />
+                            </StackPanel>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="ToggleSwitch">
+                            <StackPanel Spacing="14">
+                                <ToggleSwitch Header="Wi-Fi" IsOn="True" OnContent="On" OffContent="Off" HorizontalAlignment="Left" />
+                                <ToggleSwitch Header="Bluetooth" IsOn="False" OnContent="On" OffContent="Off" HorizontalAlignment="Left" />
+                            </StackPanel>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="Slider">
+                            <Slider
+                                x:Name="PART_Slider"
+                                Minimum="0"
+                                Maximum="100"
+                                Width="220"
+                                Height="28"
+                                HorizontalAlignment="Left"
+                                VerticalAlignment="Center"
+                                Value="65"
+                                TickFrequency="10"
+                                IsSnapToTickEnabled="True" />
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="Slider (Segmented)">
+                            <StackPanel Spacing="14">
+                                <Slider
+                                    Minimum="0"
+                                    Maximum="100"
+                                    Width="220"
+                                    Height="28"
+                                    HorizontalAlignment="Left"
+                                    VerticalAlignment="Center"
+                                    Value="60"
+                                    TickFrequency="20"
+                                    IsSnapToTickEnabled="True"
+                                    TrackMode="Segmented" />
+                                <Slider
+                                    Minimum="0"
+                                    Maximum="100"
+                                    Width="220"
+                                    Height="28"
+                                    HorizontalAlignment="Left"
+                                    VerticalAlignment="Center"
+                                    Value="45"
+                                    Ticks="10,30,60"
+                                    SegmentGap="5"
+                                    TrackMode="Segmented" />
+                                <RangeSlider
+                                    Minimum="0"
+                                    Maximum="100"
+                                    Width="220"
+                                    Height="28"
+                                    HorizontalAlignment="Left"
+                                    VerticalAlignment="Center"
+                                    RangeStart="20"
+                                    RangeEnd="80"
+                                    TickFrequency="20"
+                                    IsSnapToTickEnabled="True"
+                                    TrackMode="Segmented" />
+                            </StackPanel>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="RangeSlider">
+                            <RangeSlider
+                                x:Name="PART_RangeSlider"
+                                Minimum="0"
+                                Maximum="100"
+                                Width="220"
+                                Height="28"
+                                HorizontalAlignment="Left"
+                                VerticalAlignment="Center"
+                                RangeStart="25"
+                                RangeEnd="75"
+                                TickFrequency="10" />
+                        </sample:GallerySampleCard>
+                    </sample:GallerySampleSection>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySampleStatusSection">
+        <Setter Property="Title" Value="Status &amp; Feedback" />
+        <Setter Property="Description" Value="Progress, inline notifications and separators." />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySampleStatusSection">
+                    <sample:GallerySampleSection Title="{TemplateBinding Title}" Description="{TemplateBinding Description}">
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <sample:GallerySampleCard Header="ProgressBar">
+                            <StackPanel Spacing="16" HorizontalAlignment="Left">
+                                <TextBlock Text="Determinate — 65%" FontSize="12" Foreground="{DynamicResource SampleGallery.TextSecondary}" TextWrapping="Wrap" />
+                                <ProgressBar x:Name="PART_Progress" Minimum="0" Maximum="100" Value="65" Width="240" HorizontalAlignment="Left" />
+                                <TextBlock Text="Indeterminate" FontSize="12" Foreground="{DynamicResource SampleGallery.TextSecondary}" TextWrapping="Wrap" />
+                                <ProgressBar IsIndeterminate="True" Width="240" HorizontalAlignment="Left" />
+                            </StackPanel>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="InfoBar" PreferredWidth="NaN">
+                            <StackPanel Spacing="10" HorizontalAlignment="Left">
+                                <InfoBar Severity="Informational" Title="Heads up" Message="A new version of the app is available." IsOpen="True" Width="360" />
+                                <InfoBar Severity="Success" Title="Saved" Message="Your changes were saved successfully." IsOpen="True" Width="360" />
+                                <InfoBar Severity="Warning" Title="Low disk space" Message="Less than 2 GB remaining on this drive." IsOpen="True" Width="360" />
+                            </StackPanel>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="Separator">
+                            <StackPanel Spacing="10">
+                                <TextBlock Text="Recent files" FontSize="12" Foreground="{DynamicResource SampleGallery.TextPrimary}" TextWrapping="Wrap" />
+                                <Separator />
+                                <TextBlock Text="Shared with me" FontSize="12" Foreground="{DynamicResource SampleGallery.TextPrimary}" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="ToolTip">
+                            <sample:GallerySamplePlaceholder Title="ToolTip" Description="hover tooltip" />
+                        </sample:GallerySampleCard>
+                    </sample:GallerySampleSection>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySamplePickersSection">
+        <Setter Property="Title" Value="Date, Time &amp; Color" />
+        <Setter Property="Description" Value="Calendar and date/time selection, plus the color picker." />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySamplePickersSection">
+                    <sample:GallerySampleSection Title="{TemplateBinding Title}" Description="{TemplateBinding Description}">
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <sample:GallerySampleCard Header="Calendar">
+                            <Calendar
+                                x:Name="PART_Calendar"
+                                SelectedDate="{Binding SampleDate, RelativeSource={RelativeSource AncestorType=sample:GallerySamplePickersSection}, Mode=TwoWay}"
+                                DisplayDate="{Binding DisplayDate, RelativeSource={RelativeSource AncestorType=sample:GallerySamplePickersSection}, Mode=TwoWay}"
+                                HorizontalAlignment="Left"
+                                VerticalAlignment="Top" />
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="DatePicker">
+                            <DatePicker
+                                x:Name="PART_DatePicker"
+                                SelectedDate="{Binding SampleDate, RelativeSource={RelativeSource AncestorType=sample:GallerySamplePickersSection}, Mode=TwoWay}"
+                                Width="240"
+                                HorizontalAlignment="Left"
+                                VerticalAlignment="Top" />
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="TimePicker">
+                            <TimePicker
+                                x:Name="PART_TimePicker"
+                                SelectedTime="{Binding SampleTime, RelativeSource={RelativeSource AncestorType=sample:GallerySamplePickersSection}, Mode=TwoWay}"
+                                Width="200"
+                                HorizontalAlignment="Left"
+                                VerticalAlignment="Top" />
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="ColorPicker" PreferredWidth="260">
+                            <ColorPicker
+                                x:Name="PART_ColorPicker"
+                                Color="{Binding SampleColor, RelativeSource={RelativeSource AncestorType=sample:GallerySamplePickersSection}, Mode=TwoWay}"
+                                Width="220"
+                                Height="340"
+                                HorizontalAlignment="Left"
+                                VerticalAlignment="Top" />
+                        </sample:GallerySampleCard>
+                    </sample:GallerySampleSection>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySampleTextBoxes">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySampleTextBoxes">
+                    <StackPanel HorizontalAlignment="Left">
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <TextBox
+                            x:Name="PART_SingleLine"
+                            Text="{Binding SingleLineText, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                            Width="240"
+                            HorizontalAlignment="Left" />
+                        <TextBox
+                            x:Name="PART_MultiLine"
+                            Text="{Binding MultiLineText, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                            AcceptsReturn="True"
+                            TextWrapping="Wrap"
+                            MinLines="3"
+                            MaxLines="5"
+                            Width="240"
+                            Margin="0,8,0,0"
+                            HorizontalAlignment="Left" />
+                    </StackPanel>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySamplePasswordDemo">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySamplePasswordDemo">
+                    <Border>
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <PasswordBox
+                            x:Name="PART_Password"
+                            Width="200"
+                            HorizontalAlignment="Left" />
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySampleNumberDemo">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySampleNumberDemo">
+                    <Border>
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <NumberBox
+                            x:Name="PART_Number"
+                            Value="{Binding Value, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                            Minimum="0"
+                            Maximum="100"
+                            SmallChange="1"
+                            Width="200"
+                            HorizontalAlignment="Left" />
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySampleAutoCompleteDemo">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySampleAutoCompleteDemo">
+                    <Border>
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <AutoCompleteBox
+                            x:Name="PART_AutoComplete"
+                            Text="{Binding Text, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                            PlaceholderText="Type a font..."
+                            Width="200"
+                            HorizontalAlignment="Left" />
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySampleComboDemo">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySampleComboDemo">
+                    <Border>
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <ComboBox
+                            x:Name="PART_Combo"
+                            ItemsSource="{TemplateBinding Choices}"
+                            SelectedIndex="{Binding SelectedIndex, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                            Width="200"
+                            HorizontalAlignment="Left" />
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySampleContainersSection">
+        <Setter Property="Title" Value="Layout &amp; Containers" />
+        <Setter Property="Description" Value="Single-child and grouping containers, expanders and splitters." />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySampleContainersSection">
+                    <sample:GallerySampleSection Title="{TemplateBinding Title}" Description="{TemplateBinding Description}">
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <sample:GallerySampleCard Header="Border">
+                            <Border Background="#263340" BorderBrush="#4CC27A" BorderThickness="2" CornerRadius="10" Padding="16" HorizontalAlignment="Left">
+                                <TextBlock Text="Decorated child" FontSize="13" Foreground="{DynamicResource SampleGallery.TextPrimary}" />
+                            </Border>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="GroupBox">
+                            <GroupBox Header="Account">
+                                <StackPanel Spacing="6" Margin="10">
+                                    <TextBlock Text="Name: Ada Lovelace" FontSize="13" Foreground="{DynamicResource SampleGallery.TextPrimary}" />
+                                    <TextBlock Text="Role: Engineer" FontSize="13" Foreground="{DynamicResource SampleGallery.TextSecondary}" />
+                                    <TextBlock Text="Status: Active" FontSize="13" Foreground="{DynamicResource SampleGallery.TextSecondary}" />
+                                </StackPanel>
+                            </GroupBox>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="Expander">
+                            <Expander x:Name="PART_Expander" Header="Advanced options" IsExpanded="True">
+                                <StackPanel Spacing="6" Margin="10,8">
+                                    <TextBlock Text="Enable telemetry" FontSize="13" Foreground="{DynamicResource SampleGallery.TextPrimary}" />
+                                    <TextBlock Text="Use experimental renderer" FontSize="13" Foreground="{DynamicResource SampleGallery.TextSecondary}" />
+                                    <TextBlock Text="Cache shaders on disk" FontSize="13" Foreground="{DynamicResource SampleGallery.TextSecondary}" />
+                                </StackPanel>
+                            </Expander>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="Viewbox">
+                            <Viewbox Width="140" Height="110" Stretch="Uniform" HorizontalAlignment="Left">
+                                <TextBlock Text="Aa" FontSize="48" FontWeight="Bold" Foreground="{DynamicResource SampleGallery.Accent}" />
+                            </Viewbox>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="UniformGrid">
+                            <UniformGrid Rows="2" Columns="2" RowSpacing="6" ColumnSpacing="6" Width="160" Height="120" HorizontalAlignment="Left">
+                                <Border Background="#E06C75" CornerRadius="6" />
+                                <Border Background="#98C379" CornerRadius="6" />
+                                <Border Background="#61AFEF" CornerRadius="6" />
+                                <Border Background="#E5C07B" CornerRadius="6" />
+                            </UniformGrid>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="GridSplitter">
+                            <Grid Width="240" Height="100">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="6" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Border Background="#333333" CornerRadius="6">
+                                    <TextBlock
+                                        Text="Left"
+                                        FontSize="13"
+                                        Foreground="{DynamicResource SampleGallery.TextSecondary}"
+                                        HorizontalAlignment="Center"
+                                        VerticalAlignment="Center" />
+                                </Border>
+                                <GridSplitter Grid.Column="1" ResizeDirection="Columns" />
+                                <Border Grid.Column="2" Background="#333333" CornerRadius="6">
+                                    <TextBlock
+                                        Text="Right"
+                                        FontSize="13"
+                                        Foreground="{DynamicResource SampleGallery.TextSecondary}"
+                                        HorizontalAlignment="Center"
+                                        VerticalAlignment="Center" />
+                                </Border>
+                            </Grid>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="ScrollViewer">
+                            <ScrollViewer x:Name="PART_ExampleScroller" Height="130" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                                <StackPanel Spacing="8">
+                                    <TextBlock Text="Scrollable item 1" FontSize="13" Foreground="{DynamicResource SampleGallery.Accent}" />
+                                    <TextBlock Text="Scrollable item 2" FontSize="13" Foreground="{DynamicResource SampleGallery.TextPrimary}" />
+                                    <TextBlock Text="Scrollable item 3" FontSize="13" Foreground="{DynamicResource SampleGallery.TextPrimary}" />
+                                    <TextBlock Text="Scrollable item 4" FontSize="13" Foreground="{DynamicResource SampleGallery.TextPrimary}" />
+                                    <TextBlock Text="Scrollable item 5" FontSize="13" Foreground="{DynamicResource SampleGallery.TextPrimary}" />
+                                    <TextBlock Text="Scrollable item 6" FontSize="13" Foreground="{DynamicResource SampleGallery.TextPrimary}" />
+                                    <TextBlock Text="Scrollable item 7" FontSize="13" Foreground="{DynamicResource SampleGallery.TextPrimary}" />
+                                    <TextBlock Text="Scrollable item 8" FontSize="13" Foreground="{DynamicResource SampleGallery.TextPrimary}" />
+                                    <TextBlock Text="Scrollable item 9" FontSize="13" Foreground="{DynamicResource SampleGallery.TextPrimary}" />
+                                    <TextBlock Text="Scrollable item 10" FontSize="13" Foreground="{DynamicResource SampleGallery.TextPrimary}" />
+                                    <TextBlock Text="Scrollable item 11" FontSize="13" Foreground="{DynamicResource SampleGallery.TextPrimary}" />
+                                    <TextBlock Text="Scrollable item 12" FontSize="13" Foreground="{DynamicResource SampleGallery.TextPrimary}" />
+                                </StackPanel>
+                            </ScrollViewer>
+                        </sample:GallerySampleCard>
+                    </sample:GallerySampleSection>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySamplePanelsSection">
+        <Setter Property="Title" Value="Layout Panels" />
+        <Setter Property="Description" Value="How the layout panels arrange their children." />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySamplePanelsSection">
+                    <sample:GallerySampleSection Title="{TemplateBinding Title}" Description="{TemplateBinding Description}">
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <sample:GallerySampleCard Header="Grid" PreferredWidth="NaN">
+                            <Grid Width="168" Height="104" HorizontalAlignment="Left">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <sample:GallerySamplePanelCell Content="0,0" Background="#4CC27A" Grid.Row="0" Grid.Column="0" />
+                                <sample:GallerySamplePanelCell Content="0,1" Background="#3B82F6" Grid.Row="0" Grid.Column="1" />
+                                <sample:GallerySamplePanelCell Content="1,0" Background="#E07B39" Grid.Row="1" Grid.Column="0" />
+                                <sample:GallerySamplePanelCell Content="1,1" Background="#A755F7" Grid.Row="1" Grid.Column="1" />
+                            </Grid>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="StackPanel" PreferredWidth="NaN">
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
+                                <sample:GallerySamplePanelCell Content="1" Background="#4CC27A" Width="44" Height="44" />
+                                <sample:GallerySamplePanelCell Content="2" Background="#3B82F6" Width="44" Height="44" />
+                                <sample:GallerySamplePanelCell Content="3" Background="#E07B39" Width="44" Height="44" />
+                                <sample:GallerySamplePanelCell Content="4" Background="#A755F7" Width="44" Height="44" />
+                            </StackPanel>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="DockPanel" PreferredWidth="NaN">
+                            <DockPanel Width="200" Height="120" LastChildFill="True" HorizontalAlignment="Left">
+                                <sample:GallerySamplePanelCell Content="Top" Background="#4CC27A" DockPanel.Dock="Top" Height="30" />
+                                <sample:GallerySamplePanelCell Content="Left" Background="#3B82F6" DockPanel.Dock="Left" Width="46" />
+                                <sample:GallerySamplePanelCell Content="Right" Background="#E07B39" DockPanel.Dock="Right" Width="46" />
+                                <sample:GallerySamplePanelCell Content="Fill" Background="#A755F7" />
+                            </DockPanel>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="WrapPanel" PreferredWidth="220">
+                            <WrapPanel Width="196" HorizontalAlignment="Left">
+                                <sample:GallerySamplePanelCell Content="1" Background="#4CC27A" Width="56" Height="36" />
+                                <sample:GallerySamplePanelCell Content="2" Background="#3B82F6" Width="56" Height="36" />
+                                <sample:GallerySamplePanelCell Content="3" Background="#E07B39" Width="56" Height="36" />
+                                <sample:GallerySamplePanelCell Content="4" Background="#A755F7" Width="56" Height="36" />
+                                <sample:GallerySamplePanelCell Content="5" Background="#2DD4BF" Width="56" Height="36" />
+                                <sample:GallerySamplePanelCell Content="6" Background="#F472B6" Width="56" Height="36" />
+                            </WrapPanel>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="Canvas" PreferredWidth="NaN">
+                            <Canvas Width="180" Height="110" HorizontalAlignment="Left">
+                                <sample:GallerySamplePanelCell Content="A" Background="#4CC27A" Width="50" Height="36" Canvas.Left="8" Canvas.Top="8" />
+                                <sample:GallerySamplePanelCell Content="B" Background="#3B82F6" Width="50" Height="36" Canvas.Left="70" Canvas.Top="34" />
+                                <sample:GallerySamplePanelCell Content="C" Background="#E07B39" Width="50" Height="36" Canvas.Left="120" Canvas.Top="64" />
+                            </Canvas>
+                        </sample:GallerySampleCard>
+                    </sample:GallerySampleSection>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySamplePanelCell">
+        <Setter Property="CornerRadius" Value="4" />
+        <Setter Property="Margin" Value="3" />
+        <Setter Property="Foreground" Value="White" />
+        <Setter Property="FontSize" Value="12" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySamplePanelCell">
+                    <Border Background="{TemplateBinding Background}" CornerRadius="{TemplateBinding CornerRadius}" Padding="{TemplateBinding Padding}">
+                        <ContentPresenter
+                            Content="{TemplateBinding Content}"
+                            ContentTemplate="{TemplateBinding ContentTemplate}"
+                            ContentTemplateSelector="{TemplateBinding ContentTemplateSelector}"
+                            ContentStringFormat="{TemplateBinding ContentStringFormat}"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center" />
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySampleNavigationSection">
+        <Setter Property="Title" Value="Navigation &amp; Chrome" />
+        <Setter Property="Description" Value="App navigation, tabs, menus, toolbars and status bars." />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySampleNavigationSection">
+                    <sample:GallerySampleSection Title="{TemplateBinding Title}" Description="{TemplateBinding Description}">
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <sample:GallerySampleCard Header="NavigationView" PreferredWidth="360" MinHeight="240">
+                            <NavigationView
+                                x:Name="PART_Navigation"
+                                PaneTitle="Jalium"
+                                IsSettingsVisible="True"
+                                OpenPaneLength="180"
+                                Width="320"
+                                Height="220"
+                                HorizontalAlignment="Left">
+                                <NavigationView.MenuItems>
+                                    <NavigationViewItem Content="Home" Icon="" IsSelected="True" />
+                                    <NavigationViewItem Content="Documents" Icon="" />
+                                    <NavigationViewItem Content="Downloads" Icon="" />
+                                    <NavigationViewItem Content="Settings" Icon="" />
+                                </NavigationView.MenuItems>
+                            </NavigationView>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="TabControl" PreferredWidth="360">
+                            <TabControl x:Name="PART_Tabs" TabStripPlacement="Top" Width="320" Height="150" HorizontalAlignment="Left">
+                                <TabItem Header="Overview">
+                                    <TextBlock Text="Overview tab content." FontSize="13" Foreground="{DynamicResource SampleGallery.TextPrimary}" Margin="12" />
+                                </TabItem>
+                                <TabItem Header="Details">
+                                    <TextBlock Text="Details tab content." FontSize="13" Foreground="{DynamicResource SampleGallery.TextSecondary}" Margin="12" />
+                                </TabItem>
+                            </TabControl>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="MenuBar" PreferredWidth="360">
+                            <MenuBar Width="320" HorizontalAlignment="Left" VerticalAlignment="Top">
+                                <MenuBarItem Title="File" />
+                                <MenuBarItem Title="Edit" />
+                                <MenuBarItem Title="View" />
+                                <MenuBarItem Title="Help" />
+                            </MenuBar>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="CommandBar" PreferredWidth="400">
+                            <CommandBar DefaultLabelPosition="Right" Width="360" HorizontalAlignment="Left">
+                                <CommandBar.PrimaryCommands>
+                                    <AppBarButton Label="Add">
+                                        <AppBarButton.Icon>
+                                            <SymbolIcon Symbol="Add" />
+                                        </AppBarButton.Icon>
+                                    </AppBarButton>
+                                    <AppBarButton Label="Edit">
+                                        <AppBarButton.Icon>
+                                            <SymbolIcon Symbol="Edit" />
+                                        </AppBarButton.Icon>
+                                    </AppBarButton>
+                                    <AppBarButton Label="Share">
+                                        <AppBarButton.Icon>
+                                            <SymbolIcon Symbol="Share" />
+                                        </AppBarButton.Icon>
+                                    </AppBarButton>
+                                </CommandBar.PrimaryCommands>
+                            </CommandBar>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="Ribbon">
+                            <sample:GallerySamplePlaceholder Title="Ribbon" Description="Office-style ribbon" />
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="ToolBar" PreferredWidth="360">
+                            <ToolBar Width="320" HorizontalAlignment="Left" VerticalAlignment="Top">
+                                <Button Content="Cut" Padding="12,6" />
+                                <Button Content="Copy" Padding="12,6" />
+                                <Button Content="Paste" Padding="12,6" />
+                            </ToolBar>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="StatusBar" PreferredWidth="360">
+                            <StatusBar Width="320" HorizontalAlignment="Left" VerticalAlignment="Top">
+                                <StatusBarItem Content="Ready" />
+                                <Separator Orientation="Vertical" />
+                                <StatusBarItem Content="Ln 1, Col 1" />
+                                <Separator Orientation="Vertical" />
+                                <StatusBarItem Content="UTF-8" />
+                            </StatusBar>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="Frame">
+                            <sample:GallerySamplePlaceholder Title="Frame" Description="page navigation host" />
+                        </sample:GallerySampleCard>
+                    </sample:GallerySampleSection>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySampleFlyoutsSection">
+        <Setter Property="Title" Value="Menus &amp; Flyouts" />
+        <Setter Property="Description" Value="Context menus, flyout menus and swipe actions, shown via their anchors." />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySampleFlyoutsSection">
+                    <sample:GallerySampleSection Title="{TemplateBinding Title}" Description="{TemplateBinding Description}">
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <sample:GallerySampleCard Header="MenuFlyout">
+                            <StackPanel Spacing="8">
+                                <Button Content="Open menu" Padding="16,8" HorizontalAlignment="Left" />
+                                <TextBlock
+                                    Text="Opens a MenuFlyout with Cut / Copy / Paste items."
+                                    FontSize="13"
+                                    Foreground="{DynamicResource SampleGallery.TextSecondary}"
+                                    TextWrapping="Wrap" />
+                            </StackPanel>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="ContextMenu">
+                            <Border
+                                Background="{DynamicResource SampleGallery.HeaderBackground}"
+                                BorderBrush="{DynamicResource SampleGallery.CardStroke}"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                Height="92">
+                                <TextBlock
+                                    Text="Right-click me"
+                                    FontSize="13"
+                                    Foreground="{DynamicResource SampleGallery.TextSecondary}"
+                                    HorizontalAlignment="Center"
+                                    VerticalAlignment="Center" />
+                            </Border>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="CommandBarFlyout">
+                            <sample:GallerySamplePlaceholder Title="CommandBarFlyout" Description="contextual command flyout" />
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="SwipeControl">
+                            <Border BorderBrush="{DynamicResource SampleGallery.CardStroke}" BorderThickness="1" CornerRadius="6" HorizontalAlignment="Left">
+                                <SwipeControl x:Name="PART_Swipe" Width="260" Height="64" Background="{DynamicResource SampleGallery.HeaderBackground}">
+                                    <TextBlock
+                                        Text="Swipe for actions"
+                                        FontSize="13"
+                                        Foreground="{DynamicResource SampleGallery.TextSecondary}"
+                                        HorizontalAlignment="Center"
+                                        VerticalAlignment="Center" />
+                                </SwipeControl>
+                            </Border>
+                        </sample:GallerySampleCard>
+                    </sample:GallerySampleSection>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySampleDialogsSection">
+        <Setter Property="Title" Value="Dialogs &amp; Notifications" />
+        <Setter Property="Description" Value="Modal dialogs and toasts, shown via trigger buttons and inline previews." />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySampleDialogsSection">
+                    <sample:GallerySampleSection Title="{TemplateBinding Title}" Description="{TemplateBinding Description}">
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <sample:GallerySampleCard Header="ContentDialog">
+                            <Button Content="Show ContentDialog" Padding="16,8" HorizontalAlignment="Left" VerticalAlignment="Top" />
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="MessageBox">
+                            <Button Content="Show MessageBox" Padding="16,8" HorizontalAlignment="Left" VerticalAlignment="Top" />
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="ToastNotificationItem" PreferredWidth="320" ContentScrollBarVisibility="Disabled">
+                            <StackPanel Spacing="10" HorizontalAlignment="Left" VerticalAlignment="Top">
+                                <ToastNotificationItem Severity="Success" Title="Saved" Message="Your changes were saved successfully." IsAutoDismissEnabled="False" Width="280" />
+                                <ToastNotificationItem
+                                    Severity="Information"
+                                    Title="Sync complete"
+                                    Message="12 items updated from the server."
+                                    IsAutoDismissEnabled="False"
+                                    Width="280" />
+                            </StackPanel>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="OpenFileDialog / SaveFileDialog">
+                            <Button Content="Open file dialog" Padding="16,8" HorizontalAlignment="Left" VerticalAlignment="Top" />
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="NotifyIcon">
+                            <sample:GallerySamplePlaceholder Title="NotifyIcon" Description="system tray icon + balloon tips" />
+                        </sample:GallerySampleCard>
+                    </sample:GallerySampleSection>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySampleEditorsSection">
+        <Setter Property="Title" Value="Documents &amp; Editors" />
+        <Setter Property="Description" Value="Code editing with syntax highlighting, rich-text editing and document viewing." />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySampleEditorsSection">
+                    <sample:GallerySampleSection Title="{TemplateBinding Title}" Description="{TemplateBinding Description}">
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <sample:GallerySampleCard Header="EditControl" PreferredWidth="480">
+                            <EditControl
+                                x:Name="PART_CodeEditor"
+                                Text="public static int Fib(int n)&#10;{&#10;    if (n &lt; 2) return n;&#10;    return Fib(n - 1) + Fib(n - 2);&#10;}"
+                                Language="csharp"
+                                ShowLineNumbers="True"
+                                Width="452"
+                                Height="170"
+                                HorizontalAlignment="Left" />
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="RichTextBox" PreferredWidth="380">
+                            <sample:GallerySampleRichTextDemo />
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="DocumentViewer">
+                            <sample:GallerySamplePlaceholder Title="DocumentViewer" Description="Paginated document viewing with zoom, page navigation and search." />
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="FlowDocumentScrollViewer">
+                            <sample:GallerySamplePlaceholder Title="FlowDocumentScrollViewer" Description="Continuously scrolling flow-document host." />
+                        </sample:GallerySampleCard>
+                    </sample:GallerySampleSection>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySampleRichTextDemo">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySampleRichTextDemo">
+                    <Border>
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <RichTextBox x:Name="PART_Editor" Width="352" Height="150" HorizontalAlignment="Left" />
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySampleChartsSection">
+        <Setter Property="Title" Value="Charts" />
+        <Setter Property="Description" Value="GPU-rendered data visualizations driven by small sample series." />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySampleChartsSection">
+                    <sample:GallerySampleSection Title="{TemplateBinding Title}" Description="{TemplateBinding Description}">
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <sample:GallerySampleCard Header="BarChart" PreferredWidth="480">
+                            <charts:BarChart
+                                x:Name="PART_BarChart"
+                                Title="Quarterly revenue"
+                                Series="{Binding Data.Bars, RelativeSource={RelativeSource AncestorType=sample:GallerySampleChartsSection}}"
+                                Width="440"
+                                Height="240" />
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="LineChart" PreferredWidth="480">
+                            <charts:LineChart
+                                x:Name="PART_LineChart"
+                                Title="Active users"
+                                Series="{Binding Data.Lines, RelativeSource={RelativeSource AncestorType=sample:GallerySampleChartsSection}}"
+                                ShowArea="True"
+                                ShowDataPoints="True"
+                                Width="440"
+                                Height="240" />
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="PieChart" PreferredWidth="340">
+                            <charts:PieChart
+                                x:Name="PART_PieChart"
+                                Title="Browser share"
+                                Series="{Binding Data.Pie, RelativeSource={RelativeSource AncestorType=sample:GallerySampleChartsSection}}"
+                                Width="300"
+                                Height="240" />
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="ScatterPlot" PreferredWidth="480">
+                            <charts:ScatterPlot
+                                x:Name="PART_ScatterPlot"
+                                Title="Height vs. weight"
+                                Series="{Binding Data.Scatter, RelativeSource={RelativeSource AncestorType=sample:GallerySampleChartsSection}}"
+                                Width="440"
+                                Height="240" />
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="GaugeChart" PreferredWidth="300">
+                            <charts:GaugeChart Title="CPU load" Minimum="0" Maximum="100" Value="72" Width="260" Height="200" />
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="Sparkline" PreferredWidth="280">
+                            <StackPanel Spacing="10">
+                                <charts:Sparkline
+                                    Values="{Binding Data.LineValues, RelativeSource={RelativeSource AncestorType=sample:GallerySampleChartsSection}}"
+                                    SparklineType="Line"
+                                    Width="240"
+                                    Height="56" />
+                                <charts:Sparkline
+                                    Values="{Binding Data.BarValues, RelativeSource={RelativeSource AncestorType=sample:GallerySampleChartsSection}}"
+                                    SparklineType="Bar"
+                                    Width="240"
+                                    Height="56" />
+                            </StackPanel>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="CandlestickChart" PreferredWidth="480">
+                            <charts:CandlestickChart
+                                x:Name="PART_CandlestickChart"
+                                Title="JAL/USD"
+                                ItemsSource="{Binding Data.Candles, RelativeSource={RelativeSource AncestorType=sample:GallerySampleChartsSection}}"
+                                Width="440"
+                                Height="240" />
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="Heatmap" PreferredWidth="360">
+                            <charts:Heatmap
+                                x:Name="PART_Heatmap"
+                                Title="Activity"
+                                Data="{Binding Data.Heat, RelativeSource={RelativeSource AncestorType=sample:GallerySampleChartsSection}}"
+                                XLabels="{Binding Data.XLabels, RelativeSource={RelativeSource AncestorType=sample:GallerySampleChartsSection}}"
+                                YLabels="{Binding Data.YLabels, RelativeSource={RelativeSource AncestorType=sample:GallerySampleChartsSection}}"
+                                ShowCellValues="True"
+                                Width="320"
+                                Height="220" />
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="TreeMap" PreferredWidth="360">
+                            <charts:TreeMap
+                                x:Name="PART_TreeMap"
+                                Title="Disk usage"
+                                Items="{Binding Data.DiskUsage, RelativeSource={RelativeSource AncestorType=sample:GallerySampleChartsSection}}"
+                                Width="320"
+                                Height="220" />
+                        </sample:GallerySampleCard>
+                    </sample:GallerySampleSection>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySampleDiagramsSection">
+        <Setter Property="Title" Value="Diagrams" />
+        <Setter Property="Description" Value="Flow, network, gantt, sankey and mermaid-style diagrams from small sample models." />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySampleDiagramsSection">
+                    <sample:GallerySampleSection Title="{TemplateBinding Title}" Description="{TemplateBinding Description}">
+                        <sample:GallerySampleSection.Resources>
+                            <Style TargetType="charts:FlowchartDiagram">
+                                <Setter Property="NodeFill" Value="#35303E" />
+                                <Setter Property="NodeBorderBrush" Value="#B9A3FF" />
+                                <Setter Property="NodeForeground" Value="{DynamicResource SampleGallery.TextPrimary}" />
+                                <Setter Property="EdgeLabelBackground" Value="#35303E" />
+                                <Setter Property="EdgeLabelForeground" Value="{DynamicResource SampleGallery.TextPrimary}" />
+                            </Style>
+                        </sample:GallerySampleSection.Resources>
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <sample:GallerySampleCard Header="SankeyDiagram" PreferredWidth="480">
+                            <charts:SankeyDiagram
+                                x:Name="PART_Sankey"
+                                Nodes="{Binding Data.SankeyNodes, RelativeSource={RelativeSource AncestorType=sample:GallerySampleDiagramsSection}}"
+                                Links="{Binding Data.SankeyLinks, RelativeSource={RelativeSource AncestorType=sample:GallerySampleDiagramsSection}}"
+                                Width="440"
+                                Height="260" />
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="GanttChart" PreferredWidth="480">
+                            <charts:GanttChart
+                                x:Name="PART_Gantt"
+                                Tasks="{Binding Data.Tasks, RelativeSource={RelativeSource AncestorType=sample:GallerySampleDiagramsSection}}"
+                                Width="440"
+                                Height="220">
+                                <charts:GanttChart.XAxis><charts:DateTimeAxis DateFormat="MM-dd" IntervalType="Week" /></charts:GanttChart.XAxis>
+                            </charts:GanttChart>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="NetworkGraph" PreferredWidth="400">
+                            <charts:NetworkGraph
+                                x:Name="PART_Network"
+                                Nodes="{Binding Data.NetworkNodes, RelativeSource={RelativeSource AncestorType=sample:GallerySampleDiagramsSection}}"
+                                Links="{Binding Data.NetworkLinks, RelativeSource={RelativeSource AncestorType=sample:GallerySampleDiagramsSection}}"
+                                Width="380"
+                                Height="240" />
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="FlowchartDiagram" PreferredWidth="400">
+                            <charts:FlowchartDiagram
+                                x:Name="PART_Flowchart"
+                                Nodes="{Binding Data.FlowNodes, RelativeSource={RelativeSource AncestorType=sample:GallerySampleDiagramsSection}}"
+                                Edges="{Binding Data.FlowEdges, RelativeSource={RelativeSource AncestorType=sample:GallerySampleDiagramsSection}}"
+                                Width="380"
+                                Height="240" />
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="MermaidDiagram" PreferredWidth="420">
+                            <MermaidDiagram
+                                x:Name="PART_Mermaid"
+                                Source="{Binding Data.MermaidSource, RelativeSource={RelativeSource AncestorType=sample:GallerySampleDiagramsSection}}"
+                                Width="400"
+                                Height="240" />
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="GeographicHeatmap" PreferredWidth="300">
+                            <sample:GallerySamplePlaceholder
+                                Title="GeographicHeatmap"
+                                Description="Geographic intensity overlay built from weighted points and a color gradient." />
+                        </sample:GallerySampleCard>
+                    </sample:GallerySampleSection>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySampleEffectsSection">
+        <Setter Property="Title" Value="Backdrop Effects" />
+        <Setter Property="Description" Value="Blur and material effects applied to the content behind an element (IBackdropEffect)." />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySampleEffectsSection">
+                    <sample:GallerySampleSection Title="{TemplateBinding Title}" Description="{TemplateBinding Description}" ItemsSource="{TemplateBinding Examples}">
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <sample:GallerySampleSection.ItemTemplate>
+                            <DataTemplate>
+                                <sample:GallerySampleCard Header="{Binding Title}" PreferredWidth="360">
+                                    <sample:GallerySampleBackdropDemo Material="{Binding Effect}" />
+                                </sample:GallerySampleCard>
+                            </DataTemplate>
+                        </sample:GallerySampleSection.ItemTemplate>
+                    </sample:GallerySampleSection>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySampleBackdropDemo">
+        <Setter Property="Background" Value="#101014" />
+        <Setter Property="CornerRadius" Value="8" />
+        <Setter Property="ClipToBounds" Value="True" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySampleBackdropDemo">
+                    <Border Background="{TemplateBinding Background}" CornerRadius="{TemplateBinding CornerRadius}">
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <Grid Height="150">
+                            <ItemsControl ItemsSource="{TemplateBinding Tiles}" Width="309" Height="114" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <UniformGrid Rows="3" Columns="8" RowSpacing="3" ColumnSpacing="3" />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Width="36" Height="36" CornerRadius="4" Background="{Binding}" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <Border
+                                x:Name="PART_EffectPanel"
+                                Margin="22,16"
+                                CornerRadius="14"
+                                BorderBrush="#60FFFFFF"
+                                BorderThickness="1"
+                                BackdropEffect="{TemplateBinding Material}">
+                                <Border Background="#D0181818" CornerRadius="4" Padding="6,3" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                    <TextBlock
+                                    Text="{TemplateBinding EffectName}"
+                                    FontSize="14"
+                                    FontWeight="SemiBold"
+                                    Foreground="{DynamicResource SampleGallery.TextPrimary}"
+                                    HorizontalAlignment="Center"
+                                    VerticalAlignment="Center" />
+                                </Border>
+                            </Border>
+                        </Grid>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySampleListBoxDemo">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySampleListBoxDemo">
+                    <Border>
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <ListBox
+                            x:Name="PART_List"
+                            ItemsSource="{TemplateBinding Entries}"
+                            SelectedIndex="{Binding SelectedIndex, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                            Height="150"
+                            HorizontalAlignment="Stretch" />
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySampleListViewDemo">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySampleListViewDemo">
+                    <Border>
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <ListView
+                            x:Name="PART_List"
+                            ItemsSource="{TemplateBinding Entries}"
+                            SelectedIndex="{Binding SelectedIndex, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                            Height="150"
+                            HorizontalAlignment="Stretch" />
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySampleDataGridDemo">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySampleDataGridDemo">
+                    <Border>
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <DataGrid
+                            x:Name="PART_Grid"
+                            AutoGenerateColumns="True"
+                            ItemsSource="{TemplateBinding Rows}"
+                            SelectedIndex="{Binding SelectedIndex, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                            Width="452"
+                            Height="190"
+                            HorizontalAlignment="Left" />
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySampleTreeDemo">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySampleTreeDemo">
+                    <Border>
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <TreeView x:Name="PART_Tree" Height="170" HorizontalAlignment="Stretch">
+                            <TreeViewItem Header="Solution 'Jalium.UI'" IsExpanded="True">
+                                <TreeViewItem Header="Jalium.UI.Core" />
+                                <TreeViewItem Header="Jalium.UI.Controls" />
+                                <TreeViewItem Header="Jalium.UI.Media" />
+                            </TreeViewItem>
+                            <TreeViewItem Header="Samples" IsExpanded="True">
+                                <TreeViewItem Header="Jalium.UI.Gallery" />
+                                <TreeViewItem Header="Jalium.UI.Demo" />
+                            </TreeViewItem>
+                        </TreeView>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySampleQrDemo">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySampleQrDemo">
+                    <Border>
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <Border Background="White" CornerRadius="6" Padding="10" HorizontalAlignment="Left">
+                            <QRCode x:Name="PART_QrCode" Text="{TemplateBinding Text}" ErrorCorrectionLevel="Q" Width="150" Height="150" />
+                        </Border>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySampleInkDemo">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySampleInkDemo">
+                    <Border>
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <InkCanvas
+                            x:Name="PART_Ink"
+                            Strokes="{Binding Strokes, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                            Width="280"
+                            Height="150"
+                            HorizontalAlignment="Left" />
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySampleDiffDemo">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySampleDiffDemo">
+                    <Border>
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <DiffViewer x:Name="PART_Diff" OriginalText="{TemplateBinding OriginalText}" ModifiedText="{TemplateBinding ModifiedText}" Width="452" Height="190" />
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySampleJsonDemo">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySampleJsonDemo">
+                    <Border>
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <JsonTreeViewer x:Name="PART_Json" JsonText="{TemplateBinding JsonText}" Width="312" Height="190" />
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySamplePropertyDemo">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySamplePropertyDemo">
+                    <Border>
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <PropertyGrid x:Name="PART_PropertyGrid" SelectedObject="{TemplateBinding SelectedObject}" Width="312" Height="210" />
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySampleHexDemo">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySampleHexDemo">
+                    <Border>
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <HexEditor x:Name="PART_HexEditor" Data="{Binding Data, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}" Width="452" Height="190" />
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style x:Key="SampleGallery.MarkdownHeading" TargetType="MarkdownHeadingPresenter">
+        <Setter Property="Foreground" Value="#B9A3FF" />
+        <Setter Property="HasSeparator" Value="False" />
+        <Setter Property="Margin" Value="0,0,0,8" />
+    </Style>
+    <Style x:Key="SampleGallery.MarkdownQuote" TargetType="MarkdownQuotePresenter">
+        <Setter Property="Background" Value="{x:Null}" />
+        <Setter Property="BorderBrush" Value="#F59E0B" />
+        <Setter Property="BorderThickness" Value="3,0,0,0" />
+        <Setter Property="Padding" Value="10,4,0,0" />
+        <Setter Property="CornerRadius" Value="0" />
+    </Style>
+    <Style x:Key="SampleGallery.MarkdownListItem" TargetType="MarkdownListItemPresenter">
+        <Setter Property="BulletGlyph" Value="→" />
+        <Setter Property="MarkerForeground" Value="#B9A3FF" />
+        <Setter Property="MarkerWidth" Value="20" />
+    </Style>
+    <Style TargetType="sample:GallerySampleTextDisplaySection">
+        <Setter Property="Title" Value="Text &amp; Icons" />
+        <Setter Property="Description" Value="Read-only text, rich markdown, and the icon element family." />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySampleTextDisplaySection">
+                    <sample:GallerySampleSection Title="{TemplateBinding Title}" Description="{TemplateBinding Description}">
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <sample:GallerySampleCard Header="TextBlock" PreferredWidth="300" ContentScrollBarVisibility="Disabled">
+                            <StackPanel>
+                                <TextBlock Text="Headline text" FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource SampleGallery.TextPrimary}" />
+                                <TextBlock
+                                    Text="A secondary supporting line that wraps across the available width when the content is long."
+                                    FontSize="13"
+                                    Foreground="{DynamicResource SampleGallery.TextSecondary}"
+                                    TextWrapping="Wrap" />
+                            </StackPanel>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="Label" PreferredWidth="300">
+                            <Label Content="Account name" />
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="Markdown" PreferredWidth="360" ContentScrollBarVisibility="Disabled">
+                            <Markdown HorizontalScrollBarVisibility="Disabled"
+                                Text="### Markdown&#10;Renders **bold**, *italic*, and `inline code`.&#10;&#10;- First item&#10;- Second item&#10;- Third item&#10;" />
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="Markdown (restyled)" PreferredWidth="360" ContentScrollBarVisibility="Disabled">
+                            <Markdown HorizontalScrollBarVisibility="Disabled"
+                                Text="### Restyled&#10;Headings, quotes, bullets and `inline code` all restyled from outside.&#10;&#10;&gt; A quote with its own rule.&#10;&#10;- First item&#10;- Second item&#10;"
+                                HeadingStyle="{StaticResource SampleGallery.MarkdownHeading}"
+                                QuoteStyle="{StaticResource SampleGallery.MarkdownQuote}"
+                                ListItemStyle="{StaticResource SampleGallery.MarkdownListItem}"
+                                InlineCodeForeground="#B9A3FF"
+                                InlineCodeBackground="#287C3AED">
+                                <Markdown.InlineCodeStyle>
+                                    <MarkdownInlineStyle CornerRadius="9" Padding="7,2" FontSizeRatio="0.92" />
+                                </Markdown.InlineCodeStyle>
+                                <Markdown.LinkStyle>
+                                    <MarkdownInlineStyle Decorations="None" FontWeight="SemiBold" />
+                                </Markdown.LinkStyle>
+                            </Markdown>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="Markdown (GFM)" PreferredWidth="360" ContentScrollBarVisibility="Disabled">
+                            <Markdown HorizontalScrollBarVisibility="Disabled"
+                                Text="### GFM&#10;~~Struck out~~, `get_user_name` stays whole, and MAX_INT_VALUE too.&#10;&#10;| Left | Center | Right |&#10;| :--- | :----: | ----: |&#10;| a | b | c |&#10;&#10;- [x] Task done&#10;- [ ] Task pending&#10;&#10;Visit https://jalium.dev for the docs[^1].&#10;&#10;[^1]: Footnotes render as their own block.&#10;" />
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="Markdown (streaming)" PreferredWidth="360" ContentScrollBarVisibility="Disabled">
+                            <sample:GallerySampleMarkdownReplay x:Name="PART_StreamingReplay" />
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="FontIcon" PreferredWidth="300">
+                            <StackPanel Orientation="Horizontal">
+                                <FontIcon Glyph="◆" FontFamily="{ThemeResource BodyFontFamily}" FontSize="24" Margin="0,0,16,0" />
+                                <FontIcon Glyph="★" FontFamily="{ThemeResource BodyFontFamily}" FontSize="24" Margin="0,0,16,0" />
+                                <FontIcon Glyph="●" FontFamily="{ThemeResource BodyFontFamily}" FontSize="24" Margin="0,0,16,0" />
+                                <FontIcon Glyph="✓" FontFamily="{ThemeResource BodyFontFamily}" FontSize="24" Margin="0,0,0,0" />
+                            </StackPanel>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="SymbolIcon" PreferredWidth="300">
+                            <StackPanel Orientation="Horizontal">
+                                <SymbolIcon Symbol="Home" Margin="0,0,16,0" />
+                                <SymbolIcon Symbol="Save" Margin="0,0,16,0" />
+                                <SymbolIcon Symbol="Setting" Margin="0,0,16,0" />
+                                <SymbolIcon Symbol="Mail" Margin="0,0,0,0" />
+                            </StackPanel>
+                        </sample:GallerySampleCard>
+                        <sample:GallerySampleCard Header="PathIcon" PreferredWidth="300">
+                            <StackPanel Orientation="Horizontal">
+                                <PathIcon Data="M 12,2 L 22,11 L 19,11 L 19,21 L 14,21 L 14,14 L 10,14 L 10,21 L 5,21 L 5,11 L 2,11 Z" Width="28" Height="28" Margin="0,0,16,0" />
+                                <PathIcon Data="M 12,2 L 22,12 L 12,22 L 2,12 Z" Width="28" Height="28" Margin="0,0,16,0" />
+                                <PathIcon Data="M 9,2 L 15,2 L 15,9 L 22,9 L 22,15 L 15,15 L 15,22 L 9,22 L 9,15 L 2,15 L 2,9 L 9,9 Z" Width="28" Height="28" Margin="0,0,16,0" />
+                                <PathIcon Data="M 2,2 L 22,2 L 22,22 L 2,22 Z M 7,7 L 17,7 L 17,17 L 7,17 Z" Width="28" Height="28" Margin="0,0,16,0" />
+                                <PathIcon
+                                    Data="M 2,12 A 10,10 0 1 1 22,12 A 10,10 0 1 1 2,12 Z M 7,12 A 5,5 0 1 1 17,12 A 5,5 0 1 1 7,12 Z"
+                                    Width="28"
+                                    Height="28"
+                                    Margin="0,0,16,0" />
+                                <PathIcon Data="M 12,1 L 18.5,20.9 L 1.5,8.6 L 22.5,8.6 L 5.5,20.9 Z" Width="28" Height="28" Margin="0,0,0,0" />
+                            </StackPanel>
+                        </sample:GallerySampleCard>
+                    </sample:GallerySampleSection>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="sample:GallerySampleMarkdownReplay">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="sample:GallerySampleMarkdownReplay">
+                    <StackPanel>
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                            <VisualStateGroup x:Name="PlaybackStates">
+                                <VisualState x:Name="Ready" />
+                                <VisualState x:Name="Playing" />
+                                <VisualState x:Name="Completed" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <Markdown x:Name="PART_Markdown" Height="220" AutoScrollToEnd="True" HorizontalScrollBarVisibility="Disabled" />
+                        <Button x:Name="PART_Replay" Content="Replay" Margin="0,8,0,0" />
+                    </StackPanel>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+</ResourceDictionary>

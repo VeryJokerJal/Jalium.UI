@@ -1,4 +1,6 @@
 using System.Collections;
+using System.Windows.Input;
+using Jalium.UI.Input;
 using Jalium.UI.Controls;
 using Jalium.UI.Markup;
 using Jalium.UI.Media;
@@ -8,8 +10,16 @@ namespace Jalium.UI.Navigation;
 /// <summary>
 /// A Window that supports content navigation within a single window.
 /// </summary>
+[TemplatePart(Name = "PART_NavigationBar", Type = typeof(FrameworkElement))]
+[TemplatePart(Name = "PART_ContentPresenter", Type = typeof(ContentPresenter))]
+[TemplateVisualState(Name = "NavigationVisible", GroupName = "NavigationStates")]
+[TemplateVisualState(Name = "NavigationHidden", GroupName = "NavigationStates")]
 public class NavigationWindow : Window, IUriContext
 {
+    static NavigationWindow()
+    {
+        DefaultStyleKeyProperty.OverrideMetadata(typeof(NavigationWindow), new PropertyMetadata(typeof(NavigationWindow)));
+    }
     private Uri? _baseUri;
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
@@ -18,7 +28,11 @@ public class NavigationWindow : Window, IUriContext
     }
 
     private NavigationService? _navigationService;
-    private Frame? _frame;
+    private object? _presentedContent;
+    private bool _updatingNavigationProperties;
+    private RelayCommand? _goBackCommand;
+    private RelayCommand? _goForwardCommand;
+    private RelayCommand? _refreshCommand;
 
     #region Dependency Properties
 
@@ -66,6 +80,33 @@ public class NavigationWindow : Window, IUriContext
     public static readonly DependencyProperty CanGoForwardProperty = CanGoForwardPropertyKey.DependencyProperty;
     public static readonly DependencyProperty BackStackProperty = BackStackPropertyKey.DependencyProperty;
     public static readonly DependencyProperty ForwardStackProperty = ForwardStackPropertyKey.DependencyProperty;
+
+    private static readonly DependencyPropertyKey CurrentSourcePropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(CurrentSource), typeof(Uri), typeof(NavigationWindow), new PropertyMetadata(null));
+    public static readonly DependencyProperty CurrentSourceProperty = CurrentSourcePropertyKey.DependencyProperty;
+
+    private static readonly DependencyPropertyKey GoBackCommandPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(GoBackCommand), typeof(ICommand), typeof(NavigationWindow), new PropertyMetadata(null));
+    public static readonly DependencyProperty GoBackCommandProperty = GoBackCommandPropertyKey.DependencyProperty;
+    public ICommand GoBackCommand => (ICommand)GetValue(GoBackCommandProperty)!;
+
+    private static readonly DependencyPropertyKey GoForwardCommandPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(GoForwardCommand), typeof(ICommand), typeof(NavigationWindow), new PropertyMetadata(null));
+    public static readonly DependencyProperty GoForwardCommandProperty = GoForwardCommandPropertyKey.DependencyProperty;
+    public ICommand GoForwardCommand => (ICommand)GetValue(GoForwardCommandProperty)!;
+
+    private static readonly DependencyPropertyKey RefreshCommandPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(RefreshCommand), typeof(ICommand), typeof(NavigationWindow), new PropertyMetadata(null));
+    public static readonly DependencyProperty RefreshCommandProperty = RefreshCommandPropertyKey.DependencyProperty;
+    public ICommand RefreshCommand => (ICommand)GetValue(RefreshCommandProperty)!;
+
+    public static readonly DependencyProperty NavigationBarBackgroundProperty = DependencyProperty.Register(
+        nameof(NavigationBarBackground), typeof(Brush), typeof(NavigationWindow), new PropertyMetadata(null));
+    public Brush? NavigationBarBackground { get => (Brush?)GetValue(NavigationBarBackgroundProperty); set => SetValue(NavigationBarBackgroundProperty, value); }
+
+    public static readonly DependencyProperty NavigationBarBorderBrushProperty = DependencyProperty.Register(
+        nameof(NavigationBarBorderBrush), typeof(Brush), typeof(NavigationWindow), new PropertyMetadata(null));
+    public Brush? NavigationBarBorderBrush { get => (Brush?)GetValue(NavigationBarBorderBrushProperty); set => SetValue(NavigationBarBorderBrushProperty, value); }
 
     #endregion
 
@@ -131,7 +172,7 @@ public class NavigationWindow : Window, IUriContext
     /// <summary>
     /// Gets the URI of the content that was last navigated to.
     /// </summary>
-    public Uri? CurrentSource => NavigationService.CurrentSource;
+    public Uri? CurrentSource => (Uri?)GetValue(CurrentSourceProperty);
 
     Uri? IUriContext.BaseUri
     {
@@ -148,19 +189,21 @@ public class NavigationWindow : Window, IUriContext
     /// </summary>
     public NavigationWindow()
     {
-        InitializeNavigationWindow();
+        _goBackCommand = new RelayCommand(GoBack, () => CanGoBack);
+        _goForwardCommand = new RelayCommand(GoForward, () => CanGoForward);
+        _refreshCommand = new RelayCommand(Refresh, () => NavigationService.Content != null);
+        SetValue(GoBackCommandPropertyKey, _goBackCommand);
+        SetValue(GoForwardCommandPropertyKey, _goForwardCommand);
+        SetValue(RefreshCommandPropertyKey, _refreshCommand);
+        _navigationService ??= CreateNavigationService();
+        UpdateJournalProperties();
+        AddHandler(KeyDownEvent, new KeyEventHandler(OnNavigationKeyDown));
     }
 
-    private void InitializeNavigationWindow()
+    public override void OnApplyTemplate()
     {
-        // Create internal frame for content hosting
-        _frame = new Frame();
-
-        _navigationService = CreateNavigationService();
-        UpdateJournalProperties();
-
-        // Set the frame as the window content
-        base.Content = CreateNavigationChrome(_frame);
+        base.OnApplyTemplate();
+        UpdateNavigationStates();
     }
 
     #endregion
@@ -173,7 +216,7 @@ public class NavigationWindow : Window, IUriContext
     /// </summary>
     public new object? Content
     {
-        get => _frame?.Content;
+        get => base.Content;
         set
         {
             if (value != null)
@@ -390,158 +433,98 @@ public class NavigationWindow : Window, IUriContext
 
     private NavigationService CreateNavigationService()
     {
-        var service = new NavigationService();
-
-        // Wire up navigation events
-        service.Navigated += OnNavigationServiceNavigated;
-        service.StateChanged += (_, _) => UpdateJournalProperties();
-
+        var service = new NavigationService(this);
+        service.StateChanged += OnNavigationStateChanged;
         return service;
     }
 
+    private void OnNavigationStateChanged(object? sender, EventArgs e) => UpdateJournalProperties();
+
     private void UpdateJournalProperties()
     {
-        NavigationService service = NavigationService;
+        var service = NavigationService;
         SetValue(CanGoBackPropertyKey, service.CanGoBack);
         SetValue(CanGoForwardPropertyKey, service.CanGoForward);
         SetValue(BackStackPropertyKey, service.BackStack);
         SetValue(ForwardStackPropertyKey, service.ForwardStack);
+        SetValue(CurrentSourcePropertyKey, service.CurrentSource);
+        _goBackCommand?.RaiseCanExecuteChanged();
+        _goForwardCommand?.RaiseCanExecuteChanged();
+        _refreshCommand?.RaiseCanExecuteChanged();
     }
 
-    private void OnNavigationServiceNavigated(object? sender, NavigationEventArgs e)
+    internal void SetNavigationContent(object? content, Uri? source)
     {
+        var wasUpdating = _updatingNavigationProperties;
+        _updatingNavigationProperties = true;
+        try
+        {
+            SetCurrentValue(ContentProperty, content);
+            if (!ReferenceEquals(NavigationService.Content, content)) return;
+            SetCurrentValue(SourceProperty, source);
+            PresentContent(content);
+            if (!ReferenceEquals(NavigationService.Content, content)) return;
+        }
+        finally { _updatingNavigationProperties = wasUpdating; }
+
+        if (content is Page page && !string.IsNullOrEmpty(page.Title))
+            SetCurrentValue(TitleProperty, page.Title);
         UpdateJournalProperties();
-        // Update the frame content
-        if (_frame != null)
-        {
-            _frame.Content = e.Content;
-        }
-
-        // Update window title from page title
-        if (e.Content is Page page && !string.IsNullOrEmpty(page.Title))
-        {
-            Title = page.Title;
-        }
     }
 
-    private FrameworkElement CreateNavigationChrome(Frame frame)
+    protected override void OnContentChanged(object? oldContent, object? newContent)
     {
-        if (!ShowsNavigationUI)
+        if (_updatingNavigationProperties)
         {
-            return frame;
+            PresentContent(newContent);
+            return;
         }
 
-        // Create navigation chrome with back/forward buttons
-        var grid = new Grid();
-
-        // Navigation bar row
-        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(40) });
-        // Content row
-        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-
-        // Create navigation bar
-        var navigationBar = CreateNavigationBar();
-        Grid.SetRow(navigationBar, 0);
-        grid.Children.Add(navigationBar);
-
-        // Add frame
-        Grid.SetRow(frame, 1);
-        grid.Children.Add(frame);
-
-        return grid;
+        // A Binding writes the inherited Content DP directly, bypassing the CLR
+        // navigation setter. Keep that path on the same journal and cancellation
+        // contract as Navigate(). Null retains the existing CLR setter behavior.
+        if (newContent != null && NavigationService.Navigate(newContent)) return;
+        SetNavigationContent(NavigationService.Content, NavigationService.CurrentSource);
     }
 
-    private FrameworkElement CreateNavigationBar()
+    private void PresentContent(object? content)
     {
-        var panel = new StackPanel
+        if (ReferenceEquals(_presentedContent, content)) return;
+        var previous = _presentedContent;
+        _presentedContent = content;
+        base.OnContentChanged(previous, content);
+    }
+
+    private void UpdateNavigationStates()
+        => VisualStateManager.GoToState(this, ShowsNavigationUI ? "NavigationVisible" : "NavigationHidden", false);
+
+    private void OnNavigationKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Handled || !IsEnabled) return;
+        ICommand? command = e.Key switch
         {
-            Orientation = Orientation.Horizontal,
-            Height = 44,
-            VerticalAlignment = VerticalAlignment.Center
+            Key.BrowserBack => GoBackCommand,
+            Key.BrowserForward => GoForwardCommand,
+            Key.Left when e.KeyboardModifiers == ModifierKeys.Alt => GoBackCommand,
+            Key.Right when e.KeyboardModifiers == ModifierKeys.Alt => GoForwardCommand,
+            Key.F5 => RefreshCommand,
+            Key.R when e.KeyboardModifiers == ModifierKeys.Control => RefreshCommand,
+            _ => null,
         };
-
-        // Helper to create a compact chrome button with consistent styling.
-        Button CreateChromeButton(string glyph, Thickness margin)
-        {
-            return new Button
-            {
-                Content = glyph,
-                Width = 36,
-                Height = 36,
-                MinWidth = 36,
-                MinHeight = 36,
-                Padding = new Thickness(0),
-                Margin = margin,
-                CornerRadius = new CornerRadius(6),
-                Background = Brushes.Transparent,
-                BorderThickness = new Thickness(0),
-                HorizontalContentAlignment = HorizontalAlignment.Center,
-                VerticalContentAlignment = VerticalAlignment.Center,
-                FontSize = 16
-            };
-        }
-
-        // Back button
-        var backButton = CreateChromeButton("\u2190", new Thickness(8, 0, 2, 0));
-        backButton.Click += (s, e) =>
-        {
-            if (CanGoBack)
-            {
-                GoBack();
-            }
-        };
-        panel.Children.Add(backButton);
-
-        // Forward button
-        var forwardButton = CreateChromeButton("\u2192", new Thickness(0, 0, 2, 0));
-        forwardButton.Click += (s, e) =>
-        {
-            if (CanGoForward)
-            {
-                GoForward();
-            }
-        };
-        panel.Children.Add(forwardButton);
-
-        // Refresh button
-        var refreshButton = CreateChromeButton("\u21BB", new Thickness(0, 0, 8, 0));
-        refreshButton.Click += (s, e) => Refresh();
-        panel.Children.Add(refreshButton);
-
-        // Wrap in a border with theme-aware background and bottom divider
-        var border = new Border
-        {
-            Background = TryFindResource("LayerFillColorDefaultBrush") as Brush
-                ?? new SolidColorBrush(Color.FromArgb(0x4C, 0x3A, 0x3A, 0x3A)),
-            BorderBrush = TryFindResource("ControlBorder") as Brush
-                ?? new SolidColorBrush(Color.FromArgb(0x12, 0xFF, 0xFF, 0xFF)),
-            BorderThickness = new Thickness(0, 0, 0, 1),
-            Padding = new Thickness(0, 2, 0, 2),
-            Child = panel
-        };
-
-        return border;
+        if (command?.CanExecute(null) != true) return;
+        command.Execute(null);
+        e.Handled = true;
     }
 
     private static void OnSourceChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is NavigationWindow window && e.NewValue is Uri source)
-        {
-            window.Navigate(source);
-        }
+        var window = (NavigationWindow)d;
+        if (!window._updatingNavigationProperties && e.NewValue is Uri source && !window.Navigate(source))
+            window.SetNavigationContent(window.NavigationService.Content, window.NavigationService.CurrentSource);
     }
 
     private static void OnShowsNavigationUIChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        if (d is NavigationWindow window)
-        {
-            // Recreate navigation chrome
-            if (window._frame != null)
-            {
-                window.SetValue(Window.ContentProperty, window.CreateNavigationChrome(window._frame));
-            }
-        }
-    }
+        => ((NavigationWindow)d).UpdateNavigationStates();
 
     #endregion
 }

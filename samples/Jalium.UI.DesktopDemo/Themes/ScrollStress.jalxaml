@@ -1,0 +1,16 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:local="clr-namespace:Jalium.UI.DesktopDemo" x:Class="Jalium.UI.DesktopDemo.Themes.ScrollStressTheme">
+    <Style x:Key="ScrollStress.Window" TargetType="Window"><Setter Property="Background" Value="#12121A" /></Style>
+    <Style TargetType="local:ScrollStressSurface">
+        <Setter Property="ItemsPanel"><Setter.Value><ItemsPanelTemplate><WrapPanel ItemWidth="{Binding CardWidth, RelativeSource={RelativeSource AncestorType=local:ScrollStressSurface}}" ItemHeight="{Binding CardHeight, RelativeSource={RelativeSource AncestorType=local:ScrollStressSurface}}" Margin="12" /></ItemsPanelTemplate></Setter.Value></Setter>
+        <Setter Property="ItemTemplate"><Setter.Value><DataTemplate><Border Width="{Binding Width}" Height="{Binding Height}" Background="#242632" BorderBrush="#3C4050" BorderThickness="1" CornerRadius="6" Margin="4" Padding="8" ClipToBounds="True"><Grid><Grid.RowDefinitions><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions><Image Source="{Binding Source}" Stretch="UniformToFill" Margin="0,0,0,8" /><StackPanel Grid.Row="1"><TextBlock Text="{Binding Title}" FontSize="12" Foreground="#DCDCE6" /><TextBlock Text="{Binding Description}" FontSize="11" Foreground="#9696A5" TextWrapping="Wrap" /></StackPanel></Grid></Border></DataTemplate></Setter.Value></Setter>
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="local:ScrollStressSurface"><DockPanel>
+            <VisualStateManager.VisualStateGroups>
+                <VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Normal" /><VisualState x:Name="Disabled"><VisualState.Setters><Setter Property="Opacity" Value="0.5" /></VisualState.Setters></VisualState></VisualStateGroup>
+                <VisualStateGroup x:Name="DataStates"><VisualState x:Name="Ready" /><VisualState x:Name="Empty"><VisualState.Setters><Setter TargetName="PART_Empty" Property="Visibility" Value="Visible" /><Setter TargetName="PART_Scroller" Property="Visibility" Value="Collapsed" /></VisualState.Setters></VisualState></VisualStateGroup>
+                <VisualStateGroup x:Name="MonitoringStates"><VisualState x:Name="Monitoring" /><VisualState x:Name="Paused" /></VisualStateGroup>
+            </VisualStateManager.VisualStateGroups>
+            <Border DockPanel.Dock="Top" Background="#1C1E2A" BorderBrush="#3C4050" BorderThickness="0,0,0,1"><StackPanel><TextBlock Text="{TemplateBinding LiveText}" FontSize="13" Foreground="#DCEBDC" Margin="12,6,12,0" TextWrapping="Wrap" /><TextBlock Text="{TemplateBinding CycleText}" FontSize="12" Foreground="#FFC88C" Margin="12,2,12,0" TextWrapping="Wrap" /><TextBlock Text="{TemplateBinding HistoryText}" FontSize="11" Foreground="#B4B4C8" Margin="12,2,12,8" TextWrapping="Wrap" /></StackPanel></Border>
+            <Grid><ScrollViewer x:Name="PART_Scroller" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto"><ItemsPresenter /></ScrollViewer><TextBlock x:Name="PART_Empty" Text="暂无图像" Foreground="#DCEBDC" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Center" /></Grid>
+        </DockPanel></ControlTemplate></Setter.Value></Setter>
+    </Style>
+</ResourceDictionary>

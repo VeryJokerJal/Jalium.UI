@@ -113,6 +113,8 @@
     X(gst_util_double_to_fraction) \
     X(gst_video_frame_map) \
     X(gst_video_frame_unmap) \
+    X(gst_video_colorimetry_from_string) \
+    X(gst_video_chroma_from_string) \
     X(gst_video_info_from_caps)
 
 namespace jalium::media::gst_runtime {
@@ -233,6 +235,8 @@ bool IsLoaded() noexcept;
 #define gst_video_frame_map (*::jalium::media::gst_runtime::gst_video_frame_map_ptr)
 #define gst_video_frame_unmap (*::jalium::media::gst_runtime::gst_video_frame_unmap_ptr)
 #define gst_video_info_from_caps (*::jalium::media::gst_runtime::gst_video_info_from_caps_ptr)
+#define gst_video_colorimetry_from_string (*::jalium::media::gst_runtime::gst_video_colorimetry_from_string_ptr)
+#define gst_video_chroma_from_string (*::jalium::media::gst_runtime::gst_video_chroma_from_string_ptr)
 
 // These are static inline wrappers in the public headers. Their bodies were
 // compiled before the symbol aliases above were visible, so call the resolved

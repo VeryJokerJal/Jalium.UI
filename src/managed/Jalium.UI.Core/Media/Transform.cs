@@ -814,6 +814,7 @@ public sealed class SkewTransform : Transform
 /// Forwards each child transform's Changed event so the owning element
 /// re-renders when an inner transform mutates.
 /// </summary>
+[Jalium.UI.Markup.ContentProperty(nameof(Children))]
 public sealed class TransformGroup : Transform
 {
     public static readonly DependencyProperty ChildrenProperty =

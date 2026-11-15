@@ -292,7 +292,9 @@ public sealed class MacOSPopupMouseCommandRouteTests
     private sealed class DialogContent : ContentDialog
     {
         private readonly UIElement _child;
-        internal DialogContent(UIElement child) { _child = child; Visibility = Visibility.Visible; AddVisualChild(child); }
+        // This carrier supplies its own visual tree and layout; ambient themes must
+        // not replace it with ContentDialog's production template during routing tests.
+        internal DialogContent(UIElement child) { Template = null; _child = child; Visibility = Visibility.Visible; AddVisualChild(child); }
         protected override Size MeasureOverride(Size size) { _child.Measure(size); return _child.DesiredSize; }
         protected override Size ArrangeOverride(Size size) { _child.Arrange(new Rect(new Point(), size)); return size; }
     }

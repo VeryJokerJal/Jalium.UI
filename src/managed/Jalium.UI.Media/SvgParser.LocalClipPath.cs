@@ -42,7 +42,8 @@ internal static partial class SvgParser
         if (drawing is not DrawingGroup group) return drawing.Bounds;
 
         var bounds = Rect.Empty;
-        foreach (var child in group.Children)
+        if (t_markers?.ObjectBounds.TryGetValue(drawing, out var original) == true) bounds = original;
+        else foreach (var child in group.Children)
             bounds = Rect.Union(bounds, SvgObjectBounds(child));
         if (bounds.IsEmpty || group.Transform is null) return bounds;
 

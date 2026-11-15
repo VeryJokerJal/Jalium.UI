@@ -7,8 +7,11 @@ namespace Jalium.UI.Media.Native;
 /// <see cref="INativeImageDecoder"/> 的默认实现：调用 <see cref="NativeMediaInterop"/>。
 /// 真实的 WIC / AImageDecoder 解码逻辑在原生库中按 <c>#ifdef</c> 分流。
 /// </summary>
-public sealed class NativeImageDecoder : INativeImageDecoder
+public sealed partial class NativeImageDecoder : INativeImageDecoder
 {
+    /// <inheritdoc />
+    public bool SupportsMimeType(string mimeType) => ImageMimeTypes.IsSupported(mimeType);
+
     /// <summary>初始化 <see cref="NativeImageDecoder"/>，确保原生库已 <c>jalium_media_initialize</c>。</summary>
     public NativeImageDecoder()
     {

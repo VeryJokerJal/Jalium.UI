@@ -15,6 +15,8 @@ public class EditorThemeTests
         var currentField = typeof(Application).GetField("_current",
             BindingFlags.NonPublic | BindingFlags.Static);
         currentField?.SetValue(null, null);
+        typeof(ThemeManager).GetField("_controlThemeDictionaries", BindingFlags.NonPublic | BindingFlags.Static)
+            ?.SetValue(null, Array.Empty<ResourceDictionary>());
 
         var resetMethod = typeof(ThemeManager).GetMethod("Reset",
             BindingFlags.NonPublic | BindingFlags.Static);
@@ -83,7 +85,7 @@ public class EditorThemeTests
             Assert.NotNull(editor.LineNumberForeground);
             Assert.NotNull(editor.CurrentLineBackground);
             Assert.NotNull(editor.GutterBackground);
-            Assert.Equal("Cascadia Code", editor.FontFamily.Source);
+            Assert.Equal(OperatingSystem.IsMacOS() ? "Menlo" : "Cascadia Code", editor.FontFamily.Source);
             Assert.Equal(14, editor.FontSize);
         }
         finally

@@ -1,0 +1,269 @@
+{
+  "origin": "Jalium MIT geometric outlines with nonuniform vertical metrics and independent GSUB/GPOS programs; generated offline.",
+  "files": [
+    {
+      "file": "MetricsMixed.ttf",
+      "sha256": "6546d3e0a960de1633962784c362b88888a2a27b70082b1188e736a0069e816c",
+      "source": "FontSizeAdjust/Primary.ttf",
+      "sourceSha256": "f737abcccf464b621ebb5d0a5679b0ddad4dbd5d9dfbd3b8383b522fb49d12f3",
+      "unitsPerEm": 1000,
+      "verticalAdvances": {
+        "2": 1200,
+        "3": 0,
+        "4": 800,
+        "5": 1600,
+        "6": 600
+      },
+      "scalars": [
+        [
+          32,
+          1
+        ],
+        [
+          65,
+          2
+        ],
+        [
+          12290,
+          4
+        ],
+        [
+          12441,
+          3
+        ],
+        [
+          20013,
+          2
+        ],
+        [
+          22269,
+          5
+        ],
+        [
+          25991,
+          6
+        ]
+      ]
+    },
+    {
+      "file": "MetricsKern.ttf",
+      "sha256": "7de8b47d0d1184a5e06932dc3b65233f432a80ec83444c27d5b2e9684592b2f9",
+      "source": "FontSizeAdjust/Primary.ttf",
+      "sourceSha256": "f737abcccf464b621ebb5d0a5679b0ddad4dbd5d9dfbd3b8383b522fb49d12f3",
+      "unitsPerEm": 1000,
+      "verticalAdvances": {
+        "2": 1200,
+        "3": 0,
+        "4": 800,
+        "5": 1600,
+        "6": 600
+      },
+      "scalars": [
+        [
+          32,
+          1
+        ],
+        [
+          65,
+          2
+        ],
+        [
+          12290,
+          4
+        ],
+        [
+          12441,
+          3
+        ],
+        [
+          20013,
+          2
+        ],
+        [
+          22269,
+          5
+        ],
+        [
+          25991,
+          6
+        ]
+      ]
+    },
+    {
+      "file": "MetricsLigature.ttf",
+      "sha256": "99423d1902bca424f347db4623efa9c3491a0c114773a24f69069c22644b2537",
+      "source": "FontSizeAdjust/Primary.ttf",
+      "sourceSha256": "f737abcccf464b621ebb5d0a5679b0ddad4dbd5d9dfbd3b8383b522fb49d12f3",
+      "unitsPerEm": 1000,
+      "verticalAdvances": {
+        "2": 1200,
+        "3": 0,
+        "4": 800,
+        "5": 1600,
+        "6": 600
+      },
+      "scalars": [
+        [
+          32,
+          1
+        ],
+        [
+          65,
+          2
+        ],
+        [
+          12290,
+          4
+        ],
+        [
+          12441,
+          3
+        ],
+        [
+          20013,
+          2
+        ],
+        [
+          22269,
+          5
+        ],
+        [
+          25991,
+          6
+        ]
+      ]
+    },
+    {
+      "file": "MetricsContext.ttf",
+      "sha256": "6f3bd4cb47e74d99c6d4f00adf011e2abc21a031de5cfb238847fdda180f16f4",
+      "source": "FontSizeAdjust/Primary.ttf",
+      "sourceSha256": "f737abcccf464b621ebb5d0a5679b0ddad4dbd5d9dfbd3b8383b522fb49d12f3",
+      "unitsPerEm": 1000,
+      "verticalAdvances": {
+        "2": 1200,
+        "3": 0,
+        "4": 800,
+        "5": 1600,
+        "6": 600
+      },
+      "scalars": [
+        [
+          32,
+          1
+        ],
+        [
+          65,
+          2
+        ],
+        [
+          12290,
+          4
+        ],
+        [
+          12441,
+          3
+        ],
+        [
+          20013,
+          2
+        ],
+        [
+          22269,
+          5
+        ],
+        [
+          25991,
+          6
+        ]
+      ]
+    },
+    {
+      "file": "MetricsMultiple.ttf",
+      "sha256": "94d8fafebc9b5e3b2ccbec651ab8684f6e824db0a3a67706af623935bd456eea",
+      "source": "FontSizeAdjust/Primary.ttf",
+      "sourceSha256": "f737abcccf464b621ebb5d0a5679b0ddad4dbd5d9dfbd3b8383b522fb49d12f3",
+      "unitsPerEm": 1000,
+      "verticalAdvances": {
+        "2": 1200,
+        "3": 0,
+        "4": 800,
+        "5": 1600,
+        "6": 600
+      },
+      "scalars": [
+        [
+          32,
+          1
+        ],
+        [
+          65,
+          2
+        ],
+        [
+          12290,
+          4
+        ],
+        [
+          12441,
+          3
+        ],
+        [
+          20013,
+          2
+        ],
+        [
+          22269,
+          5
+        ],
+        [
+          25991,
+          6
+        ]
+      ]
+    },
+    {
+      "file": "MetricsMark.ttf",
+      "sha256": "2f32c5be98a1ecbff0cdc1c8fab3ba30417ab0828a454f479960c65865627442",
+      "source": "FontSizeAdjust/Primary.ttf",
+      "sourceSha256": "f737abcccf464b621ebb5d0a5679b0ddad4dbd5d9dfbd3b8383b522fb49d12f3",
+      "unitsPerEm": 1000,
+      "verticalAdvances": {
+        "2": 1200,
+        "3": 0,
+        "4": 800,
+        "5": 1600,
+        "6": 600
+      },
+      "scalars": [
+        [
+          32,
+          1
+        ],
+        [
+          65,
+          2
+        ],
+        [
+          12290,
+          4
+        ],
+        [
+          12441,
+          3
+        ],
+        [
+          20013,
+          2
+        ],
+        [
+          22269,
+          5
+        ],
+        [
+          25991,
+          6
+        ]
+      ]
+    }
+  ]
+}

@@ -1,178 +1,97 @@
-using Jalium.UI.Media;
-
 namespace Jalium.UI.Controls;
 
-/// <summary>
-/// A lightweight overlay panel that displays real-time render diagnostics.
-/// Built with Jalium.UI controls (Border, StackPanel, TextBlock) so it
-/// participates in normal layout and theming instead of raw DrawingContext painting.
-/// Toggle visibility with F3.
-/// </summary>
-internal sealed class DebugHudOverlay : Border
+/// <summary>Templated render diagnostics. Samples survive template and theme replacement.</summary>
+[TemplateVisualState(Name = "Healthy", GroupName = "FrameRateStates")]
+[TemplateVisualState(Name = "Fair", GroupName = "FrameRateStates")]
+[TemplateVisualState(Name = "Critical", GroupName = "FrameRateStates")]
+[TemplateVisualState(Name = "WorstNormal", GroupName = "WorstFrameStates")]
+[TemplateVisualState(Name = "WorstSlow", GroupName = "WorstFrameStates")]
+[TemplateVisualState(Name = "TotalNormal", GroupName = "FrameTimeStates")]
+[TemplateVisualState(Name = "TotalSlow", GroupName = "FrameTimeStates")]
+[TemplateVisualState(Name = "FramesNormal", GroupName = "PipelineStates")]
+[TemplateVisualState(Name = "FramesFailed", GroupName = "PipelineStates")]
+internal sealed class DebugHudOverlay : Control
 {
-    private readonly TextBlock _fpsText;
-    private readonly TextBlock _pathText;
-    private readonly TextBlock _worstText;
-    private readonly TextBlock _timingText;
-    private readonly Border _barLayout;
-    private readonly Border _barRender;
-    private readonly Border _barPresent;
-    private readonly TextBlock _framesText;
-    private readonly TextBlock _dirtyText;
-    private readonly TextBlock _windowText;
-    private readonly TextBlock _gcText;
+    private const double BarFixedWidth = 380;
+    private double _fps, _worstMs, _totalMs;
+    private int _beginFails;
 
-    public DebugHudOverlay()
+    static DebugHudOverlay() => DefaultStyleKeyProperty.OverrideMetadata(typeof(DebugHudOverlay), new PropertyMetadata(typeof(DebugHudOverlay)));
+
+    private static readonly DependencyPropertyKey BarWidthPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(BarWidth), typeof(double), typeof(DebugHudOverlay), new PropertyMetadata(380d));
+    public static readonly DependencyProperty BarWidthProperty = BarWidthPropertyKey.DependencyProperty;
+    public double BarWidth { get => (double)GetValue(BarWidthProperty)!; private set => SetValue(BarWidthPropertyKey, value); }
+
+    private static readonly DependencyPropertyKey FpsTextPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(FpsText), typeof(string), typeof(DebugHudOverlay), new PropertyMetadata("0"));
+    public static readonly DependencyProperty FpsTextProperty = FpsTextPropertyKey.DependencyProperty;
+    public string FpsText { get => (string)GetValue(FpsTextProperty)!; private set => SetValue(FpsTextPropertyKey, value); }
+
+    private static readonly DependencyPropertyKey RenderPathTextPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(RenderPathText), typeof(string), typeof(DebugHudOverlay), new PropertyMetadata("Full [D3D12 · Impeller]"));
+    public static readonly DependencyProperty RenderPathTextProperty = RenderPathTextPropertyKey.DependencyProperty;
+    public string RenderPathText { get => (string)GetValue(RenderPathTextProperty)!; private set => SetValue(RenderPathTextPropertyKey, value); }
+
+    private static readonly DependencyPropertyKey WorstFrameTextPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(WorstFrameText), typeof(string), typeof(DebugHudOverlay), new PropertyMetadata("worst 0.0ms"));
+    public static readonly DependencyProperty WorstFrameTextProperty = WorstFrameTextPropertyKey.DependencyProperty;
+    public string WorstFrameText { get => (string)GetValue(WorstFrameTextProperty)!; private set => SetValue(WorstFrameTextPropertyKey, value); }
+
+    private static readonly DependencyPropertyKey TimingTextPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(TimingText), typeof(string), typeof(DebugHudOverlay), new PropertyMetadata("Layout 0.0ms   Render 0.0ms   Present 0.0ms   Total 0.0ms"));
+    public static readonly DependencyProperty TimingTextProperty = TimingTextPropertyKey.DependencyProperty;
+    public string TimingText { get => (string)GetValue(TimingTextProperty)!; private set => SetValue(TimingTextPropertyKey, value); }
+
+    private static readonly DependencyPropertyKey FramesTextPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(FramesText), typeof(string), typeof(DebugHudOverlay), new PropertyMetadata(""));
+    public static readonly DependencyProperty FramesTextProperty = FramesTextPropertyKey.DependencyProperty;
+    public string FramesText { get => (string)GetValue(FramesTextProperty)!; private set => SetValue(FramesTextPropertyKey, value); }
+
+    private static readonly DependencyPropertyKey DirtyTextPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(DirtyText), typeof(string), typeof(DebugHudOverlay), new PropertyMetadata(""));
+    public static readonly DependencyProperty DirtyTextProperty = DirtyTextPropertyKey.DependencyProperty;
+    public string DirtyText { get => (string)GetValue(DirtyTextProperty)!; private set => SetValue(DirtyTextPropertyKey, value); }
+
+    private static readonly DependencyPropertyKey WindowTextPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(WindowText), typeof(string), typeof(DebugHudOverlay), new PropertyMetadata(""));
+    public static readonly DependencyProperty WindowTextProperty = WindowTextPropertyKey.DependencyProperty;
+    public string WindowText { get => (string)GetValue(WindowTextProperty)!; private set => SetValue(WindowTextPropertyKey, value); }
+
+    private static readonly DependencyPropertyKey GcTextPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(GcText), typeof(string), typeof(DebugHudOverlay), new PropertyMetadata(""));
+    public static readonly DependencyProperty GcTextProperty = GcTextPropertyKey.DependencyProperty;
+    public string GcText { get => (string)GetValue(GcTextProperty)!; private set => SetValue(GcTextPropertyKey, value); }
+
+    private static readonly DependencyPropertyKey LayoutBarWidthPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(LayoutBarWidth), typeof(double), typeof(DebugHudOverlay), new PropertyMetadata(1d));
+    public static readonly DependencyProperty LayoutBarWidthProperty = LayoutBarWidthPropertyKey.DependencyProperty;
+    public double LayoutBarWidth { get => (double)GetValue(LayoutBarWidthProperty)!; private set => SetValue(LayoutBarWidthPropertyKey, value); }
+
+    private static readonly DependencyPropertyKey RenderBarWidthPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(RenderBarWidth), typeof(double), typeof(DebugHudOverlay), new PropertyMetadata(1d));
+    public static readonly DependencyProperty RenderBarWidthProperty = RenderBarWidthPropertyKey.DependencyProperty;
+    public double RenderBarWidth { get => (double)GetValue(RenderBarWidthProperty)!; private set => SetValue(RenderBarWidthPropertyKey, value); }
+
+    private static readonly DependencyPropertyKey PresentBarWidthPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(PresentBarWidth), typeof(double), typeof(DebugHudOverlay), new PropertyMetadata(1d));
+    public static readonly DependencyProperty PresentBarWidthProperty = PresentBarWidthPropertyKey.DependencyProperty;
+    public double PresentBarWidth { get => (double)GetValue(PresentBarWidthProperty)!; private set => SetValue(PresentBarWidthPropertyKey, value); }
+
+    public override void OnApplyTemplate()
     {
-        // ── Container style ──
-        Background = new SolidColorBrush(Color.FromArgb(235, 16, 16, 22));
-        BorderBrush = new SolidColorBrush(Color.FromArgb(80, 100, 160, 220));
-        BorderThickness = new Thickness(1);
-        CornerRadius = new CornerRadius(6);
-        Padding = new Thickness(10, 8, 10, 8);
-        HorizontalAlignment = HorizontalAlignment.Left;
-        VerticalAlignment = VerticalAlignment.Top;
-        Margin = new Thickness(4, 4, 0, 0);
-        IsHitTestVisible = false;
-        Visibility = Visibility.Collapsed;
-
-        var accentColor = Color.FromArgb(255, 0, 180, 255);
-        var labelColor = Color.FromArgb(220, 170, 180, 190);
-        var dimColor = Color.FromArgb(200, 140, 145, 155);
-        var valueColor = Color.FromArgb(245, 240, 240, 240);
-
-        // ── Header row ──
-        _fpsText = new TextBlock
-        {
-            Text = "0",
-            FontFamily = new FontFamily(FrameworkElement.DefaultFontFamilyName),
-            FontSize = 20,
-            FontWeight = FontWeights.Bold,
-            Foreground = new SolidColorBrush(Color.FromArgb(255, 80, 255, 80)),
-            Margin = new Thickness(0, 0, 4, 0),
-        };
-        var fpsLabel = new TextBlock
-        {
-            Text = "FPS",
-            FontFamily = new FontFamily(FrameworkElement.DefaultFontFamilyName),
-            FontSize = 10,
-            Foreground = new SolidColorBrush(labelColor),
-            Margin = new Thickness(0, 8, 12, 0),
-        };
-        _pathText = new TextBlock
-        {
-            Text = "Full [D3D12 · Impeller]",
-            FontFamily = new FontFamily(FrameworkElement.DefaultFontFamilyName),
-            FontSize = 10,
-            Foreground = new SolidColorBrush(dimColor),
-            Margin = new Thickness(0, 8, 0, 0),
-        };
-        _worstText = new TextBlock
-        {
-            Text = "worst 0.0ms",
-            FontFamily = new FontFamily("Consolas"),
-            FontSize = 10,
-            Foreground = new SolidColorBrush(dimColor),
-            Margin = new Thickness(16, 8, 0, 0),
-        };
-
-        var headerRow = new StackPanel { Orientation = Orientation.Horizontal };
-        headerRow.Children.Add(_fpsText);
-        headerRow.Children.Add(fpsLabel);
-        headerRow.Children.Add(_pathText);
-        headerRow.Children.Add(_worstText);
-
-        // ── Timing text ──
-        _timingText = new TextBlock
-        {
-            Text = "Layout 0.0ms   Render 0.0ms   Present 0.0ms   Total 0.0ms",
-            FontFamily = new FontFamily("Consolas"),
-            FontSize = 10,
-            Foreground = new SolidColorBrush(valueColor),
-            Margin = new Thickness(0, 4, 0, 2),
-        };
-
-        // ── Timing bar ──
-        _barLayout = new Border
-        {
-            Background = new SolidColorBrush(Color.FromArgb(200, 80, 180, 255)),
-            Height = 3,
-            Width = 1,
-            HorizontalAlignment = HorizontalAlignment.Left,
-        };
-        _barRender = new Border
-        {
-            Background = new SolidColorBrush(Color.FromArgb(200, 255, 160, 40)),
-            Height = 3,
-            Width = 1,
-            HorizontalAlignment = HorizontalAlignment.Left,
-        };
-        _barPresent = new Border
-        {
-            Background = new SolidColorBrush(Color.FromArgb(200, 100, 220, 100)),
-            Height = 3,
-            Width = 1,
-            HorizontalAlignment = HorizontalAlignment.Left,
-        };
-        // Fixed-width container prevents layout feedback loop (bar width change → parent resize → repeat)
-        var barRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 6), Width = BarFixedWidth, ClipToBounds = true };
-        barRow.Children.Add(_barLayout);
-        barRow.Children.Add(_barRender);
-        barRow.Children.Add(_barPresent);
-
-        // ── Pipeline info ──
-        _framesText = new TextBlock
-        {
-            FontFamily = new FontFamily("Consolas"),
-            FontSize = 10,
-            Foreground = new SolidColorBrush(labelColor),
-        };
-        _dirtyText = new TextBlock
-        {
-            FontFamily = new FontFamily("Consolas"),
-            FontSize = 10,
-            Foreground = new SolidColorBrush(labelColor),
-            Margin = new Thickness(0, 0, 0, 6),
-        };
-
-        // ── System info ──
-        _windowText = new TextBlock
-        {
-            FontFamily = new FontFamily("Consolas"),
-            FontSize = 10,
-            Foreground = new SolidColorBrush(dimColor),
-        };
-        _gcText = new TextBlock
-        {
-            FontFamily = new FontFamily("Consolas"),
-            FontSize = 10,
-            Foreground = new SolidColorBrush(dimColor),
-        };
-
-        // ── Assemble ──
-        var root = new StackPanel();
-        root.Children.Add(headerRow);
-        root.Children.Add(_timingText);
-        root.Children.Add(barRow);
-        root.Children.Add(_framesText);
-        root.Children.Add(_dirtyText);
-        root.Children.Add(_windowText);
-        root.Children.Add(_gcText);
-        Child = root;
+        base.OnApplyTemplate();
+        UpdateVisualStates();
     }
 
-    private const double BarFixedWidth = 380;
+    private void UpdateVisualStates()
+    {
+        VisualStateManager.GoToState(this, _fps >= 55 ? "Healthy" : _fps >= 30 ? "Fair" : "Critical", false);
+        VisualStateManager.GoToState(this, _worstMs > 16 ? "WorstSlow" : "WorstNormal", false);
+        VisualStateManager.GoToState(this, _totalMs > 16 ? "TotalSlow" : "TotalNormal", false);
+        VisualStateManager.GoToState(this, _beginFails > 0 ? "FramesFailed" : "FramesNormal", false);
+    }
 
-    private static readonly SolidColorBrush FpsGreen = new(Color.FromArgb(255, 80, 255, 80));
-    private static readonly SolidColorBrush FpsYellow = new(Color.FromArgb(255, 255, 220, 60));
-    private static readonly SolidColorBrush FpsRed = new(Color.FromArgb(255, 255, 70, 70));
-    private static readonly SolidColorBrush WarnBrush = new(Color.FromArgb(255, 255, 180, 60));
-    private static readonly SolidColorBrush ValueBrush = new(Color.FromArgb(245, 240, 240, 240));
-    private static readonly SolidColorBrush DimBrush = new(Color.FromArgb(200, 140, 145, 155));
-
-    /// <summary>
-    /// Updates all displayed values. Call once per frame after EndDraw.
-    /// </summary>
     public void Update(
         double fps, double worstMs,
         double layoutMs, double renderMs, double presentMs, double totalMs,
@@ -184,27 +103,30 @@ internal sealed class DebugHudOverlay : Border
         int promotedFrames = 0, int capacityExceeded = 0,
         int dirtyRectCount = 0, double dirtyCoverageRatio = 0)
     {
+        _fps = fps;
+        _worstMs = worstMs;
+        _totalMs = totalMs;
+        _beginFails = beginFails;
         // FPS header
-        _fpsText.Text = $"{fps:F0}";
-        _fpsText.Foreground = fps >= 55 ? FpsGreen : fps >= 30 ? FpsYellow : FpsRed;
-        _pathText.Text = $"{renderPath}  [{backend} · {engine}]";
-        _worstText.Text = $"worst {worstMs:F1}ms";
-        _worstText.Foreground = worstMs > 16 ? WarnBrush : DimBrush;
+        FpsText = $"{fps:F0}";
+        RenderPathText = $"{renderPath}  [{backend} · {engine}]";
+        WorstFrameText = $"worst {worstMs:F1}ms";
 
         // Timing
-        _timingText.Text = $"Layout {layoutMs:F1}ms   Render {renderMs:F1}ms   Present {presentMs:F1}ms   Total {totalMs:F1}ms";
-        _timingText.Foreground = totalMs > 16 ? WarnBrush : ValueBrush;
+        TimingText = $"Layout {layoutMs:F1}ms   Render {renderMs:F1}ms   Present {presentMs:F1}ms   Total {totalMs:F1}ms";
 
-        // Bar widths (proportional, clamped so sum == BarFixedWidth exactly)
-        double barTotal = Math.Max(totalMs, 0.01);
-        double lW = Math.Floor((layoutMs / barTotal) * BarFixedWidth);
-        double rW = Math.Floor((renderMs / barTotal) * BarFixedWidth);
-        lW = Math.Clamp(lW, 0, BarFixedWidth);
-        rW = Math.Clamp(rW, 0, BarFixedWidth - lW);
-        double pW = BarFixedWidth - lW - rW;
-        _barLayout.Width = lW;
-        _barRender.Width = rW;
-        _barPresent.Width = pW;
+        // The window width is logical, matching the template's layout units.
+        BarWidth = Math.Min(BarFixedWidth, Math.Max(0, windowW - Padding.TotalWidth - BorderThickness.TotalWidth - Margin.TotalWidth));
+        // Bar widths stay proportional and sum to the available width exactly.
+        double barTotal = double.IsFinite(totalMs) ? Math.Max(totalMs, 0.01) : 0.01;
+        double lW = double.IsFinite(layoutMs) ? Math.Floor((layoutMs / barTotal) * BarWidth) : 0;
+        double rW = double.IsFinite(renderMs) ? Math.Floor((renderMs / barTotal) * BarWidth) : 0;
+        lW = Math.Clamp(lW, 0, BarWidth);
+        rW = Math.Clamp(rW, 0, BarWidth - lW);
+        double pW = BarWidth - lW - rW;
+        LayoutBarWidth = lW;
+        RenderBarWidth = rW;
+        PresentBarWidth = pW;
 
         // Pipeline — now split into two lines so promote / capacity / partial hit
         // are visible at a glance. The original "Frames" line keeps its legacy
@@ -214,12 +136,12 @@ internal sealed class DebugHudOverlay : Border
         double partialHitRatio = partialAttempts > 0
             ? (double)partialFrames / partialAttempts
             : 0;
-        _framesText.Text = $"Frames  Full={fullFrames}  Partial={partialFrames}  Promoted={promotedFrames}  Skip={skippedFrames}  Fail={beginFails}";
-        _framesText.Foreground = beginFails > 0 ? WarnBrush : DimBrush;
-        _dirtyText.Text = $"Dirty   {dirtyElements}el  rects={dirtyRectCount}  cov={dirtyCoverageRatio * 100:F1}%  hit={partialHitRatio * 100:F0}%  cap+={capacityExceeded}   {dirtyRegion}";
+        FramesText = $"Frames  Full={fullFrames}  Partial={partialFrames}  Promoted={promotedFrames}  Skip={skippedFrames}  Fail={beginFails}";
+        DirtyText = $"Dirty   {dirtyElements}el  rects={dirtyRectCount}  cov={dirtyCoverageRatio * 100:F1}%  hit={partialHitRatio * 100:F0}%  cap+={capacityExceeded}   {dirtyRegion}";
 
         // System
-        _windowText.Text = $"Window  {windowW}x{windowH}   DPI {dpiScale * 96:F0} ({dpiScale:F2}x)";
-        _gcText.Text = $"GC      {gcBytes / (1024.0 * 1024.0):F1} MB   Gen {gen0}/{gen1}/{gen2}";
+        WindowText = $"Window  {windowW}x{windowH}   DPI {dpiScale * 96:F0} ({dpiScale:F2}x)";
+        GcText = $"GC      {gcBytes / (1024.0 * 1024.0):F1} MB   Gen {gen0}/{gen1}/{gen2}";
+        UpdateVisualStates();
     }
 }

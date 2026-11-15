@@ -214,6 +214,7 @@ internal static class KeyboardFocusRevalidation
 
     private static bool IsFocusable(UIElement element) =>
         element.Focusable && element.IsEnabled && element.IsVisible &&
+        !Jalium.UI.Styling.CssContentsLayout.IsContents(element) && !Jalium.UI.Styling.CssContentsLayout.Suppressed(element) &&
         !Jalium.UI.Styling.CssDisplayProperties.IsExitInert(element);
 
     /// <summary>True when the visual sits under a window (or popup window) root.</summary>

@@ -30,4 +30,8 @@ jalium_media_status_t MfVideoDecoderAcquireGpuDescriptor(
     jalium_video_decoder_t*                decoder,
     jalium_video_decoder_gpu_descriptor_t* out_descriptor);
 
+jalium_media_status_t MfVideoDecoderReadGpuFrame(jalium_video_decoder_t*,
+    jalium_video_decoder_gpu_descriptor_t*, int64_t*, int32_t*);
+jalium_media_status_t MfVideoDecoderDisableGpuOutput(jalium_video_decoder_t*);
+
 } // namespace jalium::media::win

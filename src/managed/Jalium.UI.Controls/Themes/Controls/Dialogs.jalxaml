@@ -1,6 +1,7 @@
 <ResourceDictionary
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:documents="clr-namespace:Jalium.UI.Documents;assembly=Jalium.UI.Controls">
 
     <Style x:Key="ContentDialogAccentButtonStyle" TargetType="Button">
         <Setter Property="Background" Value="{ThemeResource AccentBrush}" />
@@ -59,76 +60,56 @@
         <Setter Property="Template">
             <ControlTemplate TargetType="ContentDialog">
                 <Grid Name="PART_Root">
-                    <Grid Name="PART_Overlay"
-                          Background="{ThemeResource SmokeFillColorDefaultBrush}" />
-
+                    <Grid Name="PART_Overlay" Background="{ThemeResource SmokeFillColorDefaultBrush}" />
                     <Border Name="PART_DialogCard"
-                            HorizontalAlignment="Center"
-                            VerticalAlignment="Center"
-                            MinWidth="340"
-                            MaxWidth="600"
+                            HorizontalAlignment="Center" VerticalAlignment="Center"
+                            MinWidth="280" MaxWidth="600"
                             BackdropEffect="{TemplateBinding BackdropEffect}"
                             Background="{TemplateBinding Background}"
                             BorderBrush="{TemplateBinding BorderBrush}"
                             BorderThickness="{TemplateBinding BorderThickness}"
-                            CornerRadius="{TemplateBinding CornerRadius}"
-                            Shape="RoundedRectangle">
+                            CornerRadius="{TemplateBinding CornerRadius}" Shape="RoundedRectangle">
                         <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="*" />
                                 <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
-
-                            <ContentPresenter Name="PART_TitleHost"
-                                              Grid.Row="0"
-                                              Margin="24,22,24,0"
-                                              ContentSource="Title"
-                                              ContentTemplate="{TemplateBinding TitleTemplate}">
+                            <ContentPresenter Name="PART_TitleHost" Grid.Row="0" Margin="24,20,24,0"
+                                              documents:TextElement.FontFamily="{ThemeResource BodyFontFamily}"
+                                              documents:TextElement.FontSize="19" documents:TextElement.FontWeight="SemiBold"
+                                              documents:TextElement.Foreground="{TemplateBinding Foreground}"
+                                              ContentSource="Title" ContentTemplate="{TemplateBinding TitleTemplate}">
                                 <ContentPresenter.Resources>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
-                                        <Setter Property="FontSize" Value="21" />
+                                        <Setter Property="FontSize" Value="19" />
                                         <Setter Property="FontWeight" Value="SemiBold" />
                                         <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
                                         <Setter Property="TextWrapping" Value="Wrap" />
                                     </Style>
                                 </ContentPresenter.Resources>
                             </ContentPresenter>
-
-                            <ScrollViewer Name="PART_ContentScrollViewer"
-                                          Grid.Row="1"
-                                          Margin="24,16,24,0"
-                                          VerticalScrollBarVisibility="Auto"
-                                          HorizontalScrollBarVisibility="Disabled">
+                            <ScrollViewer Name="PART_ContentScrollViewer" Grid.Row="1" Margin="24,16,24,20"
+                                          VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                                 <ContentPresenter />
                             </ScrollViewer>
-
-                            <StackPanel Name="PART_ButtonPanel"
-                                        Grid.Row="2"
-                                        Margin="24,20,24,22"
-                                        Orientation="Horizontal"
-                                        HorizontalAlignment="Right">
-                                <Button Name="PART_CloseButton"
-                                        Content="{TemplateBinding CloseButtonText}"
-                                        MinWidth="96" />
-                                <Button Name="PART_SecondaryButton"
-                                        Margin="10,0,0,0"
-                                        Content="{TemplateBinding SecondaryButtonText}"
-                                        MinWidth="96" />
-                                <Button Name="PART_PrimaryButton"
-                                        Margin="10,0,0,0"
-                                        Content="{TemplateBinding PrimaryButtonText}"
-                                        MinWidth="96" />
-                            </StackPanel>
+                            <Grid Name="PART_ButtonPanel" Grid.Row="2">
+                                <Grid Height="1" VerticalAlignment="Top" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
+                                <WrapPanel Margin="20,12,20,12"
+                                           Orientation="Horizontal" HorizontalAlignment="Right">
+                                    <Button Name="PART_CloseButton" Content="{TemplateBinding CloseButtonText}"
+                                            Margin="4" MinWidth="88" MinHeight="36" />
+                                    <Button Name="PART_SecondaryButton" Content="{TemplateBinding SecondaryButtonText}"
+                                            Margin="4" MinWidth="88" MinHeight="36" />
+                                    <Button Name="PART_PrimaryButton" Content="{TemplateBinding PrimaryButtonText}"
+                                            Margin="4" MinWidth="88" MinHeight="36" />
+                                </WrapPanel>
+                            </Grid>
                         </Grid>
                     </Border>
                 </Grid>
             </ControlTemplate>
         </Setter>
     </Style>
-
 </ResourceDictionary>

@@ -3,6 +3,7 @@
 #include "jalium_media_internal.h"
 
 #include <Windows.h>
+#include <new>
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mferror.h>

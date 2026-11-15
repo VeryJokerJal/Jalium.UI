@@ -502,6 +502,7 @@ public sealed partial class KeyboardNavigation
         }
 
         if (element.Focusable && element.IsVisible && GetIsTabStop(element) &&
+            !Jalium.UI.Styling.CssContentsLayout.IsContents(element) && !Jalium.UI.Styling.CssContentsLayout.Suppressed(element) &&
             (!OperatingSystem.IsMacOS() || KeyboardFocusHost.IsTargetEligible(element)))
         {
             results.Add((element, visualOrder++));
@@ -509,6 +510,15 @@ public sealed partial class KeyboardNavigation
 
         if (!ReferenceEquals(element, traversalRoot) && GetNavigationMode(element, kind) == KeyboardNavigationMode.None)
         {
+            return;
+        }
+
+        // Tab navigation follows source order, independently of z-index, floats,
+        // and positioned painting. The visual tree exposes a panel's paint order.
+        if (kind == NavigationPropertyKind.Tab && element is Jalium.UI.Controls.Panel panel)
+        {
+            foreach (UIElement child in panel.Children)
+                CollectFocusableElements(child, traversalRoot, kind, results, ref visualOrder);
             return;
         }
 

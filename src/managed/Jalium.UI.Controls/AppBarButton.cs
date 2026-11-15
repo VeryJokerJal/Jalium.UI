@@ -7,6 +7,14 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class AppBarButton : Button, ICommandBarElement
 {
+    static AppBarButton()
+    {
+        DefaultStyleKeyProperty.OverrideMetadata(typeof(AppBarButton), new PropertyMetadata(typeof(AppBarButton)));
+    }
+
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Automation.Peers.AppBarButtonAutomationPeer(this);
+
     #region Dependency Properties
 
     /// <summary>
@@ -116,94 +124,4 @@ public class AppBarButton : Button, ICommandBarElement
 
     #endregion
 
-    /// <inheritdoc />
-    protected override Size MeasureOverride(Size availableSize)
-    {
-        EnsureDefaultTemplateIfMissing();
-        return base.MeasureOverride(availableSize);
-    }
-
-    /// <inheritdoc />
-    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
-    {
-        base.OnPropertyChanged(e);
-
-        if (e.Property == FrameworkElement.StyleProperty && Template == null)
-        {
-            EnsureDefaultTemplateIfMissing();
-        }
-    }
-
-    private void EnsureDefaultTemplateIfMissing()
-    {
-        if (Template != null)
-            return;
-
-        var activeStyle = GetEffectiveStyle();
-
-        // Explicit/implicit style already defines a template.
-        if (TryGetTemplateFromStyle(activeStyle, out _))
-            return;
-
-        var appResources = Jalium.UI.Application.Current?.Resources;
-        if (appResources == null)
-            return;
-
-        var themeStyle = FindMergedStyle(appResources.MergedDictionaries, typeof(AppBarButton));
-        if (themeStyle == null)
-            return;
-
-        if (!TryGetTemplateFromStyle(themeStyle, out var template) || template == null)
-            return;
-
-        // Preserve style color overrides while restoring default visual structure.
-        Template = template;
-    }
-
-    private Style? GetEffectiveStyle()
-    {
-        // Explicit style path.
-        if (Style != null)
-            return Style;
-
-        // Implicit style path (FrameworkElement applies implicit style without assigning Style DP).
-        return TryFindResource(typeof(AppBarButton)) as Style;
-    }
-
-    private static Style? FindMergedStyle(IList<ResourceDictionary> dictionaries, object key)
-    {
-        for (int i = dictionaries.Count - 1; i >= 0; i--)
-        {
-            var dictionary = dictionaries[i];
-
-            if (dictionary.TryGetValue(key, out var styleValue) && styleValue is Style style)
-                return style;
-
-            var nested = FindMergedStyle(dictionary.MergedDictionaries, key);
-            if (nested != null)
-                return nested;
-        }
-
-        return null;
-    }
-
-    private static bool TryGetTemplateFromStyle(Style? style, out ControlTemplate? template)
-    {
-        while (style != null)
-        {
-            foreach (var setter in style.Setters.OfType<Setter>())
-            {
-                if (setter.Property == TemplateProperty && setter.Value is ControlTemplate controlTemplate)
-                {
-                    template = controlTemplate;
-                    return true;
-                }
-            }
-
-            style = style.BasedOn;
-        }
-
-        template = null;
-        return false;
-    }
 }

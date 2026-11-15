@@ -1,6 +1,7 @@
 using System.Collections.Specialized;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Controls.Virtualization;
+using Jalium.UI.Styling;
 
 using Jalium.UI.Media;
 
@@ -239,6 +240,7 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
     // Jalium's synchronous-pull ScrollViewer/StackPanel/ItemsPresenter read-back contract is preserved.
     private double _requestedOffset;
     private double _computedOffset;
+    private int _bringIntoViewIndex = -1;
     private Size _extent;
     private Size _viewport;
     // The scroll-axis viewport used to calculate the latest realization
@@ -532,6 +534,28 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
         var cacheBefore = ToCachePixels(cache.CacheBeforeViewport, cacheUnit, viewportAxisSize);
         var cacheAfter = ToCachePixels(cache.CacheAfterViewport, cacheUnit, viewportAxisSize);
 
+        // A distant item's estimated offset can move while this pass learns row
+        // sizes. Measure the requested item first and keep it in the realization
+        // window until its final position is known.
+        var bringIntoViewIndex = _bringIntoViewIndex;
+        _bringIntoViewIndex = -1;
+        if (bringIntoViewIndex >= 0 && bringIntoViewIndex < itemCount)
+        {
+            var target = RealizeContainer(bringIntoViewIndex);
+            if (target != null)
+            {
+                target.Measure(Orientation == Orientation.Vertical
+                    ? new Size(availableSize.Width, double.PositiveInfinity)
+                    : new Size(double.PositiveInfinity, availableSize.Height));
+                _heightIndex.SetMeasuredHeight(bringIntoViewIndex, GetAxisSize(target.DesiredSize));
+                ScrollIndexIntoViewport(bringIntoViewIndex);
+            }
+        }
+        else
+        {
+            bringIntoViewIndex = -1;
+        }
+
         // Re-resolve the requested offset (which may be the +Infinity scroll-to-end sentinel) against
         // the live extent for this pass's window math, then commit it.
         SetComputedOffset(CoerceOffset(_requestedOffset));
@@ -539,6 +563,7 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
         var windowEndOffset = _computedOffset + viewportAxisSize + cacheAfter;
 
         var startIndex = Math.Max(0, GetIndexAtSpacedOffset(windowStartOffset));
+        if (bringIntoViewIndex >= 0) startIndex = Math.Min(startIndex, bringIntoViewIndex);
         var endIndex = Math.Min(itemCount - 1,
             Math.Max(startIndex, GetIndexAtSpacedOffset(windowEndOffset)));
 
@@ -552,7 +577,7 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
         // path (which only re-measures already-realized children) would otherwise never realize the
         // inserted index, leaving a blank gap. We must still re-measure any child whose measure was
         // invalidated (e.g. a TreeViewItem that expanded/collapsed) so height offsets stay correct.
-        if (!_structureDirty && newWindow.Equals(_currentWindow) && _realizedContainers.Count > 0)
+        if (bringIntoViewIndex < 0 && !_structureDirty && newWindow.Equals(_currentWindow) && _realizedContainers.Count > 0)
         {
             var anyHeightChanged = false;
             var maxCrossAxis = 0.0;
@@ -592,7 +617,7 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
             // so fall through to the full realization path below.
         }
 
-        endIndex = RealizeWindow(startIndex, windowEndOffset, availableSize);
+        endIndex = RealizeWindow(startIndex, windowEndOffset, availableSize, bringIntoViewIndex);
         _currentWindow = endIndex >= startIndex
             ? new RealizationWindow(startIndex, endIndex)
             : RealizationWindow.Empty;
@@ -600,6 +625,8 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
         RecycleOutsideWindow(_currentWindow);
         _structureDirty = false;
         UpdateExtent(itemCount, availableSize);
+
+        if (bringIntoViewIndex >= 0) ScrollIndexIntoViewport(bringIntoViewIndex);
 
         return FinishMeasurePass(availableSize);
     }
@@ -720,6 +747,16 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
             return;
         }
 
+        ScrollIndexIntoViewport(index);
+        if (ShouldVirtualize())
+        {
+            _bringIntoViewIndex = index;
+            InvalidateMeasure();
+        }
+    }
+
+    private void ScrollIndexIntoViewport(int index)
+    {
         var itemStart = GetSpacedOffset(index);
         var itemEnd = itemStart + _heightIndex.GetHeightAt(index);
         var viewportAxis = GetViewportAxisSize();
@@ -742,6 +779,7 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
     /// <inheritdoc />
     protected override void OnItemsChanged(object sender, ItemsChangedEventArgs args)
     {
+        _bringIntoViewIndex = -1;
         // Reentrant structural mutation during measure (e.g. a binding side-effect in
         // PrepareContainerForItem editing the collection): do NOT mutate the height index / realized
         // map under the in-flight realize loop. Defer to the bounded restart in MeasureOverride.
@@ -950,6 +988,7 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
 
     private void ResetVirtualizationState(int itemCount)
     {
+        _bringIntoViewIndex = -1;
         _heightIndex.Reset(itemCount, _heightIndex.EstimatedHeight);
         ClearRealizedContainers(recycle: true);
         _currentWindow = RealizationWindow.Empty;
@@ -1087,14 +1126,14 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
         _lastKnownItemCount = itemCount;
     }
 
-    private int RealizeWindow(int startIndex, double windowEndOffset, Size availableSize)
+    private int RealizeWindow(int startIndex, double windowEndOffset, Size availableSize, int requiredIndex = -1)
     {
         _maxCrossAxis = 0;
         var endIndex = startIndex - 1;
         var index = startIndex;
         var currentOffset = GetSpacedOffset(startIndex);
 
-        while (index < _heightIndex.Count && currentOffset <= windowEndOffset)
+        while (index < _heightIndex.Count && (currentOffset <= windowEndOffset || index <= requiredIndex))
         {
             var child = RealizeContainer(index);
             if (child == null)
@@ -1176,9 +1215,12 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
             return false;
         }
 
-        if (child is FrameworkElement frameworkElement)
+        if (child is FrameworkElement frameworkElement &&
+            CssTransform3D.TryMapParentPointToChildLocal(child, localPoint, out var childPoint))
         {
-            hitResult = frameworkElement.HitTest(localPoint);
+            // The candidate lookup uses panel coordinates; the public entry
+            // point expects coordinates local to the realized container.
+            hitResult = frameworkElement.HitTest(childPoint);
             return hitResult != null;
         }
 
@@ -1296,6 +1338,8 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
         {
             return;
         }
+
+        _bringIntoViewIndex = -1;
 
         // Floor negatives; preserve +Infinity (the scroll-to-end sentinel).
         var requested = offset < 0 ? 0 : offset;

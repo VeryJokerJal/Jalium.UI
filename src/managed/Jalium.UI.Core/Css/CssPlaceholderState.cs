@@ -13,7 +13,7 @@ internal static class CssPlaceholderState
 
     internal static string[] ObservedProperties(DependencyObject target) => target switch
     {
-        TextBox or AutoCompleteBox or NumberBox or DatePicker => s_textProperties,
+        TextBox or NumberBox or DatePicker => s_textProperties,
         PasswordBox => s_passwordProperties,
         TimePicker => s_timeProperties,
         ComboBox => s_comboProperties,
@@ -25,7 +25,6 @@ internal static class CssPlaceholderState
     {
         TextBox box => IsEmptyWithPlaceholder(box.Text, box.PlaceholderText),
         PasswordBox box => IsEmptyWithPlaceholder(box.Password, box.PlaceholderText),
-        AutoCompleteBox box => IsEmptyWithPlaceholder(box.Text, box.PlaceholderText),
         NumberBox box => IsEmptyWithPlaceholder(box.Text, box.PlaceholderText),
         DatePicker picker => IsEmptyWithPlaceholder(picker.Text, picker.PlaceholderText ?? "Select a date"),
         TimePicker picker => !picker.SelectedTime.HasValue &&

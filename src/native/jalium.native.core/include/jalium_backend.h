@@ -1,6 +1,8 @@
 #pragma once
 
 #include "jalium_types.h"
+#include "jalium_gradient_transform.h"
+#include "jalium_radial_geometry.h"
 #include "jalium_api.h"  // JALIUM_API export/import decorator for TextFormat helpers
 #include "jalium_video_surface.h"  // JaliumVideoSurfaceKind / Descriptor / DirtyRect
 #include <algorithm>
@@ -1029,6 +1031,20 @@ public:
     /// callers must NOT CloseHandle it.
     virtual intptr_t GetFrameLatencyWaitable() const { return 0; }
 
+    /// Predicts whether Resize(width, height) keeps the swap chain's queued
+    /// presents paired with their pending retire signals. The default is the
+    /// conservative answer — every resize invalidates pending presents — which
+    /// is correct for backends that rebuild their swap chain on resize.
+    /// D3D12 overrides this for same-size no-ops without a queued restart;
+    /// its changed-size composition resizes restart pending presents even
+    /// when the swap-chain allocation remains unchanged.
+    virtual bool ResizePreservesPendingPresents(uint32_t width, uint32_t height) const
+    {
+        (void)width;
+        (void)height;
+        return false;
+    }
+
     /// Fills <paramref name="out"/> with the swap chain / present configuration
     /// currently in use. Lets host apps display "FLIP / tearing on / 1 frame
     /// latency" in status bars and confirm the low-latency path is actually
@@ -1371,6 +1387,28 @@ protected:
     ~ShaderEffectStatusProvider() = default;
 };
 
+/// Optional CSS blend compositor. The source is the last completed effect
+/// capture; each group blends with its restored parent target exactly once.
+class BlendEffectProvider {
+public:
+    virtual bool SupportsBlendModes() const = 0;
+    virtual JaliumResult DrawBlendEffect(uint32_t mode, float x, float y, float w, float h) = 0;
+protected:
+    ~BlendEffectProvider() = default;
+};
+
+/// Optional group mask compositor; alpha bytes are borrowed only for this call.
+/// Overlapping descendants are masked after their composition.
+class AlphaMaskEffectProvider {
+public:
+    virtual JaliumResult BeginAlphaMaskCapture(float x, float y, float w, float h) = 0;
+    virtual JaliumResult DrawAlphaMaskEffect(const uint8_t* pixels,uint32_t bytes,
+        uint32_t width,uint32_t height,uint32_t stride,float maskX,float maskY,float maskW,float maskH,
+        float captureX,float captureY,float captureW,float captureH)=0;
+protected:
+    ~AlphaMaskEffectProvider()=default;
+};
+
 /// Optional ordered color-matrix filter chain. Each stage receives the prior
 /// stage's clamped straight RGBA result. Matrices use four coefficient rows
 /// followed by one offset row, twenty floats per stage.
@@ -1417,6 +1455,23 @@ public:
     virtual JaliumBrushType GetType() const = 0;
 };
 
+// Separate capability keeps the pre-existing Brush vtable unchanged.
+class GradientColorInterpolationProvider {
+public:
+    virtual JaliumResult SetColorInterpolationMode(uint32_t mode) = 0;
+protected:
+    ~GradientColorInterpolationProvider() = default;
+};
+
+class GradientColorInterpolationState : public GradientColorInterpolationProvider, public GradientPaintTransformState {
+public:
+    uint32_t colorInterpolationMode = 1; // 0=linear light, 1=sRGB
+    JaliumResult SetColorInterpolationMode(uint32_t mode) override {
+        if (mode > 1) return JALIUM_ERROR_INVALID_ARGUMENT;
+        colorInterpolationMode = mode; return JALIUM_OK;
+    }
+};
+
 /// Abstract base class for text formats.
 // Optional side interface: the existing TextFormat vtable stays unchanged, so
 // an older backend can be queried safely and reports NOT_SUPPORTED.
@@ -1461,6 +1516,111 @@ protected:
     ~TextFontFallbackProvider() = default;
 };
 
+// Optional paragraph direction leaves the legacy TextFormat vtable intact.
+class TextDirectionProvider {
+public:
+    // 0 = explicit LTR, 1 = explicit RTL, 2 = first-strong (default LTR).
+    virtual JaliumResult SetTextDirection(int32_t direction) = 0;
+protected:
+    ~TextDirectionProvider() = default;
+};
+
+// Optional feature capability leaves the legacy TextFormat vtable intact.
+class TextFontFeatureProvider {
+public:
+    virtual JaliumResult SetFontFeatures(const JaliumFontFeature* features, uint32_t count) = 0;
+protected:
+    ~TextFontFeatureProvider() = default;
+};
+
+// Separate query capability preserves existing backend and feature vtables.
+class TextFontFeatureQueryProvider {
+public:
+    virtual JaliumResult GetFontFeatureSupport(uint32_t tables, const uint32_t* tags, uint32_t count,
+        uint8_t* supported) const = 0;
+protected:
+    ~TextFontFeatureQueryProvider() = default;
+};
+
+// Semantic caps requests are separate from raw OpenType feature switches.
+// A font without smcp still needs synthesis when an author sets smcp=0.
+class TextFontCapsProvider {
+public:
+    virtual JaliumResult SetFontCaps(uint32_t variant, uint32_t flags,
+        const char* language, uint32_t languageLength) = 0;
+protected:
+    ~TextFontCapsProvider() = default;
+};
+
+// Optional fragment context keeps every pre-existing text-format vtable intact.
+class TextFontCapsContextProvider {
+public:
+    virtual JaliumResult SetFontCapsContext(uint32_t boundaries) = 0;
+protected:
+    ~TextFontCapsContextProvider() = default;
+};
+
+class TextFontCapsContinuationProvider {
+public:
+    // 0=none, 1=uppercase at synthesized size, 2=lowercase with native smcp.
+    virtual JaliumResult SetFontCapsContinuation(uint32_t operation) = 0;
+protected:
+    ~TextFontCapsContinuationProvider() = default;
+};
+
+class TextFontFaceMetricsProvider {
+public:
+    virtual JaliumResult SetFontFaceMetrics(const JaliumFontFaceMetrics* metrics, float* usedSize) = 0;
+    virtual JaliumResult GetFontInkBounds(const wchar_t* text, uint32_t length, JaliumTextRangeMetrics* bounds) = 0;
+protected:
+    ~TextFontFaceMetricsProvider() = default;
+};
+
+// Independent optional capability preserves pre-existing text-format vtables.
+class TextFontSizeAdjustProvider {
+public:
+    virtual JaliumResult SetFontSizeAdjust(uint32_t metric, double aspect, uint32_t opticalMode,
+        const JaliumFontVariation* axes, uint32_t count, float* usedSize) = 0;
+    virtual JaliumResult GetFontAspectMetric(uint32_t metric, double* aspect) = 0;
+protected:
+    ~TextFontSizeAdjustProvider() = default;
+};
+
+class TextFontOpticalVariationProvider {
+public:
+    virtual JaliumResult SetFontOpticalVariations(const JaliumFontVariation* axes, uint32_t count, uint32_t mode) = 0;
+protected:
+    ~TextFontOpticalVariationProvider() = default;
+};
+
+class TextFontVariationProvider {
+public:
+    virtual JaliumResult SetFontVariations(const JaliumFontVariation* axes, uint32_t count) = 0;
+protected:
+    ~TextFontVariationProvider() = default;
+};
+
+class TextFontEmojiProvider {
+public:
+    virtual JaliumResult SetFontEmoji(uint32_t variant, uint32_t after) = 0;
+protected:
+    ~TextFontEmojiProvider() = default;
+};
+
+class TextFontPositionProvider {
+public:
+    virtual JaliumResult SetFontPosition(uint32_t variant, uint32_t flags, uint32_t runMode) = 0;
+protected:
+    ~TextFontPositionProvider() = default;
+};
+
+class TextParagraphPositionProvider {
+public:
+    virtual JaliumResult GetPositionModes(uint8_t* modes, uint32_t length) const = 0;
+protected:
+    ~TextParagraphPositionProvider() = default;
+};
+
 class TextFontCharacterProvider {
 public:
     virtual JaliumResult SetUnicodeRanges(const JaliumUnicodeRange* ranges, uint32_t count, bool restricted) = 0;
@@ -1494,6 +1654,29 @@ public:
         JaliumTextRangeMetrics* results, uint32_t capacity, uint32_t* count) const = 0;
 };
 
+class TextParagraphCapsOperationsProvider {
+public:
+    virtual JaliumResult GetCapsOperations(uint8_t* operations, uint32_t length) const = 0;
+protected:
+    ~TextParagraphCapsOperationsProvider() = default;
+};
+
+class TextParagraphSourceBoundsProvider {
+public:
+    virtual JaliumResult GetSourceBounds(uint32_t line, uint32_t start, uint32_t length,
+        JaliumTextRangeMetrics* result) const = 0;
+protected:
+    ~TextParagraphSourceBoundsProvider() = default;
+};
+
+// Optional per-source typography, without changing TextFormat or span ABI.
+class TextOrientationProvider {
+public:
+    virtual JaliumResult SetTextOrientation(int32_t orientation, int32_t baseline) = 0;
+protected:
+    ~TextOrientationProvider() = default;
+};
+
 class TextParagraphProvider {
 public:
     virtual TextParagraph* CreateParagraph(const uint16_t* text, uint32_t length,
@@ -1504,6 +1687,38 @@ protected:
 };
 
 // Optional creation capability: leave the original provider vtable unchanged.
+class TextParagraphSpacingProvider {
+public:
+    virtual TextParagraph* CreateSpacedParagraph(const uint16_t* text, uint32_t length,
+        const JaliumTextSpan* spans, uint32_t spanCount,
+        const JaliumTextSpacingUnit* units, uint32_t unitCount,
+        float width, float minLineHeight, int32_t direction) = 0;
+protected:
+    ~TextParagraphSpacingProvider() = default;
+};
+
+// Paint is supplied per source slice after shaping, so paint-only source
+// boundaries cannot split a ligature or a cursive connection.
+class TextParagraphContextProvider {
+public:
+    virtual TextParagraph* CreateContextParagraph(const uint16_t* text, uint32_t length,
+        const JaliumTextSpan* spans, uint32_t spanCount,
+        const JaliumTextSpacingUnit* units, uint32_t unitCount,
+        float width, float minLineHeight, int32_t direction) = 0;
+protected:
+    ~TextParagraphContextProvider() = default;
+};
+
+class TextParagraphAdvanceProvider {
+public:
+    virtual TextParagraph* CreateAdvancedParagraph(const uint16_t* text, uint32_t length,
+        const JaliumTextSpan* spans, uint32_t spanCount,
+        const JaliumTextAdvanceUnit* units, uint32_t unitCount,
+        float width, float minLineHeight, int32_t direction, bool contextPaint) = 0;
+protected:
+    ~TextParagraphAdvanceProvider() = default;
+};
+
 class TextParagraphWrappingProvider {
 public:
     virtual TextParagraph* CreateParagraphWithWrapping(const uint16_t* text, uint32_t length,
@@ -1511,6 +1726,28 @@ public:
         int32_t alignment, int32_t direction, int32_t wrapping) = 0;
 protected:
     ~TextParagraphWrappingProvider() = default;
+};
+
+// Glyphs are shaped for vertical typography, while paragraph metrics retain
+// logical inline/block coordinates. Physical column placement is the caller's
+// responsibility. A separate capability preserves existing provider vtables.
+class TextParagraphVerticalProvider {
+public:
+    virtual TextParagraph* CreateVerticalParagraph(const uint16_t* text, uint32_t length,
+        const JaliumTextSpan* spans, uint32_t spanCount, float inlineSize, float minColumnWidth,
+        int32_t alignment, int32_t direction, int32_t wrapping) = 0;
+protected:
+    ~TextParagraphVerticalProvider() = default;
+};
+
+class TextParagraphVerticalAdvanceProvider {
+public:
+    virtual TextParagraph* CreateAdvancedVerticalParagraph(const uint16_t* text, uint32_t length,
+        const JaliumTextSpan* spans, uint32_t spanCount,
+        const JaliumTextAdvanceUnit* units, uint32_t unitCount,
+        float inlineSize, float minColumnWidth, int32_t direction, bool contextPaint) = 0;
+protected:
+    ~TextParagraphVerticalAdvanceProvider() = default;
 };
 
 // Optional capability: keep the existing paragraph vtable ABI unchanged.
@@ -1522,6 +1759,33 @@ public:
         bool backwardAffinity, JaliumParagraphCaret* result) const = 0;
 protected:
     ~TextParagraphNavigationProvider() = default;
+};
+
+// Upright character units and used LTR direction. This optional capability
+// preserves the mixed-vertical creation interfaces and their provider vtables.
+class TextParagraphUprightProvider {
+public:
+    virtual TextParagraph* CreateUprightParagraph(const uint16_t* text, uint32_t length,
+        const JaliumTextSpan* spans, uint32_t spanCount, float inlineSize, float minColumnWidth,
+        int32_t alignment, int32_t direction, int32_t wrapping) = 0;
+    virtual TextParagraph* CreateAdvancedUprightParagraph(const uint16_t* text, uint32_t length,
+        const JaliumTextSpan* spans, uint32_t spanCount,
+        const JaliumTextAdvanceUnit* units, uint32_t unitCount,
+        float inlineSize, float minColumnWidth, int32_t direction, bool contextPaint) = 0;
+protected:
+    ~TextParagraphUprightProvider() = default;
+};
+
+class TextParagraphCombineProvider {
+public:
+    virtual TextParagraph* CreateCombinedParagraph(const uint16_t* text, uint32_t length,
+        const JaliumTextSpan* spans, uint32_t spanCount,
+        const JaliumTextCombineUnit* combined, uint32_t combinedCount,
+        const JaliumTextAdvanceUnit* advances, uint32_t advanceCount,
+        float inlineSize, float minColumnWidth, int32_t alignment, int32_t direction,
+        int32_t wrapping, int32_t orientation, bool contextPaint) = 0;
+protected:
+    ~TextParagraphCombineProvider() = default;
 };
 
 // Optional render-target capability. Ranges address UTF-16 source positions;
@@ -1539,6 +1803,24 @@ public:
         float x, float y, float opacity) = 0;
 protected:
     ~TextParagraphRenderProvider() = default;
+};
+
+class TextParagraphSliceRenderProvider {
+public:
+    virtual JaliumResult RenderParagraphSlice(TextParagraph* paragraph, uint32_t line,
+        float x, float y, uint32_t start, uint32_t length, const float* rgba) = 0;
+protected:
+    ~TextParagraphSliceRenderProvider() = default;
+};
+
+// Paint retained paragraph glyphs with a caller-supplied brush. Keep this an
+// optional interface so existing paragraph and render-target vtables stay stable.
+class TextParagraphBrushRenderProvider {
+public:
+    virtual JaliumResult RenderParagraphBrush(TextParagraph* paragraph, uint32_t line,
+        float x, float y, uint32_t start, uint32_t length, Brush* brush) = 0;
+protected:
+    ~TextParagraphBrushRenderProvider() = default;
 };
 
 class TextFormat {

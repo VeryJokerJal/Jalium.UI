@@ -15,6 +15,8 @@ public class StatusBarThemeTests
         var currentField = typeof(Application).GetField("_current",
             BindingFlags.NonPublic | BindingFlags.Static);
         currentField?.SetValue(null, null);
+        typeof(ThemeManager).GetField("_controlThemeDictionaries",
+            BindingFlags.NonPublic | BindingFlags.Static)?.SetValue(null, Array.Empty<ResourceDictionary>());
 
         var resetMethod = typeof(ThemeManager).GetMethod("Reset",
             BindingFlags.NonPublic | BindingFlags.Static);
@@ -53,7 +55,9 @@ public class StatusBarThemeTests
             Assert.Equal(10, item.Padding.Left);
             Assert.Equal(3, item.Padding.Top);
             Assert.NotNull(item.Foreground);
-            Assert.Equal(0, item.VisualChildrenCount);
+            Assert.IsType<Border>(item.GetVisualChild(0));
+            var presenter = Assert.IsType<ContentPresenter>(item.FindName("PART_ContentPresenter"));
+            Assert.Equal("Ready", Assert.IsType<TextBlock>(presenter.GetVisualChild(0)).Text);
             Assert.True(item.DesiredSize.Height >= 24);
         }
         finally

@@ -27,6 +27,7 @@ public static partial class Css
         "ViewportMetrics", typeof(CssViewportMetrics), typeof(Css), new PropertyMetadata(null,
             static (target, _) =>
             {
+                if (target is UIElement viewport) CssPositionedLayout.ContainingBlockChanged(viewport);
                 if (CssEngine.IsActive && target is FrameworkElement or FrameworkContentElement)
                     CssEvaluationScheduler.InvalidateSubtree(CssNode.Get(target));
             }, null, inherits: true));

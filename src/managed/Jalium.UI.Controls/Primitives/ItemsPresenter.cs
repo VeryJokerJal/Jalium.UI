@@ -2,7 +2,6 @@ using Jalium.UI.Media;
 using Jalium.UI.Controls.Primitives;
 
 namespace Jalium.UI.Controls;
-
 /// <summary>
 /// Used within the template of an item control to specify the place in the control's
 /// visual tree where the ItemsPanel defined by the ItemsControl is to be added.
@@ -16,19 +15,17 @@ public class ItemsPresenter : FrameworkElement, IScrollInfo
     private double _horizontalOffset;
     private double _verticalOffset;
     private ScrollViewer? _scrollOwner;
-
+    private bool _isTemplateRetired;
     private IScrollInfo? CurrentScrollInfo => _itemsPanel as IScrollInfo;
-
     /// <summary>
     /// The template root of the expanded template instance this presenter belongs to, stamped
-    /// while <see cref="Control.SetTemplatedParentRecursive(FrameworkElement, FrameworkElement)"/>
-    /// walks the freshly loaded tree. It lets <see cref="AttachToOwner"/> tell a presenter that
+    /// while <see cref = "Control.SetTemplatedParentRecursive(FrameworkElement, FrameworkElement)"/>
+    /// walks the freshly loaded tree. It lets <see cref = "AttachToOwner"/> tell a presenter that
     /// still belongs to the owner's current template apart from one left behind in a discarded
     /// template tree (see the guard there). Null when the presenter was never reached by that
-    /// walk — e.g. an <see cref="ItemsPresenter"/> authored directly in a data template.
+    /// walk — e.g. an <see cref = "ItemsPresenter"/> authored directly in a data template.
     /// </summary>
     internal FrameworkElement? TemplateInstanceRoot { get; set; }
-
     /// <summary>
     /// Gets the panel that hosts the items.
     /// </summary>
@@ -45,13 +42,15 @@ public class ItemsPresenter : FrameworkElement, IScrollInfo
             if (_owner != value)
             {
                 _owner = value;
+                if (value != null)
+                    _isTemplateRetired = false;
                 InvalidateMeasure();
             }
         }
     }
 
     /// <summary>
-    /// Initializes a new instance of the <see cref="ItemsPresenter"/> class.
+    /// Initializes a new instance of the <see cref = "ItemsPresenter"/> class.
     /// </summary>
     public ItemsPresenter()
     {
@@ -74,14 +73,15 @@ public class ItemsPresenter : FrameworkElement, IScrollInfo
                 }
                 else if (created != null)
                 {
-                    System.Diagnostics.Debug.WriteLine(
-                        $"ItemsPresenter: ItemsPanelTemplate produced a {created.GetType().Name} instead of a Panel. Falling back to StackPanel.");
+                    System.Diagnostics.Debug.WriteLine($"ItemsPresenter: ItemsPanelTemplate produced a {created.GetType().Name} instead of a Panel. Falling back to StackPanel.");
                 }
             }
 
             // Default to StackPanel if no template or template didn't produce a Panel
-            _itemsPanel ??= new StackPanel { Orientation = Orientation.Vertical };
-
+            _itemsPanel ??= new StackPanel
+            {
+                Orientation = Orientation.Vertical
+            };
             if (_itemsPanel is IScrollInfo scrollInfo)
             {
                 scrollInfo.ScrollOwner = _scrollOwner;
@@ -97,23 +97,29 @@ public class ItemsPresenter : FrameworkElement, IScrollInfo
 
     /// <summary>
     /// Discards the current items panel so that the next measure pass
-    /// will create a new one from the owner's <see cref="ItemsControl.ItemsPanel"/> template.
+    /// will create a new one from the owner's <see cref = "ItemsControl.ItemsPanel"/> template.
     /// The retired panel is fully decommissioned (children cleared, items-host flag and
     /// generator/owner references dropped) so a stale queued measure cannot make it realize
     /// containers that now belong to the replacement panel.
     /// </summary>
-    /// <param name="invalidateMeasure">
+    /// <param name = "invalidateMeasure">
     /// Pass false when the presenter itself is being discarded together with its template
     /// tree — re-queueing a detached presenter for layout would only let a zombie measure
     /// re-create a panel on it.
     /// </param>
     internal void InvalidatePanel(bool invalidateMeasure = true)
     {
+        if (!invalidateMeasure)
+        {
+            _isTemplateRetired = true;
+            _owner = null;
+            _scrollOwner = null;
+        }
+
         if (_itemsPanel != null)
         {
             var panel = _itemsPanel;
             ItemsControl.RetireItemsHostPanel(panel);
-
             // Clear the field BEFORE detaching: RemoveVisualChild re-syncs the cached
             // DependencyObject.VisualChildrenCount from the overridden property, which
             // reads _itemsPanel. Clearing afterwards leaves the cache at 1 while the
@@ -131,23 +137,19 @@ public class ItemsPresenter : FrameworkElement, IScrollInfo
     }
 
     /// <summary>Called when the owning items-panel template changes.</summary>
-    protected virtual void OnTemplateChanged(
-        ItemsPanelTemplate? oldTemplate,
-        ItemsPanelTemplate? newTemplate)
+    protected virtual void OnTemplateChanged(ItemsPanelTemplate? oldTemplate, ItemsPanelTemplate? newTemplate)
     {
         InvalidatePanel();
     }
 
-    internal void NotifyTemplateChanged(
-        ItemsPanelTemplate? oldTemplate,
-        ItemsPanelTemplate? newTemplate) =>
-        OnTemplateChanged(oldTemplate, newTemplate);
-
+    internal void NotifyTemplateChanged(ItemsPanelTemplate? oldTemplate, ItemsPanelTemplate? newTemplate) => OnTemplateChanged(oldTemplate, newTemplate);
     /// <summary>
     /// Called when the template's parent changes to find the owning ItemsControl.
     /// </summary>
     internal void AttachToOwner()
     {
+        if (_isTemplateRetired)
+            return;
         // Reject a presenter that belongs to a template instance the owner has already discarded.
         // Such a presenter is never retired by ItemsControl.OnTemplateContentClearing (that only
         // inspects the registered presenter, and this one was replaced before it was ever
@@ -157,9 +159,7 @@ public class ItemsPresenter : FrameworkElement, IScrollInfo
         // item-is-own-container items, reparenting live containers into the discarded panel.
         // Fail open when unmarked (data-template-authored presenters walk up the visual parent
         // chain instead and never carry a template-instance root).
-        if (TemplateInstanceRoot != null &&
-            TemplatedParent is Control templatedHost &&
-            !ReferenceEquals(TemplateInstanceRoot, templatedHost.TemplateRootInternal))
+        if (TemplateInstanceRoot != null && TemplatedParent is Control templatedHost && !ReferenceEquals(TemplateInstanceRoot, templatedHost.TemplateRootInternal))
         {
             return;
         }
@@ -174,13 +174,19 @@ public class ItemsPresenter : FrameworkElement, IScrollInfo
                 itemsControl.SetItemsPresenter(this);
                 break;
             }
+
             parent = (parent as FrameworkElement)?.VisualParent ?? (parent as FrameworkElement)?.TemplatedParent;
         }
     }
 
-    /// <inheritdoc />
+    /// <inheritdoc/>
     protected override Size MeasureOverride(Size availableSize)
     {
+        // A presenter which already had an owner does not call AttachToOwner
+        // again. Guard this path as well: stale queued layout must not refresh
+        // the live owner's items into a replacement or temporary staging host.
+        if (IsRetiredTemplateInstance)
+            return new Size(0, 0);
         // Attach to owner BEFORE creating the panel so that
         // EnsureItemsPanel can read the owner's ItemsPanel template.
         if (_owner == null)
@@ -190,7 +196,6 @@ public class ItemsPresenter : FrameworkElement, IScrollInfo
 
         bool panelJustCreated = _itemsPanel == null;
         var panel = EnsureItemsPanel();
-
         // If the panel was just created after owner attachment, the earlier
         // RefreshItems (from SetItemsPresenter) found no panel and was a no-op.
         // Trigger it again now that the panel exists.
@@ -203,9 +208,11 @@ public class ItemsPresenter : FrameworkElement, IScrollInfo
         return panel.DesiredSize;
     }
 
-    /// <inheritdoc />
+    /// <inheritdoc/>
     protected override Size ArrangeOverride(Size finalSize)
     {
+        if (IsRetiredTemplateInstance)
+            return finalSize;
         if (_itemsPanel != null)
         {
             _itemsPanel.Arrange(new Rect(0, 0, finalSize.Width, finalSize.Height));
@@ -214,10 +221,11 @@ public class ItemsPresenter : FrameworkElement, IScrollInfo
         return finalSize;
     }
 
-    /// <inheritdoc />
+    private bool IsRetiredTemplateInstance => _isTemplateRetired || TemplateInstanceRoot != null && TemplatedParent is Control host && !ReferenceEquals(TemplateInstanceRoot, host.TemplateRootInternal);
+    /// <inheritdoc/>
     protected override int VisualChildrenCount => _itemsPanel != null ? 1 : 0;
 
-    /// <inheritdoc />
+    /// <inheritdoc/>
     protected override Visual? GetVisualChild(int index)
     {
         if (index == 0 && _itemsPanel != null)
@@ -225,8 +233,7 @@ public class ItemsPresenter : FrameworkElement, IScrollInfo
         throw new ArgumentOutOfRangeException(nameof(index));
     }
 
-    #region IScrollInfo
-
+#region IScrollInfo
     public bool CanHorizontallyScroll
     {
         get => CurrentScrollInfo?.CanHorizontallyScroll ?? _canHorizontallyScroll;
@@ -254,15 +261,10 @@ public class ItemsPresenter : FrameworkElement, IScrollInfo
     }
 
     public double ExtentWidth => CurrentScrollInfo?.ExtentWidth ?? (_itemsPanel?.DesiredSize.Width ?? 0);
-
     public double ExtentHeight => CurrentScrollInfo?.ExtentHeight ?? (_itemsPanel?.DesiredSize.Height ?? 0);
-
     public double ViewportWidth => CurrentScrollInfo?.ViewportWidth ?? RenderSize.Width;
-
     public double ViewportHeight => CurrentScrollInfo?.ViewportHeight ?? RenderSize.Height;
-
     public double HorizontalOffset => CurrentScrollInfo?.HorizontalOffset ?? _horizontalOffset;
-
     public double VerticalOffset => CurrentScrollInfo?.VerticalOffset ?? _verticalOffset;
 
     public ScrollViewer? ScrollOwner
@@ -391,15 +393,9 @@ public class ItemsPresenter : FrameworkElement, IScrollInfo
         {
             if (Jalium.UI.Diagnostics.ScrollDiagnostics.Enabled)
             {
-                Jalium.UI.Diagnostics.ScrollDiagnostics.RecordEvent(
-                    Name,
-                    System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(this),
-                    "items-presenter-set-vertical",
-                    $"raw={offset:R} target={CurrentScrollInfo.GetType().FullName} " +
-                    $"targetOffset={CurrentScrollInfo.VerticalOffset:R} " +
-                    $"targetExtent={CurrentScrollInfo.ExtentHeight:R} " +
-                    $"targetViewport={CurrentScrollInfo.ViewportHeight:R}");
+                Jalium.UI.Diagnostics.ScrollDiagnostics.RecordEvent(Name, System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(this), "items-presenter-set-vertical", $"raw={offset:R} target={CurrentScrollInfo.GetType().FullName} " + $"targetOffset={CurrentScrollInfo.VerticalOffset:R} " + $"targetExtent={CurrentScrollInfo.ExtentHeight:R} " + $"targetViewport={CurrentScrollInfo.ViewportHeight:R}");
             }
+
             CurrentScrollInfo.SetVerticalOffset(offset);
             return;
         }
@@ -416,6 +412,5 @@ public class ItemsPresenter : FrameworkElement, IScrollInfo
 
         return rectangle;
     }
-
-    #endregion
+#endregion
 }

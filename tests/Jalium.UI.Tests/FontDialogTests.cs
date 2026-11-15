@@ -101,9 +101,18 @@ public class FontDialogTests
         };
 
         Window window = dialog.CreateFallbackDialogForTesting();
+        Jalium.UI.Markup.ThemeLoader.Initialize();
+        using var stream = new MemoryStream();
+        var defaults = Jalium.UI.Controls.Themes.ThemeManager.XamlLoader!(stream,
+            "Themes/Generic.jalxaml", typeof(Control).Assembly)!;
+        window.Resources.MergedDictionaries.Add(defaults);
+        window.UpdateDefaultStyle();
+        window.ApplyTemplate();
 
         Assert.Equal("Choose Font", window.Title);
-        Assert.IsType<StackPanel>(window.Content);
+        Assert.IsType<FontDialogWindow>(window);
+        Assert.NotNull(window.Template);
+        Assert.IsType<ComboBox>(window.FindName("PART_FontFamily"));
         Assert.Equal(WindowStartupLocation.CenterScreen, window.WindowStartupLocation);
         Assert.Equal(ResizeMode.NoResize, window.ResizeMode);
     }

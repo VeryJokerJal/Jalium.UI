@@ -279,7 +279,7 @@ public sealed class GeneralTransformCollection : Animatable, IList<GeneralTransf
         _items.AddRange(collection);
     }
 
-    public GeneralTransform this[int index] { get => _items[index]; set => _items[index] = value; }
+    public GeneralTransform this[int index] { get => _items[index]; set => _items.SetItem(index, value); }
     object? IList.this[int index] { get => this[index]; set => this[index] = AnimatableListStorage<GeneralTransform>.Cast(value); }
     public int Count => _items.Count;
     bool ICollection<GeneralTransform>.IsReadOnly => _items.IsReadOnly;
@@ -314,13 +314,7 @@ public sealed class GeneralTransformCollection : Animatable, IList<GeneralTransf
     protected override void GetAsFrozenCore(Freezable source) { base.GetAsFrozenCore(source); _items.CopyFrom(((GeneralTransformCollection)source)._items, AnimatableListCloneMode.GetAsFrozen); }
     protected override void GetCurrentValueAsFrozenCore(Freezable source) { base.GetCurrentValueAsFrozenCore(source); _items.CopyFrom(((GeneralTransformCollection)source)._items, AnimatableListCloneMode.GetCurrentValueAsFrozen); }
 
-    private AnimatableListStorage<GeneralTransform> CreateStorage(int capacity = 0) => new(
-        () => ReadPreamble(),
-        () => WritePreamble(),
-        () => WritePostscript(),
-        (oldValue, newValue) => OnFreezablePropertyChanged(oldValue, newValue),
-        () => IsFrozen,
-        capacity);
+    private AnimatableListStorage<GeneralTransform> CreateStorage(int capacity = 0) => new(this, capacity);
 
     public struct Enumerator : IEnumerator<GeneralTransform>
     {

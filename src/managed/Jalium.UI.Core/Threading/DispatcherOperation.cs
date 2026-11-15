@@ -18,6 +18,7 @@ public class DispatcherOperation
 
     // 当前在调度队列链表中的节点（用于 O(1) 中止移除）；出队后置 null。
     internal LinkedListNode<DispatcherOperation>? Node { get; set; }
+    internal long EnqueueSequence { get; set; }
 
     internal DispatcherOperation(
         DispatcherCore dispatcher,

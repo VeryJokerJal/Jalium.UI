@@ -8,14 +8,17 @@ namespace Jalium.UI.HostingDemo.ViewModels;
 /// <see cref="JaliumApp.Run"/> 进入 UI 消息循环之前就把 hosted service 启动了。
 /// </summary>
 public sealed class HostedServicesViewModel : ViewModelBase, IDisposable
+
 {
     private readonly ClockHostedService _clock;
     private string _currentTime = "等待第一次 tick...";
 
+    private bool _active;
+
     public HostedServicesViewModel(ClockHostedService clock)
     {
         _clock = clock;
-        _clock.Tick += OnTick;
+        Start();
     }
 
     public string CurrentTime
@@ -33,8 +36,15 @@ public sealed class HostedServicesViewModel : ViewModelBase, IDisposable
         });
     }
 
-    public void Dispose()
+    public void Start()
     {
-        _clock.Tick -= OnTick;
+        if (_active) return;
+        _active = true; _clock.Tick += OnTick;
     }
+    public void Stop()
+    {
+        if (!_active) return;
+        _active = false; _clock.Tick -= OnTick;
+    }
+    public void Dispose() => Stop();
 }

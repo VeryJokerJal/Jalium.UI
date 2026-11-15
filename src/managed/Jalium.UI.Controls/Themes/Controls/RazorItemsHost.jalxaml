@@ -1,0 +1,70 @@
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <ControlTemplate x:Key="RazorItemsHost.PassthroughTemplate" TargetType="RazorItemsHost">
+        <ItemsPresenter x:Name="PART_ItemsPresenter">
+            <VisualStateManager.VisualStateGroups>
+                <VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Normal" /><VisualState x:Name="Disabled" /></VisualStateGroup>
+                <VisualStateGroup x:Name="LayoutStates"><VisualState x:Name="Stack" /><VisualState x:Name="Wrap" /></VisualStateGroup>
+                <VisualStateGroup x:Name="ScrollHostStates"><VisualState x:Name="Self" /><VisualState x:Name="Outer" /><VisualState x:Name="None" /></VisualStateGroup>
+            </VisualStateManager.VisualStateGroups>
+        </ItemsPresenter>
+    </ControlTemplate>
+    <!-- ItemsPresenter must be the viewer's direct IScrollInfo content. -->
+    <ControlTemplate x:Key="RazorItemsHost.VerticalScrollTemplate" TargetType="RazorItemsHost">
+        <ScrollViewer x:Name="PART_ScrollViewer" CanContentScroll="True" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <VisualStateManager.VisualStateGroups>
+                <VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Normal" /><VisualState x:Name="Disabled" /></VisualStateGroup>
+                <VisualStateGroup x:Name="LayoutStates"><VisualState x:Name="Stack" /><VisualState x:Name="Wrap" /></VisualStateGroup>
+                <VisualStateGroup x:Name="ScrollHostStates"><VisualState x:Name="Self" /><VisualState x:Name="Outer" /><VisualState x:Name="None" /></VisualStateGroup>
+            </VisualStateManager.VisualStateGroups>
+            <ItemsPresenter x:Name="PART_ItemsPresenter" />
+        </ScrollViewer>
+    </ControlTemplate>
+    <ControlTemplate x:Key="RazorItemsHost.HorizontalScrollTemplate" TargetType="RazorItemsHost">
+        <ScrollViewer x:Name="PART_ScrollViewer" CanContentScroll="True" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+            <VisualStateManager.VisualStateGroups>
+                <VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Normal" /><VisualState x:Name="Disabled" /></VisualStateGroup>
+                <VisualStateGroup x:Name="LayoutStates"><VisualState x:Name="Stack" /><VisualState x:Name="Wrap" /></VisualStateGroup>
+                <VisualStateGroup x:Name="ScrollHostStates"><VisualState x:Name="Self" /><VisualState x:Name="Outer" /><VisualState x:Name="None" /></VisualStateGroup>
+            </VisualStateManager.VisualStateGroups>
+            <ItemsPresenter x:Name="PART_ItemsPresenter" />
+        </ScrollViewer>
+    </ControlTemplate>
+    <ItemsPanelTemplate x:Key="RazorItemsHost.VerticalStackPanel"><VirtualizingStackPanel Orientation="Vertical" /></ItemsPanelTemplate>
+    <ItemsPanelTemplate x:Key="RazorItemsHost.HorizontalStackPanel"><VirtualizingStackPanel Orientation="Horizontal" /></ItemsPanelTemplate>
+    <ItemsPanelTemplate x:Key="RazorItemsHost.VerticalWrapPanel"><VirtualizingWrapPanel Orientation="Vertical" /></ItemsPanelTemplate>
+    <ItemsPanelTemplate x:Key="RazorItemsHost.HorizontalWrapPanel"><VirtualizingWrapPanel Orientation="Horizontal" /></ItemsPanelTemplate>
+    <Style TargetType="RazorItemsHost">
+        <Setter Property="ItemsPanel" Value="{StaticResource RazorItemsHost.VerticalStackPanel}" />
+        <Setter Property="Template" Value="{StaticResource RazorItemsHost.VerticalScrollTemplate}" />
+        <Style.Triggers>
+            <Trigger Property="Orientation" Value="Horizontal">
+                <Setter Property="ItemsPanel" Value="{StaticResource RazorItemsHost.HorizontalStackPanel}" />
+            </Trigger>
+            <Trigger Property="Layout" Value="Wrap">
+                <Setter Property="ItemsPanel" Value="{StaticResource RazorItemsHost.VerticalWrapPanel}" />
+            </Trigger>
+            <MultiTrigger>
+                <MultiTrigger.Conditions>
+                    <Condition Property="Layout" Value="Wrap" />
+                    <Condition Property="Orientation" Value="Horizontal" />
+                </MultiTrigger.Conditions>
+                <Setter Property="ItemsPanel" Value="{StaticResource RazorItemsHost.HorizontalWrapPanel}" />
+            </MultiTrigger>
+            <MultiTrigger>
+                <MultiTrigger.Conditions>
+                    <Condition Property="ResolvedScrollHost" Value="Self" />
+                    <Condition Property="ScrollOrientation" Value="Horizontal" />
+                </MultiTrigger.Conditions>
+                <Setter Property="Template" Value="{StaticResource RazorItemsHost.HorizontalScrollTemplate}" />
+            </MultiTrigger>
+            <Trigger Property="ResolvedScrollHost" Value="Outer">
+                <Setter Property="Template" Value="{StaticResource RazorItemsHost.PassthroughTemplate}" />
+            </Trigger>
+            <Trigger Property="ResolvedScrollHost" Value="None">
+                <Setter Property="Template" Value="{StaticResource RazorItemsHost.PassthroughTemplate}" />
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+</ResourceDictionary>

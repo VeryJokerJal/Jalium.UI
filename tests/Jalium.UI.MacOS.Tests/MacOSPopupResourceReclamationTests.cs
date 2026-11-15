@@ -23,6 +23,31 @@ public sealed class MacOSPopupResourceReclamationTests
     }
 
     [Theory, MemberData(nameof(FrameCases))]
+    public void DrawingCachesUseThePhysicalOffscreenWitness(int depth, bool custom, int witness)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        using var pixels = new BitmapScope();
+        using var scene = new Scene(depth, custom, pixels.Bitmap);
+        long painted = Environment.TickCount64 - 2000;
+        Stamp(scene.Probe, painted);
+        long ownerFrame = painted + (witness == 0 ? 100 : -100);
+        long surfaceFrame = painted + (witness == 1 ? 100 : -100);
+        if (depth == 0) surfaceFrame = painted + (witness == 2 ? -100 : 100);
+        Frame(scene.Owner, ownerFrame); Frame(scene.Surface, surfaceFrame);
+        var cache = new object();
+        var slot = typeof(Visual).GetField("_cachedDrawing", Private)!;
+        slot.SetValue(scene.Probe, cache);
+        using var reclaimer = new ResourceReclaimer(new ResourceReclamationOptions
+        { IdleTimeoutMs = 250, EvictDrawingCache = true, InvokeReclaimableResources = false, ReclaimBackendCaches = false });
+        Track(reclaimer, scene.Probe);
+        Assert.True(scene.Probe.IsVisible);
+        reclaimer.ScanAndReclaim();
+        if (surfaceFrame > painted) Assert.Null(slot.GetValue(scene.Probe));
+        else Assert.Same(cache, slot.GetValue(scene.Probe));
+        Assert.Equal(0, scene.Probe.Reclaims);
+    }
+
+    [Theory, MemberData(nameof(FrameCases))]
     public void OnlyThePresentingWindowsFullFrameCanProveTheImageOffscreen(int depth, bool custom, int witness)
     {
         if (!OperatingSystem.IsMacOS()) return;

@@ -1,1646 +1,509 @@
 using System.Collections;
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
+using System.ComponentModel;
 using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Data;
 using Jalium.UI.Input;
-using Jalium.UI.Interop;
-using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
-using Jalium.UI.Styling;
 using Jalium.UI.Threading;
 
 namespace Jalium.UI.Controls;
 
-/// <summary>
-/// Represents a text box control that provides auto-completion suggestions.
-/// Inherits from TextBoxBase for full text editing support.
-/// </summary>
-public class AutoCompleteBox : TextBoxBase, IImeSupport
+/// <summary>A text editor with a replaceable, templated suggestion list.</summary>
+[TemplatePart(Name = "PART_ContentHost", Type = typeof(FrameworkElement))]
+[TemplatePart(Name = "PART_Popup", Type = typeof(Popup))]
+[TemplatePart(Name = "PART_SuggestionsList", Type = typeof(ListBox))]
+[TemplateVisualState(Name = "Normal", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "MouseOver", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Disabled", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Focused", GroupName = "FocusStates")]
+[TemplateVisualState(Name = "Unfocused", GroupName = "FocusStates")]
+[TemplateVisualState(Name = "DropDownOpen", GroupName = "DropDownStates")]
+[TemplateVisualState(Name = "DropDownClosed", GroupName = "DropDownStates")]
+public class AutoCompleteBox : TextBox
 {
-    private InputMethodWeakSubscription<AutoCompleteBox>? _imeSubscription;
-    private Border? _cssBorderPainter;
-    /// <inheritdoc />
-    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
-    {
-        return new Jalium.UI.Automation.Peers.AutoCompleteBoxAutomationPeer(this);
-    }
-
-    #region Static Brushes & Pens
-
-    private static readonly SolidColorBrush s_focusBorderBrush = new(ThemeColors.ControlBorderFocused);
-    private static readonly SolidColorBrush s_watermarkBrush = new(ThemeColors.TextPlaceholder);
-    private static readonly SolidColorBrush s_whiteBrush = new(Color.White);
-    private static readonly SolidColorBrush s_compositionBgBrush = new(ThemeColors.CompositionBackground);
-    private static readonly SolidColorBrush s_compositionTextBrush = new(ThemeColors.CompositionText);
-    private static readonly SolidColorBrush s_compositionUnderlineBrush = new(ThemeColors.CompositionUnderline);
-    private static readonly Pen s_compositionUnderlinePen = new(s_compositionUnderlineBrush, 1);
-    private static readonly SolidColorBrush s_dropdownShadowBrush = new(ThemeColors.DropdownShadow);
-    private static readonly SolidColorBrush s_dropdownBgBrush = new(ThemeColors.DropdownBackground);
-    private static readonly SolidColorBrush s_dropdownBorderFallbackBrush = new(ThemeColors.ControlBorder);
-    private static readonly SolidColorBrush s_dropdownSelectionBrush = new(ThemeColors.SelectedItemBackground);
-    private static readonly SolidColorBrush s_transparentBrush = new(Color.Transparent);
-    private static readonly SolidColorBrush s_dropdownHoverBrush = new(ThemeColors.HighlightBackground);
-
-    #endregion
-
-    #region Fields
-
-    // Internal text storage
-    private string _text = string.Empty;
-
-    // Text width measurement cache
-    private Dictionary<string, double> _textWidthCache = new();
-    private string? _cachedFontFamily;
-    private double _cachedFontSize;
-    private const int MaxCacheSize = 256;
-
-    // IME support
-    private bool _isImeComposing;
-    private string _imeCompositionString = string.Empty;
-    private int _imeCompositionCursor;
-    private int _imeCompositionStart;
-
-    // Suggestion state
-    private int _selectedSuggestionIndex = -1;
-    private bool _isUpdatingText;
-    private DateTime _lastFilterTime;
-    private DispatcherTimer? _filterDelayTimer;
-    private bool _suppressNextTabTextInput;
-
-    // Popup-based dropdown state
+    private readonly SuggestionCollection _filteredItems = new();
     private Popup? _popup;
-    private StackPanel? _dropDownItemsPanel;
+    private ListBox? _suggestionsList;
+    private DispatcherTimer? _filterDelayTimer;
+    private bool _acceptingSuggestion;
+    private bool _updatingSuggestions;
+    private bool _syncingPopup;
+    private bool _insertingText;
+    private bool _suppressNextTabTextInput;
+    private int _filterRevision;
+    private int _pressedSuggestionIndex = -1;
+    private int _touchId = -1;
+    private Point _touchStart;
+    private bool _touchCandidate;
 
-    // Constants
-    private const double DefaultHeight = 32;
-    private const double ItemHeight = 28;
-    private const double DropdownMaxItems = 8;
-
-    #endregion
-
-    #region Dependency Properties
-
-    /// <summary>
-    /// Identifies the Text dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    public static readonly DependencyProperty TextProperty =
-        DependencyProperty.Register(nameof(Text), typeof(string), typeof(AutoCompleteBox),
-            new PropertyMetadata(string.Empty, OnTextPropertyChanged));
-
-    /// <summary>
-    /// Identifies the ItemsSource dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Items)]
-    public static readonly DependencyProperty ItemsSourceProperty =
-        DependencyProperty.Register(nameof(ItemsSource), typeof(IEnumerable), typeof(AutoCompleteBox),
-            new PropertyMetadata(null, OnItemsSourceChanged));
-
-    /// <summary>
-    /// Identifies the SelectedItem dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public static readonly DependencyProperty SelectedItemProperty =
-        DependencyProperty.Register(nameof(SelectedItem), typeof(object), typeof(AutoCompleteBox),
-            new PropertyMetadata(null, OnSelectedItemChanged));
-
-    /// <summary>
-    /// Identifies the IsDropDownOpen dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public static readonly DependencyProperty IsDropDownOpenProperty =
-        DependencyProperty.Register(nameof(IsDropDownOpen), typeof(bool), typeof(AutoCompleteBox),
-            new PropertyMetadata(false, OnIsDropDownOpenChanged));
-
-    /// <summary>
-    /// Identifies the MinimumPrefixLength dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
-    public static readonly DependencyProperty MinimumPrefixLengthProperty =
-        DependencyProperty.Register(nameof(MinimumPrefixLength), typeof(int), typeof(AutoCompleteBox),
-            new PropertyMetadata(1));
-
-    /// <summary>
-    /// Identifies the FilterMode dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
-    public static readonly DependencyProperty FilterModeProperty =
-        DependencyProperty.Register(nameof(FilterMode), typeof(AutoCompleteFilterMode), typeof(AutoCompleteBox),
-            new PropertyMetadata(AutoCompleteFilterMode.StartsWith));
-
-    /// <summary>
-    /// Identifies the MaxDropDownHeight dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
-    public static readonly DependencyProperty MaxDropDownHeightProperty =
-        DependencyProperty.Register(nameof(MaxDropDownHeight), typeof(double), typeof(AutoCompleteBox),
-            new PropertyMetadata(224.0));
-
-    /// <summary>
-    /// Identifies the MinimumPopulateDelay dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
-    public static readonly DependencyProperty MinimumPopulateDelayProperty =
-        DependencyProperty.Register(nameof(MinimumPopulateDelay), typeof(TimeSpan), typeof(AutoCompleteBox),
-            new PropertyMetadata(TimeSpan.Zero, OnPopulateDelayChanged));
-
-    /// <summary>
-    /// Identifies the PlaceholderText dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    public static readonly DependencyProperty PlaceholderTextProperty =
-        DependencyProperty.Register(nameof(PlaceholderText), typeof(string), typeof(AutoCompleteBox),
-            new PropertyMetadata(null, OnVisualPropertyChanged));
-
-    /// <summary>
-    /// Identifies the TextMemberPath dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Items)]
-    public static readonly DependencyProperty TextMemberPathProperty =
-        DependencyProperty.Register(nameof(TextMemberPath), typeof(string), typeof(AutoCompleteBox),
-            new PropertyMetadata(null));
-
-    /// <summary>
-    /// Identifies the IsTextCompletionEnabled dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public static readonly DependencyProperty IsTextCompletionEnabledProperty =
-        DependencyProperty.Register(nameof(IsTextCompletionEnabled), typeof(bool), typeof(AutoCompleteBox),
-            new PropertyMetadata(false));
-
-    #endregion
-
-    #region Routed Events
-
-    /// <summary>
-    /// Identifies the TextChanged routed event.
-    /// </summary>
-    public new static readonly RoutedEvent TextChangedEvent =
-        EventManager.RegisterRoutedEvent(nameof(TextChanged), RoutingStrategy.Bubble,
-            typeof(RoutedEventHandler), typeof(AutoCompleteBox));
-
-    /// <summary>
-    /// Identifies the SelectionChanged routed event.
-    /// </summary>
-    public new static readonly RoutedEvent SelectionChangedEvent =
-        EventManager.RegisterRoutedEvent(nameof(SelectionChanged), RoutingStrategy.Bubble,
-            typeof(EventHandler<SelectionChangedEventArgs>), typeof(AutoCompleteBox));
-
-    /// <summary>
-    /// Identifies the DropDownOpened routed event.
-    /// </summary>
-    public static readonly RoutedEvent DropDownOpenedEvent =
-        EventManager.RegisterRoutedEvent(nameof(DropDownOpened), RoutingStrategy.Bubble,
-            typeof(RoutedEventHandler), typeof(AutoCompleteBox));
-
-    /// <summary>
-    /// Identifies the DropDownClosed routed event.
-    /// </summary>
-    public static readonly RoutedEvent DropDownClosedEvent =
-        EventManager.RegisterRoutedEvent(nameof(DropDownClosed), RoutingStrategy.Bubble,
-            typeof(RoutedEventHandler), typeof(AutoCompleteBox));
-
-    /// <summary>
-    /// Identifies the Populating routed event.
-    /// </summary>
-    public static readonly RoutedEvent PopulatingEvent =
-        EventManager.RegisterRoutedEvent(nameof(Populating), RoutingStrategy.Bubble,
-            typeof(RoutedEventHandler), typeof(AutoCompleteBox));
-
-    /// <summary>
-    /// Occurs when the text changes.
-    /// </summary>
-    public new event RoutedEventHandler TextChanged
+    static AutoCompleteBox()
     {
-        add => AddHandler(TextChangedEvent, value);
-        remove => RemoveHandler(TextChangedEvent, value);
+        DefaultStyleKeyProperty.OverrideMetadata(typeof(AutoCompleteBox), new PropertyMetadata(typeof(AutoCompleteBox)));
+        TextWrappingProperty.OverrideMetadata(typeof(AutoCompleteBox), new FrameworkPropertyMetadata(TextWrapping.NoWrap));
     }
 
-    /// <summary>
-    /// Occurs when the selection changes.
-    /// </summary>
-    public new event EventHandler<SelectionChangedEventArgs> SelectionChanged
-    {
-        add => AddHandler(SelectionChangedEvent, value);
-        remove => RemoveHandler(SelectionChangedEvent, value);
-    }
+    // Keep the existing public identifiers while using the TextBox editing engine.
+    public new static readonly DependencyProperty TextProperty = TextBox.TextProperty;
+    public new static readonly DependencyProperty PlaceholderTextProperty = TextBox.PlaceholderTextProperty;
 
-    /// <summary>
-    /// Occurs when the drop-down opens.
-    /// </summary>
-    public event RoutedEventHandler DropDownOpened
-    {
-        add => AddHandler(DropDownOpenedEvent, value);
-        remove => RemoveHandler(DropDownOpenedEvent, value);
-    }
+    public static readonly DependencyProperty ItemsSourceProperty = DependencyProperty.Register(
+        nameof(ItemsSource), typeof(IEnumerable), typeof(AutoCompleteBox), new PropertyMetadata(null, OnItemsSourceChanged));
+    public static readonly DependencyProperty SelectedItemProperty = DependencyProperty.Register(
+        nameof(SelectedItem), typeof(object), typeof(AutoCompleteBox),
+        new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.BindsTwoWayByDefault, OnSelectedItemChanged));
+    public static readonly DependencyProperty IsDropDownOpenProperty = DependencyProperty.Register(
+        nameof(IsDropDownOpen), typeof(bool), typeof(AutoCompleteBox),
+        new FrameworkPropertyMetadata(false, FrameworkPropertyMetadataOptions.BindsTwoWayByDefault, OnIsDropDownOpenChanged));
+    public static readonly DependencyProperty MinimumPrefixLengthProperty = DependencyProperty.Register(
+        nameof(MinimumPrefixLength), typeof(int), typeof(AutoCompleteBox), new PropertyMetadata(1, OnFilterOptionsChanged));
+    public static readonly DependencyProperty FilterModeProperty = DependencyProperty.Register(
+        nameof(FilterMode), typeof(AutoCompleteFilterMode), typeof(AutoCompleteBox),
+        new PropertyMetadata(AutoCompleteFilterMode.StartsWith, OnFilterOptionsChanged));
+    public static readonly DependencyProperty MaxDropDownHeightProperty = DependencyProperty.Register(
+        nameof(MaxDropDownHeight), typeof(double), typeof(AutoCompleteBox), new PropertyMetadata(224.0));
+    public static readonly DependencyProperty MinimumPopulateDelayProperty = DependencyProperty.Register(
+        nameof(MinimumPopulateDelay), typeof(TimeSpan), typeof(AutoCompleteBox), new PropertyMetadata(TimeSpan.Zero, OnFilterOptionsChanged));
+    public static readonly DependencyProperty TextMemberPathProperty = DependencyProperty.Register(
+        nameof(TextMemberPath), typeof(string), typeof(AutoCompleteBox), new PropertyMetadata(null, OnFilterOptionsChanged));
+    public static readonly DependencyProperty IsTextCompletionEnabledProperty = DependencyProperty.Register(
+        nameof(IsTextCompletionEnabled), typeof(bool), typeof(AutoCompleteBox), new PropertyMetadata(false, OnFilterOptionsChanged));
+    public static readonly DependencyProperty ItemFilterProperty = DependencyProperty.Register(
+        nameof(ItemFilter), typeof(Func<string, object, bool>), typeof(AutoCompleteBox), new PropertyMetadata(null, OnFilterOptionsChanged));
+    public static readonly DependencyProperty SuggestionItemTemplateProperty = DependencyProperty.Register(
+        nameof(SuggestionItemTemplate), typeof(DataTemplate), typeof(AutoCompleteBox), new PropertyMetadata(null));
+    public static readonly DependencyProperty SuggestionItemTemplateSelectorProperty = DependencyProperty.Register(
+        nameof(SuggestionItemTemplateSelector), typeof(DataTemplateSelector), typeof(AutoCompleteBox), new PropertyMetadata(null));
+    public static readonly DependencyProperty SuggestionItemContainerStyleProperty = DependencyProperty.Register(
+        nameof(SuggestionItemContainerStyle), typeof(Style), typeof(AutoCompleteBox), new PropertyMetadata(null));
 
-    /// <summary>
-    /// Occurs when the drop-down closes.
-    /// </summary>
-    public event RoutedEventHandler DropDownClosed
-    {
-        add => AddHandler(DropDownClosedEvent, value);
-        remove => RemoveHandler(DropDownClosedEvent, value);
-    }
+    private static readonly DependencyPropertyKey FilteredItemsPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(FilteredItems), typeof(ObservableCollection<object>), typeof(AutoCompleteBox), new PropertyMetadata(null));
+    public static readonly DependencyProperty FilteredItemsProperty = FilteredItemsPropertyKey.DependencyProperty;
+    private static readonly DependencyPropertyKey SelectedSuggestionIndexPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(SelectedSuggestionIndex), typeof(int), typeof(AutoCompleteBox), new PropertyMetadata(-1));
+    public static readonly DependencyProperty SelectedSuggestionIndexProperty = SelectedSuggestionIndexPropertyKey.DependencyProperty;
+    private static readonly DependencyPropertyKey HasSuggestionsPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(HasSuggestions), typeof(bool), typeof(AutoCompleteBox), new PropertyMetadata(false));
+    public static readonly DependencyProperty HasSuggestionsProperty = HasSuggestionsPropertyKey.DependencyProperty;
 
-    /// <summary>
-    /// Occurs when the suggestion list is about to be populated.
-    /// </summary>
-    public event RoutedEventHandler Populating
-    {
-        add => AddHandler(PopulatingEvent, value);
-        remove => RemoveHandler(PopulatingEvent, value);
-    }
+    public IEnumerable? ItemsSource { get => (IEnumerable?)GetValue(ItemsSourceProperty); set => SetValue(ItemsSourceProperty, value); }
+    public object? SelectedItem { get => GetValue(SelectedItemProperty); set => SetValue(SelectedItemProperty, value); }
+    public bool IsDropDownOpen { get => (bool)GetValue(IsDropDownOpenProperty)!; set => SetValue(IsDropDownOpenProperty, value); }
+    public int MinimumPrefixLength { get => (int)GetValue(MinimumPrefixLengthProperty)!; set => SetValue(MinimumPrefixLengthProperty, value); }
+    public AutoCompleteFilterMode FilterMode { get => (AutoCompleteFilterMode)GetValue(FilterModeProperty)!; set => SetValue(FilterModeProperty, value); }
+    public double MaxDropDownHeight { get => (double)GetValue(MaxDropDownHeightProperty)!; set => SetValue(MaxDropDownHeightProperty, value); }
+    public TimeSpan MinimumPopulateDelay { get => (TimeSpan)GetValue(MinimumPopulateDelayProperty)!; set => SetValue(MinimumPopulateDelayProperty, value); }
+    public string? TextMemberPath { get => (string?)GetValue(TextMemberPathProperty); set => SetValue(TextMemberPathProperty, value); }
+    public bool IsTextCompletionEnabled { get => (bool)GetValue(IsTextCompletionEnabledProperty)!; set => SetValue(IsTextCompletionEnabledProperty, value); }
+    public Func<string, object, bool>? ItemFilter { get => (Func<string, object, bool>?)GetValue(ItemFilterProperty); set => SetValue(ItemFilterProperty, value); }
+    public DataTemplate? SuggestionItemTemplate { get => (DataTemplate?)GetValue(SuggestionItemTemplateProperty); set => SetValue(SuggestionItemTemplateProperty, value); }
+    public DataTemplateSelector? SuggestionItemTemplateSelector { get => (DataTemplateSelector?)GetValue(SuggestionItemTemplateSelectorProperty); set => SetValue(SuggestionItemTemplateSelectorProperty, value); }
+    public Style? SuggestionItemContainerStyle { get => (Style?)GetValue(SuggestionItemContainerStyleProperty); set => SetValue(SuggestionItemContainerStyleProperty, value); }
+    public ObservableCollection<object> FilteredItems => _filteredItems;
+    public int SelectedSuggestionIndex => (int)GetValue(SelectedSuggestionIndexProperty)!;
+    public bool HasSuggestions => (bool)GetValue(HasSuggestionsProperty)!;
 
-    #endregion
+    // Preserve the AutoCompleteBox events independently from the inherited text-selection event.
+    public new static readonly RoutedEvent TextChangedEvent = EventManager.RegisterRoutedEvent(
+        nameof(TextChanged), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(AutoCompleteBox));
+    public new static readonly RoutedEvent SelectionChangedEvent = EventManager.RegisterRoutedEvent(
+        nameof(SelectionChanged), RoutingStrategy.Bubble, typeof(EventHandler<SelectionChangedEventArgs>), typeof(AutoCompleteBox));
+    public static readonly RoutedEvent DropDownOpenedEvent = EventManager.RegisterRoutedEvent(
+        nameof(DropDownOpened), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(AutoCompleteBox));
+    public static readonly RoutedEvent DropDownClosedEvent = EventManager.RegisterRoutedEvent(
+        nameof(DropDownClosed), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(AutoCompleteBox));
+    public static readonly RoutedEvent PopulatingEvent = EventManager.RegisterRoutedEvent(
+        nameof(Populating), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(AutoCompleteBox));
+    public new event RoutedEventHandler TextChanged { add => AddHandler(TextChangedEvent, value); remove => RemoveHandler(TextChangedEvent, value); }
+    public new event EventHandler<SelectionChangedEventArgs> SelectionChanged { add => AddHandler(SelectionChangedEvent, value); remove => RemoveHandler(SelectionChangedEvent, value); }
+    public event RoutedEventHandler DropDownOpened { add => AddHandler(DropDownOpenedEvent, value); remove => RemoveHandler(DropDownOpenedEvent, value); }
+    public event RoutedEventHandler DropDownClosed { add => AddHandler(DropDownClosedEvent, value); remove => RemoveHandler(DropDownClosedEvent, value); }
+    public event RoutedEventHandler Populating { add => AddHandler(PopulatingEvent, value); remove => RemoveHandler(PopulatingEvent, value); }
 
-    #region CLR Properties
-
-    /// <summary>Gets or sets the caret position in the editable text.</summary>
-    public int CaretIndex
-    {
-        get => CaretIndexCore;
-        set => CaretIndexCore = value;
-    }
-
-    /// <summary>
-    /// Gets or sets the text in the text box.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    public string Text
-    {
-        get => _text;
-        set
-        {
-            if (_text != value)
-            {
-                _text = value ?? string.Empty;
-                SetValue(TextProperty, _text);
-
-                if (_caretIndex > _text.Length)
-                    _caretIndex = _text.Length;
-
-                if (!_isUpdatingText)
-                {
-                    TriggerFilterUpdate();
-                    RaiseEvent(new RoutedEventArgs(TextChangedEvent, this));
-                }
-
-                InvalidateVisual();
-            }
-        }
-    }
-
-    /// <summary>
-    /// Gets or sets the items source for suggestions.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Items)]
-    public IEnumerable? ItemsSource
-    {
-        get => (IEnumerable?)GetValue(ItemsSourceProperty);
-        set => SetValue(ItemsSourceProperty, value);
-    }
-
-    /// <summary>
-    /// Gets or sets the selected item.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public object? SelectedItem
-    {
-        get => GetValue(SelectedItemProperty);
-        set => SetValue(SelectedItemProperty, value);
-    }
-
-    /// <summary>
-    /// Gets or sets whether the drop-down is open.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public bool IsDropDownOpen
-    {
-        get => (bool)GetValue(IsDropDownOpenProperty)!;
-        set => SetValue(IsDropDownOpenProperty, value);
-    }
-
-    /// <summary>
-    /// Gets or sets the minimum number of characters to type before suggestions appear.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
-    public int MinimumPrefixLength
-    {
-        get => (int)GetValue(MinimumPrefixLengthProperty)!;
-        set => SetValue(MinimumPrefixLengthProperty, value);
-    }
-
-    /// <summary>
-    /// Gets or sets the filter mode for suggestions.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
-    public AutoCompleteFilterMode FilterMode
-    {
-        get => (AutoCompleteFilterMode)(GetValue(FilterModeProperty) ?? AutoCompleteFilterMode.StartsWith);
-        set => SetValue(FilterModeProperty, value);
-    }
-
-    /// <summary>
-    /// Gets or sets the maximum height of the drop-down.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
-    public double MaxDropDownHeight
-    {
-        get => (double)GetValue(MaxDropDownHeightProperty)!;
-        set => SetValue(MaxDropDownHeightProperty, value);
-    }
-
-    /// <summary>
-    /// Gets or sets the delay before populating suggestions.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
-    public TimeSpan MinimumPopulateDelay
-    {
-        get => (TimeSpan)GetValue(MinimumPopulateDelayProperty)!;
-        set => SetValue(MinimumPopulateDelayProperty, value);
-    }
-
-    /// <summary>
-    /// Gets or sets the placeholder text displayed when the text box is empty.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    public string? PlaceholderText
-    {
-        get => (string?)GetValue(PlaceholderTextProperty);
-        set => SetValue(PlaceholderTextProperty, value);
-    }
-
-    /// <summary>
-    /// Gets or sets the property path for text display.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Items)]
-    public string? TextMemberPath
-    {
-        get => (string?)GetValue(TextMemberPathProperty);
-        set => SetValue(TextMemberPathProperty, value);
-    }
-
-    /// <summary>
-    /// Gets or sets whether text completion is enabled.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public bool IsTextCompletionEnabled
-    {
-        get => (bool)GetValue(IsTextCompletionEnabledProperty)!;
-        set => SetValue(IsTextCompletionEnabledProperty, value);
-    }
-
-    /// <summary>
-    /// Gets or sets a custom filter predicate.
-    /// </summary>
-    public Func<string, object, bool>? ItemFilter { get; set; }
-
-    /// <summary>
-    /// Gets the filtered suggestions.
-    /// </summary>
-    public ObservableCollection<object> FilteredItems { get; } = new();
-
-    #endregion
-
-    #region Constructor
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="AutoCompleteBox"/> class.
-    /// </summary>
     public AutoCompleteBox()
     {
-        // Set IBeam cursor for text input
-        Cursor = Jalium.UI.Input.Cursors.IBeam;
-
-        // Subscribe to IME events
-        Loaded += OnImeOwnerLoaded;
-        Unloaded += OnImeOwnerUnloaded;
-
-        // Subscribe to focus events
+        SetValue(FilteredItemsPropertyKey, _filteredItems);
+        _filteredItems.CollectionChanged += OnFilteredItemsChanged;
         AddHandler(GotKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OnGotFocusHandler));
         AddHandler(LostKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OnLostFocusHandler));
-        SizeChanged += OnAutoCompleteBoxSizeChanged;
+        SizeChanged += (_, _) => UpdatePopupPlacementAndWidth();
+        Unloaded += OnUnloaded;
     }
 
-    /// <inheritdoc />
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Automation.Peers.AutoCompleteBoxAutomationPeer(this);
+
     public override void OnApplyTemplate()
     {
-        if (_popup != null)
-        {
-            _popup.Closed -= OnPopupClosed;
-        }
-
         base.OnApplyTemplate();
-
         _popup = GetTemplateChild("PART_Popup") as Popup;
-        _dropDownItemsPanel = GetTemplateChild("PART_DropDownItemsHost") as StackPanel;
-
+        _suggestionsList = GetTemplateChild("PART_SuggestionsList") as ListBox;
         if (_popup != null)
         {
             _popup.PlacementTarget = this;
             _popup.Closed += OnPopupClosed;
         }
-
-        EnsureDropDownItemsPanel();
+        if (_suggestionsList != null)
+        {
+            _suggestionsList.SelectionChanged += OnSuggestionsSelectionChanged;
+            _suggestionsList.AddHandler(PreviewMouseDownEvent, new MouseButtonEventHandler(OnSuggestionMouseDown), true);
+            _suggestionsList.AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnSuggestionMouseUp), true);
+            _suggestionsList.AddHandler(PreviewTouchDownEvent, new RoutedEventHandler(OnSuggestionTouchDown), true);
+            _suggestionsList.AddHandler(PreviewTouchMoveEvent, new RoutedEventHandler(OnSuggestionTouchMove), true);
+            _suggestionsList.AddHandler(PreviewTouchUpEvent, new RoutedEventHandler(OnSuggestionTouchUp), true);
+        }
         UpdatePopupPlacementAndWidth();
-        RefreshDropDownItems();
+        SyncSuggestionSelection();
         SyncPopupOpenState();
+        UpdateVisualStates();
     }
 
-    /// <inheritdoc />
-    internal override void OnTemplateContentClearing()
+    protected override void OnTemplateChanging()
     {
-        base.OnTemplateContentClearing();
-
-        // Release the cached parts before the tree is discarded. The dropdown builder only guards
-        // against null, so a surviving _dropDownItemsPanel keeps realizing suggestion items into
-        // the detached popup subtree once the template is cleared.
         if (_popup != null)
         {
             _popup.Closed -= OnPopupClosed;
+            _syncingPopup = true;
+            try { _popup.SetCurrentValue(Popup.IsOpenProperty, false); }
+            finally { _syncingPopup = false; }
         }
-
+        if (_suggestionsList != null)
+        {
+            _suggestionsList.SelectionChanged -= OnSuggestionsSelectionChanged;
+            _suggestionsList.RemoveHandler(PreviewMouseDownEvent, new MouseButtonEventHandler(OnSuggestionMouseDown));
+            _suggestionsList.RemoveHandler(MouseUpEvent, new MouseButtonEventHandler(OnSuggestionMouseUp));
+            _suggestionsList.RemoveHandler(PreviewTouchDownEvent, new RoutedEventHandler(OnSuggestionTouchDown));
+            _suggestionsList.RemoveHandler(PreviewTouchMoveEvent, new RoutedEventHandler(OnSuggestionTouchMove));
+            _suggestionsList.RemoveHandler(PreviewTouchUpEvent, new RoutedEventHandler(OnSuggestionTouchUp));
+            BindingOperations.ClearBinding(_suggestionsList, ItemsControl.ItemsSourceProperty);
+            _suggestionsList.SetCurrentValue(ItemsControl.ItemsSourceProperty, null);
+        }
+        _suggestionsList = null;
         _popup = null;
-        _dropDownItemsPanel = null;
+        _pressedSuggestionIndex = -1;
+        _touchCandidate = false;
+        base.OnTemplateChanging();
     }
 
-    private void OnGotFocusHandler(object sender, KeyboardFocusChangedEventArgs e)
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
     {
-        InputMethod.SetTarget(this);
-        InvalidateVisual();
-    }
-
-    private void OnLostFocusHandler(object sender, KeyboardFocusChangedEventArgs e)
-    {
-        if (InputMethod.CurrentTarget == this)
+        base.OnPropertyChanged(e);
+        if (e.Property == IsEnabledProperty || e.Property == IsReadOnlyProperty || e.Property == IsMouseOverProperty || e.Property == IsKeyboardFocusWithinProperty)
         {
-            InputMethod.SetTarget(null);
-        }
-        // In popup mode, keep the dropdown open while user is interacting with it via mouse.
-        // For keyboard focus moves (e.g. Tab to next control), close immediately.
-        if (_popup == null || !_popup.IsMouseOver)
-        {
-            IsDropDownOpen = false;
-        }
-        InvalidateVisual();
-    }
-
-    private void OnAutoCompleteBoxSizeChanged(object? sender, SizeChangedEventArgs e)
-    {
-        UpdatePopupPlacementAndWidth();
-    }
-
-    private void OnPopupClosed(object? sender, EventArgs e)
-    {
-        if (IsDropDownOpen)
-        {
-            SetValue(IsDropDownOpenProperty, false);
+            if (!IsEnabled || IsReadOnly) SetCurrentValue(IsDropDownOpenProperty, false);
+            UpdateVisualStates();
         }
     }
 
-    private void OnImeOwnerLoaded(object? sender, RoutedEventArgs e)
+    protected override void OnTextChanged(TextChangedEventArgs e)
     {
-        _imeSubscription ??= new InputMethodWeakSubscription<AutoCompleteBox>(
-            this,
-            static (owner, source, args) => owner.OnImeCompositionStarted(source, args),
-            static (owner, source, args) => owner.OnImeCompositionUpdated(source, args),
-            static (owner, source, args) => owner.OnImeCompositionEnded(source, args));
-        _imeSubscription.Attach();
-    }
-
-    private void OnImeOwnerUnloaded(object? sender, RoutedEventArgs e)
-    {
-        _imeSubscription?.Detach();
-        if (ReferenceEquals(InputMethod.CurrentTarget, this))
+        base.OnTextChanged(e);
+        if (!_acceptingSuggestion)
         {
-            InputMethod.SetTarget(null);
+            if (SelectedItem != null && !string.Equals(GetItemText(SelectedItem), Text, StringComparison.Ordinal))
+                SetCurrentValue(SelectedItemProperty, null);
+            TriggerFilterUpdate();
         }
+        RaiseEvent(new RoutedEventArgs(TextChangedEvent, this));
     }
 
-    private void OnImeCompositionStarted(object? sender, EventArgs e)
+    protected override void InsertText(string textToInsert)
     {
-        if (InputMethod.CurrentTarget == this)
-        {
-            OnImeCompositionStart();
-        }
+        var suppressTab = _suppressNextTabTextInput;
+        _suppressNextTabTextInput = false;
+        if (suppressTab) textToInsert = textToInsert.Replace("\t", string.Empty);
+        _insertingText = true;
+        try { base.InsertText(textToInsert); }
+        finally { _insertingText = false; }
+        if (MinimumPopulateDelay <= TimeSpan.Zero) CompleteFirstMatch();
     }
 
-    private void OnImeCompositionUpdated(object? sender, CompositionEventArgs e)
-    {
-        if (InputMethod.CurrentTarget == this)
-        {
-            OnImeCompositionUpdate(e.Text, e.CursorPosition);
-        }
-    }
-
-    private void OnImeCompositionEnded(object? sender, CompositionResultEventArgs e)
-    {
-        if (InputMethod.CurrentTarget == this)
-        {
-            OnImeCompositionEnd(e.Result);
-        }
-    }
-
-    #endregion
-
-    #region Abstract Method Implementations
-
-    /// <inheritdoc />
-    protected override string GetText() => _text;
-
-    /// <inheritdoc />
-    protected override void SetText(string value)
-    {
-        Text = value;
-    }
-
-    /// <inheritdoc />
-    protected override double GetLineHeight()
-    {
-        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
-        var fontSize = FontSize;
-        var fontMetrics = TextMeasurement.GetFontMetrics(fontFamily, fontSize);
-        return fontMetrics.LineHeight;
-    }
-
-    /// <inheritdoc />
-    protected override double MeasureTextWidth(string text)
-    {
-        if (string.IsNullOrEmpty(text))
-            return 0;
-
-        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
-        var fontSize = FontSize;
-
-        if (_cachedFontFamily != fontFamily || _cachedFontSize != fontSize)
-        {
-            _textWidthCache.Clear();
-            _cachedFontFamily = fontFamily;
-            _cachedFontSize = fontSize;
-        }
-
-        if (_textWidthCache.TryGetValue(text, out var cachedWidth))
-            return cachedWidth;
-
-        var formattedText = new FormattedText(text, fontFamily, fontSize);
-        var usedNative = TextMeasurement.MeasureText(formattedText);
-
-        double width;
-        if (usedNative && formattedText.IsMeasured)
-        {
-            width = formattedText.Width;
-        }
-        else
-        {
-            width = text.Length * fontSize * 0.6;
-        }
-
-        if (_textWidthCache.Count >= MaxCacheSize)
-        {
-            var keysToRemove = _textWidthCache.Keys.Take(MaxCacheSize / 2).ToList();
-            foreach (var key in keysToRemove)
-                _textWidthCache.Remove(key);
-        }
-        _textWidthCache[text] = width;
-
-        return width;
-    }
-
-    /// <inheritdoc />
-    protected override int GetLineCount() => 1;
-
-    /// <inheritdoc />
-    protected override (int lineIndex, int columnIndex) GetLineColumnFromCharIndex(int charIndex)
-    {
-        return (0, Math.Clamp(_text.Length, 0, charIndex));
-    }
-
-    /// <inheritdoc />
-    protected override int GetCharIndexFromLineColumn(int lineIndex, int columnIndex)
-    {
-        return Math.Clamp(_text.Length, 0, columnIndex);
-    }
-
-    /// <inheritdoc />
-    protected override string GetLineTextInternal(int lineIndex)
-    {
-        return _text;
-    }
-
-    /// <inheritdoc />
-    protected override int GetLineStartIndex(int lineIndex)
-    {
-        return 0;
-    }
-
-    /// <inheritdoc />
-    protected override int GetLineLengthInternal(int lineIndex)
-    {
-        return _text.Length;
-    }
-
-    #endregion
-
-    #region Key Handling Override
-
-    /// <inheritdoc />
     protected override void OnKeyDown(KeyEventArgs e)
     {
+        if (e.Handled || !IsEnabled) return;
+        if (IsImeComposing) { base.OnKeyDown(e); return; }
         switch (e.Key)
         {
-            case Key.Down:
-                if (IsDropDownOpen && FilteredItems.Count > 0)
-                {
-                    _selectedSuggestionIndex = Math.Min(_selectedSuggestionIndex + 1, FilteredItems.Count - 1);
-                    UpdateDropDownSelectionVisuals();
-                    InvalidateVisual();
-                }
-                else if (FilteredItems.Count > 0)
-                {
-                    IsDropDownOpen = true;
-                    _selectedSuggestionIndex = 0;
-                    RefreshDropDownItems();
-                }
+            case Key.Down when HasSuggestions:
+                if (!IsDropDownOpen) { SetCurrentValue(IsDropDownOpenProperty, true); SetSuggestionIndex(0); }
+                else SetSuggestionIndex(Math.Min(SelectedSuggestionIndex + 1, _filteredItems.Count - 1));
                 e.Handled = true;
                 return;
-
-            case Key.Up:
-                if (IsDropDownOpen && _selectedSuggestionIndex > 0)
-                {
-                    _selectedSuggestionIndex--;
-                    UpdateDropDownSelectionVisuals();
-                    InvalidateVisual();
-                }
+            case Key.Up when IsDropDownOpen && HasSuggestions:
+                SetSuggestionIndex(Math.Max(0, SelectedSuggestionIndex - 1));
                 e.Handled = true;
                 return;
-
-            case Key.Enter:
-                if (IsDropDownOpen && _selectedSuggestionIndex >= 0 && _selectedSuggestionIndex < FilteredItems.Count)
-                {
-                    SelectSuggestion(_selectedSuggestionIndex);
-                }
-                IsDropDownOpen = false;
+            case Key.Enter when IsDropDownOpen && SelectedSuggestionIndex >= 0:
+                AcceptSuggestion(SelectedSuggestionIndex, false);
                 e.Handled = true;
                 return;
-
-            case Key.Escape:
-                if (IsDropDownOpen)
-                {
-                    IsDropDownOpen = false;
-                    e.Handled = true;
-                    return;
-                }
-                break;
-
-            case Key.Tab:
-                if (IsDropDownOpen && _selectedSuggestionIndex >= 0 && _selectedSuggestionIndex < FilteredItems.Count)
-                {
-                    SelectSuggestion(_selectedSuggestionIndex);
-                    IsDropDownOpen = false;
-                    _suppressNextTabTextInput = true;
-                    e.Handled = true;
-                    return;
-                }
-                break;
+            case Key.Tab when IsDropDownOpen && SelectedSuggestionIndex >= 0:
+                AcceptSuggestion(SelectedSuggestionIndex, false);
+                _suppressNextTabTextInput = true;
+                e.Handled = true;
+                return;
+            case Key.Escape when IsDropDownOpen:
+                SetCurrentValue(IsDropDownOpenProperty, false);
+                e.Handled = true;
+                return;
         }
-
         base.OnKeyDown(e);
     }
 
-    #endregion
-
-    #region Text Input Override
-
-    /// <inheritdoc />
-    protected override void InsertText(string textToInsert)
-    {
-        if (IsReadOnly || string.IsNullOrEmpty(textToInsert))
-            return;
-
-        // Tab completion should not also insert a literal tab character.
-        // Also keep default single-line behavior when AcceptsTab is false.
-        var suppressTab = _suppressNextTabTextInput;
-        _suppressNextTabTextInput = false;
-
-        if (textToInsert.IndexOf('\t') >= 0 && (suppressTab || !AcceptsTab))
-        {
-            textToInsert = textToInsert.Replace("\t", string.Empty);
-            if (string.IsNullOrEmpty(textToInsert))
-                return;
-        }
-
-        PushUndo();
-
-        // Delete selection if any
-        if (_selectionLength > 0)
-        {
-            DeleteSelectionInternal();
-        }
-
-        // Ensure caret is within bounds
-        if (_caretIndex < 0) _caretIndex = 0;
-        if (_caretIndex > _text.Length) _caretIndex = _text.Length;
-
-        // Insert text
-        _text = _text.Substring(0, _caretIndex) + textToInsert + _text.Substring(_caretIndex);
-        _caretIndex += textToInsert.Length;
-
-        // Trigger filter update
-        TriggerFilterUpdate();
-        RaiseEvent(new RoutedEventArgs(TextChangedEvent, this));
-
-        ResetCaretBlink();
-        EnsureCaretVisible();
-        InvalidateVisual();
-    }
-
-    #endregion
-
-    #region Suggestion Handling
-
     private void TriggerFilterUpdate()
     {
-        var delay = MinimumPopulateDelay;
-        if (delay > TimeSpan.Zero)
+        _filterRevision++;
+        _filterDelayTimer?.Stop();
+        if (MinimumPopulateDelay <= TimeSpan.Zero) { UpdateFilteredItems(); return; }
+        if (_filterDelayTimer == null)
         {
-            _lastFilterTime = DateTime.Now;
-
-            if (_filterDelayTimer == null)
-            {
-                _filterDelayTimer = new DispatcherTimer();
-                _filterDelayTimer.Interval = delay;
-                _filterDelayTimer.Tick += (s, e) =>
-                {
-                    _filterDelayTimer.Stop();
-                    // Check if enough time has passed since last update
-                    if ((DateTime.Now - _lastFilterTime).TotalMilliseconds >= delay.TotalMilliseconds - 10)
-                    {
-                        UpdateFilteredItems();
-                    }
-                };
-            }
-
-            _filterDelayTimer.Stop();
-            _filterDelayTimer.Start();
+            _filterDelayTimer = new DispatcherTimer();
+            _filterDelayTimer.Tick += OnFilterDelayTick;
         }
-        else
-        {
-            UpdateFilteredItems();
-        }
+        _filterDelayTimer.Interval = MinimumPopulateDelay;
+        _filterDelayTimer.Start();
+    }
+    private void OnFilterDelayTick(object? sender, EventArgs e)
+    {
+        _filterDelayTimer?.Stop();
+        UpdateFilteredItems();
     }
 
     private void UpdateFilteredItems()
     {
-        if (_isUpdatingText) return;
-
+        if (_acceptingSuggestion) return;
+        var revision = ++_filterRevision;
         RaiseEvent(new RoutedEventArgs(PopulatingEvent, this));
-
-        FilteredItems.Clear();
-        _selectedSuggestionIndex = -1;
-
-        if (ItemsSource == null || string.IsNullOrEmpty(_text) || _text.Length < MinimumPrefixLength)
+        if (revision != _filterRevision) return;
+        var text = Text;
+        var items = new List<object>();
+        if (ItemsSource != null && text.Length >= Math.Max(0, MinimumPrefixLength))
         {
-            IsDropDownOpen = false;
-            RefreshDropDownItems();
-            return;
-        }
-
-        foreach (var item in ItemsSource)
-        {
-            if (MatchesFilter(item))
+            foreach (var item in ItemsSource)
             {
-                FilteredItems.Add(item);
+                if (item != null && MatchesFilter(text, item)) items.Add(item);
+                if (revision != _filterRevision) return;
             }
         }
-
-        if (FilteredItems.Count > 0)
-        {
-            _selectedSuggestionIndex = 0;
-            IsDropDownOpen = true;
-
-            // Auto-complete first match if enabled
-            if (IsTextCompletionEnabled && FilteredItems.Count > 0)
-            {
-                var firstItemText = GetItemText(FilteredItems[0]);
-                if (firstItemText.StartsWith(_text, StringComparison.OrdinalIgnoreCase) && firstItemText.Length > _text.Length)
-                {
-                    var completion = firstItemText.Substring(_text.Length);
-                    _isUpdatingText = true;
-                    var currentCaret = _caretIndex;
-                    _text = _text + completion;
-                    _selectionStart = currentCaret;
-                    _selectionLength = completion.Length;
-                    _caretIndex = _text.Length;
-                    _isUpdatingText = false;
-                }
-            }
-        }
-        else
-        {
-            IsDropDownOpen = false;
-        }
-
-        RefreshDropDownItems();
-        InvalidateVisual();
+        _updatingSuggestions = true;
+        try { _filteredItems.Replace(items); }
+        finally { _updatingSuggestions = false; }
+        SetValue(HasSuggestionsPropertyKey, _filteredItems.Count > 0);
+        SetSuggestionIndex(HasSuggestions ? 0 : -1);
+        SetCurrentValue(IsDropDownOpenProperty, IsEnabled && !IsReadOnly && HasSuggestions);
+        SyncPopupOpenState();
+        UpdateVisualStates();
+        if (!_insertingText) CompleteFirstMatch();
     }
 
-    private bool MatchesFilter(object item)
+    private bool MatchesFilter(string text, object item)
     {
+        if (ItemFilter is { } filter) return filter(text, item);
         var itemText = GetItemText(item);
-        if (string.IsNullOrEmpty(itemText)) return false;
-
-        var searchText = _text;
-
-        // Use custom filter if provided
-        if (ItemFilter != null)
-        {
-            return ItemFilter(searchText, item);
-        }
-
-        // Use built-in filter modes
         return FilterMode switch
         {
-            AutoCompleteFilterMode.StartsWith =>
-                itemText.StartsWith(searchText, StringComparison.OrdinalIgnoreCase),
-            AutoCompleteFilterMode.StartsWithCaseSensitive =>
-                itemText.StartsWith(searchText, StringComparison.Ordinal),
-            AutoCompleteFilterMode.Contains =>
-                itemText.Contains(searchText, StringComparison.OrdinalIgnoreCase),
-            AutoCompleteFilterMode.ContainsCaseSensitive =>
-                itemText.Contains(searchText, StringComparison.Ordinal),
-            AutoCompleteFilterMode.Equals =>
-                itemText.Equals(searchText, StringComparison.OrdinalIgnoreCase),
-            AutoCompleteFilterMode.EqualsCaseSensitive =>
-                itemText.Equals(searchText, StringComparison.Ordinal),
-            AutoCompleteFilterMode.Custom => true,
-            AutoCompleteFilterMode.None => true,
-            _ => true
+            AutoCompleteFilterMode.StartsWith => itemText.StartsWith(text, StringComparison.OrdinalIgnoreCase),
+            AutoCompleteFilterMode.StartsWithCaseSensitive => itemText.StartsWith(text, StringComparison.Ordinal),
+            AutoCompleteFilterMode.Contains => itemText.Contains(text, StringComparison.OrdinalIgnoreCase),
+            AutoCompleteFilterMode.ContainsCaseSensitive => itemText.Contains(text, StringComparison.Ordinal),
+            AutoCompleteFilterMode.Equals => itemText.Equals(text, StringComparison.OrdinalIgnoreCase),
+            AutoCompleteFilterMode.EqualsCaseSensitive => itemText.Equals(text, StringComparison.Ordinal),
+            _ => true,
         };
     }
 
     [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2075:UnrecognizedReflectionPattern",
-        Justification = "TextMemberPath resolves a named property on the consumer's item type via reflection. The item Type comes from object.GetType() on the application's own bound data objects, which cannot carry DynamicallyAccessedMembers. This is an opt-in display-path feature: consumers that set TextMemberPath are responsible for keeping the referenced property preserved under trimming/AOT (the same documented prerequisite as any data-bound member-path), not a defect of this site. When TextMemberPath is unset no reflection occurs.")]
+        Justification = "TextMemberPath is a consumer-provided binding path; applications must preserve the referenced item properties under trimming.")]
     private string GetItemText(object item)
     {
-        if (item == null) return string.Empty;
-
-        if (!string.IsNullOrEmpty(TextMemberPath))
-        {
-            var prop = item.GetType().GetProperty(TextMemberPath);
-            return prop?.GetValue(item)?.ToString() ?? item.ToString() ?? string.Empty;
-        }
-
-        return item.ToString() ?? string.Empty;
+        if (string.IsNullOrEmpty(TextMemberPath)) return item.ToString() ?? string.Empty;
+        return item.GetType().GetProperty(TextMemberPath)?.GetValue(item)?.ToString() ?? item.ToString() ?? string.Empty;
     }
 
-    private void SelectSuggestion(int index)
+    private void CompleteFirstMatch()
     {
-        if (index < 0 || index >= FilteredItems.Count) return;
-
-        var item = FilteredItems[index];
-        var oldItem = SelectedItem;
-
-        _isUpdatingText = true;
-        _text = GetItemText(item);
-        _caretIndex = _text.Length;
-        _selectionStart = 0;
-        _selectionLength = 0;
-        _isUpdatingText = false;
-
-        SelectedItem = item;
-        IsDropDownOpen = false;
-        RefreshDropDownItems();
-
-        var args = new SelectionChangedEventArgs(SelectionChangedEvent,
-            oldItem != null ? new[] { oldItem } : Array.Empty<object>(),
-            new[] { item });
-        RaiseEvent(args);
-
-        InvalidateVisual();
+        if (!IsTextCompletionEnabled || IsReadOnly || !IsDropDownOpen || _filteredItems.Count == 0 || _acceptingSuggestion) return;
+        var prefix = Text;
+        var completed = GetItemText(_filteredItems[0]);
+        if (!completed.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) || completed.Length <= prefix.Length) return;
+        _acceptingSuggestion = true;
+        try { SetCurrentValue(TextProperty, completed); Select(prefix.Length, completed.Length - prefix.Length); }
+        finally { _acceptingSuggestion = false; }
     }
 
-    private void EnsureDropDownItemsPanel()
+    private void AcceptSuggestion(int index, bool restoreFocus)
     {
-        if (_dropDownItemsPanel != null)
-            return;
-
-        if (_popup?.Child is Border border && border.Child is ScrollViewer scrollViewer)
+        if (IsReadOnly || !IsEnabled || index < 0 || index >= _filteredItems.Count) return;
+        var item = _filteredItems[index];
+        _filterDelayTimer?.Stop();
+        _filterRevision++;
+        _acceptingSuggestion = true;
+        try
         {
-            if (scrollViewer.Content is StackPanel panel)
-            {
-                _dropDownItemsPanel = panel;
-            }
-            else
-            {
-                _dropDownItemsPanel = new StackPanel();
-                scrollViewer.Content = _dropDownItemsPanel;
-            }
+            SetCurrentValue(TextProperty, GetItemText(item));
+            CaretIndex = Text.Length;
+            Select(CaretIndex, 0);
+            SetCurrentValue(SelectedItemProperty, item);
         }
+        finally { _acceptingSuggestion = false; }
+        SetCurrentValue(IsDropDownOpenProperty, false);
+        if (restoreFocus) Focus();
     }
 
-    private void RefreshDropDownItems()
+    private void OnFilteredItemsChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
-        EnsureDropDownItemsPanel();
-        if (_dropDownItemsPanel == null)
-        {
-            SyncPopupOpenState();
-            return;
-        }
-
-        _dropDownItemsPanel.Children.Clear();
-
-        for (var i = 0; i < FilteredItems.Count; i++)
-        {
-            var index = i;
-            var item = FilteredItems[i];
-
-            var itemContainer = new ComboBoxItem
-            {
-                Content = GetItemText(item),
-                Tag = item,
-                Foreground = Foreground ?? s_whiteBrush,
-                MinHeight = ItemHeight,
-                Background = index == _selectedSuggestionIndex ? ResolveSelectedSuggestionBackground() : s_transparentBrush
-            };
-
-            itemContainer.ItemClicked += (s, e) => SelectSuggestion(index);
-            _dropDownItemsPanel.Children.Add(itemContainer);
-        }
-
+        if (_updatingSuggestions) return;
+        SetValue(HasSuggestionsPropertyKey, _filteredItems.Count > 0);
+        SetSuggestionIndex(HasSuggestions ? Math.Clamp(SelectedSuggestionIndex, 0, _filteredItems.Count - 1) : -1);
+        if (!HasSuggestions) SetCurrentValue(IsDropDownOpenProperty, false);
         SyncPopupOpenState();
     }
-
-    private void UpdateDropDownSelectionVisuals()
+    private void SetSuggestionIndex(int index)
     {
-        if (_dropDownItemsPanel == null)
-            return;
-
-        for (var i = 0; i < _dropDownItemsPanel.Children.Count; i++)
+        SetValue(SelectedSuggestionIndexPropertyKey, index);
+        SyncSuggestionSelection();
+    }
+    private void SyncSuggestionSelection()
+    {
+        if (_suggestionsList == null) return;
+        _updatingSuggestions = true;
+        try { _suggestionsList.SetCurrentValue(Selector.SelectedIndexProperty, SelectedSuggestionIndex); }
+        finally { _updatingSuggestions = false; }
+        (_suggestionsList.ItemContainerGenerator.ContainerFromIndex(SelectedSuggestionIndex) as FrameworkElement)?.BringIntoView();
+    }
+    private void OnSuggestionsSelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (!_updatingSuggestions && _suggestionsList != null) SetSuggestionIndex(_suggestionsList.SelectedIndex);
+    }
+    private int SuggestionIndex(object? source)
+    {
+        for (var visual = source as Visual; visual != null && !ReferenceEquals(visual, _suggestionsList); visual = visual.VisualParent)
+            if (visual is ListBoxItem item) return _suggestionsList?.ItemContainerGenerator.IndexFromContainer(item) ?? -1;
+        return -1;
+    }
+    private void OnSuggestionMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        _pressedSuggestionIndex = e.ChangedButton == MouseButton.Left ? SuggestionIndex(e.OriginalSource ?? e.Source) : -1;
+    }
+    private void OnSuggestionMouseUp(object sender, MouseButtonEventArgs e)
+    {
+        var index = SuggestionIndex(e.OriginalSource ?? e.Source);
+        if (e.ChangedButton == MouseButton.Left && index >= 0 && index == _pressedSuggestionIndex)
         {
-            if (_dropDownItemsPanel.Children[i] is ComboBoxItem itemContainer)
-            {
-                itemContainer.Background = i == _selectedSuggestionIndex ? ResolveSelectedSuggestionBackground() : s_transparentBrush;
-            }
+            AcceptSuggestion(index, true);
+            e.Handled = true;
         }
+        _pressedSuggestionIndex = -1;
+    }
+    private void OnSuggestionTouchDown(object sender, RoutedEventArgs e)
+    {
+        if (e is not TouchEventArgs touch) return;
+        _touchId = touch.TouchDevice.Id;
+        _touchStart = touch.GetTouchPoint(_suggestionsList).Position;
+        _touchCandidate = SuggestionIndex(e.OriginalSource ?? e.Source) >= 0;
+    }
+    private void OnSuggestionTouchMove(object sender, RoutedEventArgs e)
+    {
+        if (!_touchCandidate || e is not TouchEventArgs touch || touch.TouchDevice.Id != _touchId) return;
+        var position = touch.GetTouchPoint(_suggestionsList).Position;
+        if (Math.Abs(position.X - _touchStart.X) > 8 || Math.Abs(position.Y - _touchStart.Y) > 8) _touchCandidate = false;
+    }
+    private void OnSuggestionTouchUp(object sender, RoutedEventArgs e)
+    {
+        if (e is not TouchEventArgs touch || touch.TouchDevice.Id != _touchId) return;
+        var candidate = _touchCandidate;
+        _touchCandidate = false;
+        _touchId = -1;
+        var index = SuggestionIndex(e.OriginalSource ?? e.Source);
+        if (candidate && index >= 0) { AcceptSuggestion(index, true); e.Handled = true; }
     }
 
     private void UpdatePopupPlacementAndWidth()
     {
-        if (_popup == null)
-            return;
-
+        if (_popup == null) return;
         _popup.PlacementTarget = this;
-
-        var popupWidth = ActualWidth;
-        if (popupWidth <= 0 || double.IsNaN(popupWidth) || double.IsInfinity(popupWidth))
+        var width = ActualWidth > 0 ? ActualWidth : Width;
+        if (width > 0 && double.IsFinite(width))
         {
-            if (!double.IsNaN(Width) && !double.IsInfinity(Width) && Width > 0)
-                popupWidth = Width;
-        }
-
-        if (popupWidth > 0 && !double.IsNaN(popupWidth) && !double.IsInfinity(popupWidth))
-        {
-            _popup.Width = popupWidth;
-            _popup.MinWidth = popupWidth;
-            _popup.MaxWidth = popupWidth;
+            _popup.Width = width;
+            _popup.MinWidth = width;
+            _popup.MaxWidth = width;
         }
     }
-
     private void SyncPopupOpenState()
     {
-        if (_popup == null)
-            return;
-
-        var shouldOpen = IsDropDownOpen && FilteredItems.Count > 0;
-        if (_popup.IsOpen != shouldOpen)
-        {
-            _popup.IsOpen = shouldOpen;
-        }
+        if (_popup == null) return;
+        _syncingPopup = true;
+        try { _popup.SetCurrentValue(Popup.IsOpenProperty, IsEnabled && IsDropDownOpen && HasSuggestions); }
+        finally { _syncingPopup = false; }
     }
-
-    #endregion
-
-    #region Mouse Handling
-
-    /// <inheritdoc />
-    protected override int GetCaretIndexFromPosition(Point position)
+    private void OnPopupClosed(object? sender, EventArgs e)
     {
-        // In non-popup rendering mode, the dropdown is drawn below the input box.
-        var dropDownTop = HasContentHost ? DefaultHeight : GetDirectInputRect().Bottom;
-        if (_popup == null && IsDropDownOpen && position.Y > dropDownTop)
-        {
-            var dropdownY = position.Y - dropDownTop;
-            var suggestionIndex = (int)(dropdownY / ItemHeight);
-            if (suggestionIndex >= 0 && suggestionIndex < FilteredItems.Count)
-            {
-                SelectSuggestion(suggestionIndex);
-                return _caretIndex;
-            }
-        }
-
-        return base.GetCaretIndexFromPosition(position);
+        if (!_syncingPopup) SetCurrentValue(IsDropDownOpenProperty, false);
     }
-
-    #endregion
-
-    #region Layout
-
-    /// <inheritdoc />
-    protected override Size MeasureOverride(Size availableSize)
+    private void OnGotFocusHandler(object sender, KeyboardFocusChangedEventArgs e) => UpdateVisualStates();
+    private void OnLostFocusHandler(object sender, KeyboardFocusChangedEventArgs e)
     {
-        // If using template, delegate to base class which handles template root
-        if (Template != null)
-        {
-            return base.MeasureOverride(availableSize);
-        }
-
-        // Direct rendering mode
-        var cssEdges = UsesCssBoxGeometry();
-        var width = double.IsPositiveInfinity(availableSize.Width)
-            ? 200 + (cssEdges ? BorderThickness.TotalWidth + Padding.TotalWidth : 0)
-            : availableSize.Width;
-        var height = DefaultHeight +
-            (cssEdges ? BorderThickness.TotalHeight + Padding.TotalHeight : 0);
-
-        // Account for drop-down height when open
-        height += GetDropDownHeight();
-
-        return new Size(width, height);
+        if (_popup == null || !_popup.IsMouseOver) SetCurrentValue(IsDropDownOpenProperty, false);
+        UpdateVisualStates();
     }
-
-    /// <inheritdoc />
-    internal override Size MeasureTextContent(Size availableSize)
+    private void OnUnloaded(object? sender, RoutedEventArgs e)
     {
-        var lineHeight = Math.Round(GetLineHeight());
-        return new Size(availableSize.Width, Math.Min(lineHeight, availableSize.Height));
+        _filterDelayTimer?.Stop();
+        _filterRevision++;
+        SetCurrentValue(IsDropDownOpenProperty, false);
     }
-
-    #endregion
-
-    #region Rendering
-
-    /// <inheritdoc />
-    protected override void OnRender(DrawingContext drawingContext)
+    private void UpdateVisualStates()
     {
-        // If using content host, text rendering is handled by TextBoxContentHost
-        // In template + popup mode, dropdown is rendered by Popup content.
-        // Keep drawing fallback only for non-popup templates.
-        if (HasContentHost)
-        {
-            if (_popup == null && drawingContext is DrawingContext dc && IsDropDownOpen && FilteredItems.Count > 0)
-            {
-                DrawDropDown(dc);
-            }
-            return;
-        }
-
-        // Direct rendering mode
-        var directDc = drawingContext;
-
-        var inputRect = GetDirectInputRect();
-        var cornerRadius = CornerRadius;
-        var lineHeight = Math.Round(GetLineHeight());
-        var padding = Padding;
-        var border = BorderThickness;
-        var cssEdges = UsesCssBoxGeometry();
-        var strokeThickness = border.Left;
-        var borderRect = ControlRenderGeometry.GetStrokeAlignedRect(inputRect, strokeThickness);
-        var borderRadius = ControlRenderGeometry.GetStrokeAlignedCornerRadius(cornerRadius, strokeThickness);
-
-        // Draw background and border
-        var cssBackgroundDrawn = false;
-        if (Background is { } cssBackground)
-        {
-            var inputSize = new Size(inputRect.Width, inputRect.Height);
-            var radii = CssBorderRadiusProperties.Get(this)?.Resolve(inputSize) ??
-                CssBackgroundPainter.CircularRadii(cornerRadius).Normalize(inputSize);
-            var shape = new CssRoundedRectangleGeometry(inputRect, radii);
-            cssBackgroundDrawn = CssBackgroundPainter.TryDraw(this, BackgroundProperty,
-                cssBackground, directDc, inputRect, radii, border, padding,
-                brush => directDc.DrawGeometry(brush, null, shape));
-        }
-        if (!cssBackgroundDrawn && Background is { } background)
-        {
-            directDc.DrawRoundedRectangle(background, null, borderRect, borderRadius);
-        }
-
-        var borderBrush = IsKeyboardFocused ? ResolveFocusedBorderBrush() : BorderBrush;
-        if (CssBorderPaintProperties.Get(this) is null && borderBrush != null && border.TotalWidth > 0)
-        {
-            var pen = new Pen(borderBrush, strokeThickness);
-            directDc.DrawRoundedRectangle(null, pen, borderRect, borderRadius);
-        }
-
-        // Focus indicator is painted by FocusVisualManager into the adorner layer.
-
-        // Content area
-        var contentRect = GetDirectContentRect(inputRect, cssEdges);
-
-        // Render text content
-        RenderTextContentCore(directDc, contentRect, lineHeight);
-
-        // Draw drop-down
-        if (IsDropDownOpen && FilteredItems.Count > 0)
-        {
-            DrawDropDown(directDc);
-        }
+        VisualStateManager.GoToState(this, !IsEnabled ? "Disabled" : IsMouseOver ? "MouseOver" : "Normal", true);
+        VisualStateManager.GoToState(this, IsEnabled && IsKeyboardFocusWithin ? "Focused" : "Unfocused", true);
+        VisualStateManager.GoToState(this, IsDropDownOpen && HasSuggestions ? "DropDownOpen" : "DropDownClosed", true);
     }
-
-    protected override void OnPostRender(DrawingContext drawingContext)
-    {
-        base.OnPostRender(drawingContext);
-        if (!HasContentHost)
-            CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter,
-                GetDirectInputRect());
-    }
-
-    private bool UsesCssBoxGeometry()
-        => GetEffectiveValueLayer(BorderThicknessProperty) is
-               DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState ||
-           GetEffectiveValueLayer(PaddingProperty) is
-               DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState ||
-           GetEffectiveValueLayer(BackgroundProperty) is
-               DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState ||
-           CssBorderRadiusProperties.Get(this) is not null;
-
-    private double GetDropDownHeight()
-        => IsDropDownOpen && FilteredItems.Count > 0
-            ? Math.Min(FilteredItems.Count * ItemHeight, MaxDropDownHeight)
-            : 0;
-
-    private Rect GetDirectInputRect()
-    {
-        if (!UsesCssBoxGeometry())
-            return new Rect(0, 0, RenderSize.Width, DefaultHeight);
-
-        var height = RenderSize.Height;
-        var dropDownHeight = GetDropDownHeight();
-        if (dropDownHeight > 0)
-        {
-            // Keep the measured input height when the parent cannot fit the list.
-            // Extra arranged height can still stretch the input above the list.
-            var measuredInputHeight = DefaultHeight +
-                BorderThickness.TotalHeight + Padding.TotalHeight;
-            height = Math.Max(Math.Min(measuredInputHeight, height),
-                height - dropDownHeight);
-        }
-        return new Rect(0, 0, RenderSize.Width, height);
-    }
-
-    private Rect GetDirectContentRect(Rect inputRect, bool cssEdges)
-    {
-        var border = BorderThickness;
-        var padding = Padding;
-        return ControlRenderGeometry.GetContentRect(inputRect, cssEdges
-            ? new Thickness(border.Left + padding.Left, border.Top + padding.Top,
-                border.Right + padding.Right, border.Bottom + padding.Bottom)
-            : padding);
-    }
-
-    /// <inheritdoc />
-    internal override void RenderTextContent(DrawingContext drawingContext)
-    {
-        var dc = drawingContext;
-
-        var lineHeight = Math.Round(GetLineHeight());
-        var contentRect = new Rect(0, 0, _textContentSize.Width, _textContentSize.Height);
-
-        RenderTextContentCore(dc, contentRect, lineHeight);
-    }
-
-    /// <summary>
-    /// Core text rendering logic used by both direct rendering and content host modes.
-    /// </summary>
-    private void RenderTextContentCore(DrawingContext dc, Rect contentRect, double lineHeight)
-    {
-        // Clip to content area
-        dc.PushClip(new RectangleGeometry(contentRect));
-
-        // Draw selection background
-        if (_selectionLength > 0 && (IsKeyboardFocused || IsInactiveSelectionHighlightEnabled))
-        {
-            DrawSelection(dc, contentRect, lineHeight);
-        }
-
-        // Draw text or placeholder
-        if (FontSize > 0 && string.IsNullOrEmpty(_text) && !string.IsNullOrEmpty(PlaceholderText))
-        {
-            var watermarkText = new FormattedText(PlaceholderText, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
-            {
-                Foreground = ResolvePlaceholderBrush(),
-                MaxTextWidth = contentRect.Width,
-                MaxTextHeight = lineHeight,
-                Trimming = TextTrimming
-            };
-            TextMeasurement.MeasureText(watermarkText);
-            var textY = (contentRect.Height - watermarkText.Height) / 2;
-            dc.DrawText(watermarkText, new Point(contentRect.X - Math.Round(_horizontalOffset), contentRect.Y + textY));
-        }
-        else if (FontSize > 0 && !string.IsNullOrEmpty(_text))
-        {
-            var formattedText = new FormattedText(_text, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
-            {
-                Foreground = ResolveTextForegroundBrush(),
-                MaxTextWidth = contentRect.Width,
-                MaxTextHeight = lineHeight,
-                Trimming = TextTrimming
-            };
-            TextMeasurement.MeasureText(formattedText);
-            var textY = (contentRect.Height - formattedText.Height) / 2;
-            dc.DrawText(formattedText, new Point(contentRect.X - Math.Round(_horizontalOffset), contentRect.Y + textY));
-        }
-
-        // Draw IME composition
-        if (FontSize > 0 && _isImeComposing && !string.IsNullOrEmpty(_imeCompositionString))
-        {
-            DrawImeComposition(dc, contentRect, lineHeight);
-        }
-
-        // Draw caret
-        if (IsFocused && (!IsReadOnly || IsReadOnlyCaretVisible))
-        {
-            DrawCaret(dc, contentRect, lineHeight);
-        }
-
-        dc.Pop(); // Pop clip
-    }
-
-    private void DrawSelection(DrawingContext dc, Rect contentRect, double lineHeight)
-    {
-        var selectionBrush = ResolveSelectionBrush();
-        if (selectionBrush == null)
-            return;
-
-        var roundedHorizontalOffset = Math.Round(_horizontalOffset);
-        var textBefore = _text.Substring(0, Math.Min(_selectionStart, _text.Length));
-        var selectedText = _text.Substring(_selectionStart, Math.Min(_selectionLength, _text.Length - _selectionStart));
-
-        var startX = Math.Round(contentRect.X + MeasureTextWidth(textBefore) - roundedHorizontalOffset);
-        var width = Math.Max(Math.Round(MeasureTextWidth(selectedText)), 1);
-        var textY = contentRect.Y + (contentRect.Height - lineHeight) / 2;
-
-        var selRect = new Rect(startX, textY, width, lineHeight);
-        dc.DrawRectangle(selectionBrush, null, selRect);
-    }
-
-    private void DrawImeComposition(DrawingContext dc, Rect contentRect, double lineHeight)
-    {
-        if (string.IsNullOrEmpty(_imeCompositionString))
-            return;
-
-        var roundedHorizontalOffset = Math.Round(_horizontalOffset);
-        var textBeforeCaret = _text[..Math.Clamp(_imeCompositionStart, 0, _text.Length)];
-        var x = Math.Round(contentRect.X + MeasureTextWidth(textBeforeCaret) - roundedHorizontalOffset);
-        var textY = contentRect.Y + (contentRect.Height - lineHeight) / 2;
-
-        var compositionWidth = MeasureTextWidth(_imeCompositionString);
-        dc.DrawRectangle(s_compositionBgBrush, null, new Rect(x, textY, compositionWidth, lineHeight));
-
-        var compositionText = new FormattedText(_imeCompositionString, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
-        {
-            Foreground = s_compositionTextBrush,
-            MaxTextWidth = contentRect.Width,
-            MaxTextHeight = lineHeight
-        };
-        dc.DrawText(compositionText, new Point(x, textY));
-
-        dc.DrawLine(s_compositionUnderlinePen, new Point(x, textY + lineHeight - 2), new Point(x + compositionWidth, textY + lineHeight - 2));
-    }
-
-    private void DrawCaret(DrawingContext dc, Rect contentRect, double lineHeight)
-    {
-        var caretOpacity = UpdateCaretAnimation();
-
-        var caretBrush = ResolveCaretBrush();
-        if (caretBrush == null || _isImeComposing || caretOpacity < 0.01)
-            return;
-
-        var columnIndex = Math.Min(_caretIndex, _text.Length);
-        var textBeforeCaret = _text.Substring(0, columnIndex);
-
-        var roundedHorizontalOffset = Math.Round(_horizontalOffset);
-        var x = Math.Round(contentRect.X + MeasureTextWidth(textBeforeCaret) - roundedHorizontalOffset);
-        var textY = contentRect.Y + (contentRect.Height - lineHeight) / 2;
-
-        Brush caretBrushWithOpacity;
-        if (caretBrush is SolidColorBrush solidBrush)
-        {
-            var color = solidBrush.Color;
-            var alpha = (byte)(color.A * caretOpacity);
-            caretBrushWithOpacity = new SolidColorBrush(Color.FromArgb(alpha, color.R, color.G, color.B));
-        }
-        else
-        {
-            caretBrushWithOpacity = caretBrush;
-        }
-
-        var caretShape = Styling.CssCaretShapeProperties.Get(this);
-        if (caretShape != Styling.CssCaretShape.Auto)
-        {
-            var advance = CssCaretPainter.NextAdvance(_text, columnIndex,
-                index => MeasureTextWidth(_text.Substring(0, index)), MeasureTextWidth("0"));
-            _lastRenderedCaretRect = CssCaretPainter.Draw(dc, caretBrushWithOpacity,
-                caretShape, x, textY, lineHeight, advance, 1.5);
-            return;
-        }
-
-        var caretPen = new Pen(caretBrushWithOpacity, 1.5);
-        dc.DrawLine(caretPen, new Point(x, textY), new Point(x, textY + lineHeight));
-
-        // Publish caret rect in local coords for partial-redraw invalidation.
-        _lastRenderedCaretRect = new Rect(x - 2, textY - 1, 5, lineHeight + 2);
-    }
-
-    private void DrawDropDown(DrawingContext dc)
-    {
-        var dropDownTop = HasContentHost ? DefaultHeight : GetDirectInputRect().Bottom;
-        var dropDownHeight = GetDropDownHeight();
-        var dropDownRect = new Rect(0, dropDownTop, RenderSize.Width, dropDownHeight);
-
-        // Draw drop-down background with shadow effect (simplified)
-        var shadowRect = new Rect(2, dropDownTop + 2, RenderSize.Width, dropDownHeight);
-        dc.DrawRectangle(s_dropdownShadowBrush, null, shadowRect);
-
-        var dropDownBorder = new Pen(ResolveDropDownBorderBrush(), 1);
-        dc.DrawRectangle(ResolveDropDownBackground(), dropDownBorder, dropDownRect);
-
-        // Clip to dropdown
-        dc.PushClip(new RectangleGeometry(dropDownRect));
-
-        // Draw items
-        var y = dropDownTop;
-
-        for (var i = 0; i < FilteredItems.Count && y < dropDownTop + dropDownHeight; i++)
-        {
-            var itemRect = ControlRenderGeometry.GetContentRect(new Rect(0, y, RenderSize.Width, ItemHeight), new Thickness(1, 0));
-
-            // Draw selection background
-            if (i == _selectedSuggestionIndex)
-            {
-                dc.DrawRectangle(ResolveSelectedSuggestionBackground(), null, itemRect);
-            }
-
-            // Draw item text
-            if (FontSize > 0)
-            {
-                var itemText = GetItemText(FilteredItems[i]);
-                var formattedText = new FormattedText(itemText, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
-                {
-                    Foreground = Foreground ?? s_whiteBrush
-                };
-                TextMeasurement.MeasureText(formattedText);
-                var itemTextY = y + (ItemHeight - formattedText.Height) / 2;
-                dc.DrawText(formattedText, new Point(Padding.Left, itemTextY));
-            }
-
-            y += ItemHeight;
-        }
-
-        dc.Pop(); // Pop dropdown clip
-    }
-
-    private Brush ResolveFocusedBorderBrush()
-    {
-        return TryFindResource("ControlBorderFocused") as Brush ?? s_focusBorderBrush;
-    }
-
-    private Brush ResolvePlaceholderBrush()
-    {
-        return TryFindResource("TextPlaceholder") as Brush ?? s_watermarkBrush;
-    }
-
-    private Brush ResolveSelectedSuggestionBackground()
-    {
-        return TryFindResource("AccentBrush") as Brush ?? s_dropdownSelectionBrush;
-    }
-
-    private Brush ResolveDropDownBackground()
-    {
-        return TryFindResource("SurfaceBackground") as Brush
-            ?? TryFindResource("ControlBackground") as Brush
-            ?? s_dropdownBgBrush;
-    }
-
-    private Brush ResolveDropDownBorderBrush()
-    {
-        return BorderBrush
-            ?? TryFindResource("ControlBorder") as Brush
-            ?? TryFindResource("MenuFlyoutPresenterBorderBrush") as Brush
-            ?? s_dropdownBorderFallbackBrush;
-    }
-
-    #endregion
-
-    #region Property Changed Callbacks
-
-    private static void OnTextPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        if (d is AutoCompleteBox autoComplete)
-        {
-            var newText = (string)(e.NewValue ?? string.Empty);
-            if (autoComplete._text != newText)
-            {
-                autoComplete._text = newText;
-
-                if (autoComplete._caretIndex > autoComplete._text.Length)
-                    autoComplete._caretIndex = autoComplete._text.Length;
-
-                autoComplete.InvalidateVisual();
-            }
-        }
-    }
-
     private static void OnItemsSourceChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is AutoCompleteBox autoComplete)
-        {
-            autoComplete.UpdateFilteredItems();
-        }
+        var owner = (AutoCompleteBox)d;
+        if (e.OldValue is INotifyCollectionChanged oldSource) CollectionChangedEventManager.RemoveHandler(oldSource, owner.OnSourceChanged);
+        if (e.NewValue is INotifyCollectionChanged newSource) CollectionChangedEventManager.AddHandler(newSource, owner.OnSourceChanged);
+        owner.TriggerFilterUpdate();
     }
-
+    private void OnSourceChanged(object? sender, NotifyCollectionChangedEventArgs e) => TriggerFilterUpdate();
+    private static void OnFilterOptionsChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) => ((AutoCompleteBox)d).TriggerFilterUpdate();
     private static void OnSelectedItemChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is AutoCompleteBox autoComplete)
+        var owner = (AutoCompleteBox)d;
+        if (!owner._acceptingSuggestion && e.NewValue != null)
         {
-            autoComplete.InvalidateVisual();
+            owner._acceptingSuggestion = true;
+            try { owner.SetCurrentValue(TextProperty, owner.GetItemText(e.NewValue)); owner.CaretIndex = owner.Text.Length; }
+            finally { owner._acceptingSuggestion = false; }
+            owner.SetCurrentValue(IsDropDownOpenProperty, false);
         }
+        owner.RaiseEvent(new SelectionChangedEventArgs(SelectionChangedEvent,
+            e.OldValue != null ? new[] { e.OldValue } : Array.Empty<object>(),
+            e.NewValue != null ? new[] { e.NewValue } : Array.Empty<object>()));
     }
-
     private static void OnIsDropDownOpenChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is AutoCompleteBox autoComplete)
+        var owner = (AutoCompleteBox)d;
+        owner.UpdatePopupPlacementAndWidth();
+        owner.SyncPopupOpenState();
+        owner.UpdateVisualStates();
+        owner.RaiseEvent(new RoutedEventArgs((bool)e.NewValue! ? DropDownOpenedEvent : DropDownClosedEvent, owner));
+    }
+
+    private sealed class SuggestionCollection : ObservableCollection<object>
+    {
+        internal void Replace(IReadOnlyList<object> items)
         {
-            if ((bool)e.NewValue!)
-            {
-                autoComplete.UpdatePopupPlacementAndWidth();
-                autoComplete.RefreshDropDownItems();
-                autoComplete.RaiseEvent(new RoutedEventArgs(DropDownOpenedEvent, autoComplete));
-            }
-            else
-            {
-                autoComplete.SyncPopupOpenState();
-                autoComplete.RaiseEvent(new RoutedEventArgs(DropDownClosedEvent, autoComplete));
-            }
-            autoComplete.InvalidateMeasure();
-            autoComplete.InvalidateVisual();
+            Items.Clear();
+            foreach (var item in items) Items.Add(item);
+            OnPropertyChanged(new PropertyChangedEventArgs(nameof(Count)));
+            OnPropertyChanged(new PropertyChangedEventArgs("Item[]"));
+            OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
         }
     }
-
-    private static void OnPopulateDelayChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        if (d is AutoCompleteBox autoComplete && autoComplete._filterDelayTimer != null)
-        {
-            var delay = (TimeSpan)e.NewValue!;
-            autoComplete._filterDelayTimer.Interval = delay > TimeSpan.Zero ? delay : TimeSpan.FromMilliseconds(1);
-        }
-    }
-
-    private static new void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        if (d is AutoCompleteBox autoComplete)
-        {
-            autoComplete.UpdateDropDownSelectionVisuals();
-            autoComplete.InvalidateVisual();
-        }
-    }
-
-    #endregion
-
-    #region IME Support
-
-    /// <summary>
-    /// Gets whether IME composition is currently active.
-    /// </summary>
-    public bool IsImeComposing => _isImeComposing;
-
-    /// <inheritdoc />
-    public bool IsImeAllowed => !IsReadOnly;
-
-    bool IImeSupport.TryGetImeSurroundingText(out ImeSurroundingTextSnapshot snapshot)
-        => TryGetImeSurroundingTextCore(out snapshot);
-
-    bool IImeSupport.DeleteImeSurroundingText(int beforeUtf8ByteCount, int afterUtf8ByteCount)
-        => DeleteImeSurroundingTextCore(beforeUtf8ByteCount, afterUtf8ByteCount);
-
-    bool IImeSupport.TrySetImeSelection(int start, int length) => TrySetImeSelectionCore(start, length);
-
-    bool IImeSupport.TryReplaceImeText(int start, int length, string text)
-    {
-        if (IsReadOnly || !ImeTextEncoding.TryNormalizeUtf16Range(_text, start, length, out start, out length))
-            return false;
-        bool suppressTab = _suppressNextTabTextInput;
-        _suppressNextTabTextInput = false;
-        if (text.Contains('\t') && (suppressTab || !AcceptsTab))
-        {
-            text = text.Replace("\t", string.Empty);
-            if (text.Length == 0) return true;
-        }
-        return TryReplaceImeTextCore(start, length, text);
-    }
-
-    /// <inheritdoc />
-    public Point GetImeCaretPosition()
-    {
-        return GetCaretScreenPosition();
-    }
-
-    /// <inheritdoc />
-    public Rect GetImeCaretRectangle()
-    {
-        Rect caret = _isImeComposing ? GetImeCompositionCaret(Math.Clamp(_imeCompositionCursor, 0, _imeCompositionString.Length), false) :
-            GetImeTextCaret(Math.Clamp(_caretIndex, 0, _text.Length), false);
-        return new Rect(caret.X, caret.Y, 1, caret.Height);
-    }
-
-    private Rect GetImeTextViewport()
-    {
-        if (HasContentHost)
-        {
-            Point origin = GetTextContentOrigin();
-            return new Rect(origin.X, origin.Y, _textContentSize.Width, _textContentSize.Height);
-        }
-        return GetDirectContentRect(GetDirectInputRect(), UsesCssBoxGeometry());
-    }
-
-    private Rect GetImeTextCaret(int index, bool trailing)
-    {
-        Rect viewport = GetImeTextViewport();
-        double height = Math.Max(1, Math.Round(GetLineHeight()));
-        int end = trailing ? GraphemeClusters.NextBoundary(_text, index) : index;
-        return new Rect(Math.Round(viewport.X + MeasureTextWidth(_text[..end]) - Math.Round(_horizontalOffset)),
-            viewport.Y + (viewport.Height - height) / 2, 0, height);
-    }
-
-    private Rect GetImeCompositionCaret(int index, bool trailing)
-    {
-        Rect anchor = GetImeTextCaret(Math.Clamp(_imeCompositionStart, 0, _text.Length), false);
-        return ImeTextGeometry.GetFormattedCaret(_imeCompositionString, index, trailing, new Point(anchor.X, anchor.Y),
-            anchor.Height, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName,
-            FontSize, 400, 0, (float)Math.Max(1, GetImeTextViewport().Width), MeasureTextWidth);
-    }
-
-    bool IImeSupport.TryGetImeTextRangeGeometry(int start, int length, bool composition, out ImeTextRangeGeometry geometry)
-    {
-        geometry = default;
-        if (composition && !_isImeComposing) return false;
-        return ImeTextGeometry.TryGetFirstLineRange(composition ? _imeCompositionString : _text, start, length,
-            composition ? GetImeCompositionCaret : GetImeTextCaret, out geometry);
-    }
-
-    bool IImeSupport.TryGetImeCharacterIndex(Point point, bool composition, out int index)
-    {
-        index = -1;
-        if (!GetImeTextViewport().Contains(point) || (composition && !_isImeComposing)) return false;
-        Rect anchor = GetImeTextCaret(composition ? Math.Clamp(_imeCompositionStart, 0, _text.Length) : 0, false);
-        return ImeTextGeometry.TryHitTest(composition ? _imeCompositionString : _text, point,
-            new Point(anchor.X, anchor.Y), anchor.Height,
-            FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize, 400, 0,
-            (float)Math.Max(1, GetImeTextViewport().Width), MeasureTextWidth, composition, out index);
-    }
-
-    private Point GetCaretScreenPosition()
-    {
-        Rect caret = GetImeCaretRectangle();
-        return new Point(caret.X, caret.Bottom);
-    }
-
-    /// <inheritdoc />
-    public void OnImeCompositionStart()
-    {
-        _isImeComposing = true;
-        _imeCompositionStart = _caretIndex;
-        _imeCompositionString = string.Empty;
-        _imeCompositionCursor = 0;
-
-        if (OperatingSystem.IsMacOS())
-            _imeCompositionStart = _selectionLength > 0 ? _selectionStart : _caretIndex;
-        else if (_selectionLength > 0)
-        {
-            DeleteSelection();
-            _imeCompositionStart = _caretIndex;
-        }
-
-        InvalidateVisual();
-    }
-
-    /// <inheritdoc />
-    public void OnImeCompositionUpdate(string compositionString, int cursorPosition)
-    {
-        _imeCompositionString = compositionString;
-        _imeCompositionCursor = cursorPosition;
-        InvalidateVisual();
-    }
-
-    /// <inheritdoc />
-    public void OnImeCompositionEnd(string? resultString)
-    {
-        _isImeComposing = false;
-        _imeCompositionString = string.Empty;
-        _imeCompositionCursor = 0;
-        InvalidateVisual();
-    }
-
-    #endregion
 }
 
 /// <summary>

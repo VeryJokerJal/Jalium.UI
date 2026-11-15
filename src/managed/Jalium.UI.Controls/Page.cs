@@ -68,6 +68,15 @@ public class Page : FrameworkElement, IAddChild, IWindowService
     private Border? _cssBorderPainter;
     private IList<TriggerBase>? _appliedTemplateTriggers;
     private bool _templateApplied;
+    private readonly Dictionary<string, FrameworkElement> _templateRegisteredNames = new(StringComparer.Ordinal);
+
+    internal override FrameworkElement? StateGroupsRoot => _templateRoot;
+
+    internal void RegisterTemplateName(string name, FrameworkElement element)
+    {
+        RegisterName(name, element);
+        _templateRegisteredNames[name] = element;
+    }
     private bool _showsNavigationUI = true;
     private bool _showsNavigationUISet;
     private double _windowHeight = double.NaN;
@@ -339,7 +348,10 @@ public class Page : FrameworkElement, IAddChild, IWindowService
         if (Template?.LoadContent() is FrameworkElement templateRoot)
         {
             _templateRoot = templateRoot;
-            _templateRoot.IsTemplatedRoot = true;
+            // Page paints its background in OnRender, then its content in the
+            // normal child pass. Control's special background-root flag would
+            // exclude this tree from that pass; Page has no such background hook.
+            _templateRoot.IsTemplatedRoot = false;
 
             // 与 Control.ApplyTemplateCore 完全同构的一次模板展开，因此用同一套绑定重算轮次
             // 剪枝：SetTemplatedParentRecursive 不再顺带重算（紧接着的 AddVisualChild 会对整棵
@@ -385,6 +397,7 @@ public class Page : FrameworkElement, IAddChild, IWindowService
 
     private void ClearVisualTree()
     {
+        OnTemplateChanging();
         if (_appliedTemplateTriggers is not null)
         {
             foreach (TriggerBase trigger in _appliedTemplateTriggers)
@@ -398,10 +411,19 @@ public class Page : FrameworkElement, IAddChild, IWindowService
         if (_templateRoot is not null)
         {
             var root = _templateRoot;
+            Control.ReleasePresentedContentRecursive(root);
             _templateRoot = null;
             root.IsTemplatedRoot = false;
             RemoveVisualChild(root);
+            Control.ReleaseTemplateOwner(root, this);
         }
+
+        foreach (var (name, element) in _templateRegisteredNames)
+        {
+            if (ReferenceEquals(FindName(name), element))
+                UnregisterName(name);
+        }
+        _templateRegisteredNames.Clear();
 
         if (_contentVisual is not null)
         {

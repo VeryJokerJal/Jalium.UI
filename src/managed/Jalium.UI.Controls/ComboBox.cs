@@ -1,3 +1,4 @@
+using Jalium.UI.Styling;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
@@ -63,6 +64,7 @@ public class ComboBox : Selector
 
     static ComboBox()
     {
+        MinWidthProperty.OverrideMetadata(typeof(ComboBox), new FrameworkPropertyMetadata(120.0, FrameworkPropertyMetadataOptions.AffectsMeasure));
         // WPF enables incremental text search for ComboBox by default, while
         // ItemsControl leaves it disabled for the general case.
         ItemsControl.IsTextSearchEnabledProperty.OverrideMetadata(
@@ -390,15 +392,12 @@ public class ComboBox : Selector
 
     public ComboBox()
     {
-        MinWidth = 120;
-        Focusable = true;
-        SetCurrentValue(UIElement.TransitionPropertyProperty, TransitionPropertyCollection.None());
-        SizeChanged += OnComboBoxSizeChanged;
-
         // Initialize SelectionBoxItem with placeholder
         SelectionBoxItem = PlaceholderText;
 
         // Set up mouse handling for toggle
+        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnPointerFocus), handledEventsToo: true);
+        AddHandler(TouchDownEvent, new RoutedEventHandler(OnTouchFocus), handledEventsToo: true);
         AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
         AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler));
         AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
@@ -431,8 +430,10 @@ public class ComboBox : Selector
         // Get template parts
         _toggleButton = GetTemplateChild("PART_ToggleButton") as ToggleButton;
         _popup = GetTemplateChild("PART_Popup") as Popup;
+        CssPlaceholder.Unbind(_editableTextBox); CssPlaceholder.Unbind(_selectionPresenter);
         _editableTextBox = GetTemplateChild("PART_EditableTextBox") as TextBox;
         _selectionPresenter = GetTemplateChild("PART_SelectionPresenter") as ContentPresenter;
+        CssPlaceholder.Bind(_editableTextBox, this); CssPlaceholder.Bind(_selectionPresenter, this);
         _dropDownArea = GetTemplateChild("PART_DropDownArea") as Grid;
 
         // Wire up toggle button
@@ -454,7 +455,7 @@ public class ComboBox : Selector
             _editableTextBox.TextChanged += OnEditableTextBoxTextChanged;
         }
 
-        UpdatePopupPlacementAndWidth();
+        UpdatePopupPlacement();
         SyncPopupOpenState();
 
         // Find the arrow Path inside ToggleButton's template for the open/close indicator.
@@ -479,6 +480,7 @@ public class ComboBox : Selector
     /// <inheritdoc />
     internal override void OnTemplateContentClearing()
     {
+        CssPlaceholder.Unbind(_editableTextBox); CssPlaceholder.Unbind(_selectionPresenter);
         _popupAnimTimer?.Stop();
         _popupAnimTimer = null;
         _arrowAnimTimer?.Stop();
@@ -555,6 +557,22 @@ public class ComboBox : Selector
             _editableTextBox.CaretIndex = _editableTextBox.Text?.Length ?? 0;
             e.Handled = true;
         }
+    }
+
+    private void OnPointerFocus(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton == MouseButton.Left) FocusFromPointer(e);
+    }
+
+    private void OnTouchFocus(object sender, RoutedEventArgs e) => FocusFromPointer(e);
+
+    private void FocusFromPointer(RoutedEventArgs e)
+    {
+        if (!IsEnabled || !IsEventFromVisualTree(e, this) || IsEventFromVisualTree(e, _popup)
+            || (IsEditable && IsEventFromEditableTextBox(e))) return;
+        // The template's toggle is deliberately absent from the Tab sequence.
+        // Its handled pointer event must still move keyboard input to this owner.
+        Focus();
     }
 
     private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
@@ -794,7 +812,7 @@ public class ComboBox : Selector
         {
             var selectedText = GetItemText(selectedItem);
             object? displayItem = selectedItem;
-            DataTemplate? displayTemplate = ItemTemplate;
+            DataTemplate? displayTemplate = ResolveItemTemplate(selectedItem);
             string? displayStringFormat = ItemStringFormat;
 
             // WPF displays the content of an item container, rather than the
@@ -1285,7 +1303,7 @@ public class ComboBox : Selector
 
         if (_popup != null)
         {
-            UpdatePopupPlacementAndWidth();
+            UpdatePopupPlacement();
             _popup.IsOpen = true;
         }
 
@@ -1317,30 +1335,9 @@ public class ComboBox : Selector
         OnDropDownClosed(EventArgs.Empty);
     }
 
-    private void OnComboBoxSizeChanged(object? sender, SizeChangedEventArgs e)
+    private void UpdatePopupPlacement()
     {
-        UpdatePopupPlacementAndWidth();
-    }
-
-    private void UpdatePopupPlacementAndWidth()
-    {
-        if (_popup == null) return;
-
-        _popup.PlacementTarget = this;
-
-        var popupWidth = ActualWidth;
-        if (popupWidth <= 0 || double.IsNaN(popupWidth) || double.IsInfinity(popupWidth))
-        {
-            if (!double.IsNaN(Width) && !double.IsInfinity(Width) && Width > 0)
-                popupWidth = Width;
-        }
-
-        if (popupWidth > 0 && !double.IsNaN(popupWidth) && !double.IsInfinity(popupWidth))
-        {
-            _popup.Width = popupWidth;
-            _popup.MinWidth = popupWidth;
-            _popup.MaxWidth = popupWidth;
-        }
+        if (_popup != null) _popup.PlacementTarget = this;
     }
 
     private void SyncPopupOpenState()

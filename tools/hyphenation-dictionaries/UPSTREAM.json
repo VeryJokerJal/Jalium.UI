@@ -1,0 +1,135 @@
+{
+  "schemaVersion": 1,
+  "generator": "tools/generate-css-hyphenation-data.py",
+  "dictionaries": {
+    "en-us": {
+      "file": "en-us.pat.txt",
+      "tags": [
+        "en",
+        "en-us",
+        "en-gb",
+        "en-ca",
+        "en-au"
+      ],
+      "upstream": "TeX hyph-utf8 / Knuth-Liang US English (hyph-en-us)",
+      "license": "Public Domain / LPPL-1.3c",
+      "version": "2021-06-01",
+      "leftHyphenMin": 2,
+      "rightHyphenMin": 3,
+      "payloadSha256": "4e3737c63bd72ed0a0afd0012f07f414a18d19052527111aea471547abde4f3a",
+      "fileSha256": "52401638c7f3a4bd5e7c5cfb4a6d87bbec83f94703e2bb2a33f3561596bf8a55"
+    },
+    "de-1996": {
+      "file": "de-1996.pat.txt",
+      "tags": [
+        "de",
+        "de-de",
+        "de-at",
+        "de-ch",
+        "de-1996"
+      ],
+      "upstream": "TeX hyph-utf8 / German Reformed 1996 (hyph-de-1996)",
+      "license": "LPPL-1.3c / MIT",
+      "version": "2021-06-01",
+      "leftHyphenMin": 2,
+      "rightHyphenMin": 2,
+      "payloadSha256": "998b9694e401a0abc4a95da5dc79376b553d645868564b88af21258d58f9c0e6",
+      "fileSha256": "7197353ef8dfa0fb452dd2653d93f5173aa1056230e06a0df4b479d308cf340d"
+    },
+    "de-1901": {
+      "file": "de-1901.pat.txt",
+      "tags": [
+        "de-1901",
+        "de-de-1901",
+        "de-ch-1901"
+      ],
+      "upstream": "TeX hyph-utf8 / German Traditional 1901 with libhyphen non-standard ck->k-k (hyph-de-1901)",
+      "license": "LPPL-1.3c / MIT",
+      "version": "2021-06-01",
+      "leftHyphenMin": 2,
+      "rightHyphenMin": 2,
+      "payloadSha256": "2df3ef39deef270b3f4ad748dc81d2c021611b538c3b4bbafa6ef383fc406b20",
+      "fileSha256": "443a4abb091b0243fcdb97aa645b2d3336c496c2d5716b855059df54b7af44ed"
+    },
+    "nl": {
+      "file": "nl.pat.txt",
+      "tags": [
+        "nl",
+        "nl-nl",
+        "nl-be"
+      ],
+      "upstream": "TeX hyph-utf8 / Dutch with diaeresis & diminutive spelling rules (hyph-nl)",
+      "license": "LPPL-1.3c / BSD-3-Clause",
+      "version": "2021-06-01",
+      "leftHyphenMin": 2,
+      "rightHyphenMin": 2,
+      "payloadSha256": "0d52b4e5d7afeec2072a023583749e3917bb61ec98defca6925d87b2db196ea6",
+      "fileSha256": "60e52e2b9ebbda0d6d6f54a8f121f013aa696abf946fdd8c053f7bd2cdcf6033"
+    },
+    "hu": {
+      "file": "hu.pat.txt",
+      "tags": [
+        "hu",
+        "hu-hu"
+      ],
+      "upstream": "TeX hyph-utf8 / Hungarian with doubled digraph rules (hyph-hu)",
+      "license": "MPL-2.0 / LPPL-1.3c",
+      "version": "2021-06-01",
+      "leftHyphenMin": 2,
+      "rightHyphenMin": 2,
+      "payloadSha256": "ec1a1546d1052081d033f7c9c8dfbd68f1fdb8257dfc5e6077df95acb39d936e",
+      "fileSha256": "8cd5bf748a1fa9a1a152688877cfbb122d4a80335be323da4852abf2421be7f3"
+    },
+    "ca": {
+      "file": "ca.pat.txt",
+      "tags": [
+        "ca",
+        "ca-es",
+        "ca-ad",
+        "ca-fr",
+        "ca-it"
+      ],
+      "upstream": "TeX hyph-utf8 / Catalan with punt volat l·l->l-l (hyph-ca)",
+      "license": "LPPL-1.3c / GPL-2.0-or-later",
+      "version": "2021-06-01",
+      "leftHyphenMin": 2,
+      "rightHyphenMin": 2,
+      "payloadSha256": "d8535ffc9fb3310f2b1f3e4ce7c74d2351ea17c824fd0109380022c174ea2d9c",
+      "fileSha256": "eb4700c7498c6cb9c12b98ccd40fe2128493db7a8667d73955459d8f5fb6c49e"
+    },
+    "fr": {
+      "file": "fr.pat.txt",
+      "tags": [
+        "fr",
+        "fr-fr",
+        "fr-ca",
+        "fr-be",
+        "fr-ch"
+      ],
+      "upstream": "TeX hyph-utf8 / French (hyph-fr)",
+      "license": "LPPL-1.3c / MIT",
+      "version": "2021-06-01",
+      "leftHyphenMin": 2,
+      "rightHyphenMin": 3,
+      "payloadSha256": "de818555db4f750211f219eb0862a9ac1d694e37bb20dd942021ad00ea77e3eb",
+      "fileSha256": "26e0eedcb4c575675525814e2c51273eb26f3796184ecc154bc1afc705754720"
+    },
+    "es": {
+      "file": "es.pat.txt",
+      "tags": [
+        "es",
+        "es-es",
+        "es-mx",
+        "es-ar",
+        "es-419"
+      ],
+      "upstream": "TeX hyph-utf8 / Spanish (hyph-es)",
+      "license": "LPPL-1.3c / MIT",
+      "version": "2021-06-01",
+      "leftHyphenMin": 2,
+      "rightHyphenMin": 2,
+      "payloadSha256": "655e494786d53118dd81c008495c49309b61cb37b6adfd5e2b8d11e9d319e300",
+      "fileSha256": "615d3ad5d84d03225deeaef2d505bb2afcf91515f40b186190488f05f47fbc9f"
+    }
+  }
+}

@@ -422,6 +422,15 @@ void VulkanBackend::UnregisterDeviceContext(const std::shared_ptr<VulkanDeviceGe
         brushPipeline_.reset();
         brushPipelineAttempted_ = false;
         deviceGeneration_.reset();
+        // A second window may have replaced the import/ink generation. When
+        // it closes, keep the remaining healthy windows available to factories.
+        for (auto it = registeredGenerations_.rbegin(); it != registeredGenerations_.rend(); ++it) {
+            auto remaining = it->lock();
+            if (remaining && remaining->IsUsable() && remaining->ctx.valid) {
+                deviceGeneration_ = std::move(remaining);
+                break;
+            }
+        }
     }
 }
 

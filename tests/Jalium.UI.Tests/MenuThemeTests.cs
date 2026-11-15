@@ -129,7 +129,8 @@ public class MenuThemeTests
 
             Assert.Same(textPrimary, InvokePrivateBrushResolver(menuItem, "ResolvePrimaryTextBrush"));
             Assert.Same(textPrimary, InvokePrivateBrushResolver(menuBarItem, "ResolveForegroundBrush"));
-            Assert.Same(textPrimary, InvokePrivateBrushResolver(flyoutItem, "ResolveForegroundBrush"));
+            MenuFlyoutTemplateTestHelper.Apply(flyoutItem);
+            Assert.Same(textPrimary, flyoutItem.ItemForeground);
         }
         finally
         {
@@ -197,7 +198,7 @@ public class MenuThemeTests
     [Fact]
     public void ContextMenu_PopupChrome_ShouldUpdateWhenThemePropertiesChange()
     {
-        var contextMenu = new ContextMenu();
+        var contextMenu = LegacyMenuTemplateTestHelper.Apply(new ContextMenu());
         contextMenu.Items.Add(new MenuItem { Header = "Item" });
         contextMenu.Open(new Point(10, 10));
 

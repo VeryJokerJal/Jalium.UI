@@ -22,6 +22,8 @@ internal enum CssPositionMode : byte
     Static,
     Relative,
     Absolute,
+    Fixed,
+    Sticky,
 }
 
 internal enum CssPositionKeyword : byte
@@ -42,11 +44,20 @@ internal readonly struct CssLayoutLength : IEquatable<CssLayoutLength>
     public const byte KindExpression = 3;
     public const byte KindAuto = 4;
     public const byte KindNormal = 5;
+    public const byte KindMinContent = 6;
+    public const byte KindMaxContent = 7;
+    public const byte KindFitContent = 8;
+    public const byte KindStretch = 9;
+    public const byte KindFitFunction = 10;
+    public const byte KindCalcSize = 11;
+    public const byte KindContent = 12;
 
     public readonly double Value;
     public readonly byte Kind;
+    private readonly byte _argumentKind;
     public readonly CssMathExpression? Expression;
     public readonly CssLengthContext Context;
+    internal readonly CssCalcSizeComputed? Calculation;
 
     private CssLayoutLength(CssMathExpression expression, CssLengthContext context)
     {
@@ -71,6 +82,24 @@ internal readonly struct CssLayoutLength : IEquatable<CssLayoutLength>
     public static CssLayoutLength Unset => default;
     public static CssLayoutLength Auto => new(0, KindAuto);
     public static CssLayoutLength Normal => new(0, KindNormal);
+    public static CssLayoutLength Sizing(byte kind) => new(0, kind);
+    public bool IsSizing => Kind >= KindMinContent && Kind <= KindContent;
+    internal CssLayoutLength SizingBasis => Calculation?.SizingBasis ?? this;
+    internal static CssLayoutLength Calculate(CssCalcSizeComputed calculation) => new(calculation);
+    private CssLayoutLength(CssCalcSizeComputed calculation)
+    {
+        Kind = KindCalcSize;
+        Calculation = calculation;
+    }
+    public CssLayoutLength FitArgument => Kind == KindFitFunction
+        ? _argumentKind == KindExpression ? new CssLayoutLength(Expression!, Context) : new(Value, _argumentKind)
+        : default;
+    public static CssLayoutLength Fit(CssLayoutLength argument) => new(argument);
+    private CssLayoutLength(CssLayoutLength argument)
+    {
+        Kind = KindFitFunction; Value = argument.Value; Expression = argument.Expression;
+        Context = argument.Context; _argumentKind = argument.Kind;
+    }
     public bool IsNormal => Kind == KindNormal;
     public bool IsAuto => Kind == KindAuto;
 
@@ -81,7 +110,8 @@ internal readonly struct CssLayoutLength : IEquatable<CssLayoutLength>
 
     public bool IsSet => Kind != KindUnset;
 
-    public bool IsPercent => Kind == KindPercent || Expression?.UsesPercent == true;
+    public bool IsPercent => Kind == KindPercent || Kind == KindFitFunction && _argumentKind == KindPercent ||
+        Expression?.UsesPercent == true || Calculation?.UsesPercent == true;
 
     /// <summary>
     /// Resolves against the containing-block basis. A percentage against an infinite or
@@ -108,12 +138,12 @@ internal readonly struct CssLayoutLength : IEquatable<CssLayoutLength>
         }
     }
 
-    public bool Equals(CssLayoutLength other) => Kind == other.Kind && Value.Equals(other.Value) &&
-        Equals(Expression, other.Expression) && Context.Equals(other.Context);
+    public bool Equals(CssLayoutLength other) => Kind == other.Kind && _argumentKind == other._argumentKind && Value.Equals(other.Value) &&
+        Equals(Expression, other.Expression) && Context.Equals(other.Context) && Equals(Calculation, other.Calculation);
 
     public override bool Equals(object? obj) => obj is CssLayoutLength other && Equals(other);
 
-    public override int GetHashCode() => HashCode.Combine(Value, Kind, Expression, Context);
+    public override int GetHashCode() => HashCode.Combine(Value, Kind, Expression, Context, _argumentKind, Calculation);
 }
 
 /// <summary>
@@ -128,6 +158,8 @@ internal sealed class CssLayoutState : IEquatable<CssLayoutState>
     // Sizes: percentage expressions and minimum-size auto keep their computed values
     // here; ordinary px/auto values use the regular DP channel and its CSS-layer sentinel.
     public CssLayoutLength Width, Height, MinWidth, MinHeight, MaxWidth, MaxHeight;
+    public bool HasSizingKeywords => Width.IsSizing || Height.IsSizing || MinWidth.IsSizing ||
+        MinHeight.IsSizing || MaxWidth.IsSizing || MaxHeight.IsSizing;
 
     // When a layout snapshot is needed, computed margin/padding edges are retained for
     // style queries. HasMargin/HasPadding say whether layout reads them instead of native DPs.
@@ -146,17 +178,29 @@ internal sealed class CssLayoutState : IEquatable<CssLayoutState>
     public bool HasBoxSizing;
 
     public CssPositionMode Position;
-    // The specified keyword can differ from the currently supported layout mode.
+    public bool IsOutOfFlow => Position is CssPositionMode.Absolute or CssPositionMode.Fixed;
+    // Retained separately for computed style and CSS-wide inheritance.
     public CssPositionKeyword ComputedPosition;
     public CssLayoutLength InsetLeft, InsetTop, InsetRight, InsetBottom;
 
-    /// <summary>Precomputed: any percentage anywhere (drives the arrange-basis correction).</summary>
+    /// <summary>Percentages that affect measurement (drive the arrange-basis correction).</summary>
     public bool UsesPercent;
 
     // ── Per-layout mutable caches (not part of equality) ──
     internal Thickness MeasureMarginCache;
     internal double ContainingWidthCache = double.NaN;
+    internal Size? NativeMeasureContainingBlock;
     internal bool ArrangeCorrectionQueued;
+
+    internal CssLayoutState CloneForLayout()
+    {
+        var copy = (CssLayoutState)MemberwiseClone();
+        copy.MeasureMarginCache = default;
+        copy.ContainingWidthCache = double.NaN;
+        copy.NativeMeasureContainingBlock = null;
+        copy.ArrangeCorrectionQueued = false;
+        return copy;
+    }
 
     internal void Seal()
     {
@@ -165,9 +209,7 @@ internal sealed class CssLayoutState : IEquatable<CssLayoutState>
             MinWidth.IsPercent || MinHeight.IsPercent ||
             MaxWidth.IsPercent || MaxHeight.IsPercent ||
             MarginLeft.IsPercent || MarginTop.IsPercent || MarginRight.IsPercent || MarginBottom.IsPercent ||
-            PaddingLeft.IsPercent || PaddingTop.IsPercent || PaddingRight.IsPercent || PaddingBottom.IsPercent ||
-            (Position != CssPositionMode.Static &&
-             (InsetLeft.IsPercent || InsetTop.IsPercent || InsetRight.IsPercent || InsetBottom.IsPercent));
+            PaddingLeft.IsPercent || PaddingTop.IsPercent || PaddingRight.IsPercent || PaddingBottom.IsPercent;
     }
 
     public bool Equals(CssLayoutState? other)

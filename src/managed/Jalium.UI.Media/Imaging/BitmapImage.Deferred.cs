@@ -784,7 +784,7 @@ public sealed partial class BitmapImage
     /// thread that also disables display-bucket downsampling for the life of the source — just to
     /// get ahead of the renderer.</para>
     /// <para>Idempotent and cheap to repeat. A source whose published bucket already covers the
-    /// request — including a non-deferred source, which always has its pixels — returns a
+    /// request — including a resident non-deferred source — returns a
     /// completed task without touching the scheduler. A request larger than the published bucket
     /// schedules an upgrade; the pixels already published stay drawable until the upgrade lands.
     /// After the idle reclaimer has dropped the pixels, calling this again is what restores them
@@ -809,7 +809,36 @@ public sealed partial class BitmapImage
     {
         ArgumentOutOfRangeException.ThrowIfNegative(pixelWidth);
         ArgumentOutOfRangeException.ThrowIfNegative(pixelHeight);
+        lock (_deferredDecodeLock)
+        {
+            // FromBytes/StreamSource images can also lose their decoded cache.
+            // A completed no-op here forced their next draw to decode in sync.
+            if (!_isDeferredSource && _imageData is { Length: > 0 } && !TryGetPixelSnapshot(out _))
+            {
+                long version = _deferredSourceVersion;
+                if (_eagerPixelPreloadVersion == version && _eagerPixelPreloadTask is { IsCompleted: false })
+                    return _eagerPixelPreloadTask;
+                _eagerPixelPreloadVersion = version;
+                return _eagerPixelPreloadTask = RestoreEagerPixelsAsync(version);
+            }
+        }
         return RequestDecodeAsync(pixelWidth, pixelHeight, cover);
+    }
+
+    private async Task RestoreEagerPixelsAsync(long version)
+    {
+        bool restored;
+        await s_eagerPixelRestoreGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            lock (_deferredDecodeLock)
+                if (version != _deferredSourceVersion) throw new OperationCanceledException("Bitmap source was replaced during preload");
+            restored = await Task.Run(TryRestorePixelData).ConfigureAwait(false);
+        }
+        finally { s_eagerPixelRestoreGate.Release(); }
+        lock (_deferredDecodeLock)
+            if (version != _deferredSourceVersion) throw new OperationCanceledException("Bitmap source was replaced during preload");
+        if (!restored) throw new InvalidOperationException("The reclaimed bitmap pixels could not be restored");
     }
 
     /// <summary>

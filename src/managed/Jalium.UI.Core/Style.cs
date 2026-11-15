@@ -579,7 +579,7 @@ public class Setter : SetterBase, ISupportInitialize
     /// <summary>
     /// Applies this setter to the specified element.
     /// </summary>
-    internal void Apply(FrameworkElement element)
+    internal void Apply(FrameworkElement element, DependencyObject.LayerValueSource source = DependencyObject.LayerValueSource.StyleSetter)
     {
         var target = GetTarget(element);
         if (target == null)
@@ -619,13 +619,22 @@ public class Setter : SetterBase, ISupportInitialize
         //     style 应用（style 在入树时才应用），style 的 Background setter 被整条丢弃；
         //   • 之后 ClearValue(BackgroundProperty) 回落到 DP 默认值而不是 style 值；
         //     SetCurrentValue / 动画结束后的回落同理。
+        // All styles share the same setter layer. A more specific setter must retire
+        // an earlier binding before its next source update can overwrite this value.
+        if (s_activeBindingSetters.TryGetValue(target, out var activeSetters) &&
+            activeSetters.TryGetValue((actualProperty, source), out var previousSetter) &&
+            !ReferenceEquals(previousSetter, this))
+        {
+            previousSetter.RemoveBindingValue(target);
+        }
+
         if (Value is IDynamicResourceReference dynamicReference)
         {
             DynamicResourceBindingOperations.SetDynamicResource(
-                target,
+                element, target,
                 actualProperty,
                 dynamicReference.ResourceKey,
-                DependencyObject.LayerValueSource.StyleSetter);
+                source);
             return;
         }
 
@@ -635,7 +644,7 @@ public class Setter : SetterBase, ISupportInitialize
         // 订阅若来自 local SetDynamicResource 则层不匹配、不受影响（且 local 值存在时
         // 上面的 HasLocalValue 早已短路）。
         DynamicResourceBindingOperations.ClearDynamicResource(
-            target, actualProperty, DependencyObject.LayerValueSource.StyleSetter);
+            target, actualProperty, source);
 
         // Setter.Value 可以是一个 BindingBase（典型场景：jalxaml 里写
         // <Setter Property="Foo" Value="{TemplateBinding Bar}" /> 或 RelativeSource Binding）。
@@ -649,7 +658,7 @@ public class Setter : SetterBase, ISupportInitialize
         // 上，把它的当前值镜像进 StyleSetter 层，优先级与生命周期都归位。
         if (Value is BindingBase binding)
         {
-            ApplyBindingValue(target, actualProperty, binding);
+            ApplyBindingValue(target, actualProperty, binding, source);
             return;
         }
 
@@ -665,7 +674,7 @@ public class Setter : SetterBase, ISupportInitialize
         {
             target.ClearLayerValue(
                 actualProperty,
-                DependencyObject.LayerValueSource.StyleSetter,
+                source,
                 allowAutoTransition: false);
             return;
         }
@@ -678,14 +687,14 @@ public class Setter : SetterBase, ISupportInitialize
         target.SetLayerValue(
             actualProperty,
             valueToSet,
-            DependencyObject.LayerValueSource.StyleSetter,
+            source,
             allowAutoTransition: false);
 
         // 宿主元素的失效由唯一调用链 FrameworkElement.UpdateStyleStack 末尾的 InvalidateVisual
         // 统一负责，这里不重复；只有 TargetName 打到别的元素时才需要单独安排一次。
         if (!ReferenceEquals(target, element))
         {
-            TriggerBase.EnsureSetterInvalidation(target, actualProperty);
+            EnsureTargetInvalidation(target, actualProperty);
         }
     }
 
@@ -700,11 +709,15 @@ public class Setter : SetterBase, ISupportInitialize
     private sealed class BindingSetterState
     {
         public required DependencyProperty TargetProperty { get; init; }
+        public required DependencyObject.LayerValueSource Source { get; init; }
         public required DependencyProperty ShadowProperty { get; init; }
         public required Action<DependencyProperty, object?, object?> Handler { get; init; }
     }
 
-    private readonly ConditionalWeakTable<FrameworkElement, BindingSetterState> _bindingStates = new();
+    private readonly ConditionalWeakTable<DependencyObject, BindingSetterState> _bindingStates = new();
+    private static readonly ConditionalWeakTable<DependencyObject,
+        Dictionary<(DependencyProperty Property, DependencyObject.LayerValueSource Source), Setter>>
+        s_activeBindingSetters = new();
 
     private DependencyProperty GetBindingShadowProperty()
     {
@@ -722,9 +735,9 @@ public class Setter : SetterBase, ISupportInitialize
     }
 
     private void ApplyBindingValue(
-        FrameworkElement target,
+        DependencyObject target,
         DependencyProperty actualProperty,
-        BindingBase binding)
+        BindingBase binding, DependencyObject.LayerValueSource source)
     {
         if (_bindingStates.TryGetValue(target, out var existing))
         {
@@ -746,17 +759,19 @@ public class Setter : SetterBase, ISupportInitialize
         state = new BindingSetterState
         {
             TargetProperty = actualProperty,
+            Source = source,
             ShadowProperty = shadowProperty,
             Handler = handler
         };
 
         _bindingStates.Add(target, state);
+        s_activeBindingSetters.GetOrCreateValue(target)[(actualProperty, source)] = this;
         target.PropertyChangedInternal += handler;
         target.SetBinding(shadowProperty, binding);
         PublishBindingValue(target, state);
     }
 
-    private static void PublishBindingValue(FrameworkElement target, BindingSetterState state)
+    private static void PublishBindingValue(DependencyObject target, BindingSetterState state)
     {
         var value = target.GetValue(state.ShadowProperty);
         if (ReferenceEquals(value, DependencyProperty.UnsetValue) ||
@@ -764,7 +779,7 @@ public class Setter : SetterBase, ISupportInitialize
         {
             target.ClearLayerValue(
                 state.TargetProperty,
-                DependencyObject.LayerValueSource.StyleSetter,
+                state.Source,
                 allowAutoTransition: false);
         }
         else
@@ -772,19 +787,25 @@ public class Setter : SetterBase, ISupportInitialize
             target.SetLayerValue(
                 state.TargetProperty,
                 value,
-                DependencyObject.LayerValueSource.StyleSetter,
+                state.Source,
                 allowAutoTransition: false);
         }
 
-        TriggerBase.EnsureSetterInvalidation(target, state.TargetProperty);
+        EnsureTargetInvalidation(target, state.TargetProperty);
     }
 
-    private void RemoveBindingValue(FrameworkElement target)
+    private void RemoveBindingValue(DependencyObject target)
     {
         if (!_bindingStates.TryGetValue(target, out var state))
             return;
 
         _bindingStates.Remove(target);
+        if (s_activeBindingSetters.TryGetValue(target, out var activeSetters) &&
+            activeSetters.TryGetValue((state.TargetProperty, state.Source), out var activeSetter) &&
+            ReferenceEquals(activeSetter, this))
+        {
+            activeSetters.Remove((state.TargetProperty, state.Source));
+        }
         target.PropertyChangedInternal -= state.Handler;
         target.ClearBinding(state.ShadowProperty);
         target.ClearValue(state.ShadowProperty);
@@ -920,7 +941,7 @@ public class Setter : SetterBase, ISupportInitialize
     /// <summary>
     /// Removes this setter from the specified element.
     /// </summary>
-    internal void Remove(FrameworkElement element)
+    internal void Remove(FrameworkElement element, DependencyObject.LayerValueSource source = DependencyObject.LayerValueSource.StyleSetter)
     {
         var target = GetTarget(element);
         if (target == null) return;
@@ -943,15 +964,15 @@ public class Setter : SetterBase, ISupportInitialize
         DynamicResourceBindingOperations.ClearDynamicResource(
             target,
             actualProperty,
-            DependencyObject.LayerValueSource.StyleSetter);
+            source);
         target.ClearLayerValue(
             actualProperty,
-            DependencyObject.LayerValueSource.StyleSetter,
+            source,
             allowAutoTransition: false);
 
         if (!ReferenceEquals(target, element))
         {
-            TriggerBase.EnsureSetterInvalidation(target, actualProperty);
+            EnsureTargetInvalidation(target, actualProperty);
         }
     }
 
@@ -960,12 +981,12 @@ public class Setter : SetterBase, ISupportInitialize
     /// This handles the case where the property was resolved against the Style's TargetType
     /// but the setter targets a different element type via TargetName.
     /// </summary>
-    private static DependencyProperty? ResolvePropertyForTarget(DependencyProperty originalProperty, FrameworkElement target)
+    private static DependencyProperty? ResolvePropertyForTarget(DependencyProperty originalProperty, DependencyObject target)
     {
         var targetType = target.GetType();
 
         // If the property is already from this type or an ancestor, use it directly
-        if (originalProperty.OwnerType.IsAssignableFrom(targetType))
+        if (originalProperty.IsAttached || originalProperty.OwnerType.IsAssignableFrom(targetType))
         {
             return originalProperty;
         }
@@ -1009,14 +1030,23 @@ public class Setter : SetterBase, ISupportInitialize
         Console.Error.WriteLine(message);
     }
 
-    private FrameworkElement? GetTarget(FrameworkElement element)
+    internal (FrameworkElement Target, DependencyProperty Property)? ResolveTargetProperty(FrameworkElement element)
+    {
+        if (GetTarget(element) is not FrameworkElement target) return null;
+        var property = Property ?? (PropertyName == null ? null : ResolveDependencyPropertyByName(PropertyName, target.GetType()));
+        if (property == null) return null;
+        var actual = ResolvePropertyForTarget(property, target);
+        return actual == null ? null : (target, actual);
+    }
+
+    private DependencyObject? GetTarget(FrameworkElement element)
     {
         if (string.IsNullOrEmpty(TargetName))
             return element;
 
         // Look up named element in the template scope
         // First, try using the element's FindName method
-        if (element.FindName(TargetName) is FrameworkElement found)
+        if (element.FindName(TargetName) is DependencyObject found)
         {
             return found;
         }
@@ -1027,9 +1057,14 @@ public class Setter : SetterBase, ISupportInitialize
         return result;
     }
 
-    /// <summary>
-    /// Recursively searches the visual tree for an element with the specified name.
-    /// </summary>
+    private static void EnsureTargetInvalidation(DependencyObject target, DependencyProperty property)
+    {
+        // Definitions and other named dependency objects publish their own
+        // metadata notifications; only visual targets need the paint fallback.
+        if (target is FrameworkElement element) TriggerBase.EnsureSetterInvalidation(element, property);
+    }
+
+    /// <summary>Recursively searches the visual tree for an element with the specified name.</summary>
     private static FrameworkElement? SearchVisualTreeForName(Visual? visual, string name, ref int visitedNodes)
     {
         if (visual == null) return null;
@@ -1598,7 +1633,7 @@ public abstract class TriggerBase : DependencyObject
         var targetType = target.GetType();
 
         // If the property is already from this type or an ancestor, use it directly
-        if (originalProperty.OwnerType.IsAssignableFrom(targetType))
+        if (originalProperty.IsAttached || originalProperty.OwnerType.IsAssignableFrom(targetType))
         {
             return originalProperty;
         }

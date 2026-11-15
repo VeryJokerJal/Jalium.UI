@@ -1,5 +1,6 @@
 #pragma once
 
+#include "jalium_color_interpolation.h"
 #include <cstdint>
 #include <cmath>
 #include <vector>
@@ -1327,7 +1328,7 @@ inline std::vector<Contour> FlattenPathToContours(float startX, float startY,
 /// Compute linear gradient color at a point (px, py) given gradient geometry.
 /// startX/Y → endX/Y defines the gradient line.
 /// Stops: array of (position, r, g, b, a) tuples.
-/// Returns premultiplied linear-space RGBA.
+/// Straight encoded-sRGB display color; callers premultiply once at composition.
 struct GradientColor { float r, g, b, a; };
 
 /// Samples an ordered, interleaved [position, r, g, b, a] stop table.
@@ -1335,16 +1336,16 @@ struct GradientColor { float r, g, b, a; };
 /// ABI stop count instead of doing a linear scan for every emitted vertex.
 inline GradientColor SampleGradientStops(float t,
                                          const float* stops,
-                                         uint32_t stopCount) {
+                                         uint32_t stopCount, uint32_t colorInterpolationMode = 1) {
     if (!stops || stopCount == 0) return { 0, 0, 0, 0 };
     if (stopCount == 1 || t < stops[0]) {
-        return { stops[1], stops[2], stops[3], stops[4] };
+        return { std::clamp(stops[1],0.0f,1.0f), std::clamp(stops[2],0.0f,1.0f), std::clamp(stops[3],0.0f,1.0f), stops[4] };
     }
     // A hard transition has several stops at one position. At that position
     // and beyond the final stop, CSS uses the last color in source order.
     if (t >= stops[(stopCount - 1) * 5]) {
         const uint32_t at = (stopCount - 1) * 5;
-        return { stops[at + 1], stops[at + 2], stops[at + 3], stops[at + 4] };
+        return { std::clamp(stops[at+1],0.0f,1.0f), std::clamp(stops[at+2],0.0f,1.0f), std::clamp(stops[at+3],0.0f,1.0f), stops[at+4] };
     }
 
     uint32_t lower = 1;
@@ -1363,23 +1364,19 @@ inline GradientColor SampleGradientStops(float t,
     const float position = stops[i * 5];
     const float span = position - previousPosition;
     float fraction =
-        span > 1e-6f ? (t - previousPosition) / span : 0.0f;
+        span > 0.0f ? (t - previousPosition) / span : 0.0f;
     fraction = (std::max)(0.0f, (std::min)(1.0f, fraction));
     return {
-        stops[(i - 1) * 5 + 1] +
-            fraction * (stops[i * 5 + 1] - stops[(i - 1) * 5 + 1]),
-        stops[(i - 1) * 5 + 2] +
-            fraction * (stops[i * 5 + 2] - stops[(i - 1) * 5 + 2]),
-        stops[(i - 1) * 5 + 3] +
-            fraction * (stops[i * 5 + 3] - stops[(i - 1) * 5 + 3]),
-        stops[(i - 1) * 5 + 4] +
-            fraction * (stops[i * 5 + 4] - stops[(i - 1) * 5 + 4])
+        InterpolateGradientChannel(stops[(i-1)*5+1], stops[i*5+1], fraction, colorInterpolationMode),
+        InterpolateGradientChannel(stops[(i-1)*5+2], stops[i*5+2], fraction, colorInterpolationMode),
+        InterpolateGradientChannel(stops[(i-1)*5+3], stops[i*5+3], fraction, colorInterpolationMode),
+        stops[(i-1)*5+4] + fraction * (stops[i*5+4] - stops[(i-1)*5+4])
     };
 }
 
 inline GradientColor SampleLinearGradient(float px, float py,
                                            float startX, float startY, float endX, float endY,
-                                           const float* stops, uint32_t stopCount) {
+                                           const float* stops, uint32_t stopCount, uint32_t colorInterpolationMode = 1) {
     // Project point onto gradient line
     float dx = endX - startX, dy = endY - startY;
     float len2 = dx * dx + dy * dy;
@@ -1389,19 +1386,19 @@ inline GradientColor SampleLinearGradient(float px, float py,
     }
     t = (std::max)(0.0f, (std::min)(1.0f, t));
 
-    return SampleGradientStops(t, stops, stopCount);
+    return SampleGradientStops(t, stops, stopCount, colorInterpolationMode);
 }
 
 inline GradientColor SampleRadialGradient(float px, float py,
                                            float centerX, float centerY,
                                            float radiusX, float radiusY,
-                                           const float* stops, uint32_t stopCount) {
+                                           const float* stops, uint32_t stopCount, uint32_t colorInterpolationMode = 1) {
     float dx = (px - centerX) / (std::max)(radiusX, 1e-6f);
     float dy = (py - centerY) / (std::max)(radiusY, 1e-6f);
     float t = std::sqrt(dx * dx + dy * dy);
     t = (std::max)(0.0f, (std::min)(1.0f, t));
 
-    return SampleGradientStops(t, stops, stopCount);
+    return SampleGradientStops(t, stops, stopCount, colorInterpolationMode);
 }
 
 } // namespace jalium

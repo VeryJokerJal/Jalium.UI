@@ -36,6 +36,9 @@ internal sealed class CssComputedFontFamily(CssFontFamilyItem[] items)
 internal sealed class CssFontFamilyValue(CssComputedFontFamily family) : CssCompiledValue
 {
     internal static bool TryRead(ref CssTokenReader reader, out CssComputedFontFamily family)
+        => TryRead(ref reader, out family, false);
+
+    internal static bool TryRead(ref CssTokenReader reader, out CssComputedFontFamily family, bool allowSystemNames)
     {
         family = CssComputedFontFamily.Initial;
         var probe = reader;
@@ -43,7 +46,7 @@ internal sealed class CssFontFamilyValue(CssComputedFontFamily family) : CssComp
         do
         {
             if (!probe.TryReadUntilTopLevelComma(out var segment) ||
-                !TryReadItem(segment, out var item)) return false;
+                !TryReadItem(segment, out var item, allowSystemNames)) return false;
             items.Add(item);
             if (probe.AtEnd) break;
             if (!probe.TryReadComma() || probe.AtEnd) return false;
@@ -82,7 +85,7 @@ internal sealed class CssFontFamilyValue(CssComputedFontFamily family) : CssComp
         return true;
     }
 
-    private static bool TryReadItem(ReadOnlySpan<char> segment, out CssFontFamilyItem item)
+    private static bool TryReadItem(ReadOnlySpan<char> segment, out CssFontFamilyItem item, bool allowSystemNames)
     {
         item = default;
         var reader = new CssTokenReader(segment);
@@ -110,7 +113,7 @@ internal sealed class CssFontFamilyValue(CssComputedFontFamily family) : CssComp
         while (reader.TryReadIdent(out var ident))
         {
             var name = ident.ToString();
-            if (IsReserved(name)) return false;
+            if (IsReserved(name) && !(allowSystemNames && CssSystemFontValue.IsRole(name))) return false;
             names.Add(name);
         }
         if (names.Count == 0 || !reader.AtEnd) return false;

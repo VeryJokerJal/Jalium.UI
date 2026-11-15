@@ -532,6 +532,22 @@ public sealed class JalxamlSourceGenerator : IIncrementalGenerator
     {
         var sb = new StringBuilder();
 
+        string? relativeSlash = null;
+        if (!string.IsNullOrEmpty(jalxamlSourceRelativePath))
+        {
+            relativeSlash = jalxamlSourceRelativePath!.Replace('\\', '/').TrimStart('/');
+        }
+        else if (!string.IsNullOrEmpty(projectDir))
+        {
+            var normalizedFile = filePath.Replace('\\', '/');
+            var normalizedRoot = projectDir!.Replace('\\', '/').TrimEnd('/');
+            if (normalizedFile.StartsWith(normalizedRoot, StringComparison.OrdinalIgnoreCase))
+            {
+                relativeSlash = normalizedFile.Substring(normalizedRoot.Length).TrimStart('/');
+            }
+        }
+
+
         // Compile-time codegen is the preferred path. When the codegen returns null the
         // failure mode splits in two:
         //   1. Document contains Razor directives the SG cannot lower (e.g.
@@ -547,7 +563,9 @@ public sealed class JalxamlSourceGenerator : IIncrementalGenerator
             return null;
         }
 
-        var initializeBody = JalxamlCodeGenerator.TryEmitInitializeBody(result, symbols, xmlnsResolver);
+        var componentUri = string.IsNullOrEmpty(relativeSlash) ? null
+            : $"resource:///{assemblyName}/{relativeSlash}";
+        var initializeBody = JalxamlCodeGenerator.TryEmitInitializeBody(result, symbols, xmlnsResolver, componentUri);
         var useRuntimeFallback = false;
         if (initializeBody == null)
         {
@@ -660,20 +678,6 @@ public sealed class JalxamlSourceGenerator : IIncrementalGenerator
         // into the intermediate output directory. Falling back to (filePath - projectDir)
         // catches projects that haven't imported Jalium.UI.Build.targets but still wire up
         // AdditionalFiles directly.
-        string? relativeSlash = null;
-        if (!string.IsNullOrEmpty(jalxamlSourceRelativePath))
-        {
-            relativeSlash = jalxamlSourceRelativePath!.Replace('\\', '/').TrimStart('/');
-        }
-        else if (!string.IsNullOrEmpty(projectDir))
-        {
-            var normalizedFile = filePath.Replace('\\', '/');
-            var normalizedRoot = projectDir!.Replace('\\', '/').TrimEnd('/');
-            if (normalizedFile.StartsWith(normalizedRoot, StringComparison.OrdinalIgnoreCase))
-            {
-                relativeSlash = normalizedFile.Substring(normalizedRoot.Length).TrimStart('/');
-            }
-        }
 
         if (!string.IsNullOrEmpty(relativeSlash))
         {

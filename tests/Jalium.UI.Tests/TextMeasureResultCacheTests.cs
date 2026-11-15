@@ -77,6 +77,40 @@ public sealed class TextMeasureResultCacheTests : IDisposable
         Assert.Equal(0, CountEntriesWithText("Drop me"));
     }
 
+    [Fact]
+    public void MeasureText_OverCapacity_EvictsOldResultsWithoutChangingMetrics()
+    {
+        RenderContext.GetOrCreateCurrent(RenderBackend.D3D12);
+        const int capacity = 8192;
+        const string prefix = "Bounded measure cache fixture ";
+        var first = new FormattedText(prefix + "0", "Segoe UI", 13);
+        Assert.True(TextMeasurement.MeasureText(first));
+
+        for (int i = 1; i <= capacity + 32; i++)
+        {
+            Assert.True(TextMeasurement.MeasureText(new FormattedText(prefix + i, "Segoe UI", 13)));
+        }
+
+        var gate = typeof(TextMeasurement).GetField("_measureLock", BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!;
+        lock (gate)
+        {
+            Assert.InRange(GetMeasureCache().Count, 1, capacity);
+            Assert.Equal(0, CountEntriesWithText(first.Text));
+            Assert.Equal(1, CountEntriesWithText(prefix + (capacity + 32)));
+        }
+
+        var remeasured = new FormattedText(first.Text, "Segoe UI", 13);
+        Assert.True(TextMeasurement.MeasureText(remeasured));
+        Assert.Equal(first.Width, remeasured.Width);
+        Assert.Equal(first.Height, remeasured.Height);
+        Assert.Equal(first.LineHeight, remeasured.LineHeight);
+        Assert.Equal(first.Baseline, remeasured.Baseline);
+        Assert.Equal(first.WidthIncludingTrailingWhitespace, remeasured.WidthIncludingTrailingWhitespace);
+
+        TextMeasurement.ClearCache();
+        Assert.Equal(0, CountEntriesWithText(first.Text));
+    }
+
     // Counts cache entries whose key text equals <paramref name="text"/>. Reflects
     // the (private, nested) MeasureKey struct's public Text field. Snapshots the
     // keys defensively so a background measurement mutating the shared cache mid

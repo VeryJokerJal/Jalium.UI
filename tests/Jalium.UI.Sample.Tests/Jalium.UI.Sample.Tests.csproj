@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsTestProject>true</IsTestProject>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.3.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5" PrivateAssets="all" />
+    <Using Include="Xunit" />
+    <ProjectReference Include="../../src/managed/Jalium.UI.Xaml/Jalium.UI.Xaml.csproj" />
+    <ProjectReference Include="../../src/managed/Jalium.UI.Xaml.SourceGenerator/Jalium.UI.Xaml.SourceGenerator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" UndefineProperties="PublishAot;PublishTrimmed;PublishSingleFile;PublishReadyToRun;SelfContained;RuntimeIdentifier;RuntimeIdentifiers" />
+    <Compile Include="../../samples/Jalium.UI.Gallery/*.cs" Exclude="../../samples/Jalium.UI.Gallery/Program.cs" Link="Gallery/%(Filename)%(Extension)" />
+    <EmbeddedResource Include="../../samples/Jalium.UI.Gallery/Themes/SampleGallery.jalxaml" LogicalName="Jalium.UI.Gallery.Themes.SampleGallery.jalxaml" />
+    <Compile Include="../../samples/Jalium.UI.AotWindowDemo/AotCounterSurface.cs;../../samples/Jalium.UI.AotWindowDemo/Themes/AotDemoTheme.cs" Link="Aot/%(Filename)%(Extension)" />
+    <AdditionalFiles Include="../../samples/Jalium.UI.AotWindowDemo/Themes/AotDemo.jalxaml" />
+    <Compile Include="../../samples/Jalium.UI.BorderlessDemo/BorderlessDemoSurface.cs;../../samples/Jalium.UI.BorderlessDemo/Themes/BorderlessDemoTheme.cs" Link="Borderless/%(Filename)%(Extension)" />
+    <AdditionalFiles Include="../../samples/Jalium.UI.BorderlessDemo/Themes/BorderlessDemo.jalxaml" />
+    <Compile Include="../../samples/Jalium.UI.TransparentBackdropDemo/TransparentBackdropSurface.cs;../../samples/Jalium.UI.TransparentBackdropDemo/Themes/TransparentBackdropDemoTheme.cs" Link="Backdrop/%(Filename)%(Extension)" />
+    <AdditionalFiles Include="../../samples/Jalium.UI.TransparentBackdropDemo/Themes/TransparentBackdropDemo.jalxaml" />
+    <Compile Include="../../samples/Jalium.UI.AndroidDemo/KeyboardDemoSurface.cs;../../samples/Jalium.UI.AndroidDemo/Themes/KeyboardDemoTheme.cs" Link="Android/%(Filename)%(Extension)" />
+    <AdditionalFiles Include="../../samples/Jalium.UI.AndroidDemo/Themes/KeyboardDemo.jalxaml" />
+    <Compile Include="../../samples/Jalium.UI.LinuxDemo/LinuxDemoSurface.cs;../../samples/Jalium.UI.LinuxDemo/Themes/LinuxDemoTheme.cs" Link="Linux/%(Filename)%(Extension)" />
+    <AdditionalFiles Include="../../samples/Jalium.UI.LinuxDemo/Themes/LinuxDemo.jalxaml" />
+    <Compile Include="../../samples/Jalium.UI.HostingDemo/Views/*.cs;../../samples/Jalium.UI.HostingDemo/ViewModels/*.cs;../../samples/Jalium.UI.HostingDemo/Services/*.cs;../../samples/Jalium.UI.HostingDemo/Themes/HostingDemoTheme.cs" Link="Hosting/%(Filename)%(Extension)" />
+    <AdditionalFiles Include="../../samples/Jalium.UI.HostingDemo/Themes/HostingDemo.jalxaml" />
+    <Compile Include="../../samples/Jalium.UI.MillionScroll/MillionScrollSurface.cs;../../samples/Jalium.UI.MillionScroll/MillionScrollRunOptions.cs;../../samples/Jalium.UI.MillionScroll/MillionRowSource.cs;../../samples/Jalium.UI.MillionScroll/Themes/MillionScrollTheme.cs" Link="MillionScroll/%(Filename)%(Extension)" />
+    <AdditionalFiles Include="../../samples/Jalium.UI.MillionScroll/Themes/MillionScroll.jalxaml" />
+    <Compile Include="../../samples/Jalium.UI.DesktopDemo/HoverProbeSurface.cs;../../samples/Jalium.UI.DesktopDemo/RotationReproSurface.cs;../../samples/Jalium.UI.DesktopDemo/Themes/HoverProbeTheme.cs;../../samples/Jalium.UI.DesktopDemo/Themes/RotationReproTheme.cs" Link="Desktop/%(Filename)%(Extension)" />
+    <AdditionalFiles Include="../../samples/Jalium.UI.DesktopDemo/Themes/HoverProbe.jalxaml;../../samples/Jalium.UI.DesktopDemo/Themes/RotationRepro.jalxaml" />
+    <Compile Include="../../samples/Jalium.UI.DesktopDemo/HoverProbeWindow.cs" Link="Desktop/HoverProbeWindow.cs" />
+    <Compile Include="../../samples/Jalium.UI.DesktopDemo/EffectReproSurface.cs;../../samples/Jalium.UI.DesktopDemo/Themes/EffectReproTheme.cs" Link="Desktop/%(Filename)%(Extension)" />
+    <AdditionalFiles Include="../../samples/Jalium.UI.DesktopDemo/Themes/EffectRepro.jalxaml" />
+    <Compile Include="../../samples/Jalium.UI.DesktopDemo/PathPerfSurface.cs;../../samples/Jalium.UI.DesktopDemo/Themes/PathPerfTheme.cs" Link="Desktop/%(Filename)%(Extension)" />
+    <AdditionalFiles Include="../../samples/Jalium.UI.DesktopDemo/Themes/PathPerf.jalxaml" />
+    <Compile Include="../../samples/Jalium.UI.DesktopDemo/VelloTestSurface.cs;../../samples/Jalium.UI.DesktopDemo/Themes/VelloTestTheme.cs" Link="Desktop/%(Filename)%(Extension)" />
+    <AdditionalFiles Include="../../samples/Jalium.UI.DesktopDemo/Themes/VelloTest.jalxaml" />
+    <Compile Include="../../samples/Jalium.UI.DesktopDemo/ImagePerfSurface.cs;../../samples/Jalium.UI.DesktopDemo/Themes/ImagePerfTheme.cs" Link="Desktop/%(Filename)%(Extension)" />
+    <AdditionalFiles Include="../../samples/Jalium.UI.DesktopDemo/Themes/ImagePerf.jalxaml" />
+    <Compile Include="../../samples/Jalium.UI.DesktopDemo/ScrollStressSurface.cs;../../samples/Jalium.UI.DesktopDemo/Themes/ScrollStressTheme.cs" Link="Desktop/%(Filename)%(Extension)" />
+    <AdditionalFiles Include="../../samples/Jalium.UI.DesktopDemo/Themes/ScrollStress.jalxaml" />
+    <Compile Include="../../samples/Jalium.UI.DesktopDemo/NotificationDemoSurface.cs;../../samples/Jalium.UI.DesktopDemo/Themes/NotificationDemoTheme.cs;../../samples/Jalium.UI.DesktopDemo/PathPerfWindow.cs;../../samples/Jalium.UI.DesktopDemo/ScrollStressWindow.cs" Link="Desktop/%(Filename)%(Extension)" />
+    <AdditionalFiles Include="../../samples/Jalium.UI.DesktopDemo/Themes/NotificationDemo.jalxaml" />
+  </ItemGroup>
+</Project>

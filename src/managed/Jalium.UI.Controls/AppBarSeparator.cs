@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Controls.Themes;
+using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
 using Jalium.UI.Styling;
 
@@ -7,6 +7,11 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Represents a vertical line that separates items in a CommandBar.
 /// </summary>
+[TemplatePart(Name = "PART_Line", Type = typeof(Border))]
+[TemplateVisualState(Name = "Normal", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Disabled", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Full", GroupName = "CompactStates")]
+[TemplateVisualState(Name = "Compact", GroupName = "CompactStates")]
 public class AppBarSeparator : Control, ICommandBarElement
 {
     private Border? _cssBorderPainter;
@@ -25,7 +30,7 @@ public class AppBarSeparator : Control, ICommandBarElement
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsCompactProperty =
         DependencyProperty.Register(nameof(IsCompact), typeof(bool), typeof(AppBarSeparator),
-            new PropertyMetadata(false));
+            new PropertyMetadata(false, OnCompactChanged));
 
     /// <summary>
     /// Identifies the DynamicOverflowOrder dependency property.
@@ -36,6 +41,22 @@ public class AppBarSeparator : Control, ICommandBarElement
             new PropertyMetadata(0));
 
     #endregion
+
+    private static readonly DependencyPropertyKey ResolvedSeparatorBrushPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(ResolvedSeparatorBrush), typeof(Brush), typeof(AppBarSeparator),
+            new PropertyMetadata(null));
+    /// <summary>Identifies the resolved line brush for separator templates.</summary>
+    public static readonly DependencyProperty ResolvedSeparatorBrushProperty = ResolvedSeparatorBrushPropertyKey.DependencyProperty;
+    /// <summary>Gets the line brush after authored and theme values are resolved.</summary>
+    public Brush? ResolvedSeparatorBrush => (Brush?)GetValue(ResolvedSeparatorBrushProperty);
+
+    private static readonly DependencyPropertyKey SeparatorHeightPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(SeparatorHeight), typeof(double), typeof(AppBarSeparator),
+            new PropertyMetadata(32d));
+    /// <summary>Identifies the intrinsic height of the separator content box.</summary>
+    public static readonly DependencyProperty SeparatorHeightProperty = SeparatorHeightPropertyKey.DependencyProperty;
+    /// <summary>Gets the intrinsic content-box height for the current compact mode.</summary>
+    public double SeparatorHeight => (double)GetValue(SeparatorHeightProperty)!;
 
     #region CLR Properties
 
@@ -66,13 +87,54 @@ public class AppBarSeparator : Control, ICommandBarElement
     /// </summary>
     public AppBarSeparator()
     {
+        DefaultStyleKey = typeof(AppBarSeparator);
         Focusable = false;
         IsHitTestVisible = false;
     }
 
     /// <inheritdoc />
+    public override void OnApplyTemplate()
+    {
+        base.OnApplyTemplate();
+        UpdatePresentation();
+    }
+
+    /// <inheritdoc />
+    protected override void OnIsEnabledChanged(bool oldValue, bool newValue)
+    {
+        base.OnIsEnabledChanged(oldValue, newValue);
+        UpdatePresentation();
+    }
+
+    /// <inheritdoc />
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        if (e.Property == ForegroundProperty)
+            SetValue(ResolvedSeparatorBrushPropertyKey, ResolveSeparatorBrush());
+    }
+
+    private static void OnCompactChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        var separator = (AppBarSeparator)d;
+        separator.UpdatePresentation();
+        separator.InvalidateMeasure();
+    }
+
+    private void UpdatePresentation()
+    {
+        SetValue(SeparatorHeightPropertyKey, IsCompact ? 24d : 32d);
+        SetValue(ResolvedSeparatorBrushPropertyKey, ResolveSeparatorBrush());
+        if (TemplateRootInternal is null) return;
+        VisualStateManager.GoToState(this, IsEnabled ? "Normal" : "Disabled", false);
+        VisualStateManager.GoToState(this, IsCompact ? "Compact" : "Full", false);
+    }
+
+    /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
+        UpdateDefaultStyle();
+        if (Template is not null) return base.MeasureOverride(availableSize);
         var insets = CssBoxMetrics.ContentInsets(this,
             CssLayout?.ContainingWidthCache ?? availableSize.Width);
         return new Size(
@@ -84,6 +146,7 @@ public class AppBarSeparator : Control, ICommandBarElement
     /// <inheritdoc />
     protected override void OnRender(DrawingContext drawingContext)
     {
+        if (Template is not null) { base.OnRender(drawingContext); return; }
         var dc = drawingContext;
         base.OnRender(drawingContext);
         if (RenderSize.Width <= 0 || RenderSize.Height <= 0)
@@ -128,7 +191,8 @@ public class AppBarSeparator : Control, ICommandBarElement
     protected override void OnPostRender(DrawingContext drawingContext)
     {
         base.OnPostRender(drawingContext);
-        CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter, drawNative: true);
+        if (Template is null)
+            CssBorderAdornment.Draw(this, drawingContext, ref _cssBorderPainter, drawNative: true);
     }
 
     private Brush ResolveSeparatorBrush()

@@ -749,6 +749,8 @@ public static class TypeConverterRegistry
             [typeof(FontStretch)] = new FontStretchTypeConverter(),
             [typeof(Thickness)] = new ThicknessConverter(),
             [typeof(CornerRadius)] = new CornerRadiusConverter(),
+            [typeof(Jalium.UI.Input.Cursor)] = new ComponentModelValueConverter(new Jalium.UI.Input.CursorConverter()),
+            [typeof(PropertyPath)] = new ComponentModelValueConverter(new PropertyPathConverter()),
 #pragma warning disable WPF0001
             [typeof(ThemeMode)] = new ComponentModelValueConverter(new ThemeModeConverter()),
 #pragma warning restore WPF0001
@@ -756,6 +758,7 @@ public static class TypeConverterRegistry
             [typeof(SolidColorBrush)] = new BrushConverter(),
             [typeof(Color)] = new ColorConverter(),
             [typeof(GridLength)] = new GridLengthConverter(),
+            [typeof(DataGridLength)] = new ComponentModelValueConverter(new DataGridLengthConverter()),
             [typeof(RowDefinitionCollection)] = new RowDefinitionCollectionConverter(),
             [typeof(ColumnDefinitionCollection)] = new ColumnDefinitionCollectionConverter(),
             [typeof(HorizontalAlignment)] = new HorizontalAlignmentConverter(),
@@ -771,6 +774,7 @@ public static class TypeConverterRegistry
             [typeof(Point)] = new PointConverter(),
             [typeof(Vector)] = new VectorConverter(),
             [typeof(Size)] = new SizeConverter(),
+            [typeof(Rect)] = new ComponentModelValueConverter(new Jalium.UI.RectConverter()),
             [typeof(Geometry)] = new GeometryTypeConverter(),
             [typeof(ColorMatrix)] = new ColorMatrixConverter(),
             // 基类一条即可：GetConverter 找不到精确匹配时会按 IsAssignableFrom 回退，
@@ -821,6 +825,11 @@ public static class TypeConverterRegistry
     {
         if (targetType == typeof(string) || targetType == typeof(object))
             return value;
+
+        // Animation From/To/By and other optional scalar properties use Nullable<T>.
+        // Reuse the underlying converter instead of silently dropping the attribute.
+        if (Nullable.GetUnderlyingType(targetType) is { } underlyingType)
+            return string.IsNullOrWhiteSpace(value) ? null : ConvertValue(value, underlyingType);
 
         if (targetType == typeof(FontFamily))
             return new FontFamily(value);

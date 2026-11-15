@@ -9,8 +9,11 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include <unordered_map>
 
 namespace jalium {
+
+class VulkanVideoSamplingResources;
 
 // ───────────────────────────────────────────────────────────────────────────
 // Vulkan InkCanvas GPU pipeline — the parity counterpart of the D3D12 backend's
@@ -70,7 +73,14 @@ struct VulkanDeviceContext {
     uint32_t                    graphicsQueueFamily = 0;
     PFN_vkGetInstanceProcAddr   getInstanceProcAddr = nullptr;
     PFN_vkGetDeviceProcAddr     getDeviceProcAddr   = nullptr;
+    bool                        win32ImportEnabled = false;
+    bool                        androidHardwareBufferEnabled = false;
+    uint32_t                    externalFormatDescriptorCount = 3;
     bool                        dmaBufImportEnabled = false;
+    bool                        drmModifierEnabled = false;
+    bool                        samplerYcbcrEnabled = false;
+    bool                        syncFdImportEnabled = false;
+    bool                        foreignQueueEnabled = false;
     bool                        valid               = false;
 };
 
@@ -123,6 +133,9 @@ struct VulkanDeviceGeneration {
     // to be externally synchronized across render targets and ink work that
     // share this generation.
     std::mutex            queueMutex;
+    // Weak entries avoid a generation -> sampler -> generation ownership cycle.
+    // Access is serialized by driverCallMutex.
+    std::unordered_map<std::string, std::weak_ptr<VulkanVideoSamplingResources>> videoSamplers;
     PFN_vkDeviceWaitIdle  deviceWaitIdle  = nullptr;
     PFN_vkDestroyDevice   destroyDevice   = nullptr;
     PFN_vkDestroyInstance destroyInstance = nullptr;

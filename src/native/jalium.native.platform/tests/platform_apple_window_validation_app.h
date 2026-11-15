@@ -35,6 +35,13 @@ static void ScheduleWindowValidationContracts(dispatch_block_t contracts,
 static int RunAutomatedWindowValidation(int argc, char** argv, int (*contracts)(int, char**),
     void (^asyncContracts)(void (^complete)(int)) = nil)
 {
+    // Filesystem access can wait for privacy authorization before AppKit starts.
+    // Cover initialization too, and never wait for a stdio lock in the watchdog.
+    static std::atomic<bool> completed{false};
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 55 * NSEC_PER_SEC),
+        dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            if (!completed.load()) _Exit(124);
+        });
     NSString* directory = nil;
     NSString* nonce = nil;
     if (argc != 1) {
@@ -56,14 +63,6 @@ static int RunAutomatedWindowValidation(int argc, char** argv, int (*contracts)(
 
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
-    static std::atomic<bool> completed{false};
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 55 * NSEC_PER_SEC),
-        dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-            if (!completed.load()) {
-                std::fprintf(stderr, "FAIL: Window validation application watchdog\n");
-                _Exit(124);
-            }
-        });
     std::printf("HOST_STARTED pid=%d bundle=%s\n", getpid(), NSBundle.mainBundle.bundleIdentifier.UTF8String);
     for (uint32_t index = 0; index < _dyld_image_count(); ++index) {
         const char* name = _dyld_get_image_name(index);
@@ -90,6 +89,9 @@ static int RunAutomatedWindowValidation(int argc, char** argv, int (*contracts)(
             finish();
         }
     }, ^BOOL {
+        // A Regular policy allows activation; request it after the main loop
+        // starts before requiring real AppKit and system foreground agreement.
+        if (!observedStartup && NSApp.running) [NSApp activate];
         pid_t foreground = NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier;
         if (!observedStartup) {
             observedStartup = true;

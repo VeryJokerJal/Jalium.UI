@@ -27,7 +27,7 @@ namespace Jalium.UI.Interop;
 /// coverage mask, intersected down the group tree.
 /// </para>
 /// </summary>
-internal static class SoftwareVectorRasterizer
+internal static partial class SoftwareVectorRasterizer
 {
     [ThreadStatic]
     private static int s_vectorImageBrushDepth;
@@ -66,7 +66,8 @@ internal static class SoftwareVectorRasterizer
         int width,
         int height,
         Rect? sourceBounds = null,
-        ICollection<ImageSource>? touchedSources = null)
+        ICollection<ImageSource>? touchedSources = null,
+        Size? svgViewportSize = null)
     {
         if (drawing == null || width <= 0 || height <= 0)
             return null;
@@ -74,6 +75,8 @@ internal static class SoftwareVectorRasterizer
         var bounds = sourceBounds ?? drawing.Bounds;
         if (bounds.IsEmpty || bounds.Width <= 0 || bounds.Height <= 0)
             return null;
+
+        using var svgViewport = svgViewportSize is null ? SvgStrokeSpace.Preserve() : SvgStrokeSpace.Viewport(svgViewportSize, bounds);
 
         // Allocate BGRA8 pixel buffer (straight alpha, all transparent). The D3D12
         // upload path premultiplies straight-alpha BitmapImages on its way to the GPU.
@@ -95,21 +98,16 @@ internal static class SoftwareVectorRasterizer
     {
         if (drawing is DrawingGroup group)
         {
+            using var svgSpace = SvgStrokeSpace.Enter(group);
             var childCtx = ctx;
 
             // Apply group transform (child transform applied first under row-vector composition).
-            if (group.Transform != null && !group.Transform.Value.IsIdentity)
-                childCtx = childCtx.WithTransform(group.Transform.Value);
+            if (SvgStrokeSpace.TransformFor(group) is { Value.IsIdentity: false } svgTransform)
+                childCtx = childCtx.WithTransform(svgTransform.Value);
 
-            // Apply group opacity
-            if (group.Opacity < 1.0)
-                childCtx = childCtx.WithOpacity(childCtx.Opacity * group.Opacity);
-
-            // Apply group clip (intersect the per-pixel coverage mask). The clip geometry
-            // lives in the group's post-transform coordinate space, so it is resolved
-            // through childCtx (which already carries the group transform).
-            if (group.ClipGeometry != null)
-                childCtx = ApplyClip(childCtx, group.ClipGeometry);
+            if (group.Opacity < 1 || group.SvgMask is not null || group.ClipGeometry is not null ||
+                group.Isolated && group.ContainsBlend() || group.BlendMode != CssBlendMode.Normal)
+            { RenderIsolatedGroup(group, childCtx); return; }
 
             foreach (var child in group.Children)
             {
@@ -125,39 +123,45 @@ internal static class SoftwareVectorRasterizer
         {
             RenderImageDrawing(imageDrawing, ctx);
         }
+        else if (drawing is GlyphRunDrawing glyph)
+        {
+            if (glyph.TryGetSvgOutline(out var outline))
+            {
+                RenderGeometryDrawing(new GeometryDrawing(glyph.ForegroundBrush ?? glyph.FormattedText?.Foreground, null, outline), ctx);
+            }
+            else
+            {
+                Jalium.UI.Styling.CssDiagnostics.Report("image text", Jalium.UI.Styling.CssDiagnosticReason.LossyConversion,
+                    typeof(GlyphRunDrawing), "This glyph drawing has no compatible vector outline for software image rendering");
+            }
+        }
     }
 
     private static void RenderGeometryDrawing(GeometryDrawing drawing, in SoftwareRenderContext ctx)
     {
         if (drawing.Geometry == null) return;
 
+        if (drawing.SvgNonScalingStroke && drawing.Pen is { } svgPen)
+        {
+            if (drawing.Brush is not null) RenderGeometryDrawing(new GeometryDrawing(drawing.Brush, null, drawing.Geometry), ctx);
+            if (SvgStrokeSpace.TryStroke(drawing.Geometry, svgPen, out var stroke, out var inverse))
+                RenderGeometryDrawing(stroke, ctx.WithTransform(inverse));
+            return;
+        }
+
         // Apply geometry transform if present (composed before the context transform).
         var geoCtx = ctx;
         if (drawing.Geometry.Transform != null && !drawing.Geometry.Transform.Value.IsIdentity)
             geoCtx = ctx.WithTransform(drawing.Geometry.Transform.Value);
 
-        // Match the native drawing context: one compound fill, followed by
-        // child strokes with their complete local transforms still in scope.
-        if (drawing.Geometry is GeometryGroup group)
-        {
-            double scale = Math.Max(geoCtx.ScaleX, geoCtx.ScaleY);
-            double groupTolerance = scale > 1e-6 ? 0.3 / scale : 0.3;
-            if (drawing.Brush != null)
-                RenderGeometryDrawing(new GeometryDrawing(drawing.Brush, null,
-                    RenderTargetDrawingContext.FlattenGeometryGroup(group, groupTolerance)), geoCtx);
-            if (drawing.Pen != null)
-            {
-                foreach (var child in group.Children)
-                    RenderGeometryDrawing(new GeometryDrawing(null, drawing.Pen, child), geoCtx);
-            }
-            return;
-        }
-
         // Flatten curves to line segments. Tolerance is expressed in device pixels
         // (~0.3px chord error) then converted to source units by the effective scale,
         // so high zoom keeps curves smooth instead of faceting.
         double effScale = Math.Max(geoCtx.ScaleX, geoCtx.ScaleY);
-        double tolerance = effScale > 1e-6 ? 0.3 / effScale : 0.3;
+        // Dashes also depend on the tangent at each cut. The fill tolerance
+        // leaves visibly tilted caps on curved strokes even at ordinary DPI.
+        double deviceTolerance = drawing.Pen?.DashStyle?.Dashes.Count > 0 ? 0.0001 : 0.3;
+        double tolerance = deviceTolerance / Math.Max(effScale, 1e-6);
         var flatGeometry = GetFlattenedGeometry(drawing.Geometry, tolerance);
         if (flatGeometry == null) return;
 
@@ -216,18 +220,26 @@ internal static class SoftwareVectorRasterizer
         PathGeometry geometry, Rect? strokeBounds = null)
     {
         var paintBounds = strokeBounds ?? geometry.Bounds;
-        if (brush.CssGradientLayout is { } layout &&
+        var gradientBounds = geometry.Bounds;
+        if (GradientPaintCoordinates.IsCssImage(brush))
+        {
+            gradientBounds = geometry.Bounds;
+            if (gradientBounds.Width <= 0 || gradientBounds.Height <= 0) gradientBounds = paintBounds;
+            paintBounds = gradientBounds;
+        }
+        if (brush.CssImageLayout is { } layout &&
             paintBounds.Width > 0 && paintBounds.Height > 0)
         {
-            if (layout.Resolve(paintBounds.Width, paintBounds.Height) is not { } resolved) return null;
+            if (Jalium.UI.Styling.CssImageLayout.ResolveBrush(brush, paintBounds.Width, paintBounds.Height) is not { } resolved) return null;
             brush = resolved;
         }
-        if (brush is not ImageBrush image) return GradientPaint.TryCreate(brush, ctx, geometry);
+        if (brush is GradientBrush) return (PixelPaint?)GradientPaint.TryCreate(brush, ctx, gradientBounds) ?? TransparentPaint.Instance;
+        if (brush is not ImageBrush image) return null;
         if (image.ImageSource is { } source) ctx.TouchedSources?.Add(source);
         if (!ctx.Matrix.TryInvert(out var inverse)) return null;
         var opacity = Math.Clamp(ctx.Opacity * image.Opacity, 0, 1);
         ImageBrushSampler? sampler;
-        if (TryRasterizeVectorBrushSource(image.ImageSource, paintBounds, ctx, out var vectorPixels))
+        if (TryRasterizeVectorBrushSource(image, paintBounds, ctx, out var vectorPixels))
         {
             sampler = vectorPixels is null
                 ? null
@@ -241,11 +253,15 @@ internal static class SoftwareVectorRasterizer
         return new ImagePaint(sampler, inverse);
     }
 
-    private static bool TryRasterizeVectorBrushSource(ImageSource? source, Rect paintBounds,
+    private static bool TryRasterizeVectorBrushSource(ImageBrush brush, Rect paintBounds,
         in SoftwareRenderContext ctx, out BitmapPixelSnapshot? pixels)
     {
         Drawing? drawing;
         Rect viewport;
+        var source = brush.ImageSource;
+        var svgViewportSize = ImageBrushSampler.VectorViewportSize(brush, paintBounds);
+        if (source is SvgImage { UsesCssViewport: true } cssSvg && svgViewportSize is { } concrete)
+            source = cssSvg.ImageForViewport(concrete);
         switch (source)
         {
             case DrawingImage { Drawing: { } imageDrawing }:
@@ -268,17 +284,18 @@ internal static class SoftwareVectorRasterizer
             paintBounds.Width <= 0 || paintBounds.Height <= 0 || s_vectorImageBrushDepth >= 8)
             return true;
 
-        var width = Math.Clamp((int)Math.Ceiling(paintBounds.Width * ctx.ScaleX), 1, 4096);
-        var height = Math.Clamp((int)Math.Ceiling(paintBounds.Height * ctx.ScaleY), 1, 4096);
+        var width = Math.Clamp((int)Math.Ceiling(Math.Max(paintBounds.Width, svgViewportSize?.Width ?? 0) * ctx.ScaleX), 1, 4096);
+        var height = Math.Clamp((int)Math.Ceiling(Math.Max(paintBounds.Height, svgViewportSize?.Height ?? 0) * ctx.ScaleY), 1, 4096);
         s_vectorImageBrushDepth++;
         try
         {
-            var buffer = Rasterize(drawing, width, height, viewport, ctx.TouchedSources);
+            var buffer = Rasterize(drawing, width, height, viewport, ctx.TouchedSources,
+                svgViewportSize);
             if (buffer is null) return true;
             pixels = BitmapPixelSnapshot.Create(buffer, width, height, width * 4,
                 NativePixelFormat.Bgra8,
-                Math.Clamp((int)Math.Ceiling(viewport.Width), 1, 16384),
-                Math.Clamp((int)Math.Ceiling(viewport.Height), 1, 16384));
+                Math.Clamp((int)Math.Ceiling(brush.ImageSource!.Width > 0 ? brush.ImageSource.Width : viewport.Width), 1, 16384),
+                Math.Clamp((int)Math.Ceiling(brush.ImageSource!.Height > 0 ? brush.ImageSource.Height : viewport.Height), 1, 16384));
             return true;
         }
         finally
@@ -299,63 +316,56 @@ internal static class SoftwareVectorRasterizer
         }
     }
 
+    private sealed class TransparentPaint : PixelPaint
+    {
+        internal static readonly TransparentPaint Instance = new();
+        public override (byte B, byte G, byte R, byte A) Sample(float x, float y) => default;
+    }
+
     private sealed class GradientPaint : PixelPaint
     {
-        private readonly double[] _offsets;
-        private readonly (byte B, byte G, byte R, byte A)[] _colors;
-        private readonly GradientSpreadMethod _spread;
+        private readonly GradientColorRamp _ramp;
         private readonly double _opacity;
         private readonly Matrix _deviceToBrush;
         private readonly bool _isRadial;
 
         // Linear: projection onto start→end. Radial: focal ray solve in unit space.
         private readonly double _startX, _startY, _dirX, _dirY, _lengthSq;
-        private readonly double _centerX, _centerY, _radiusX, _radiusY, _focusX, _focusY;
+        private readonly RadialGradientGeometry _radialGeometry;
 
         private GradientPaint(
             GradientBrush brush, double opacity, Matrix deviceToBrush,
             bool isRadial,
             double startX, double startY, double dirX, double dirY,
             double centerX, double centerY, double radiusX, double radiusY,
-            double focusX, double focusY)
+            double focusX, double focusY, double focalRadius)
         {
-            var stops = brush.GradientStops.OrderBy(static s => s.Offset).ToArray();
-            _offsets = new double[stops.Length];
-            _colors = new (byte, byte, byte, byte)[stops.Length];
-            for (int i = 0; i < stops.Length; i++)
-            {
-                _offsets[i] = stops[i].Offset;
-                var c = stops[i].Color;
-                _colors[i] = (c.B, c.G, c.R, c.A);
-            }
-
-            _spread = brush.SpreadMethod;
+            _ramp = GradientColorRamp.Build(brush)!;
             _opacity = opacity;
             _deviceToBrush = deviceToBrush;
             _isRadial = isRadial;
             _startX = startX; _startY = startY;
             _dirX = dirX; _dirY = dirY;
             _lengthSq = dirX * dirX + dirY * dirY;
-            _centerX = centerX; _centerY = centerY;
-            _radiusX = radiusX; _radiusY = radiusY;
-            _focusX = focusX; _focusY = focusY;
+            if (brush is RadialGradientBrush radial)
+                _radialGeometry = new(new(centerX, centerY), new(focusX, focusY), radiusX, radiusY,
+                    focalRadius, radial.UsesSvgRadialInterpolation);
         }
 
         /// <summary>
-        /// Returns a sampler for a linear/radial gradient with at least two stops, or null
-        /// when per-pixel evaluation is not possible (caller falls back to the flat
-        /// average). Geometry-relative coordinates resolve against the flattened
-        /// geometry's bounds, absolute ones against source space.
+        /// Returns a sampler for a linear/radial gradient, or null for an empty,
+        /// transparent or non-invertible paint. The caller preserves transparency
+        /// instead of substituting an average color.
         /// </summary>
-        public static GradientPaint? TryCreate(Brush brush, in SoftwareRenderContext ctx, PathGeometry geometry)
+        public static GradientPaint? TryCreate(Brush brush, in SoftwareRenderContext ctx, Rect bounds)
         {
-            if (brush.CssGradientLayout is { } cssLayout &&
-                geometry.Bounds.Width > 0 && geometry.Bounds.Height > 0)
+            if (brush.CssImageLayout is { } cssLayout &&
+                bounds.Width > 0 && bounds.Height > 0)
             {
-                if (cssLayout.Resolve(geometry.Bounds.Width, geometry.Bounds.Height) is not { } resolved) return null;
+                if (Jalium.UI.Styling.CssImageLayout.ResolveBrush(brush, bounds.Width, bounds.Height) is not { } resolved) return null;
                 brush = resolved;
             }
-            if (brush is not GradientBrush gradient || gradient.GradientStops.Count < 2)
+            if (brush is not GradientBrush gradient || gradient.GradientStops.Count == 0)
                 return null;
             if (brush is not LinearGradientBrush && brush is not RadialGradientBrush)
                 return null;
@@ -368,24 +378,10 @@ internal static class SoftwareVectorRasterizer
             if (!ctx.Matrix.TryInvert(out var deviceToSource))
                 return null;
 
-            var deviceToBrush = deviceToSource;
-            if (gradient.Transform is { } gt && !gt.Value.IsIdentity)
-            {
-                if (!gt.Value.TryInvert(out var brushInverse))
-                    return null;
-                // p_brush = p_source * inverse(gradientTransform)  (row vectors), so the
-                // full chain is device → source → brush space.
-                deviceToBrush = Matrix.Multiply(deviceToSource, brushInverse);
-            }
+            if (!GradientPaintCoordinates.TryInvert(GradientPaintCoordinates.GradientToTarget(gradient, bounds, default), out var brushInverse)) return null;
+            var deviceToBrush = deviceToSource * brushInverse;
 
-            var bounds = geometry.Bounds;
-            bool relative = gradient.MappingMode == BrushMappingMode.RelativeToBoundingBox;
-            double bw = Math.Max(bounds.Width, 1e-9);
-            double bh = Math.Max(bounds.Height, 1e-9);
-
-            Point MapPoint(Point p) => relative
-                ? new Point(bounds.X + p.X * bw, bounds.Y + p.Y * bh)
-                : p;
+            Point MapPoint(Point p) => GradientPaintCoordinates.MapPoint(gradient, p, bounds, default);
 
             if (brush is LinearGradientBrush linear)
             {
@@ -395,33 +391,23 @@ internal static class SoftwareVectorRasterizer
                     linear, opacity, deviceToBrush,
                     isRadial: false,
                     s.X, s.Y, e.X - s.X, e.Y - s.Y,
-                    0, 0, 0, 0, 0, 0);
+                    0, 0, 0, 0, 0, 0, 0);
             }
 
             var radial = (RadialGradientBrush)brush;
             var center = MapPoint(radial.Center);
             var origin = MapPoint(radial.GradientOrigin);
-            double rx = relative ? radial.RadiusX * bw : radial.RadiusX;
-            double ry = relative ? radial.RadiusY * bh : radial.RadiusY;
+            double rx = GradientPaintCoordinates.MapRadius(radial, radial.RadiusX, bounds.Width);
+            double ry = GradientPaintCoordinates.MapRadius(radial, radial.RadiusY, bounds.Height);
             rx = Math.Abs(rx);
             ry = Math.Abs(ry);
-
-            // Normalize the focal point into the unit circle so the ray solve below
-            // always has a real root.
-            double fx = rx > 1e-12 ? (origin.X - center.X) / rx : 0.0;
-            double fy = ry > 1e-12 ? (origin.Y - center.Y) / ry : 0.0;
-            double focusLen = Math.Sqrt(fx * fx + fy * fy);
-            if (focusLen > 0.99)
-            {
-                fx *= 0.99 / focusLen;
-                fy *= 0.99 / focusLen;
-            }
 
             return new GradientPaint(
                 radial, opacity, deviceToBrush,
                 isRadial: true,
                 0, 0, 0, 0,
-                center.X, center.Y, rx, ry, fx, fy);
+                center.X, center.Y, rx, ry, origin.X, origin.Y,
+                GradientPaintCoordinates.MapRadius(radial, radial.SvgFocalRadius, bounds.Width));
         }
 
         public override (byte B, byte G, byte R, byte A) Sample(float deviceX, float deviceY)
@@ -437,68 +423,13 @@ internal static class SoftwareVectorRasterizer
                     ? ((x - _startX) * _dirX + (y - _startY) * _dirY) / _lengthSq
                     : 0.0;
             }
-            else if (_radiusX <= 1e-12 || _radiusY <= 1e-12)
-            {
-                t = 1.0;
-            }
-            else
-            {
-                double px = (x - _centerX) / _radiusX;
-                double py = (y - _centerY) / _radiusY;
-                double dx = px - _focusX;
-                double dy = py - _focusY;
-                double a = dx * dx + dy * dy;
-                if (a <= 1e-12)
-                {
-                    t = 0.0;
-                }
-                else
-                {
-                    double b = 2.0 * (_focusX * dx + _focusY * dy);
-                    double c = _focusX * _focusX + _focusY * _focusY - 1.0;
-                    double disc = Math.Max(b * b - 4.0 * a * c, 0.0);
-                    double s = (-b + Math.Sqrt(disc)) / (2.0 * a);
-                    t = s > 1e-12 ? 1.0 / s : 0.0;
-                }
-            }
+            else t = _radialGeometry.Evaluate(x, y);
 
-            t = _spread switch
-            {
-                GradientSpreadMethod.Repeat => t - Math.Floor(t),
-                GradientSpreadMethod.Reflect => Reflect(t),
-                _ => Math.Clamp(t, 0.0, 1.0),
-            };
-
-            var offsets = _offsets;
-            var colors = _colors;
-            if (t <= offsets[0]) return Apply(colors[0]);
-            if (t >= offsets[^1]) return Apply(colors[^1]);
-
-            for (int i = 1; i < offsets.Length; i++)
-            {
-                if (t > offsets[i]) continue;
-                double span = offsets[i] - offsets[i - 1];
-                double local = span > 1e-12 ? (t - offsets[i - 1]) / span : 0.0;
-                var from = colors[i - 1];
-                var to = colors[i];
-                return (
-                    (byte)(from.B + (to.B - from.B) * local + 0.5),
-                    (byte)(from.G + (to.G - from.G) * local + 0.5),
-                    (byte)(from.R + (to.R - from.R) * local + 0.5),
-                    (byte)((from.A + (to.A - from.A) * local) * _opacity + 0.5));
-            }
-
-            return Apply(colors[^1]);
+            var color = _isRadial ? _ramp.EvaluateRadial(t, _opacity) : _ramp.Evaluate(t, _opacity);
+            return (GradientColorRamp.ToByte(color.B), GradientColorRamp.ToByte(color.G),
+                GradientColorRamp.ToByte(color.R), GradientColorRamp.ToByte(color.A));
         }
 
-        private (byte B, byte G, byte R, byte A) Apply((byte B, byte G, byte R, byte A) c)
-            => (c.B, c.G, c.R, (byte)(c.A * _opacity + 0.5));
-
-        private static double Reflect(double t)
-        {
-            var wrapped = Math.Abs(t) % 2.0;
-            return wrapped > 1.0 ? 2.0 - wrapped : wrapped;
-        }
     }
 
     /// <summary>
@@ -549,7 +480,7 @@ internal static class SoftwareVectorRasterizer
             imageSource,
             Math.Clamp((int)Math.Ceiling(maxXf - minXf), 1, 16384),
             Math.Clamp((int)Math.Ceiling(maxYf - minYf), 1, 16384),
-            cover: false);
+            cover: false, svgViewportSize: drawing.ImageSource is SvgImage ? new Size(rect.Width, rect.Height) : null);
         if (snapshot is null) return;
 
         int srcW = snapshot.Width;
@@ -1144,7 +1075,9 @@ internal static class SoftwareVectorRasterizer
         (float X, float Y) center, double radius, double deviceScale)
     {
         if (radius <= 0) return;
-        int sides = Math.Clamp((int)(radius * deviceScale * 1.5) + 6, 8, 128);
+        double deviceRadius = radius * Math.Max(deviceScale, 1e-6);
+        double step = 2 * Math.Acos(1 - Math.Clamp(.001 / deviceRadius, 1e-8, 1));
+        int sides = (int)Math.Clamp(Math.Ceiling(2 * Math.PI / step), 16, 4096);
         var poly = new List<(float, float)>(sides);
         for (int i = 0; i < sides; i++)
         {
@@ -1158,7 +1091,7 @@ internal static class SoftwareVectorRasterizer
     /// Analytic-coverage scanline rasterizer shared by fill and stroke. Each output row
     /// is sampled by 4 vertical sub-scanlines; within each, filled spans contribute
     /// fractional horizontal coverage. <paramref name="isMax"/> selects per-contour
-    /// max-coverage (strokes — overlap must not darken) vs. combined fill-rule coverage
+    /// union coverage (strokes — overlap must not darken) vs. combined fill-rule coverage
     /// across all contours (fills). The context's clip mask, if any, attenuates coverage.
     /// </summary>
     private static void RasterizeCoverage(
@@ -1175,38 +1108,34 @@ internal static class SoftwareVectorRasterizer
 
         int rowW = ix1 - ix0;
         var cov = new float[rowW];
-        float[]? tmp = isMax ? new float[rowW] : null;
         const int kSub = 4;
         const float kInv = 1.0f / kSub;
         var xs = new List<(float x, int dir)>();
-        var single = isMax ? new List<List<(float X, float Y)>>(1) { null! } : null;
+        if (isMax)
+        {
+            // Segment quads, joins and caps form one stroke shape. Union their
+            // spans before antialiasing: max of separately averaged coverage
+            // leaves translucent seams where adjacent pieces share a pixel.
+            foreach (var contour in contours)
+            {
+                double area = 0;
+                for (var i = 0; i < contour.Count; i++)
+                {
+                    var p = contour[i]; var q = contour[(i + 1) % contour.Count];
+                    area += (double)p.X * q.Y - (double)q.X * p.Y;
+                }
+                if (area < 0) contour.Reverse();
+            }
+        }
 
         for (int row = iy0; row < iy1; row++)
         {
             Array.Clear(cov, 0, rowW);
 
-            if (isMax)
+            for (int k = 0; k < kSub; k++)
             {
-                foreach (var contour in contours)
-                {
-                    Array.Clear(tmp!, 0, rowW);
-                    single![0] = contour;
-                    for (int k = 0; k < kSub; k++)
-                    {
-                        float sy = row + (k + 0.5f) * kInv;
-                        AccumulateScanline(single!, sy, nonZero: false, ix0, ix1, kInv, tmp!, xs);
-                    }
-                    for (int t = 0; t < rowW; t++)
-                        if (tmp![t] > cov[t]) cov[t] = tmp[t];
-                }
-            }
-            else
-            {
-                for (int k = 0; k < kSub; k++)
-                {
-                    float sy = row + (k + 0.5f) * kInv;
-                    AccumulateScanline(contours, sy, nonZero, ix0, ix1, kInv, cov, xs);
-                }
+                float sy = row + (k + 0.5f) * kInv;
+                AccumulateScanline(contours, sy, nonZero || isMax, ix0, ix1, kInv, cov, xs);
             }
 
             int rowBase = row * width;

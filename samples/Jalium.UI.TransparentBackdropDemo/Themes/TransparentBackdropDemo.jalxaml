@@ -1,0 +1,31 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:local="clr-namespace:Jalium.UI.TransparentBackdropDemo"
+                    x:Class="Jalium.UI.TransparentBackdropDemo.Themes.TransparentBackdropDemoTheme">
+    <Style TargetType="local:TransparentBackdropSurface">
+        <Setter Property="Foreground" Value="White" />
+        <Setter Property="TintBrush" Value="#A0181825" />
+        <Setter Property="Padding" Value="36,28" />
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="local:TransparentBackdropSurface">
+            <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto" CanContentScroll="False" Padding="16">
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Normal" /><VisualState x:Name="Disabled"><VisualState.Setters><Setter Property="Opacity" Value="0.5" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup x:Name="BackgroundStates"><VisualState x:Name="Transparent" /><VisualState x:Name="Tinted" /></VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <Border Background="#8C1E1E2E" CornerRadius="16" Padding="{TemplateBinding Padding}" HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="808">
+                    <StackPanel>
+                        <TextBlock Text="{TemplateBinding Title}" FontSize="24" Foreground="{TemplateBinding Foreground}" TextAlignment="Center" TextWrapping="Wrap" Margin="0,0,0,6" Focusable="False" />
+                        <TextBlock Text="{TemplateBinding Description}" FontSize="12" Foreground="#CDD6F4" TextAlignment="Center" TextWrapping="Wrap" Margin="0,0,0,22" Focusable="False" />
+                        <ListBox x:Name="PART_Effects" ItemsSource="{TemplateBinding Effects}" SelectionMode="Single" Background="Transparent" BorderThickness="0" HorizontalAlignment="Center" Margin="0,0,0,18" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                            <ListBox.ItemsPanel><ItemsPanelTemplate><WrapPanel HorizontalAlignment="Center" /></ItemsPanelTemplate></ListBox.ItemsPanel>
+                            <ListBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Label}" Padding="8,6" Foreground="{TemplateBinding Foreground}" Focusable="False" /></DataTemplate></ListBox.ItemTemplate>
+                        </ListBox>
+                        <TextBlock Text="{TemplateBinding StatusText}" FontSize="14" Foreground="#CDD6F4" TextAlignment="Center" TextWrapping="Wrap" Margin="0,0,0,18" Focusable="False" />
+                        <Button x:Name="PART_ToggleBackground" MinHeight="38" Padding="16,6"><TextBlock Text="切换窗口背景：透明 ↔ 半透明纯色" TextWrapping="Wrap" TextAlignment="Center" Focusable="False" /></Button>
+                        <TextBlock Text="Mica / Acrylic 为 DWM 系统材质，需 Windows 11 22H2+（Win10 回退为 Acrylic 模糊）。&#10;选「无」时窗口纯透明、直接透出桌面；材质需在透明背景下才会显现。" FontSize="11" Foreground="#CDD6F4" TextAlignment="Center" TextWrapping="Wrap" Margin="0,10,0,0" Focusable="False" />
+                    </StackPanel>
+                </Border>
+            </ScrollViewer>
+        </ControlTemplate></Setter.Value></Setter>
+    </Style>
+</ResourceDictionary>

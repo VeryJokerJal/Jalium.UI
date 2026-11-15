@@ -16,6 +16,8 @@ import subprocess
 import tempfile
 import time
 
+from native_payload_proof import capture_payload, verify_software_payload
+
 LIBRARIES = tuple("libjalium.native." + name + ".dylib" for name in
                   ("core", "text", "metal", "software", "platform", "media.core", "media", "browser"))
 ASSEMBLIES = ("Jalium.UI.MacOS.HostSmoke.dll", "Jalium.UI.Managed.dll", "Jalium.UI.MacOS.dll", 'Jalium.UI.Xaml.dll')
@@ -33,6 +35,7 @@ def stop_owned_app(app):
             except ProcessLookupError: pass
 
 def run_case(work, app, client_binary, observer_binary, index, libraries):
+    native_before = capture_payload(libraries)
     internal = work
     output = work / ("case-" + str(index))
     output.mkdir(mode=0o700)
@@ -179,17 +182,18 @@ def run_case(work, app, client_binary, observer_binary, index, libraries):
         host = json.loads(host_path.read_text()) if host_path.exists() else None
         err_path = output / 'app.err'
         err = err_path.read_text(errors='replace') if err_path.exists() else ''
-        loaded = {name: any(str(path) in err for path in copies) for name, copies in libraries.items()}
+        native_proof = verify_software_payload(libraries, native_before, err)
+        failures.extend(native_proof['errors'])
+        loaded = {name: name in native_proof['loadedNames'] for name in libraries}
         if not host or host.get('timedOut') or not host.get('closed'):
             failures.append('host did not finish a closed, non-timeout case')
         if p is not None and p.returncode != 0: failures.append('launcher exited unsuccessfully')
         if client is not None and client.returncode != 0: failures.append('AX client exited unsuccessfully')
         if observer is not None and observer.returncode != 0: failures.append('AX observer exited unsuccessfully')
-        if not all(loaded.values()): failures.append('host did not load every copied native library')
         for stream in ('launchLog', 'observerLog', 'observerError'):
             handle = locals().get(stream)
             if handle is not None: handle.close()
-        receipt.update({'passed':not failures, 'host':host, 'loadedNative':loaded,
+        receipt.update({'passed':not failures, 'host':host, 'loadedNative':loaded, 'nativePayloadProof':native_proof,
             'launcherExitCode':None if p is None else p.returncode,
             'clientExitCode':None if client is None else client.returncode,
             'observerExitCode':None if observer is None else observer.returncode})

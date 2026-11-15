@@ -56,6 +56,7 @@ internal static partial class SvgParser
                 for (var index = start; index < end; index++)
                 {
                     var run = runs[index];
+                    run.ChunkId = start;
                     cursorX += run.Dx;
                     cursorY += run.Dy;
                     run.X = cursorX;

@@ -20,8 +20,10 @@ namespace Jalium.UI.Tests;
 /// </para>
 /// </remarks>
 [Collection("Application")]
-public sealed class ScrollViewerViewportFeedbackStabilityTests
+public sealed class ScrollViewerViewportFeedbackStabilityTests : IDisposable
 {
+    public ScrollViewerViewportFeedbackStabilityTests() => ScrollBarTemplateTestHelper.Register();
+    public void Dispose() => ScrollBarTemplateTestHelper.Reset();
     /// <summary>Pins its own height to the viewport of the ScrollViewer above it,
     /// reading that value during arrange — the shape a self-sizing page ends up with.</summary>
     private sealed class ViewportEchoingContent : Grid

@@ -170,15 +170,13 @@ public class TreeView : ItemsControl
 
     #endregion
 
+    static TreeView() => ItemsPanelProperty.OverrideMetadata(typeof(TreeView),
+        new PropertyMetadata(CreateItemsPanelTemplate(typeof(VirtualizingStackPanel))));
+
     public TreeView()
     {
         SetCurrentValue(UIElement.TransitionPropertyProperty, TransitionPropertyCollection.None());
         Focusable = true;
-
-        if (ItemsPanel == null)
-        {
-            ItemsPanel = CreateItemsPanelTemplate(typeof(VirtualizingStackPanel));
-        }
 
         AddHandler(KeyDownEvent, new KeyEventHandler(OnTreeViewKeyDown));
     }
@@ -213,10 +211,7 @@ public class TreeView : ItemsControl
     #endregion
 
     /// <inheritdoc />
-    protected override Panel CreateItemsPanel()
-    {
-        return new VirtualizingStackPanel { Orientation = Orientation.Vertical };
-    }
+    protected override Panel CreateItemsPanel() => base.CreateItemsPanel();
 
     /// <inheritdoc />
     protected override FrameworkElement GetContainerForItem(object item)
@@ -546,7 +541,6 @@ public class TreeViewItem : HeaderedItemsControl
         return new Jalium.UI.Automation.Peers.TreeViewItemAutomationPeer(this);
     }
 
-    private const double IndentSize = 16;
     private const double ExpanderSize = 16;
     private const double ExpandAnimationDurationMs = 260;
     private const double CollapseAnimationDurationMs = 180;
@@ -611,7 +605,6 @@ public class TreeViewItem : HeaderedItemsControl
     #region Template Parts
 
     private Border? _headerBorder;
-    private FrameworkElement? _indentSpacer;
     private FrameworkElement? _expanderBorder;
     private Shapes.Path? _expanderArrow;
     private FrameworkElement? _itemsHost; // ItemsPresenter from template (controls visibility/clipping)
@@ -642,6 +635,34 @@ public class TreeViewItem : HeaderedItemsControl
     }
 
     #region Dependency Properties
+
+    /// <summary>Identifies the horizontal spacing per tree level.</summary>
+    public static readonly DependencyProperty IndentSizeProperty = DependencyProperty.Register(
+        nameof(IndentSize), typeof(double), typeof(TreeViewItem),
+        new PropertyMetadata(16.0, (d, _) => ((TreeViewItem)d).UpdateIndent()),
+        value => value is double size && double.IsFinite(size) && size >= 0);
+    private static readonly DependencyPropertyKey IndentWidthPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(IndentWidth), typeof(double), typeof(TreeViewItem), new PropertyMetadata(0.0));
+    public static readonly DependencyProperty IndentWidthProperty = IndentWidthPropertyKey.DependencyProperty;
+    public double IndentSize { get => (double)GetValue(IndentSizeProperty)!; set => SetValue(IndentSizeProperty, value); }
+    public double IndentWidth => (double)GetValue(IndentWidthProperty)!;
+
+    /// <summary>Identifies the selected header's background brush.</summary>
+    public static readonly DependencyProperty SelectionBrushProperty = DependencyProperty.Register(
+        nameof(SelectionBrush), typeof(Brush), typeof(TreeViewItem), new PropertyMetadata(null));
+    /// <summary>Identifies the unselected header's background while the pointer is over it.</summary>
+    public static readonly DependencyProperty HoverBrushProperty = DependencyProperty.Register(
+        nameof(HoverBrush), typeof(Brush), typeof(TreeViewItem), new PropertyMetadata(null));
+    /// <summary>Identifies the selected header's background while the pointer is over it.</summary>
+    public static readonly DependencyProperty SelectionPointerOverBrushProperty = DependencyProperty.Register(
+        nameof(SelectionPointerOverBrush), typeof(Brush), typeof(TreeViewItem), new PropertyMetadata(null));
+    /// <summary>Identifies the selected header's outline brush.</summary>
+    public static readonly DependencyProperty SelectionBorderBrushProperty = DependencyProperty.Register(
+        nameof(SelectionBorderBrush), typeof(Brush), typeof(TreeViewItem), new PropertyMetadata(null));
+    public Brush? SelectionBrush { get => (Brush?)GetValue(SelectionBrushProperty); set => SetValue(SelectionBrushProperty, value); }
+    public Brush? HoverBrush { get => (Brush?)GetValue(HoverBrushProperty); set => SetValue(HoverBrushProperty, value); }
+    public Brush? SelectionPointerOverBrush { get => (Brush?)GetValue(SelectionPointerOverBrushProperty); set => SetValue(SelectionPointerOverBrushProperty, value); }
+    public Brush? SelectionBorderBrush { get => (Brush?)GetValue(SelectionBorderBrushProperty); set => SetValue(SelectionBorderBrushProperty, value); }
 
     /// <summary>
     /// Identifies the IsExpanded dependency property.
@@ -940,7 +961,6 @@ public class TreeViewItem : HeaderedItemsControl
         }
 
         _headerBorder = GetTemplateChild("PART_HeaderBorder") as Border;
-        _indentSpacer = GetTemplateChild("PART_IndentSpacer") as FrameworkElement;
         _expanderBorder = GetTemplateChild("PART_ExpanderBorder") as FrameworkElement;
         _expanderArrow = GetTemplateChild("PART_ExpanderArrow") as Shapes.Path;
         _itemsHost = GetTemplateChild("PART_ItemsHost") as FrameworkElement;
@@ -988,7 +1008,6 @@ public class TreeViewItem : HeaderedItemsControl
         }
 
         _headerBorder = null;
-        _indentSpacer = null;
         _expanderBorder = null;
         _expanderArrow = null;
         _itemsHost = null;
@@ -1380,10 +1399,7 @@ public class TreeViewItem : HeaderedItemsControl
 
     private void UpdateIndent()
     {
-        if (_indentSpacer != null)
-        {
-            _indentSpacer.Width = _level * IndentSize;
-        }
+        SetValue(IndentWidthPropertyKey, _level * IndentSize);
     }
 
     private void UpdateExpanderVisibility()

@@ -15,6 +15,8 @@ import subprocess
 import tempfile
 import time
 
+from native_payload_proof import capture_payload, verify_software_payload
+
 LIBRARIES = tuple("libjalium.native." + name + ".dylib" for name in
                   ("core", "text", "metal", "software", "platform", "media.core", "media", "browser"))
 ASSEMBLIES = ("Jalium.UI.MacOS.HostSmoke.dll", "Jalium.UI.Managed.dll", "Jalium.UI.MacOS.dll")
@@ -38,6 +40,7 @@ def stop_owned_app(app):
 
 
 def run_case(work, app, client, index, libraries):
+    native_before = capture_payload(libraries)
     output = work / ("case-" + str(index))
     output.mkdir(mode=0o700)
     command = ["/usr/bin/open", "-n", "-W", "--env", "JALIUM_FILE_PANEL_OUTPUT=" + str(output),
@@ -90,11 +93,13 @@ def run_case(work, app, client, index, libraries):
     host = json.loads(host_path.read_text()) if host_path.exists() else None
     log = (output / "app.log").read_text(errors="replace") if (output / "app.log").exists() else ""
     err = (output / "app.err").read_text(errors="replace") if (output / "app.err").exists() else ""
-    loaded = {name: any(str(path) in err for path in paths) for name, paths in libraries.items()}
+    native_proof = verify_software_payload(libraries, native_before, err)
+    errors.extend(native_proof['errors'])
+    loaded = {name: name in native_proof['loadedNames'] for name in libraries}
     expected_actions = 2 if index // 2 in (1, 3, 4, 5) else 1
     correct = bool(host and host["finished"] and host["accepted"] is True and not host["failures"]
                    and host["externalAccessibility"] and host["actualMainLoop"]
-                   and len(attempts) == expected_actions and all(loaded.values()) and not errors)
+                   and len(attempts) == expected_actions and native_proof["passed"] and not errors)
     for receipt in attempts:
         correct &= bool(receipt["trusted"] and receipt["exitCode"] == 0 and receipt["pressError"] == 0
                         and receipt["targetPID"] == (host or {}).get("processId"))
@@ -105,7 +110,7 @@ def run_case(work, app, client, index, libraries):
     # Keep the original 8-second host budget. The launcher budget also covers
     # process startup and exit; it is not an extension to the dialog assertions.
     return {"index": index, "passed": bool(correct), "seconds": round(time.monotonic() - started, 3),
-            "host": host, "clients": attempts, "errors": errors, "nativeLoaded": loaded,
+            "host": host, "clients": attempts, "errors": errors, "nativeLoaded": loaded, "nativePayloadProof": native_proof,
             "log": log, "stderrTail": err[-3000:] if not correct else "", "launcherExit": process.returncode}
 
 

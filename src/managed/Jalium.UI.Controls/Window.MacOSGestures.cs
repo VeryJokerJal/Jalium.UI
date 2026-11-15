@@ -368,7 +368,7 @@ public partial class Window
                 FinishMacOSManipulation(session);
             }, faulted: () => FinishMacOSManipulation(session, raiseCompletion: false));
         session.Inertial = session.Inertia.Start(Vector.Zero, session.Velocities.AngularVelocity, Vector.Zero,
-            starting.TranslationBehavior, starting.RotationBehavior, starting.ExpansionBehavior);
+            starting.TranslationBehavior, starting.RotationBehavior, starting.ExpansionBehavior, session.Mode);
         if (!session.Inertial) FinishMacOSManipulation(session);
     }
 

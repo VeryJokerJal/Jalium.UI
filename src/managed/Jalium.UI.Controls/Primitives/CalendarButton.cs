@@ -1,40 +1,35 @@
-using Jalium.UI.Interop;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Primitives;
-
 /// <summary>
 /// Represents a button used in Calendar controls for month and year selection.
 /// </summary>
 public sealed class CalendarButton : Button
 {
-    #region Dependency Properties
+    /// <summary>Gets or sets the theme/state text role used when Foreground is not overridden.</summary>
+    public static readonly DependencyProperty CalendarForegroundProperty = DependencyProperty.Register(nameof(CalendarForeground), typeof(Brush), typeof(CalendarButton), new PropertyMetadata(Brushes.White));
+    public Brush? CalendarForeground { get => (Brush? )GetValue(CalendarForegroundProperty); set => SetValue(CalendarForegroundProperty, value); }
 
+#region Dependency Properties
     /// <summary>
     /// Identifies the HasSelectedDays read-only dependency property key.
     /// </summary>
-    private static readonly DependencyPropertyKey HasSelectedDaysPropertyKey =
-        DependencyProperty.RegisterReadOnly(nameof(HasSelectedDays), typeof(bool), typeof(CalendarButton),
-            new PropertyMetadata(false, OnVisualPropertyChanged));
-
+    private static readonly DependencyPropertyKey HasSelectedDaysPropertyKey = DependencyProperty.RegisterReadOnly(nameof(HasSelectedDays), typeof(bool), typeof(CalendarButton), new PropertyMetadata(false, OnVisualPropertyChanged));
     /// <summary>
     /// Identifies the HasSelectedDays dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty HasSelectedDaysProperty = HasSelectedDaysPropertyKey.DependencyProperty;
-
     /// <summary>
     /// Identifies the IsInactive dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public static readonly DependencyProperty IsInactiveProperty =
-        DependencyProperty.Register(nameof(IsInactive), typeof(bool), typeof(CalendarButton),
-            new PropertyMetadata(false, OnVisualPropertyChanged));
+    public static readonly DependencyProperty IsInactiveProperty = DependencyProperty.Register(nameof(IsInactive), typeof(bool), typeof(CalendarButton), new PropertyMetadata(false, OnVisualPropertyChanged));
+#endregion
+    public static readonly DependencyProperty IsSelectedProperty = DependencyProperty.Register(nameof(IsSelected), typeof(bool), typeof(CalendarButton), new PropertyMetadata(false, (d, e) => ((CalendarButton)d).SetHasSelectedDays((bool)e.NewValue!)));
+    public bool IsSelected { get => (bool)GetValue(IsSelectedProperty)!; set => SetValue(IsSelectedProperty, value); }
 
-    #endregion
-
-    #region CLR Properties
-
+#region CLR Properties
     /// <summary>
     /// Gets a value indicating whether the month/year contains selected days.
     /// </summary>
@@ -45,34 +40,31 @@ public sealed class CalendarButton : Button
     /// Gets or sets a value indicating whether this button is for display purposes only.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public bool IsInactive
-    {
-        get => (bool)GetValue(IsInactiveProperty)!;
-        set => SetValue(IsInactiveProperty, value);
-    }
+    public bool IsInactive { get => (bool)GetValue(IsInactiveProperty)!; set => SetValue(IsInactiveProperty, value); }
 
     /// <summary>
     /// Gets or sets the Calendar that owns this button.
     /// </summary>
-    public Calendar? Owner { get; internal set; }
+    private static readonly DependencyPropertyKey HasCalendarOwnerPropertyKey = DependencyProperty.RegisterReadOnly(nameof(HasCalendarOwner), typeof(bool), typeof(CalendarButton), new PropertyMetadata(false));
+    public static readonly DependencyProperty HasCalendarOwnerProperty = HasCalendarOwnerPropertyKey.DependencyProperty;
+    public bool HasCalendarOwner => (bool)GetValue(HasCalendarOwnerProperty)!;
 
-    #endregion
+    public static readonly DependencyProperty OwnerProperty = DependencyProperty.Register(nameof(Owner), typeof(Calendar), typeof(CalendarButton), new PropertyMetadata(null, (d, e) => d.SetValue(HasCalendarOwnerPropertyKey, e.NewValue is Calendar)));
+    public Calendar? Owner { get => (Calendar? )GetValue(OwnerProperty); set => SetValue(OwnerProperty, value); }
 
-    #region Constructor
-
+#endregion
+#region Constructor
     /// <summary>
-    /// Initializes a new instance of the <see cref="CalendarButton"/> class.
+    /// Initializes a new instance of the <see cref = "CalendarButton"/> class.
     /// </summary>
+    static CalendarButton() => DefaultStyleKeyProperty.OverrideMetadata(typeof(CalendarButton), new PropertyMetadata(typeof(CalendarButton)));
     public CalendarButton()
     {
-        HorizontalContentAlignment = HorizontalAlignment.Center;
-        VerticalContentAlignment = VerticalAlignment.Center;
+        UseTemplateContentManagement();
     }
 
-    #endregion
-
-    #region Internal Methods
-
+#endregion
+#region Internal Methods
     /// <summary>
     /// Sets the HasSelectedDays property.
     /// </summary>
@@ -81,69 +73,18 @@ public sealed class CalendarButton : Button
         SetValue(HasSelectedDaysPropertyKey, value);
     }
 
-    #endregion
-
-    #region Rendering
-
-    /// <inheritdoc />
-    protected override void OnRender(DrawingContext drawingContext)
+#endregion
+    public override void OnApplyTemplate()
     {
-        var dc = drawingContext;
-
-        var rect = new Rect(RenderSize);
-
-        // Draw background based on state
-        Brush? bgBrush = null;
-        if (HasSelectedDays)
-        {
-            bgBrush = new SolidColorBrush(Color.FromArgb(64, 0x1E, 0x79, 0x3F));
-        }
-        else if (IsPressed)
-        {
-            bgBrush = new SolidColorBrush(Color.FromRgb(60, 60, 60));
-        }
-        else if (Background != null)
-        {
-            bgBrush = Background;
-        }
-
-        if (bgBrush != null)
-        {
-            dc.DrawRectangle(bgBrush, null, rect);
-        }
-
-        // Draw content
-        if (Content is string text && FontSize > 0)
-        {
-            Brush fgBrush;
-            if (!IsEnabled || IsInactive)
-            {
-                fgBrush = new SolidColorBrush(Color.FromRgb(128, 128, 128));
-            }
-            else
-            {
-                fgBrush = Foreground ?? new SolidColorBrush(Color.White);
-            }
-
-            var formattedText = new FormattedText(text, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
-            {
-                Foreground = fgBrush
-            };
-            TextMeasurement.MeasureText(formattedText);
-
-            var textX = (rect.Width - formattedText.Width) / 2;
-            var textY = (rect.Height - formattedText.Height) / 2;
-            dc.DrawText(formattedText, new Point(textX, textY));
-        }
+        base.OnApplyTemplate();
+        UpdateStates();
     }
 
-    private static new void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    private void UpdateStates()
     {
-        if (d is CalendarButton button)
-        {
-            button.InvalidateVisual();
-        }
+        VisualStateManager.GoToState(this, HasSelectedDays ? "Selected" : "Unselected", false);
+        VisualStateManager.GoToState(this, IsInactive ? "Inactive" : "Active", false);
     }
 
-    #endregion
+    private static new void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) => ((CalendarButton)d).UpdateStates();
 }

@@ -36,7 +36,7 @@ internal static class WindowWordNavigationChecks
         int kind = index < 9 ? index % 3 : new[] { 0, 2, 2, 2, 2, 1, 0, 1, 2, 2, 0 }[index - 9];
         int mode = index < 9 ? index / 3 : index < 15 ? 3 : 4;
         JaliumMacApplication.Initialize();
-        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Prohibited;
+        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Accessory;
         RenderContext.GetOrCreateCurrent(RenderBackend.Metal);
         UIElement editor = kind switch
         {

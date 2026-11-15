@@ -1,3 +1,4 @@
+#include "jalium_color_interpolation.h"
 #include "vulkan_resources.h"
 #include "jalium_bitmap_stats.h"
 #include "jalium_dwrite_font_units.h"
@@ -18,6 +19,23 @@
 #include <cstring>
 
 namespace jalium {
+
+JaliumResult VulkanLinearGradientBrush::SetColorInterpolationMode(uint32_t mode) {
+    if (mode > 1) return JALIUM_ERROR_INVALID_ARGUMENT;
+    if (interpolationSource_.empty()) interpolationSource_=stops_;
+    auto prepared=PrepareSrgbGradientStops(interpolationSource_,mode);
+    stops_.swap(prepared);
+    colorInterpolationMode=mode; return JALIUM_OK;
+}
+
+JaliumResult VulkanRadialGradientBrush::SetColorInterpolationMode(uint32_t mode) {
+    if (mode > 1) return JALIUM_ERROR_INVALID_ARGUMENT;
+    if (interpolationSource_.empty()) interpolationSource_=stops_;
+    auto prepared=PrepareSrgbGradientStops(interpolationSource_,mode);
+    stops_.swap(prepared);
+    colorInterpolationMode=mode; return JALIUM_OK;
+}
+
 
 VulkanSolidBrush::VulkanSolidBrush(float r, float g, float b, float a)
     : r_(r), g_(g), b_(b), a_(a)
@@ -387,6 +405,29 @@ void VulkanTextFormat::SetLineSpacing(int32_t method, float spacing, float basel
 #endif
 }
 
+JaliumResult VulkanTextFormat::SetFontFeatures(const JaliumFontFeature* features, uint32_t count) {
+    if (count > 16384 || (count && !features)) return JALIUM_ERROR_INVALID_ARGUMENT;
+#ifdef _WIN32
+    auto* factory = GetSharedDWriteFactory();
+    if (!factory) return JALIUM_ERROR_NOT_SUPPORTED;
+    Microsoft::WRL::ComPtr<IDWriteTypography> typography;
+    std::vector<JaliumFontFeature> values;
+    if (count) {
+        if (FAILED(factory->CreateTypography(&typography))) return JALIUM_ERROR_UNKNOWN;
+        values.assign(features, features + count);
+        for (const auto& feature : values) {
+            uint32_t t = feature.tag;
+            auto tag = static_cast<DWRITE_FONT_FEATURE_TAG>((t >> 24) | ((t >> 8) & 0xff00) | ((t << 8) & 0xff0000) | (t << 24));
+            if (FAILED(typography->AddFontFeature({tag, feature.value}))) return JALIUM_ERROR_UNKNOWN;
+        }
+    }
+    typography_ = std::move(typography); fontFeatures_ = std::move(values);
+    InvalidateLayoutCache(); return JALIUM_OK;
+#else
+    return ftTextFormat_ ? ftTextFormat_->SetFontFeatures(features, count) : JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
 void VulkanTextFormat::SetMaxLines(uint32_t maxLines) {
 #ifdef _WIN32
     if (maxLines_ == maxLines) return;
@@ -411,6 +452,7 @@ uint64_t VulkanTextFormat::HashLayoutKey(
     if (text && textLength)
         mix(text, static_cast<size_t>(textLength) * sizeof(wchar_t));
     mix(&maxLines_, sizeof(maxLines_));
+    if (!fontFeatures_.empty()) mix(fontFeatures_.data(), fontFeatures_.size() * sizeof(JaliumFontFeature));
     return h;
 }
 
@@ -505,6 +547,10 @@ HRESULT VulkanTextFormat::CreateLayout(
         text, textLength, dwFormat_.Get(), maxWidth, maxHeight, layout);
 
     if (SUCCEEDED(hr) && *layout) {
+        if (typography_) {
+            hr = (*layout)->SetTypography(typography_.Get(), {0, textLength});
+            if (FAILED(hr)) { (*layout)->Release(); *layout = nullptr; return hr; }
+        }
         ApplyMaxLinesClamp(*layout);
     }
 

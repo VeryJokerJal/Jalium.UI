@@ -1,6 +1,7 @@
 <ResourceDictionary
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:input="clr-namespace:Jalium.UI.Input;assembly=Jalium.UI.Input">
 
     <!-- ============================================== -->
     <!-- DataGrid Style -->
@@ -18,7 +19,7 @@
         <Setter Property="RowBackground" Value="Transparent" />
         <Setter Property="Template">
             <ControlTemplate TargetType="DataGrid">
-                <Border Name="PART_OuterBorder"
+                <Border Name="PART_OuterBorder" input:KeyboardNavigation.TabNavigation="None"
                         Background="{TemplateBinding Background}"
                         BorderBrush="{TemplateBinding BorderBrush}"
                         BorderThickness="{TemplateBinding BorderThickness}"
@@ -67,13 +68,19 @@
                                       Focusable="False"
                                       VerticalScrollBarVisibility="{TemplateBinding VerticalScrollBarVisibility}"
                                       HorizontalScrollBarVisibility="{TemplateBinding HorizontalScrollBarVisibility}">
-                            <StackPanel Name="PART_RowsHost" />
+                            <StackPanel Name="PART_RowsHost">
+                                <Grid Name="PART_TopSpacer" Height="0" IsHitTestVisible="False" />
+                                <Grid Name="PART_BottomSpacer" Height="0" IsHitTestVisible="False" />
+                            </StackPanel>
                         </ScrollViewer>
                         <!-- Drag overlay for column reorder ghost and drop indicator -->
                         <Canvas Name="PART_DragOverlay"
                                 Grid.RowSpan="2"
                                 IsHitTestVisible="False"
-                                Visibility="Collapsed" />
+                                Visibility="Collapsed" >
+                            <DataGridDropLocationIndicator Name="PART_DropIndicator" Visibility="Collapsed" />
+                            <DataGridColumnDragIndicator Name="PART_DragGhost" />
+                        </Canvas>
                     </Grid>
                 </Border>
                 <ControlTemplate.Triggers>
@@ -93,33 +100,126 @@
     </Style>
 
     <!-- ============================================== -->
+    <!-- DataGridRowHeader Style -->
+    <!-- ============================================== -->
+    <Style TargetType="DataGridRowHeader">
+        <Setter Property="Background" Value="{ThemeResource LayerFillColorAltBrush}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
+        <Setter Property="SeparatorBrush" Value="{ThemeResource ControlBorder}" />
+        <Setter Property="Padding" Value="4" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="DataGridRowHeader">
+                <Border Name="PART_HeaderBorder" Background="{TemplateBinding Background}">
+                    <VisualStateManager.VisualStateGroups>
+                        <VisualStateGroup x:Name="CommonStates">
+                            <VisualState x:Name="Normal" />
+                            <VisualState x:Name="PointerOver"><VisualState.Setters>
+                                <Setter TargetName="PART_PointerTint" Property="Visibility" Value="Visible" />
+                            </VisualState.Setters></VisualState>
+                            <VisualState x:Name="Pressed"><VisualState.Setters>
+                                <Setter TargetName="PART_PointerTint" Property="Visibility" Value="Visible" />
+                                <Setter TargetName="PART_PointerTint" Property="Opacity" Value="0.08" />
+                            </VisualState.Setters></VisualState>
+                            <VisualState x:Name="Disabled"><VisualState.Setters>
+                                <Setter Property="Opacity" Value="0.56" />
+                            </VisualState.Setters></VisualState>
+                        </VisualStateGroup>
+                        <VisualStateGroup x:Name="SelectionStates">
+                            <VisualState x:Name="Unselected" />
+                            <VisualState x:Name="Selected"><VisualState.Setters>
+                                <Setter TargetName="PART_SelectionTint" Property="Visibility" Value="Visible" />
+                                <Setter TargetName="PART_SelectionIndicator" Property="Visibility" Value="Visible" />
+                            </VisualState.Setters></VisualState>
+                        </VisualStateGroup>
+                        <VisualStateGroup x:Name="ContentStates">
+                            <VisualState x:Name="Indicator" />
+                            <VisualState x:Name="Content"><VisualState.Setters>
+                                <Setter TargetName="PART_ContentPresenter" Property="Visibility" Value="Visible" />
+                                <Setter TargetName="PART_SelectionIndicator" Property="Opacity" Value="0" />
+                            </VisualState.Setters></VisualState>
+                        </VisualStateGroup>
+                    </VisualStateManager.VisualStateGroups>
+                    <Grid>
+                        <Grid Name="PART_PointerTint" Background="{ThemeResource TextPrimary}" Opacity="0.04"
+                              IsHitTestVisible="False" Visibility="Collapsed" />
+                        <Grid Name="PART_SelectionTint" Background="{ThemeResource AccentBrush}" Opacity="0.12"
+                              IsHitTestVisible="False" Visibility="Collapsed" />
+                        <Path Name="PART_SelectionIndicator" Data="M 0,0 L 6,4 L 0,8" Width="6" Height="8"
+                              Stroke="{ThemeResource AccentBrush}" StrokeThickness="2" Stretch="Uniform"
+                              HorizontalAlignment="Center" VerticalAlignment="Center"
+                              IsHitTestVisible="False" Visibility="Collapsed" />
+                        <ContentPresenter Name="PART_ContentPresenter" Margin="{TemplateBinding Padding}"
+                                          HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                          VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                          Visibility="Collapsed" />
+                        <Rectangle Width="1" HorizontalAlignment="Right" Fill="{TemplateBinding SeparatorBrush}"
+                                   Visibility="{TemplateBinding SeparatorVisibility}" IsHitTestVisible="False" />
+                        <Rectangle Height="1" VerticalAlignment="Bottom" Fill="{TemplateBinding SeparatorBrush}"
+                                   Visibility="{TemplateBinding SeparatorVisibility}" IsHitTestVisible="False" />
+                    </Grid>
+                </Border>
+            </ControlTemplate>
+        </Setter>
+    </Style>
+
+    <!-- ============================================== -->
     <!-- DataGridRow Style -->
     <!-- ============================================== -->
     <Style TargetType="DataGridRow">
-        <Setter Property="Background" Value="Transparent" />
-        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
+        <Setter Property="GridLinesVisibility" Value="{Binding ParentDataGrid.GridLinesVisibility, RelativeSource={RelativeSource Self}}" />
+        <Setter Property="HorizontalGridLinesBrush" Value="{Binding ParentDataGrid.HorizontalGridLinesBrush, RelativeSource={RelativeSource Self}}" />
+        <Setter Property="VerticalGridLinesBrush" Value="{Binding ParentDataGrid.VerticalGridLinesBrush, RelativeSource={RelativeSource Self}}" />
+        <Setter Property="FontFamily" Value="{Binding ParentDataGrid.FontFamily, RelativeSource={RelativeSource Self}}" />
+        <Setter Property="FontSize" Value="{Binding ParentDataGrid.FontSize, RelativeSource={RelativeSource Self}}" />
+        <Setter Property="FontStyle" Value="{Binding ParentDataGrid.FontStyle, RelativeSource={RelativeSource Self}}" />
+        <Setter Property="FontWeight" Value="{Binding ParentDataGrid.FontWeight, RelativeSource={RelativeSource Self}}" />
+        <Setter Property="Background" Value="{Binding OwnerBackground, RelativeSource={RelativeSource Self}}" />
+        <Setter Property="Foreground" Value="{Binding ParentDataGrid.Foreground, RelativeSource={RelativeSource Self}}" />
         <Setter Property="Template">
             <ControlTemplate TargetType="DataGridRow">
-                <Border Name="PART_RowBorder"
-                        Background="{TemplateBinding Background}"
-                        BorderBrush="{ThemeResource ControlBorder}"
-                        BorderThickness="0,0,0,1">
-                    <StackPanel Name="PART_CellsPanel" Orientation="Horizontal" />
+                <Border Name="PART_RowBorder" Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding HorizontalGridLinesBrush}" BorderThickness="0">
+                    <VisualStateManager.VisualStateGroups>
+                        <VisualStateGroup x:Name="GridLineStates">
+                            <VisualState x:Name="GridLinesNone" />
+                            <VisualState x:Name="GridLinesHorizontal"><VisualState.Setters>
+                                <Setter TargetName="PART_RowBorder" Property="BorderThickness" Value="0,0,0,1" />
+                            </VisualState.Setters></VisualState>
+                        </VisualStateGroup>
+
+                        <VisualStateGroup x:Name="CommonStates">
+                            <VisualState x:Name="Normal" />
+                            <VisualState x:Name="PointerOver"><VisualState.Setters>
+                                <Setter TargetName="PART_HoverTint" Property="Visibility" Value="Visible" />
+                            </VisualState.Setters></VisualState>
+                            <VisualState x:Name="Disabled"><VisualState.Setters>
+                                <Setter Property="Opacity" Value="0.56" />
+                            </VisualState.Setters></VisualState>
+                        </VisualStateGroup>
+                        <VisualStateGroup x:Name="SelectionStates">
+                            <VisualState x:Name="Unselected" />
+                            <VisualState x:Name="Selected"><VisualState.Setters>
+                                <Setter TargetName="PART_SelectionTint" Property="Visibility" Value="Visible" />
+                            </VisualState.Setters></VisualState>
+                        </VisualStateGroup>
+                    </VisualStateManager.VisualStateGroups>
+                    <Grid>
+                        <Grid Name="PART_HoverTint" Background="{ThemeResource TextPrimary}" Opacity="0.04"
+                              IsHitTestVisible="False" Visibility="Collapsed" />
+                        <Grid Name="PART_SelectionTint" Background="{ThemeResource AccentBrush}" Opacity="0.12"
+                              IsHitTestVisible="False" Visibility="Collapsed" />
+                        <StackPanel Orientation="Vertical">
+                            <StackPanel Name="PART_CellsPanel" Orientation="Horizontal" />
+                            <DataGridDetailsPresenter Name="PART_DetailsPresenter"
+                                                      Visibility="{TemplateBinding DetailsVisibility}" />
+                        </StackPanel>
+                    </Grid>
                 </Border>
-                <ControlTemplate.Triggers>
-                    <Trigger Property="IsMouseOver" Value="True">
-                        <Setter TargetName="PART_RowBorder" Property="Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}" />
-                    </Trigger>
-                    <Trigger Property="IsSelected" Value="True">
-                        <Setter TargetName="PART_RowBorder" Property="Background" Value="{ThemeResource AccentBrush}" />
-                    </Trigger>
-                </ControlTemplate.Triggers>
             </ControlTemplate>
         </Setter>
-
         <Style.Triggers>
-            <Trigger Property="IsSelected" Value="True">
-                <Setter Property="Foreground" Value="{ThemeResource TextOnAccent}" />
+            <Trigger Property="ParentDataGrid" Value="{x:Null}">
+                <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
             </Trigger>
         </Style.Triggers>
     </Style>
@@ -128,18 +228,59 @@
     <!-- DataGridCell Style -->
     <!-- ============================================== -->
     <Style TargetType="DataGridCell">
+        <Setter Property="Focusable" Value="False" />
+        <Setter Property="GridLinesVisibility" Value="{Binding GridLinesVisibility, RelativeSource={RelativeSource AncestorType=Control}}" />
+        <Setter Property="HorizontalGridLinesBrush" Value="{Binding HorizontalGridLinesBrush, RelativeSource={RelativeSource AncestorType=Control}}" />
+        <Setter Property="VerticalGridLinesBrush" Value="{Binding VerticalGridLinesBrush, RelativeSource={RelativeSource AncestorType=Control}}" />
+        <Setter Property="FontFamily" Value="{Binding FontFamily, RelativeSource={RelativeSource AncestorType=Control}}" />
+        <Setter Property="FontSize" Value="{Binding FontSize, RelativeSource={RelativeSource AncestorType=Control}}" />
+        <Setter Property="FontStyle" Value="{Binding FontStyle, RelativeSource={RelativeSource AncestorType=Control}}" />
+        <Setter Property="FontWeight" Value="{Binding FontWeight, RelativeSource={RelativeSource AncestorType=Control}}" />
         <Setter Property="Background" Value="Transparent" />
-        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
+        <Setter Property="Foreground" Value="{Binding Foreground, RelativeSource={RelativeSource FindAncestor, AncestorType=Control}}" />
         <Setter Property="Padding" Value="10,5,10,5" />
         <Setter Property="Template">
             <ControlTemplate TargetType="DataGridCell">
-                <Border Name="PART_CellBorder"
-                        Background="{TemplateBinding Background}"
-                        BorderBrush="{ThemeResource ControlBorder}"
-                        BorderThickness="0,0,1,0"
-                        Padding="{TemplateBinding Padding}">
-                    <ContentPresenter VerticalAlignment="Center" />
-                </Border>
+                <Grid>
+                    <Grid.RowDefinitions><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                    <VisualStateManager.VisualStateGroups>
+                        <VisualStateGroup x:Name="GridLineStates">
+                            <VisualState x:Name="GridLinesNone" />
+                            <VisualState x:Name="GridLinesHorizontal"><VisualState.Setters>
+                                <Setter TargetName="PART_HorizontalGridLine" Property="Visibility" Value="Visible" />
+                            </VisualState.Setters></VisualState>
+                            <VisualState x:Name="GridLinesVertical"><VisualState.Setters>
+                                <Setter TargetName="PART_VerticalGridLine" Property="Visibility" Value="Visible" />
+                            </VisualState.Setters></VisualState>
+                            <VisualState x:Name="GridLinesAll"><VisualState.Setters>
+                                <Setter TargetName="PART_HorizontalGridLine" Property="Visibility" Value="Visible" />
+                                <Setter TargetName="PART_VerticalGridLine" Property="Visibility" Value="Visible" />
+                            </VisualState.Setters></VisualState>
+                        </VisualStateGroup>
+                        <VisualStateGroup x:Name="SelectionStates">
+                            <VisualState x:Name="Unselected" />
+                            <VisualState x:Name="Selected"><VisualState.Setters>
+                                <Setter TargetName="PART_CellSelectionTint" Property="Visibility" Value="Visible" />
+                            </VisualState.Setters></VisualState>
+                        </VisualStateGroup>
+                    </VisualStateManager.VisualStateGroups>
+                    <Border Name="PART_CellBorder"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            Padding="{TemplateBinding Padding}">
+                        <Grid>
+                            <Grid Name="PART_CellSelectionTint" Background="{ThemeResource AccentBrush}" Opacity="0.12"
+                                  IsHitTestVisible="False" Visibility="Collapsed" />
+                            <ContentPresenter VerticalAlignment="Center" />
+                        </Grid>
+                    </Border>
+                    <Border Name="PART_VerticalGridLine" Grid.Column="1" Grid.RowSpan="2" Width="1"
+                            Background="{TemplateBinding VerticalGridLinesBrush}" IsHitTestVisible="False" Visibility="Collapsed" />
+                    <Border Name="PART_HorizontalGridLine" Grid.Row="1" Grid.ColumnSpan="2" Height="1"
+                            Background="{TemplateBinding HorizontalGridLinesBrush}" IsHitTestVisible="False" Visibility="Collapsed" />
+                </Grid>
             </ControlTemplate>
         </Setter>
     </Style>
@@ -154,6 +295,19 @@
         <Setter Property="Template">
             <ControlTemplate TargetType="DataGridColumnHeader">
                 <Grid>
+                    <VisualStateManager.VisualStateGroups>
+                        <VisualStateGroup x:Name="SortStates">
+                            <VisualState x:Name="Unsorted" />
+                            <VisualState x:Name="SortAscending"><VisualState.Setters>
+                                <Setter TargetName="PART_SortIndicator" Property="Text" Value="▲" />
+                                <Setter TargetName="PART_SortIndicator" Property="Visibility" Value="Visible" />
+                            </VisualState.Setters></VisualState>
+                            <VisualState x:Name="SortDescending"><VisualState.Setters>
+                                <Setter TargetName="PART_SortIndicator" Property="Text" Value="▼" />
+                                <Setter TargetName="PART_SortIndicator" Property="Visibility" Value="Visible" />
+                            </VisualState.Setters></VisualState>
+                        </VisualStateGroup>
+                    </VisualStateManager.VisualStateGroups>
                     <!-- Header content area -->
                     <Border Name="PART_HeaderBorder"
                             Background="{TemplateBinding Background}"
@@ -168,7 +322,7 @@
                             <ContentPresenter Grid.Column="0"
                                               HorizontalAlignment="Left"
                                               VerticalAlignment="Center" />
-                            <TextBlock Name="PART_SortIndicator"
+                            <TextBlock Name="PART_SortIndicator" Visibility="Collapsed"
                                        Grid.Column="1"
                                        Foreground="{ThemeResource TextSecondary}"
                                        FontSize="{ThemeResource CaptionFontSize}"

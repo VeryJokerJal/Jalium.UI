@@ -1,20 +1,16 @@
 using System.Collections;
-using Jalium.UI.Interop;
-using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Charts;
 
-/// <summary>
-/// A control that renders chart legend items as colored rectangles with labels.
-/// </summary>
+/// <summary>Template-driven chart legend with replaceable item and layout templates.</summary>
+[TemplatePart(Name="PART_Items",Type=typeof(ItemsControl))]
+[TemplateVisualState(Name="Normal",GroupName="CommonStates")]
+[TemplateVisualState(Name="Disabled",GroupName="CommonStates")]
+[TemplateVisualState(Name="Horizontal",GroupName="LayoutStates")]
+[TemplateVisualState(Name="Vertical",GroupName="LayoutStates")]
 public class ChartLegend : Control
 {
-    /// <inheritdoc />
-    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
-        => new Jalium.UI.Automation.Peers.GenericAutomationPeer(this, Jalium.UI.Automation.Peers.AutomationControlType.Pane);
-
-    private static readonly SolidColorBrush s_defaultForeground = new(Color.FromRgb(220, 220, 220));
-
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer() => new Jalium.UI.Automation.Peers.GenericAutomationPeer(this,Jalium.UI.Automation.Peers.AutomationControlType.Pane);
     #region Dependency Properties
 
     /// <summary>
@@ -23,7 +19,7 @@ public class ChartLegend : Control
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty OrientationProperty =
         DependencyProperty.Register(nameof(Orientation), typeof(Orientation), typeof(ChartLegend),
-            new PropertyMetadata(Orientation.Horizontal, OnVisualPropertyChanged));
+            new PropertyMetadata(Orientation.Horizontal, OnPresentationChanged));
 
     /// <summary>
     /// Identifies the Items dependency property.
@@ -31,7 +27,7 @@ public class ChartLegend : Control
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty ItemsProperty =
         DependencyProperty.Register(nameof(Items), typeof(IEnumerable), typeof(ChartLegend),
-            new PropertyMetadata(null, OnVisualPropertyChanged));
+            new PropertyMetadata(null, OnPresentationChanged));
 
     #endregion
 
@@ -57,127 +53,18 @@ public class ChartLegend : Control
 
     #endregion
 
-    #region Rendering
-
-    /// <inheritdoc />
-    protected override void OnRender(DrawingContext drawingContext)
-    {
-        var dc = drawingContext;
-
-        var items = Items;
-        if (items == null)
-            return;
-
-        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
-        var fontSize = FontSize;
-        var foreground = Foreground ?? s_defaultForeground;
-
-        const double markerSize = 12;
-        const double markerTextGap = 4;
-        const double itemSpacing = 16;
-
-        double offsetX = Padding.Left;
-        double offsetY = Padding.Top;
-
-        foreach (var item in items)
-        {
-            if (item is not ChartLegendItem legendItem)
-                continue;
-
-            if (!legendItem.IsVisible)
-                continue;
-
-            // Draw the color marker rectangle
-            var markerRect = new Rect(offsetX, offsetY + 1, markerSize, markerSize);
-            dc.DrawRectangle(legendItem.Brush, null, markerRect);
-
-            // Draw the label text
-            double textWidth = 0;
-            double textHeight = 0;
-            if (fontSize > 0)
-            {
-                var ft = new FormattedText(legendItem.Label, fontFamily, fontSize)
-                {
-                    Foreground = foreground
-                };
-                TextMeasurement.MeasureText(ft);
-                dc.DrawText(ft, new Point(offsetX + markerSize + markerTextGap, offsetY));
-                textWidth = ft.Width;
-                textHeight = ft.Height;
-            }
-
-            if (Orientation == Orientation.Horizontal)
-            {
-                offsetX += markerSize + markerTextGap + textWidth + itemSpacing;
-            }
-            else
-            {
-                offsetY += Math.Max(markerSize, textHeight) + itemSpacing / 2.0;
-            }
-        }
-    }
-
-    /// <inheritdoc />
-    protected override Size MeasureOverride(Size availableSize)
-    {
-        var items = Items;
-        if (items == null)
-            return new Size(0, 0);
-
-        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
-        var fontSize = FontSize;
-
-        const double markerSize = 12;
-        const double markerTextGap = 4;
-        const double itemSpacing = 16;
-
-        double totalWidth = 0;
-        double totalHeight = 0;
-        double lineWidth = 0;
-        double maxLineHeight = 0;
-
-        foreach (var item in items)
-        {
-            if (item is not ChartLegendItem legendItem || !legendItem.IsVisible)
-                continue;
-
-            double textWidth = 0;
-            double textHeight = 0;
-            if (fontSize > 0)
-            {
-                var ft = new FormattedText(legendItem.Label, fontFamily, fontSize);
-                TextMeasurement.MeasureText(ft);
-                textWidth = ft.Width;
-                textHeight = ft.Height;
-            }
-
-            var itemWidth = markerSize + markerTextGap + textWidth + itemSpacing;
-            var itemHeight = Math.Max(markerSize, textHeight);
-
-            if (Orientation == Orientation.Horizontal)
-            {
-                lineWidth += itemWidth;
-                totalWidth = Math.Max(totalWidth, lineWidth);
-                maxLineHeight = Math.Max(maxLineHeight, itemHeight);
-            }
-            else
-            {
-                totalWidth = Math.Max(totalWidth, itemWidth);
-                totalHeight += itemHeight + itemSpacing / 2.0;
-            }
-        }
-
-        if (Orientation == Orientation.Horizontal)
-        {
-            totalHeight = maxLineHeight;
-        }
-
-        // Negative Padding is legal; the Size constructor is not — clamp at the
-        // summation sink.
-        return new Size(
-            Math.Max(0, totalWidth + Padding.Left + Padding.Right),
-            Math.Max(0, totalHeight + Padding.Top + Padding.Bottom));
-    }
-
-    #endregion
+    public static readonly DependencyProperty ItemTemplateProperty=DependencyProperty.Register(nameof(ItemTemplate),typeof(DataTemplate),typeof(ChartLegend),new PropertyMetadata(null));
+    public static readonly DependencyProperty ItemContainerStyleProperty=DependencyProperty.Register(nameof(ItemContainerStyle),typeof(Style),typeof(ChartLegend),new PropertyMetadata(null));
+    public static readonly DependencyProperty ItemsPanelProperty=DependencyProperty.Register(nameof(ItemsPanel),typeof(ItemsPanelTemplate),typeof(ChartLegend),new PropertyMetadata(null));
+    public DataTemplate? ItemTemplate { get=>(DataTemplate?)GetValue(ItemTemplateProperty); set=>SetValue(ItemTemplateProperty,value); }
+    public Style? ItemContainerStyle { get=>(Style?)GetValue(ItemContainerStyleProperty); set=>SetValue(ItemContainerStyleProperty,value); }
+    public ItemsPanelTemplate? ItemsPanel { get=>(ItemsPanelTemplate?)GetValue(ItemsPanelProperty); set=>SetValue(ItemsPanelProperty,value); }
+    private ItemsControl? _items;
+    static ChartLegend()=>DefaultStyleKeyProperty.OverrideMetadata(typeof(ChartLegend),new PropertyMetadata(typeof(ChartLegend)));
+    public override void OnApplyTemplate() { ReleaseItems(); base.OnApplyTemplate(); _items=GetTemplateChild("PART_Items") as ItemsControl; UpdateStates(); }
+    protected override void OnTemplateChanging() { ReleaseItems(); base.OnTemplateChanging(); }
+    private void ReleaseItems() { if(_items is not null) { _items.ClearBinding(ItemsControl.ItemsSourceProperty); _items.ClearValue(ItemsControl.ItemsSourceProperty); } _items=null; }
+    protected override void OnIsEnabledChanged(bool oldValue,bool newValue) { base.OnIsEnabledChanged(oldValue,newValue); UpdateStates(); }
+    private static void OnPresentationChanged(DependencyObject d,DependencyPropertyChangedEventArgs e) { var legend=(ChartLegend)d; legend.InvalidateMeasure(); legend.UpdateStates(); }
+    private void UpdateStates() { if(TemplateRootInternal is null)return; VisualStateManager.GoToState(this,IsEnabled?"Normal":"Disabled",false); VisualStateManager.GoToState(this,Orientation.ToString(),false); }
 }

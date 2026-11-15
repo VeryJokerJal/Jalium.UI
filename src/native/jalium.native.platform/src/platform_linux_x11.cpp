@@ -22,6 +22,10 @@
 #include <wayland-cursor.h>
 #include <xkbcommon/xkbcommon.h>
 #include "xdg-shell-client-protocol.h"
+#ifdef JALIUM_HAS_FRACTIONAL_SCALE_V1
+#include "fractional-scale-v1-client-protocol.h"
+#include "viewporter-client-protocol.h"
+#endif
 #ifdef JALIUM_HAS_XDG_ACTIVATION_V1
 #include "xdg-activation-v1-client-protocol.h"
 #endif
@@ -253,6 +257,9 @@ static xdg_wm_base* g_xdgWmBase = nullptr;
 static xdg_activation_v1* g_xdgActivation = nullptr;
 #endif
 static wl_seat* g_waylandSeat = nullptr;
+static uint32_t g_waylandSeatRegistryName = 0;
+static std::vector<std::pair<uint32_t, uint32_t>> g_waylandSeatGlobals;
+static bool g_waylandSeatTeardown = false;
 static wl_pointer* g_waylandPointer = nullptr;
 static wl_keyboard* g_waylandKeyboard = nullptr;
 static wl_touch* g_waylandTouch = nullptr;
@@ -266,18 +273,43 @@ static float g_pointerX = 0;
 static float g_pointerY = 0;
 static uint32_t g_waylandModifiers = 0;
 static uint32_t g_waylandInputSerial = 0;
+struct WaylandMenuInputAction {
+    JaliumPlatformWindow* window = nullptr;
+    uint64_t identity = 0;
+    uint32_t serial = 0;
+    bool callback = false;
+    uint64_t epoch = 0;
+};
+static thread_local WaylandMenuInputAction g_waylandMenuInputAction;
+static thread_local WaylandMenuInputAction g_lastWaylandMenuInputAction;
+static std::atomic<uint64_t> g_waylandWindowInputIdentity{0};
+static std::atomic<uint64_t> g_waylandMenuInputEpoch{1};
+static uint64_t g_waylandSeatCapabilitiesRevision = 0;
+class ScopedWaylandMenuInput {
+    WaylandMenuInputAction previous = g_waylandMenuInputAction;
+public:
+    ScopedWaylandMenuInput(JaliumPlatformWindow* window, uint64_t identity, uint32_t serial)
+    {
+        const uint64_t epoch = g_waylandMenuInputEpoch.load(std::memory_order_acquire);
+        g_waylandMenuInputAction = {window, identity, serial, true, epoch};
+        if (serial) g_lastWaylandMenuInputAction = {window, identity, serial, false, epoch};
+    }
+    ~ScopedWaylandMenuInput() { g_waylandMenuInputAction = previous; }
+};
 static uint32_t g_waylandPointerSerial = 0;
 static uint32_t g_waylandPointerButtons = 0;
 static wl_data_device_manager* g_waylandDataDeviceManager = nullptr;
 static wl_data_device* g_waylandDataDevice = nullptr;
 static wl_data_source* g_waylandClipboardSource = nullptr;
 static bool g_waylandCompositionActive = false;
+static uint64_t g_waylandTextInputRevision = 1;
 
 struct WaylandTouchContact {
     JaliumPlatformWindow* window = nullptr;
     float x = 0;
     float y = 0;
     uint64_t order = 0;
+    uint32_t pressSerial = 0;
     bool primary = false;
 };
 static std::unordered_map<int32_t, WaylandTouchContact> g_waylandTouchContacts;
@@ -292,6 +324,8 @@ struct WaylandTabletToolState {
     zwp_tablet_tool_v2* tool = nullptr;
     JaliumPlatformWindow* window = nullptr;
     uint32_t pointerId = 0;
+    uint32_t pressSerial = 0;
+    uint32_t menuInputSerial = 0;
     float x = 0;
     float y = 0;
     float pressure = 0;
@@ -323,6 +357,10 @@ static zxdg_exporter_v2* g_waylandExporter = nullptr;
 #ifdef JALIUM_HAS_XDG_DECORATION_V1
 static zxdg_decoration_manager_v1* g_waylandDecorationManager = nullptr;
 #endif
+#ifdef JALIUM_HAS_FRACTIONAL_SCALE_V1
+static wp_fractional_scale_manager_v1* g_waylandFractionalScaleManager = nullptr;
+static wp_viewporter* g_waylandViewporter = nullptr;
+#endif
 #ifdef JALIUM_HAS_XDG_TOPLEVEL_ICON_V1
 static xdg_toplevel_icon_manager_v1* g_waylandToplevelIconManager = nullptr;
 #endif
@@ -352,6 +390,9 @@ static bool g_pendingWaylandCommitSet = false;
 static uint32_t g_pendingWaylandDeleteBefore = 0;
 static uint32_t g_pendingWaylandDeleteAfter = 0;
 static bool g_pendingWaylandDeleteSet = false;
+static JaliumPlatformWindow* g_pendingWaylandTextTarget = nullptr;
+static uint64_t g_pendingWaylandTextIdentity = 0;
+static uint64_t g_pendingWaylandTextRevision = 0;
 #endif
 #ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V1
 static zwp_text_input_manager_v1* g_waylandTextInputManagerV1 = nullptr;
@@ -439,11 +480,25 @@ struct JaliumPlatformWindow {
     int32_t             height = 0;
     float               dpiScale = 1.0f;
     bool                destroyed = false;
+    bool                destroying = false;
     JaliumWindowState   state = JALIUM_WINDOW_STATE_NORMAL;
+    JaliumWindowState   requestedState = JALIUM_WINDOW_STATE_NORMAL;
+    bool                stateRequestPending = false;
     int32_t             x = 0;
     int32_t             y = 0;
     intptr_t            parentHandle = 0;
     bool                enabled = true;
+    bool                x11Visible = false;
+    bool                x11Tiled = false;
+    uint32_t            x11ResizableEdges = 15;
+    std::vector<Window> x11ConstraintAncestors;
+    bool                x11WmGrab = false;
+    bool                x11ConfiguredTiled = false;
+    JaliumWindowState   x11ConfiguredState = JALIUM_WINDOW_STATE_NORMAL;
+    std::vector<std::array<int32_t, 2>> x11ResizeRequests;
+    bool                userResizing = false;
+    int32_t             normalX = 0, normalY = 0;
+    int32_t             normalWidth = 0, normalHeight = 0;
     int32_t             requestedMinWidth = 0;
     int32_t             requestedMinHeight = 0;
     int32_t             requestedMaxWidth = 0;
@@ -459,6 +514,10 @@ struct JaliumPlatformWindow {
     int32_t             lastPressRootX = 0;
     int32_t             lastPressRootY = 0;
     uint32_t            lastPressButton = 0;
+    bool                lastPressActive = false;
+
+    std::string         desktopApplicationId = "jalium.ui";
+    uint32_t            capabilities = JALIUM_WINDOW_CAPABILITY_ALL;
 
     // X11 XDND target state. These members stay inert for Wayland windows.
     Window              xdndSource = 0;
@@ -472,24 +531,45 @@ struct JaliumPlatformWindow {
 
 #ifdef JALIUM_HAS_WAYLAND
     wl_surface*         waylandSurface = nullptr;
+    // A callback may destroy and recreate a window at the same address.
+    uint64_t waylandInputIdentity = g_waylandWindowInputIdentity.fetch_add(1, std::memory_order_relaxed) + 1;
+#ifdef JALIUM_HAS_FRACTIONAL_SCALE_V1
+    wp_fractional_scale_v1* waylandFractionalScale = nullptr;
+    wp_viewport*        waylandViewport = nullptr;
+    uint32_t            waylandFractionalScale120 = 0;
+#endif
     xdg_surface*        xdgSurface = nullptr;
     xdg_toplevel*       xdgToplevel = nullptr;
     xdg_popup*          xdgPopup = nullptr;
+    uint32_t            pendingWaylandCapabilities = JALIUM_WINDOW_CAPABILITY_ALL;
+    bool                waylandCapabilitiesPending = false;
+    uint32_t            waylandResizableEdges = 15;
+    uint32_t            pendingWaylandResizableEdges = 15;
+    int32_t             waylandBoundsWidth = 0, waylandBoundsHeight = 0;
+    bool                waylandMaximizeAfterFullscreen = false;
+    bool                waylandTiled = false;
+    bool                acknowledgedWaylandTiled = false;
     uint32_t            xdgPopupRepositionToken = 0;
 #ifdef JALIUM_HAS_XDG_DECORATION_V1
     zxdg_toplevel_decoration_v1* xdgDecoration = nullptr;
     uint32_t            xdgDecorationMode = ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
+    uint32_t            pendingXdgDecorationMode = ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
 #endif
 #ifdef JALIUM_HAS_XDG_FOREIGN_V2
     zxdg_exported_v2*   portalExport = nullptr;
     std::string         portalParentToken;
 #endif
     std::string         waylandTitle;
+    std::vector<uint32_t> waylandIcon;
+    int32_t             waylandIconWidth = 0, waylandIconHeight = 0;
     std::atomic<bool>   waylandConfigured{false};
     std::atomic<bool>   waylandVisible{false};
+    std::atomic<bool>   waylandSuspended{false};
+    bool                pendingWaylandSuspended = false;
     std::atomic<bool>   waylandPaintPending{false};
     std::atomic<bool>   waylandDispatchingPaint{false};
     bool                waylandActivated = false;
+    std::unordered_map<uint32_t, uint32_t> waylandPointerPresses;
     bool                imeEnabled = false;
     std::string         imeSurroundingText;
     int32_t             imeCursorByteOffset = 0;
@@ -499,13 +579,12 @@ struct JaliumPlatformWindow {
     int32_t             imeCaretWidth = 1;
     int32_t             imeCaretHeight = 1;
 
-    // Integer output scale of the wl_output this surface currently occupies.
+    // Render scale selected for this surface. Fractional preferences take
+    // precedence over the max entered-output integer scale.
     // Window width/height (and every pointer coordinate we dispatch) are kept
-    // in physical pixels = compositor-logical * waylandScale, with
-    // wl_surface_set_buffer_scale telling the compositor buffers match. On a
-    // scale-1 compositor everything multiplies by 1 and behavior is identical
-    // to the pre-HiDPI code.
-    int32_t             waylandScale = 1;
+    // in physical pixels = compositor-logical * waylandScale. Integer scales
+    // use buffer_scale; fractional scales use buffer_scale=1 with a viewport.
+    double              waylandScale = 1;
     // wl_surface.enter/leave may name more than one output while a surface
     // straddles monitor boundaries. Keep a registry-name keyed snapshot so
     // scale changes and output removal can update the same state without
@@ -516,8 +595,11 @@ struct JaliumPlatformWindow {
     int32_t             waylandLogicalHeight = 0;
 #endif
 
-    void DispatchEvent(const JaliumPlatformEvent& evt)
+    void DispatchEvent(const JaliumPlatformEvent& evt, uint32_t menuInputSerial = 0)
     {
+#ifndef JALIUM_HAS_WAYLAND
+        (void)menuInputSerial;
+#endif
         if (!enabled)
         {
             switch (evt.type)
@@ -550,9 +632,303 @@ struct JaliumPlatformWindow {
             }
         }
         if (callback && !destroyed)
+        {
+#ifdef JALIUM_HAS_WAYLAND
+            // Record ownership even without a new serial: nested paint/focus
+            // callbacks cannot borrow a different window's current input.
+            ScopedWaylandMenuInput input(this, waylandInputIdentity, menuInputSerial);
+#endif
             callback(&evt, userData);
+        }
     }
 };
+
+// A managed event can synchronously close its window. Test membership without
+// dereferencing a callback's potentially freed pointer before dispatching more
+// events or touching native state.
+static bool IsLiveWindow(JaliumPlatformWindow* window)
+{
+    std::lock_guard<std::mutex> lock(g_windowMapMutex);
+#ifdef JALIUM_HAS_WAYLAND
+    if (g_waylandWindows.find(window) != g_waylandWindows.end()) return true;
+#endif
+    for (const auto& entry : g_windowMap)
+        if (entry.second == window) return true;
+    return false;
+}
+
+static bool HasX11PopupKeyboardGrab()
+{
+    std::lock_guard<std::mutex> lock(g_windowMapMutex);
+    for (const auto& entry : g_windowMap)
+        if (entry.second && entry.second->x11PopupKeyboardGrabbed) return true;
+    return false;
+}
+
+// A WM can destroy its decoration frames between QueryTree and the next
+// request. Trap only BadWindow from this checked query range. Do not hold the
+// display lock or the process-wide handler while invoking application code.
+class X11VanishedWindowTrap
+{
+public:
+    X11VanishedWindowTrap(Display* display, Window client)
+        : lock_(mutex_), display_(display), client_(client)
+    {
+        XLockDisplay(display_);
+        firstRequest_ = NextRequest(display_);
+        previous_ = XSetErrorHandler(HandleError);
+        fallback_.store(previous_, std::memory_order_release);
+        current_ = this;
+    }
+    ~X11VanishedWindowTrap()
+    {
+        if (!completed_) XSync(display_, False);
+        current_ = nullptr;
+        const auto replaced = XSetErrorHandler(previous_);
+        if (replaced != HandleError) XSetErrorHandler(replaced);
+        XUnlockDisplay(display_);
+    }
+    bool ClientDisappeared()
+    {
+        XSync(display_, False);
+        completed_ = true;
+        return clientDisappeared_;
+    }
+private:
+    static int HandleError(Display* display, XErrorEvent* error)
+    {
+        if (current_ && display == current_->display_ && error->serial >= current_->firstRequest_ &&
+            error->error_code == BadWindow)
+        {
+            if (error->resourceid == current_->client_) current_->clientDisappeared_ = true;
+            return 0;
+        }
+        const auto previous = fallback_.load(std::memory_order_acquire);
+        if (previous) return previous(display, error);
+        // Xlib's default handler is fatal. Keep that behavior for an unrelated
+        // error even on implementations returning a null default callback.
+        fprintf(stderr, "X11 protocol error %u for resource 0x%lx\n", error->error_code, error->resourceid);
+        abort();
+    }
+    inline static std::mutex mutex_;
+    inline static std::atomic<XErrorHandler> fallback_{nullptr};
+    inline static thread_local X11VanishedWindowTrap* current_ = nullptr;
+    std::unique_lock<std::mutex> lock_;
+    Display* display_;
+    Window client_;
+    unsigned long firstRequest_ = 0;
+    XErrorHandler previous_ = nullptr;
+    bool clientDisappeared_ = false;
+    bool completed_ = false;
+};
+
+static void RefreshX11ConstraintAncestors(JaliumPlatformWindow* window)
+{
+    std::vector<Window> ancestors;
+    if (!(window->style & JALIUM_WINDOW_STYLE_POPUP))
+    {
+        Window current = window->xwindow;
+        for (int depth = 0; depth < 16; ++depth)
+        {
+            Window root = None, parent = None;
+            Window* children = nullptr;
+            unsigned int count = 0;
+            const bool queried = XQueryTree(g_display, current, &root, &parent, &children, &count);
+            if (children) XFree(children);
+            if (!queried || parent == None || parent == root ||
+                std::find(ancestors.begin(), ancestors.end(), parent) != ancestors.end()) break;
+            XWindowAttributes attributes{};
+            if (!XGetWindowAttributes(g_display, parent, &attributes)) break;
+            if (std::find(window->x11ConstraintAncestors.begin(), window->x11ConstraintAncestors.end(), parent) ==
+                window->x11ConstraintAncestors.end())
+                XSelectInput(g_display, parent, attributes.your_event_mask | PropertyChangeMask | StructureNotifyMask);
+            ancestors.push_back(parent);
+            current = parent;
+        }
+    }
+    window->x11ConstraintAncestors = std::move(ancestors);
+}
+
+static bool RefreshX11ResizeConstraints(JaliumPlatformWindow* window, bool refreshAncestors = false)
+{
+    uint32_t edges = 15;
+    bool tiled = false;
+    bool clientDisappeared = false;
+    {
+        X11VanishedWindowTrap trap(g_display, window->xwindow);
+        if (refreshAncestors) RefreshX11ConstraintAncestors(window);
+        if (window->x11Visible && !(window->style & JALIUM_WINDOW_STYLE_POPUP))
+        {
+            const Atom property = XInternAtom(g_display, "_GTK_EDGE_CONSTRAINTS", False);
+            bool hasEdgeHint = false;
+            // Mutter publishes on its decoration frame for server-decorated
+            // windows. The client's own property takes precedence when present.
+            for (size_t index = 0; index <= window->x11ConstraintAncestors.size(); ++index)
+            {
+                const Window target = index == 0 ? window->xwindow : window->x11ConstraintAncestors[index - 1];
+                Atom type = None;
+                int format = 0;
+                unsigned long count = 0, remaining = 0;
+                unsigned char* data = nullptr;
+                const bool valid = XGetWindowProperty(g_display, target, property, 0, 1, False,
+                    XA_CARDINAL, &type, &format, &count, &remaining, &data) == Success &&
+                    data && type == XA_CARDINAL && format == 32 && count == 1 && remaining == 0;
+                if (valid)
+                {
+                    hasEdgeHint = true;
+                    const auto mask = *reinterpret_cast<const unsigned long*>(data);
+                    tiled = (mask & 0x55u) != 0;
+                    edges = ((mask & 0x02u) ? JALIUM_RESIZE_EDGE_TOP : 0u) |
+                        ((mask & 0x08u) ? JALIUM_RESIZE_EDGE_RIGHT : 0u) |
+                        ((mask & 0x20u) ? JALIUM_RESIZE_EDGE_BOTTOM : 0u) |
+                        ((mask & 0x80u) ? JALIUM_RESIZE_EDGE_LEFT : 0u);
+                }
+                if (data) XFree(data);
+                if (valid) break;
+            }
+            if (!hasEdgeHint)
+            {
+                // Older tilers expose only one EWMH maximize axis. Keep their
+                // geometry under WM control without guessing constrained edges.
+                Atom type = None;
+                int format = 0;
+                unsigned long count = 0, remaining = 0;
+                unsigned char* data = nullptr;
+                if (XGetWindowProperty(g_display, window->xwindow, XInternAtom(g_display, "_NET_WM_STATE", False),
+                        0, 64, False, XA_ATOM, &type, &format, &count, &remaining, &data) == Success &&
+                    data && type == XA_ATOM && format == 32 && remaining == 0)
+                {
+                    const auto* states = reinterpret_cast<const Atom*>(data);
+                    const Atom horizontal = XInternAtom(g_display, "_NET_WM_STATE_MAXIMIZED_HORZ", False);
+                    const Atom vertical = XInternAtom(g_display, "_NET_WM_STATE_MAXIMIZED_VERT", False);
+                    const bool maximizedH = std::find(states, states + count, horizontal) != states + count;
+                    const bool maximizedV = std::find(states, states + count, vertical) != states + count;
+                    tiled = maximizedH != maximizedV;
+                }
+                if (data) XFree(data);
+            }
+        }
+        clientDisappeared = trap.ClientDisappeared();
+    }
+    if (clientDisappeared) return false;
+    if (window->x11Tiled == tiled && window->x11ResizableEdges == edges) return true;
+    window->x11Tiled = tiled;
+    window->x11ResizableEdges = edges;
+    JaliumPlatformEvent event{};
+    event.type = JALIUM_EVENT_RESIZE_CONSTRAINTS_CHANGED;
+    event.window = window;
+    window->DispatchEvent(event);
+    return IsLiveWindow(window);
+}
+
+static void SaveNormalGeometry(JaliumPlatformWindow* window)
+{
+    if (window->state != JALIUM_WINDOW_STATE_NORMAL) return;
+    if (window->x11Tiled) return;
+#ifdef JALIUM_HAS_WAYLAND
+    // Tiled windows still report Normal through the public state enum. Their
+    // compositor geometry must not replace the last floating restore size,
+    // including during interactive resizing, scale changes or app requests.
+    if (window->waylandTiled) return;
+#endif
+    window->normalX = window->x;
+    window->normalY = window->y;
+    window->normalWidth = window->width;
+    window->normalHeight = window->height;
+}
+
+static void ScaleNormalSize(JaliumPlatformWindow* window, double ratio)
+{
+    const auto scaled = [ratio](int32_t value) {
+        return static_cast<int32_t>(std::clamp(std::round(value * ratio), 1.0,
+            static_cast<double>(INT32_MAX)));
+    };
+    window->normalWidth = scaled(window->normalWidth);
+    window->normalHeight = scaled(window->normalHeight);
+}
+
+static void RequestX11Resize(JaliumPlatformWindow* window, int32_t width, int32_t height)
+{
+    // ConfigureNotify has no resize reason. Remember application requests so
+    // a layout update made during a WM input grab is not mistaken for a drag.
+    const std::array<int32_t, 2> requested{width, height};
+    if (width != window->width || height != window->height || !window->x11ResizeRequests.empty())
+    {
+        auto& requests = window->x11ResizeRequests;
+        if (requests.empty() || requests.back() != requested)
+        {
+            // A WM can ignore/coalesce requests, especially while maximized.
+            if (requests.size() == 64) requests.erase(requests.begin());
+            requests.push_back(requested);
+        }
+    }
+    XResizeWindow(g_display, window->xwindow, width, height);
+}
+
+static bool ConsumeX11ResizeRequest(JaliumPlatformWindow* window, int32_t width, int32_t height)
+{
+    auto& requests = window->x11ResizeRequests;
+    const auto match = std::find_if(requests.begin(), requests.end(), [&](const auto& size) {
+        const auto clamp = [](int32_t value, int32_t minimum, int32_t maximum) {
+            return std::max(std::max(1, minimum), maximum > 0 ? std::min(value, maximum) : value);
+        };
+        return (size[0] == width && size[1] == height) ||
+            (clamp(size[0], window->requestedMinWidth, window->requestedMaxWidth) == width &&
+             clamp(size[1], window->requestedMinHeight, window->requestedMaxHeight) == height);
+    });
+    if (match == requests.end()) return false;
+    requests.erase(requests.begin(), match + 1);
+    return true;
+}
+
+static bool SupportsWindowState(uint32_t capabilities, JaliumWindowState state)
+{
+    if (!(capabilities & JALIUM_WINDOW_CAPABILITY_STATE_REQUESTS_RESTRICTED)) return true;
+    switch (state)
+    {
+    case JALIUM_WINDOW_STATE_MAXIMIZED: return capabilities & JALIUM_WINDOW_CAPABILITY_MAXIMIZE;
+    case JALIUM_WINDOW_STATE_FULLSCREEN: return capabilities & JALIUM_WINDOW_CAPABILITY_FULLSCREEN;
+    case JALIUM_WINDOW_STATE_MINIMIZED: return capabilities & JALIUM_WINDOW_CAPABILITY_MINIMIZE;
+    default: return true;
+    }
+}
+
+static bool RefreshX11WindowCapabilities(JaliumPlatformWindow* window)
+{
+    Atom type = None;
+    int format = 0;
+    unsigned long count = 0, remaining = 0;
+    unsigned char* data = nullptr;
+    uint32_t capabilities = JALIUM_WINDOW_CAPABILITY_ALL;
+    if (XGetWindowProperty(g_display, window->xwindow, XInternAtom(g_display, "_NET_WM_ALLOWED_ACTIONS", False),
+            0, 256, False, XA_ATOM, &type, &format, &count, &remaining, &data) == Success &&
+        type == XA_ATOM && format == 32)
+    {
+        capabilities = JALIUM_WINDOW_CAPABILITY_WINDOW_MENU;
+        bool maxHorizontal = false, maxVertical = false;
+        const auto* atoms = reinterpret_cast<const Atom*>(data);
+        for (unsigned long i = 0; i < count; ++i)
+        {
+            const Atom atom = atoms[i];
+            if (atom == XInternAtom(g_display, "_NET_WM_ACTION_MOVE", False)) capabilities |= JALIUM_WINDOW_CAPABILITY_MOVE;
+            else if (atom == XInternAtom(g_display, "_NET_WM_ACTION_RESIZE", False)) capabilities |= JALIUM_WINDOW_CAPABILITY_RESIZE;
+            else if (atom == XInternAtom(g_display, "_NET_WM_ACTION_MINIMIZE", False)) capabilities |= JALIUM_WINDOW_CAPABILITY_MINIMIZE;
+            else if (atom == XInternAtom(g_display, "_NET_WM_ACTION_FULLSCREEN", False)) capabilities |= JALIUM_WINDOW_CAPABILITY_FULLSCREEN;
+            else if (atom == XInternAtom(g_display, "_NET_WM_ACTION_CLOSE", False)) capabilities |= JALIUM_WINDOW_CAPABILITY_CLOSE;
+            else if (atom == XInternAtom(g_display, "_NET_WM_ACTION_MAXIMIZE_HORZ", False)) maxHorizontal = true;
+            else if (atom == XInternAtom(g_display, "_NET_WM_ACTION_MAXIMIZE_VERT", False)) maxVertical = true;
+        }
+        if (maxHorizontal && maxVertical) capabilities |= JALIUM_WINDOW_CAPABILITY_MAXIMIZE;
+    }
+    if (data) XFree(data);
+    if (capabilities == window->capabilities) return true;
+    window->capabilities = capabilities;
+    JaliumPlatformEvent event{};
+    event.type = JALIUM_EVENT_CAPABILITIES_CHANGED;
+    event.window = window;
+    window->DispatchEvent(event);
+    return IsLiveWindow(window);
+}
 
 static void NotifyPointingDevicesChanged()
 {
@@ -1322,6 +1698,7 @@ static void DispatchUtf8Characters(JaliumPlatformWindow* window, const std::stri
         event.window = window;
         event.character.codepoint = codePoint;
         window->DispatchEvent(event);
+        if (!IsLiveWindow(window)) return;
     }
 }
 
@@ -1329,7 +1706,7 @@ static void DispatchComposition(
     JaliumPlatformWindow* window, JaliumEventType type,
     const std::string& text, int32_t cursor)
 {
-    if (!window) return;
+    if (!IsLiveWindow(window)) return;
     JaliumPlatformEvent event{};
     event.type = type;
     event.window = window;
@@ -1342,7 +1719,7 @@ static void DispatchDeleteSurrounding(
     JaliumPlatformWindow* window, uint32_t beforeUtf8Bytes,
     uint32_t afterUtf8Bytes)
 {
-    if (!window || (beforeUtf8Bytes == 0 && afterUtf8Bytes == 0)) return;
+    if (!IsLiveWindow(window) || (beforeUtf8Bytes == 0 && afterUtf8Bytes == 0)) return;
     JaliumPlatformEvent event{};
     event.type = JALIUM_EVENT_DELETE_SURROUNDING_TEXT;
     event.window = window;
@@ -1753,7 +2130,9 @@ static int32_t KeySymToJaliumVK(KeySym sym)
     switch (sym)
     {
     case XK_BackSpace:    return 0x08; // VK_BACK
-    case XK_Tab:          return 0x09; // VK_TAB
+    case XK_Tab:
+    case XK_ISO_Left_Tab:
+    case XK_KP_Tab:       return 0x09; // VK_TAB (including Shift+Tab)
     case XK_Return:
     case XK_KP_Enter:     return 0x0D; // VK_RETURN
     case XK_Escape:       return 0x1B; // VK_ESCAPE
@@ -2181,6 +2560,7 @@ static bool UpdateX11WindowDpi(
         1, static_cast<int32_t>(std::lround(
             static_cast<double>(window->height) * metrics.scale / previousScale)));
     window->dpiScale = metrics.scale;
+    ScaleNormalSize(window, metrics.scale / previousScale);
 
     JaliumPlatformEvent event{};
     event.type = JALIUM_EVENT_DPI_CHANGED;
@@ -2193,12 +2573,11 @@ static bool UpdateX11WindowDpi(
     event.dpiChanged.suggestedHeight = suggestedHeight;
     window->DispatchEvent(event);
 
+    if (!IsLiveWindow(window)) return true;
     if (g_display && window->xwindow &&
         (suggestedWidth != window->width || suggestedHeight != window->height))
     {
-        XResizeWindow(g_display, window->xwindow,
-                      static_cast<unsigned int>(suggestedWidth),
-                      static_cast<unsigned int>(suggestedHeight));
+        RequestX11Resize(window, suggestedWidth, suggestedHeight);
     }
     return true;
 }
@@ -2218,9 +2597,12 @@ static void RefreshX11DisplayMetrics()
     }
     for (JaliumPlatformWindow* window : windows)
     {
+        if (!IsLiveWindow(window)) continue;
         X11MonitorMetrics metrics{};
         if (GetX11MonitorMetricsForWindow(window, metrics))
             UpdateX11WindowDpi(window, metrics);
+
+        if (!IsLiveWindow(window)) continue;
 
         JaliumPlatformEvent event{};
         event.type = JALIUM_EVENT_MONITORS_CHANGED;
@@ -2367,6 +2749,7 @@ static void DispatchWaylandPaint(JaliumPlatformWindow* window)
     // paint callback that invalidates again from recursing on the same stack.
     window->waylandPaintPending.store(true, std::memory_order_release);
     if (!window->waylandVisible.load(std::memory_order_acquire) ||
+        window->waylandSuspended.load(std::memory_order_acquire) ||
         !window->waylandConfigured.load(std::memory_order_acquire))
         return;
 
@@ -2380,6 +2763,7 @@ static void DispatchWaylandPaint(JaliumPlatformWindow* window)
     event.type = JALIUM_EVENT_PAINT;
     event.window = window;
     window->DispatchEvent(event);
+    if (!IsLiveWindow(window)) return;
     window->waylandDispatchingPaint.store(false, std::memory_order_release);
 
     // A re-entrant invalidation stays pending for the next event-loop turn.
@@ -2399,25 +2783,92 @@ static int32_t DispatchPendingWaylandPaints()
         {
             if (window->waylandPaintPending.load(std::memory_order_acquire) &&
                 window->waylandVisible.load(std::memory_order_acquire) &&
+                !window->waylandSuspended.load(std::memory_order_acquire) &&
                 window->waylandConfigured.load(std::memory_order_acquire))
                 pending.push_back(window);
         }
     }
 
     for (JaliumPlatformWindow* window : pending)
-        DispatchWaylandPaint(window);
+        if (IsLiveWindow(window)) DispatchWaylandPaint(window);
     return static_cast<int32_t>(pending.size());
 }
 
-static void ApplyWaylandScale(JaliumPlatformWindow* window, int32_t newScale)
+static int32_t WaylandPhysicalSize(int32_t logical, double scale)
 {
-    if (!window || newScale <= 0 || newScale == window->waylandScale)
+    return static_cast<int32_t>(std::clamp(std::round(logical * scale),
+        1.0, static_cast<double>(INT32_MAX)));
+}
+
+static int32_t WaylandLogicalSize(int32_t physical, double scale)
+{
+    return static_cast<int32_t>(std::clamp(std::round(physical / scale),
+        1.0, static_cast<double>(INT32_MAX)));
+}
+
+struct WaylandLogicalSizeRange {
+    int32_t minimum;
+    int32_t maximum; // 0 = unbounded
+};
+
+static WaylandLogicalSizeRange GetWaylandLogicalSizeRange(int32_t minimum, int32_t maximum, double scale)
+{
+    const auto rounded = [scale](int32_t value, bool roundUp) {
+        if (value <= 0) return 0;
+        const double logical = value / scale;
+        return static_cast<int32_t>(std::clamp(roundUp ? std::ceil(logical) : std::floor(logical),
+            1.0, static_cast<double>(INT32_MAX)));
+    };
+    const int32_t lower = rounded(minimum, true);
+    const int32_t upper = rounded(maximum, false);
+    // A physical range narrower than one logical pixel still needs a valid
+    // xdg range. Use the rounded minimum consistently in hints and client choice.
+    return {lower, upper > 0 ? std::max(lower, upper) : 0};
+}
+
+static void UpdateWaylandSurfaceScale(JaliumPlatformWindow* window)
+{
+    if (!window->waylandSurface) return;
+#ifdef JALIUM_HAS_FRACTIONAL_SCALE_V1
+    if (window->waylandViewport && window->waylandFractionalScale120 != 0)
+    {
+        wl_surface_set_buffer_scale(window->waylandSurface, 1);
+        wp_viewport_set_destination(window->waylandViewport,
+            std::max(1, window->waylandLogicalWidth), std::max(1, window->waylandLogicalHeight));
+        return;
+    }
+    if (window->waylandViewport) wp_viewport_set_destination(window->waylandViewport, -1, -1);
+#endif
+    wl_surface_set_buffer_scale(window->waylandSurface, static_cast<int32_t>(window->waylandScale));
+}
+
+static void ApplyWaylandSizeConstraints(JaliumPlatformWindow* window);
+
+static void ApplyWaylandScale(JaliumPlatformWindow* window, double newScale)
+{
+    if (!window || !std::isfinite(newScale) || newScale <= 0 || newScale == window->waylandScale)
         return;
 
+    ScaleNormalSize(window, newScale / window->waylandScale);
+    const float ratio = static_cast<float>(newScale / window->waylandScale);
+    if (g_pointerFocus == window) { g_pointerX *= ratio; g_pointerY *= ratio; }
+    for (auto& [id, contact] : g_waylandTouchContacts)
+    {
+        (void)id;
+        if (contact.window == window) { contact.x *= ratio; contact.y *= ratio; }
+    }
+#ifdef JALIUM_HAS_WAYLAND_TABLET_V2
+    for (auto* tool : g_waylandTabletTools)
+        if (tool->window == window) { tool->x *= ratio; tool->y *= ratio; }
+#endif
     window->waylandScale = newScale;
     window->dpiScale = static_cast<float>(newScale);
-    if (window->waylandSurface)
-        wl_surface_set_buffer_scale(window->waylandSurface, newScale);
+    if (window->waylandLogicalWidth == 0 || window->waylandLogicalHeight == 0)
+    {
+        window->waylandLogicalWidth = window->width;
+        window->waylandLogicalHeight = window->height;
+    }
+    UpdateWaylandSurfaceScale(window);
 
     JaliumPlatformEvent event{};
     event.type = JALIUM_EVENT_DPI_CHANGED;
@@ -2426,18 +2877,10 @@ static void ApplyWaylandScale(JaliumPlatformWindow* window, int32_t newScale)
     event.dpiChanged.dpiY = 96.0f * static_cast<float>(newScale);
     window->DispatchEvent(event);
 
-    // Physical size = logical * scale; the logical size the compositor gave
-    // us is unchanged, but every physical-pixel consumer must re-size.
-    if (window->waylandLogicalWidth == 0 || window->waylandLogicalHeight == 0)
-    {
-        // Not configured yet: the seeded width/height were scale-1 physical,
-        // i.e. equal to logical.
-        window->waylandLogicalWidth = window->width;
-        window->waylandLogicalHeight = window->height;
-    }
-
-    const int32_t physicalWidth = window->waylandLogicalWidth * newScale;
-    const int32_t physicalHeight = window->waylandLogicalHeight * newScale;
+    if (!IsLiveWindow(window)) return;
+    // The compositor-logical size stays fixed while physical consumers resize.
+    const int32_t physicalWidth = WaylandPhysicalSize(window->waylandLogicalWidth, newScale);
+    const int32_t physicalHeight = WaylandPhysicalSize(window->waylandLogicalHeight, newScale);
     if (physicalWidth != window->width || physicalHeight != window->height)
     {
         window->width = physicalWidth;
@@ -2448,10 +2891,53 @@ static void ApplyWaylandScale(JaliumPlatformWindow* window, int32_t newScale)
         event.resize.width = physicalWidth;
         event.resize.height = physicalHeight;
         window->DispatchEvent(event);
+        if (!IsLiveWindow(window)) return;
     }
 
+    SaveNormalGeometry(window);
+    ApplyWaylandSizeConstraints(window);
     DispatchWaylandPaint(window);
 }
+
+#ifdef JALIUM_HAS_FRACTIONAL_SCALE_V1
+static void HandleFractionalPreferredScale(void* data, wp_fractional_scale_v1*, uint32_t scale120)
+{
+    auto* window = static_cast<JaliumPlatformWindow*>(data);
+    if (!window || !window->waylandViewport || scale120 == 0) return;
+    window->waylandFractionalScale120 = scale120;
+    ApplyWaylandScale(window, static_cast<double>(scale120) / 120.0);
+    if (IsLiveWindow(window)) UpdateWaylandSurfaceScale(window);
+}
+
+static const wp_fractional_scale_v1_listener g_fractionalScaleListener = { HandleFractionalPreferredScale };
+
+static void CreateWaylandFractionalScale(JaliumPlatformWindow* window)
+{
+    if (!g_waylandViewporter || !g_waylandFractionalScaleManager) return;
+    window->waylandViewport = wp_viewporter_get_viewport(g_waylandViewporter, window->waylandSurface);
+    if (!window->waylandViewport) return;
+    window->waylandFractionalScale = wp_fractional_scale_manager_v1_get_fractional_scale(
+        g_waylandFractionalScaleManager, window->waylandSurface);
+    if (!window->waylandFractionalScale)
+    {
+        wp_viewport_destroy(window->waylandViewport);
+        window->waylandViewport = nullptr;
+        return;
+    }
+    wp_fractional_scale_v1_add_listener(window->waylandFractionalScale, &g_fractionalScaleListener, window);
+}
+
+static void DestroyWaylandFractionalScale(JaliumPlatformWindow* window)
+{
+    if (window->waylandFractionalScale) wp_fractional_scale_v1_destroy(window->waylandFractionalScale);
+    if (window->waylandViewport) wp_viewport_destroy(window->waylandViewport);
+    window->waylandFractionalScale = nullptr;
+    window->waylandViewport = nullptr;
+}
+#else
+static void CreateWaylandFractionalScale(JaliumPlatformWindow*) {}
+static void DestroyWaylandFractionalScale(JaliumPlatformWindow*) {}
+#endif
 
 static WaylandOutputInfo* FindWaylandOutput(wl_output* output)
 {
@@ -2466,6 +2952,9 @@ static WaylandOutputInfo* FindWaylandOutput(wl_output* output)
 static void RecomputeWaylandScale(JaliumPlatformWindow* window)
 {
     if (!window) return;
+#ifdef JALIUM_HAS_FRACTIONAL_SCALE_V1
+    if (window->waylandFractionalScale120 != 0) return;
+#endif
     int32_t scale = 1;
     for (const auto& [output, outputScale] : window->waylandEnteredOutputs)
     {
@@ -2571,12 +3060,90 @@ static const wl_surface_listener g_surfaceListener = {
     HandleSurfaceLeave,
 };
 
+static bool ApplyPendingWaylandCapabilities(JaliumPlatformWindow* window)
+{
+    if (!window->waylandCapabilitiesPending) return true;
+    window->waylandCapabilitiesPending = false;
+    if (window->capabilities == window->pendingWaylandCapabilities) return true;
+    window->capabilities = window->pendingWaylandCapabilities;
+    JaliumPlatformEvent event{};
+    event.type = JALIUM_EVENT_CAPABILITIES_CHANGED;
+    event.window = window;
+    window->DispatchEvent(event);
+    return IsLiveWindow(window);
+}
+
+static bool ApplyPendingWaylandDecoration(JaliumPlatformWindow* window)
+{
+#ifdef JALIUM_HAS_XDG_DECORATION_V1
+    if (window->xdgDecorationMode != window->pendingXdgDecorationMode)
+    {
+        window->xdgDecorationMode = window->pendingXdgDecorationMode;
+        JaliumPlatformEvent event{};
+        event.type = JALIUM_EVENT_DECORATIONS_CHANGED;
+        event.window = window;
+        window->DispatchEvent(event);
+        if (!IsLiveWindow(window)) return false;
+    }
+#endif
+    return true;
+}
+
+static bool ApplyPendingWaylandRenderingAvailability(JaliumPlatformWindow* window)
+{
+    const bool suspended = window->pendingWaylandSuspended;
+    if (window->waylandSuspended.exchange(suspended, std::memory_order_acq_rel) == suspended) return true;
+    JaliumPlatformEvent event{};
+    event.type = JALIUM_EVENT_RENDERING_AVAILABILITY_CHANGED;
+    event.window = window;
+    window->DispatchEvent(event);
+    return IsLiveWindow(window);
+}
+
+static bool ApplyPendingWaylandResizeConstraints(JaliumPlatformWindow* window)
+{
+    if (window->waylandResizableEdges == window->pendingWaylandResizableEdges &&
+        window->acknowledgedWaylandTiled == window->waylandTiled) return true;
+    window->waylandResizableEdges = window->pendingWaylandResizableEdges;
+    window->acknowledgedWaylandTiled = window->waylandTiled;
+    JaliumPlatformEvent event{};
+    event.type = JALIUM_EVENT_RESIZE_CONSTRAINTS_CHANGED;
+    event.window = window;
+    window->DispatchEvent(event);
+    return IsLiveWindow(window);
+}
+
+static void ApplyAcknowledgedWaylandSurfaceConfiguration(JaliumPlatformWindow* window)
+{
+    window->waylandConfigured.store(true, std::memory_order_release);
+    if (!ApplyPendingWaylandCapabilities(window)) return;
+    if (!ApplyPendingWaylandDecoration(window)) return;
+    if (!ApplyPendingWaylandResizeConstraints(window)) return;
+    if (!ApplyPendingWaylandRenderingAvailability(window)) return;
+    DispatchWaylandPaint(window);
+    if (!IsLiveWindow(window) || !window->xdgToplevel) return;
+    if (!window->waylandSuspended.load(std::memory_order_acquire) &&
+        window->waylandMaximizeAfterFullscreen && window->requestedState == JALIUM_WINDOW_STATE_MAXIMIZED)
+    {
+        if (window->state == JALIUM_WINDOW_STATE_MAXIMIZED)
+            window->waylandMaximizeAfterFullscreen = false;
+        else if (window->state == JALIUM_WINDOW_STATE_NORMAL)
+        {
+            // Some compositors ignore maximize while the committed surface is
+            // fullscreen. Ack and draw its restored configure before requesting
+            // maximize, preserving protocol order and any newer app request.
+            window->waylandMaximizeAfterFullscreen = false;
+            xdg_toplevel_set_maximized(window->xdgToplevel);
+            wl_display_flush(g_waylandDisplay);
+        }
+    }
+}
+
 static void HandleXdgSurfaceConfigure(void* data, xdg_surface* surface, uint32_t serial)
 {
     auto* window = static_cast<JaliumPlatformWindow*>(data);
     xdg_surface_ack_configure(surface, serial);
-    window->waylandConfigured.store(true, std::memory_order_release);
-    DispatchWaylandPaint(window);
+    ApplyAcknowledgedWaylandSurfaceConfiguration(window);
 }
 
 static const xdg_surface_listener g_xdgSurfaceListener = {
@@ -2587,20 +3154,80 @@ static void HandleXdgToplevelConfigure(
     void* data, xdg_toplevel*, int32_t width, int32_t height, wl_array* states)
 {
     auto* window = static_cast<JaliumPlatformWindow*>(data);
+    if (!window || !states || states->size % sizeof(uint32_t) != 0 || (states->size && !states->data)) return;
+    window->waylandConfigured.store(false, std::memory_order_release);
     bool maximized = false;
     bool fullscreen = false;
     bool activated = false;
+    bool resizing = false;
+    bool tiled = false;
+    bool suspended = false;
+    uint32_t resizableEdges = 15;
+    const JaliumWindowState oldState = window->state;
+    const uint32_t capabilities = window->waylandCapabilitiesPending
+        ? window->pendingWaylandCapabilities : window->capabilities;
+    if (!SupportsWindowState(capabilities, window->requestedState))
+    {
+        // Requests made before the first capability event may be ignored. Stop
+        // waiting for them and let this configure report the compositor state.
+        window->requestedState = JALIUM_WINDOW_STATE_NORMAL;
+        window->stateRequestPending = false;
+        window->waylandMaximizeAfterFullscreen = false;
+    }
     auto* state = static_cast<uint32_t*>(states->data);
     const size_t count = states->size / sizeof(uint32_t);
+#ifdef JALIUM_PLATFORM_TEST_HOOKS
+    if (getenv("JALIUM_TEST_WINDOW_TRACE"))
+        std::fprintf(stderr, "xdg configure %dx%d old=%d request=%d normal=%dx%d\n",
+            width, height, window->state, window->requestedState, window->normalWidth, window->normalHeight);
+#endif
     for (size_t index = 0; index < count; ++index)
     {
         maximized |= state[index] == XDG_TOPLEVEL_STATE_MAXIMIZED;
         fullscreen |= state[index] == XDG_TOPLEVEL_STATE_FULLSCREEN;
         activated |= state[index] == XDG_TOPLEVEL_STATE_ACTIVATED;
+        resizing |= state[index] == XDG_TOPLEVEL_STATE_RESIZING;
+#ifdef XDG_TOPLEVEL_STATE_SUSPENDED_SINCE_VERSION
+        suspended |= state[index] == XDG_TOPLEVEL_STATE_SUSPENDED;
+#endif
+#ifdef XDG_TOPLEVEL_STATE_CONSTRAINED_LEFT_SINCE_VERSION
+        switch (state[index])
+        {
+        case XDG_TOPLEVEL_STATE_CONSTRAINED_LEFT: resizableEdges &= ~JALIUM_RESIZE_EDGE_LEFT; break;
+        case XDG_TOPLEVEL_STATE_CONSTRAINED_RIGHT: resizableEdges &= ~JALIUM_RESIZE_EDGE_RIGHT; break;
+        case XDG_TOPLEVEL_STATE_CONSTRAINED_TOP: resizableEdges &= ~JALIUM_RESIZE_EDGE_TOP; break;
+        case XDG_TOPLEVEL_STATE_CONSTRAINED_BOTTOM: resizableEdges &= ~JALIUM_RESIZE_EDGE_BOTTOM; break;
+        }
+#endif
+#ifdef XDG_TOPLEVEL_STATE_TILED_LEFT_SINCE_VERSION
+        tiled |= state[index] == XDG_TOPLEVEL_STATE_TILED_LEFT ||
+            state[index] == XDG_TOPLEVEL_STATE_TILED_RIGHT ||
+            state[index] == XDG_TOPLEVEL_STATE_TILED_TOP ||
+            state[index] == XDG_TOPLEVEL_STATE_TILED_BOTTOM;
+#endif
     }
+
+    window->pendingWaylandSuspended = suspended;
+    window->pendingWaylandResizableEdges = resizableEdges;
 
     JaliumWindowState newState = fullscreen ? JALIUM_WINDOW_STATE_FULLSCREEN :
         (maximized ? JALIUM_WINDOW_STATE_MAXIMIZED : JALIUM_WINDOW_STATE_NORMAL);
+    // xdg-shell has no minimized state/acknowledgement. Preserve the requested
+    // state while inactive; activation or a later explicit request restores it.
+    if (!activated && window->requestedState == JALIUM_WINDOW_STATE_MINIMIZED)
+        newState = JALIUM_WINDOW_STATE_MINIMIZED;
+    if (activated && window->requestedState == JALIUM_WINDOW_STATE_MINIMIZED)
+        window->requestedState = newState;
+    if (!window->stateRequestPending || newState == window->requestedState)
+    {
+        window->requestedState = newState;
+        window->stateRequestPending = false;
+    }
+    const bool leavingNormal = window->state == JALIUM_WINDOW_STATE_NORMAL &&
+        newState != JALIUM_WINDOW_STATE_NORMAL;
+    if (leavingNormal) SaveNormalGeometry(window);
+    window->waylandTiled = tiled;
+    window->userResizing = resizing;
     if (newState != window->state)
     {
         window->state = newState;
@@ -2609,6 +3236,7 @@ static void HandleXdgToplevelConfigure(
         event.window = window;
         event.stateChanged.newState = newState;
         window->DispatchEvent(event);
+        if (!IsLiveWindow(window)) return;
     }
     if (activated != window->waylandActivated)
     {
@@ -2617,15 +3245,51 @@ static void HandleXdgToplevelConfigure(
         event.type = activated ? JALIUM_EVENT_ACTIVATE : JALIUM_EVENT_DEACTIVATE;
         event.window = window;
         window->DispatchEvent(event);
+        if (!IsLiveWindow(window)) return;
     }
+    if (newState == JALIUM_WINDOW_STATE_NORMAL)
+    {
+        // A zero dimension lets the client choose. After maximize/fullscreen,
+        // choose the saved normal size rather than keeping the last large buffer.
+        // An older normal configure can still arrive while a later state
+        // request is pending. Its suggested size must not replace the saved
+        // normal geometry (for example after fullscreen/maximize/restore).
+        const bool restoring = (oldState != JALIUM_WINDOW_STATE_NORMAL ||
+            (window->stateRequestPending && window->requestedState != JALIUM_WINDOW_STATE_NORMAL)) &&
+            !resizing && !tiled;
+        // Bounds are recommendations for dimensions the client chooses, not a
+        // hard maximum for compositor-directed tiling or interactive resizing.
+        const bool resizable = (window->style & JALIUM_WINDOW_STYLE_RESIZABLE) != 0;
+        const auto chooseDimension = [&](int32_t saved, int32_t bound, int32_t requestedMinimum, int32_t requestedMaximum) {
+            int32_t chosen = WaylandLogicalSize(saved, window->waylandScale);
+            if (bound > 0) chosen = std::min(chosen, bound);
+            // Fixed windows restore the saved normal size, not the dimensions
+            // of their current maximized/fullscreen buffer.
+            const auto range = GetWaylandLogicalSizeRange(
+                resizable ? requestedMinimum : saved, resizable ? requestedMaximum : saved,
+                window->waylandScale);
+            return std::clamp(chosen, std::max(1, range.minimum),
+                range.maximum > 0 ? range.maximum : INT32_MAX);
+        };
+        if (width == 0 || restoring)
+            width = chooseDimension(window->normalWidth, window->waylandBoundsWidth,
+                window->requestedMinWidth, window->requestedMaxWidth);
+        if (height == 0 || restoring)
+            height = chooseDimension(window->normalHeight, window->waylandBoundsHeight,
+                window->requestedMinHeight, window->requestedMaxHeight);
+    }
+    // Zero is client choice for each dimension in every state, not just Normal.
+    if (width == 0) width = window->waylandLogicalWidth;
+    if (height == 0) height = window->waylandLogicalHeight;
     if (width > 0 && height > 0)
     {
         // xdg configure reports compositor-logical size; the window (and every
         // consumer above native) works in physical pixels = logical * scale.
         window->waylandLogicalWidth = width;
         window->waylandLogicalHeight = height;
-        const int32_t physicalWidth = width * window->waylandScale;
-        const int32_t physicalHeight = height * window->waylandScale;
+        UpdateWaylandSurfaceScale(window);
+        const int32_t physicalWidth = WaylandPhysicalSize(width, window->waylandScale);
+        const int32_t physicalHeight = WaylandPhysicalSize(height, window->waylandScale);
         if (physicalWidth != window->width || physicalHeight != window->height)
         {
             window->width = physicalWidth;
@@ -2635,9 +3299,12 @@ static void HandleXdgToplevelConfigure(
             event.window = window;
             event.resize.width = physicalWidth;
             event.resize.height = physicalHeight;
+            event.resize.isUserInitiated = resizing ? 1 : 0;
             window->DispatchEvent(event);
+            if (!IsLiveWindow(window)) return;
         }
     }
+    if (!window->stateRequestPending || resizing || tiled) SaveNormalGeometry(window);
 }
 
 static void HandleXdgToplevelClose(void* data, xdg_toplevel*)
@@ -2649,8 +3316,36 @@ static void HandleXdgToplevelClose(void* data, xdg_toplevel*)
     window->DispatchEvent(event);
 }
 
-static void HandleXdgToplevelConfigureBounds(void*, xdg_toplevel*, int32_t, int32_t) {}
-static void HandleXdgToplevelWmCapabilities(void*, xdg_toplevel*, wl_array*) {}
+static void HandleXdgToplevelConfigureBounds(void* data, xdg_toplevel*, int32_t width, int32_t height)
+{
+    auto* window = static_cast<JaliumPlatformWindow*>(data);
+    if (!window || width < 0 || height < 0) return;
+    window->waylandBoundsWidth = width;
+    window->waylandBoundsHeight = height;
+}
+static void HandleXdgToplevelWmCapabilities(void* data, xdg_toplevel*, wl_array* values)
+{
+    auto* window = static_cast<JaliumPlatformWindow*>(data);
+    if (!window || !values || values->size % sizeof(uint32_t) != 0 || (values->size && !values->data)) return;
+    uint32_t capabilities = JALIUM_WINDOW_CAPABILITY_MOVE | JALIUM_WINDOW_CAPABILITY_RESIZE |
+        JALIUM_WINDOW_CAPABILITY_CLOSE | JALIUM_WINDOW_CAPABILITY_STATE_REQUESTS_RESTRICTED;
+    const auto* bytes = static_cast<const unsigned char*>(values->data);
+    for (size_t offset = 0; offset < values->size; offset += sizeof(uint32_t))
+    {
+        uint32_t value = 0;
+        memcpy(&value, bytes + offset, sizeof(value));
+        switch (value)
+        {
+        case 1: capabilities |= JALIUM_WINDOW_CAPABILITY_WINDOW_MENU; break;
+        case 2: capabilities |= JALIUM_WINDOW_CAPABILITY_MAXIMIZE; break;
+        case 3: capabilities |= JALIUM_WINDOW_CAPABILITY_FULLSCREEN; break;
+        case 4: capabilities |= JALIUM_WINDOW_CAPABILITY_MINIMIZE; break;
+        default: break;
+        }
+    }
+    window->pendingWaylandCapabilities = capabilities;
+    window->waylandCapabilitiesPending = true;
+}
 
 static const xdg_toplevel_listener g_xdgToplevelListener = {
     HandleXdgToplevelConfigure,
@@ -2668,11 +3363,13 @@ static void HandleXdgPopupConfigure(
 {
     auto* window = static_cast<JaliumPlatformWindow*>(data);
     if (!window) return;
-    const int32_t scale = window->waylandScale > 0 ? window->waylandScale : 1;
-    const int32_t physicalX = x * scale;
-    const int32_t physicalY = y * scale;
-    const int32_t physicalWidth = width * scale;
-    const int32_t physicalHeight = height * scale;
+    window->waylandConfigured.store(false, std::memory_order_release);
+    auto* parent = WaylandWindowFromSurface(reinterpret_cast<wl_surface*>(window->parentHandle));
+    const double parentScale = parent ? parent->waylandScale : window->waylandScale;
+    const int32_t physicalX = static_cast<int32_t>(std::round(x * parentScale));
+    const int32_t physicalY = static_cast<int32_t>(std::round(y * parentScale));
+    const int32_t physicalWidth = WaylandPhysicalSize(width, window->waylandScale);
+    const int32_t physicalHeight = WaylandPhysicalSize(height, window->waylandScale);
 
     if (physicalX != window->x || physicalY != window->y)
     {
@@ -2684,6 +3381,7 @@ static void HandleXdgPopupConfigure(
         event.move.x = physicalX;
         event.move.y = physicalY;
         window->DispatchEvent(event);
+        if (!IsLiveWindow(window)) return;
     }
     if (physicalWidth > 0 && physicalHeight > 0 &&
         (physicalWidth != window->width || physicalHeight != window->height))
@@ -2692,6 +3390,7 @@ static void HandleXdgPopupConfigure(
         window->height = physicalHeight;
         window->waylandLogicalWidth = width;
         window->waylandLogicalHeight = height;
+        UpdateWaylandSurfaceScale(window);
         JaliumPlatformEvent event{};
         event.type = JALIUM_EVENT_RESIZE;
         event.window = window;
@@ -2740,11 +3439,12 @@ static xdg_positioner* CreatePopupPositioner(JaliumPlatformWindow* window)
     if (!window || !g_xdgWmBase) return nullptr;
     xdg_positioner* positioner = xdg_wm_base_create_positioner(g_xdgWmBase);
     if (!positioner) return nullptr;
-    const int32_t scale = window->waylandScale > 0 ? window->waylandScale : 1;
-    const int32_t logicalWidth = std::max(1, (window->width + scale - 1) / scale);
-    const int32_t logicalHeight = std::max(1, (window->height + scale - 1) / scale);
-    const int32_t logicalX = window->x / scale;
-    const int32_t logicalY = window->y / scale;
+    auto* parent = FindWaylandWindowBySurface(reinterpret_cast<wl_surface*>(window->parentHandle));
+    const double parentScale = parent ? parent->waylandScale : window->waylandScale;
+    const int32_t logicalWidth = WaylandLogicalSize(window->width, window->waylandScale);
+    const int32_t logicalHeight = WaylandLogicalSize(window->height, window->waylandScale);
+    const int32_t logicalX = static_cast<int32_t>(std::round(window->x / parentScale));
+    const int32_t logicalY = static_cast<int32_t>(std::round(window->y / parentScale));
     xdg_positioner_set_size(positioner, logicalWidth, logicalHeight);
     // Keep the anchor rectangle inside the parent geometry even when the
     // requested popup origin overflows it; offsets are the protocol-defined
@@ -2767,12 +3467,10 @@ static xdg_positioner* CreatePopupPositioner(JaliumPlatformWindow* window)
         if (auto* parent = FindWaylandWindowBySurface(
                 reinterpret_cast<wl_surface*>(window->parentHandle)))
         {
-            const int32_t parentScale = parent->waylandScale > 0
-                ? parent->waylandScale : 1;
             xdg_positioner_set_parent_size(
                 positioner,
-                std::max(1, parent->width / parentScale),
-                std::max(1, parent->height / parentScale));
+                WaylandLogicalSize(parent->width, parent->waylandScale),
+                WaylandLogicalSize(parent->height, parent->waylandScale));
         }
     }
 #endif
@@ -2823,7 +3521,7 @@ static void HandleWaylandDecorationConfigure(
     void* data, zxdg_toplevel_decoration_v1*, uint32_t mode)
 {
     auto* window = static_cast<JaliumPlatformWindow*>(data);
-    if (window) window->xdgDecorationMode = mode;
+    if (window) window->pendingXdgDecorationMode = mode;
 }
 
 static const zxdg_toplevel_decoration_v1_listener g_waylandDecorationListener = {
@@ -2863,12 +3561,39 @@ static void CreateWaylandDecoration(JaliumPlatformWindow*) {}
 static void DestroyWaylandDecoration(JaliumPlatformWindow*) {}
 #endif
 
+static void ApplyWaylandSizeConstraints(JaliumPlatformWindow* window)
+{
+    if (!window->xdgToplevel) return;
+    const double scale = window->waylandScale;
+    const bool resizable = (window->style & JALIUM_WINDOW_STYLE_RESIZABLE) != 0;
+    const auto width = GetWaylandLogicalSizeRange(
+        resizable ? window->requestedMinWidth : window->width,
+        resizable ? window->requestedMaxWidth : window->width, scale);
+    const auto height = GetWaylandLogicalSizeRange(
+        resizable ? window->requestedMinHeight : window->height,
+        resizable ? window->requestedMaxHeight : window->height, scale);
+    xdg_toplevel_set_min_size(window->xdgToplevel, width.minimum, height.minimum);
+    xdg_toplevel_set_max_size(window->xdgToplevel, width.maximum, height.maximum);
+}
+
 static bool CreateWaylandRole(JaliumPlatformWindow* window)
 {
     if (!window || !window->waylandSurface || !g_xdgWmBase) return false;
     if (window->xdgToplevel || window->xdgPopup) return true;
 
     window->waylandConfigured.store(false, std::memory_order_release);
+    window->pendingWaylandSuspended = false;
+    window->pendingWaylandResizableEdges = 15;
+    window->waylandBoundsWidth = window->waylandBoundsHeight = 0;
+    window->waylandTiled = false;
+#ifdef JALIUM_HAS_XDG_DECORATION_V1
+    window->xdgDecorationMode = ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
+    window->pendingXdgDecorationMode = window->xdgDecorationMode;
+#endif
+    window->capabilities = JALIUM_WINDOW_CAPABILITY_ALL;
+    window->pendingWaylandCapabilities = JALIUM_WINDOW_CAPABILITY_ALL;
+    window->waylandCapabilitiesPending = false;
+    window->waylandMaximizeAfterFullscreen = false;
     window->xdgSurface = xdg_wm_base_get_xdg_surface(g_xdgWmBase, window->waylandSurface);
     if (!window->xdgSurface) return false;
     xdg_surface_add_listener(window->xdgSurface, &g_xdgSurfaceListener, window);
@@ -2883,7 +3608,13 @@ static bool CreateWaylandRole(JaliumPlatformWindow* window)
             window->xdgSurface = nullptr;
             return false;
         }
-        window->waylandScale = parent->waylandScale > 0 ? parent->waylandScale : 1;
+        window->waylandScale = parent->waylandScale;
+        window->dpiScale = static_cast<float>(window->waylandScale);
+#ifdef JALIUM_HAS_FRACTIONAL_SCALE_V1
+        if (window->waylandViewport) window->waylandFractionalScale120 = parent->waylandFractionalScale120;
+#endif
+        window->waylandLogicalWidth = WaylandLogicalSize(window->width, window->waylandScale);
+        window->waylandLogicalHeight = WaylandLogicalSize(window->height, window->waylandScale);
         xdg_positioner* positioner = CreatePopupPositioner(window);
         if (!positioner)
         {
@@ -2909,7 +3640,7 @@ static bool CreateWaylandRole(JaliumPlatformWindow* window)
             xdg_popup_grab(
                 window->xdgPopup, g_waylandSeat, g_waylandInputSerial);
         }
-        wl_surface_set_buffer_scale(window->waylandSurface, window->waylandScale);
+        UpdateWaylandSurfaceScale(window);
         wl_surface_commit(window->waylandSurface);
         wl_display_flush(g_waylandDisplay);
         return true;
@@ -2924,13 +3655,23 @@ static bool CreateWaylandRole(JaliumPlatformWindow* window)
     }
     xdg_toplevel_add_listener(window->xdgToplevel, &g_xdgToplevelListener, window);
     xdg_toplevel_set_title(window->xdgToplevel, window->waylandTitle.c_str());
-    xdg_toplevel_set_app_id(window->xdgToplevel, "jalium.ui");
+    xdg_toplevel_set_app_id(window->xdgToplevel, window->desktopApplicationId.c_str());
     CreateWaylandDecoration(window);
-    if (!(window->style & JALIUM_WINDOW_STYLE_RESIZABLE))
+    if (!window->waylandIcon.empty())
+        (void)jalium_window_set_icon(window, window->waylandIcon.data(), window->waylandIconWidth, window->waylandIconHeight);
+    ApplyWaylandSizeConstraints(window);
+    if (window->parentHandle != 0)
     {
-        xdg_toplevel_set_min_size(window->xdgToplevel, window->width, window->height);
-        xdg_toplevel_set_max_size(window->xdgToplevel, window->width, window->height);
+        auto* parent = FindWaylandWindowBySurface(reinterpret_cast<wl_surface*>(window->parentHandle));
+        if (parent && parent->xdgToplevel)
+            xdg_toplevel_set_parent(window->xdgToplevel, parent->xdgToplevel);
     }
+    if (window->requestedState == JALIUM_WINDOW_STATE_MAXIMIZED)
+        xdg_toplevel_set_maximized(window->xdgToplevel);
+    else if (window->requestedState == JALIUM_WINDOW_STATE_FULLSCREEN)
+        xdg_toplevel_set_fullscreen(window->xdgToplevel, nullptr);
+    else if (window->requestedState == JALIUM_WINDOW_STATE_MINIMIZED)
+        xdg_toplevel_set_minimized(window->xdgToplevel);
     wl_surface_commit(window->waylandSurface);
     wl_display_flush(g_waylandDisplay);
     EnsureWaylandPortalExport(window);
@@ -3446,7 +4187,49 @@ static void EnsureWaylandDataDevice()
         wl_data_device_add_listener(g_waylandDataDevice, &g_dataDeviceListener, nullptr);
 }
 
+static void ClearPendingWaylandTextInput()
+{
 #ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V3
+    g_pendingWaylandPreedit.clear();
+    g_pendingWaylandCommit.clear();
+    g_pendingWaylandPreeditSet = false;
+    g_pendingWaylandCommitSet = false;
+    g_pendingWaylandDeleteBefore = 0;
+    g_pendingWaylandDeleteAfter = 0;
+    g_pendingWaylandDeleteSet = false;
+    g_pendingWaylandTextTarget = nullptr;
+    g_pendingWaylandTextIdentity = 0;
+    g_pendingWaylandTextRevision = 0;
+#endif
+}
+
+static uint64_t ResetWaylandComposition(JaliumPlatformWindow* target)
+{
+    const uint64_t revision = ++g_waylandTextInputRevision;
+    const bool composing = g_waylandCompositionActive;
+    g_waylandCompositionActive = false;
+    ClearPendingWaylandTextInput();
+    if (composing && IsLiveWindow(target))
+        DispatchComposition(target, JALIUM_EVENT_COMPOSITION_END, {}, 0);
+    return revision;
+}
+
+static bool IsWaylandTextInputCurrent(JaliumPlatformWindow* window, uint64_t identity, uint64_t revision)
+{
+    return IsLiveWindow(window) && !window->destroying && window->enabled &&
+        window->waylandVisible.load(std::memory_order_acquire) &&
+        window->waylandInputIdentity == identity && g_keyboardFocus == window &&
+        g_waylandTextInputRevision == revision;
+}
+
+#ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V3
+static void StageWaylandTextInputTarget()
+{
+    if (g_pendingWaylandPreeditSet || g_pendingWaylandCommitSet || g_pendingWaylandDeleteSet) return;
+    g_pendingWaylandTextTarget = g_keyboardFocus;
+    g_pendingWaylandTextIdentity = IsLiveWindow(g_keyboardFocus) ? g_keyboardFocus->waylandInputIdentity : 0;
+    g_pendingWaylandTextRevision = g_waylandTextInputRevision;
+}
 static void ApplyWaylandTextInputV3(JaliumPlatformWindow* window)
 {
     if (!window || !g_waylandTextInput || window != g_keyboardFocus)
@@ -3466,7 +4249,7 @@ static void ApplyWaylandTextInputV3(JaliumPlatformWindow* window)
         window->imeCursorByteOffset, 0, textLength);
     const int32_t anchor = std::clamp(
         window->imeAnchorByteOffset, 0, textLength);
-    const int32_t scale = std::max(window->waylandScale, 1);
+    const double scale = window->waylandScale;
 
     zwp_text_input_v3_enable(g_waylandTextInput);
     zwp_text_input_v3_set_content_type(
@@ -3476,17 +4259,25 @@ static void ApplyWaylandTextInputV3(JaliumPlatformWindow* window)
         g_waylandTextInput, window->imeSurroundingText.c_str(), cursor, anchor);
     zwp_text_input_v3_set_cursor_rectangle(
         g_waylandTextInput,
-        window->imeCaretX / scale,
-        window->imeCaretY / scale,
-        std::max(1, (window->imeCaretWidth + scale - 1) / scale),
-        std::max(1, (window->imeCaretHeight + scale - 1) / scale));
+        static_cast<int32_t>(std::floor(window->imeCaretX / scale)),
+        static_cast<int32_t>(std::floor(window->imeCaretY / scale)),
+        std::max(1, static_cast<int32_t>(std::ceil(window->imeCaretWidth / scale))),
+        std::max(1, static_cast<int32_t>(std::ceil(window->imeCaretHeight / scale))));
     zwp_text_input_v3_commit(g_waylandTextInput);
 }
 
 static void HandleTextInputEnter(void*, zwp_text_input_v3* textInput, wl_surface* surface)
 {
     JaliumPlatformWindow* window = WaylandWindowFromSurface(surface);
-    if (window) g_keyboardFocus = window;
+    if (window && (window->destroying || !window->enabled || !window->waylandVisible.load(std::memory_order_acquire)))
+        window = nullptr;
+    if (window && window != g_keyboardFocus)
+    {
+        auto* previous = g_keyboardFocus;
+        g_keyboardFocus = window;
+        const uint64_t revision = ResetWaylandComposition(previous);
+        if (!IsLiveWindow(window) || g_keyboardFocus != window || g_waylandTextInputRevision != revision) return;
+    }
     if (window)
         ApplyWaylandTextInputV3(window);
     else
@@ -3496,25 +4287,20 @@ static void HandleTextInputEnter(void*, zwp_text_input_v3* textInput, wl_surface
     }
 }
 
-static void HandleTextInputLeave(void*, zwp_text_input_v3* textInput, wl_surface*)
+static void HandleTextInputLeave(void*, zwp_text_input_v3* textInput, wl_surface* surface)
 {
-    if (g_waylandCompositionActive && g_keyboardFocus)
-        DispatchComposition(g_keyboardFocus, JALIUM_EVENT_COMPOSITION_END, {}, 0);
-    g_waylandCompositionActive = false;
-    g_pendingWaylandPreedit.clear();
-    g_pendingWaylandCommit.clear();
-    g_pendingWaylandPreeditSet = false;
-    g_pendingWaylandCommitSet = false;
-    g_pendingWaylandDeleteBefore = 0;
-    g_pendingWaylandDeleteAfter = 0;
-    g_pendingWaylandDeleteSet = false;
+    if (textInput != g_waylandTextInput) return;
+    auto* target = WaylandWindowFromSurface(surface);
     zwp_text_input_v3_disable(textInput);
     zwp_text_input_v3_commit(textInput);
+    if (target == g_keyboardFocus) ResetWaylandComposition(target);
+    else if (target == g_pendingWaylandTextTarget) ClearPendingWaylandTextInput();
 }
 
 static void HandleTextInputPreedit(void*, zwp_text_input_v3*, const char* text,
                                    int32_t cursorBegin, int32_t)
 {
+    StageWaylandTextInputTarget();
     g_pendingWaylandPreedit = text ? text : "";
     g_pendingWaylandPreeditCursor = text
         ? Utf8ByteOffsetToUtf16(g_pendingWaylandPreedit, cursorBegin) : 0;
@@ -3523,6 +4309,7 @@ static void HandleTextInputPreedit(void*, zwp_text_input_v3*, const char* text,
 
 static void HandleTextInputCommit(void*, zwp_text_input_v3*, const char* text)
 {
+    StageWaylandTextInputTarget();
     g_pendingWaylandCommit = text ? text : "";
     g_pendingWaylandCommitSet = true;
 }
@@ -3530,6 +4317,7 @@ static void HandleTextInputCommit(void*, zwp_text_input_v3*, const char* text)
 static void HandleTextInputDeleteSurrounding(
     void*, zwp_text_input_v3*, uint32_t beforeLength, uint32_t afterLength)
 {
+    StageWaylandTextInputTarget();
     g_pendingWaylandDeleteBefore = beforeLength;
     g_pendingWaylandDeleteAfter = afterLength;
     g_pendingWaylandDeleteSet = true;
@@ -3537,53 +4325,51 @@ static void HandleTextInputDeleteSurrounding(
 
 static void HandleTextInputDone(void*, zwp_text_input_v3*, uint32_t)
 {
-    JaliumPlatformWindow* window = g_keyboardFocus;
-    if (!window)
+    auto* window = g_pendingWaylandTextTarget;
+    const uint64_t identity = g_pendingWaylandTextIdentity;
+    const uint64_t pendingRevision = g_pendingWaylandTextRevision;
+    const bool deleteSet = g_pendingWaylandDeleteSet;
+    const uint32_t before = g_pendingWaylandDeleteBefore, after = g_pendingWaylandDeleteAfter;
+    const bool commitSet = g_pendingWaylandCommitSet, preeditSet = g_pendingWaylandPreeditSet;
+    const std::string commit = std::move(g_pendingWaylandCommit);
+    const std::string preedit = std::move(g_pendingWaylandPreedit);
+    const int32_t cursor = g_pendingWaylandPreeditCursor;
+    ClearPendingWaylandTextInput();
+    if (!IsWaylandTextInputCurrent(window, identity, pendingRevision)) return;
+    const uint64_t revision = ++g_waylandTextInputRevision;
+    const auto current = [&] { return IsWaylandTextInputCurrent(window, identity, revision); };
+    // Detach the whole transaction before invoking application callbacks. A
+    // nested done may start another transaction, even on the same target.
+    if (deleteSet)
     {
-        g_pendingWaylandPreeditSet = false;
-        g_pendingWaylandCommitSet = false;
-        g_pendingWaylandDeleteBefore = 0;
-        g_pendingWaylandDeleteAfter = 0;
-        g_pendingWaylandDeleteSet = false;
-        return;
+        DispatchDeleteSurrounding(window, before, after);
+        if (!current()) return;
     }
-
-    if (g_pendingWaylandDeleteSet)
+    if (commitSet && !commit.empty())
     {
-        DispatchDeleteSurrounding(
-            window, g_pendingWaylandDeleteBefore, g_pendingWaylandDeleteAfter);
-    }
-    if (g_pendingWaylandCommitSet && !g_pendingWaylandCommit.empty())
-    {
-        DispatchComposition(window, JALIUM_EVENT_COMPOSITION_END,
-                            g_pendingWaylandCommit, 0);
         g_waylandCompositionActive = false;
+        DispatchComposition(window, JALIUM_EVENT_COMPOSITION_END, commit, 0);
+        if (!current()) return;
     }
-    if (g_pendingWaylandPreeditSet)
+    if (preeditSet)
     {
-        if (!g_pendingWaylandPreedit.empty())
+        if (!preedit.empty())
         {
-            if (!g_waylandCompositionActive)
-                DispatchComposition(window, JALIUM_EVENT_COMPOSITION_START, {}, 0);
+            const bool start = !g_waylandCompositionActive;
             g_waylandCompositionActive = true;
-            DispatchComposition(window, JALIUM_EVENT_COMPOSITION_UPDATE,
-                                g_pendingWaylandPreedit,
-                                g_pendingWaylandPreeditCursor);
+            if (start)
+            {
+                DispatchComposition(window, JALIUM_EVENT_COMPOSITION_START, {}, 0);
+                if (!current()) return;
+            }
+            DispatchComposition(window, JALIUM_EVENT_COMPOSITION_UPDATE, preedit, cursor);
         }
         else if (g_waylandCompositionActive)
         {
-            DispatchComposition(window, JALIUM_EVENT_COMPOSITION_END, {}, 0);
             g_waylandCompositionActive = false;
+            DispatchComposition(window, JALIUM_EVENT_COMPOSITION_END, {}, 0);
         }
     }
-
-    g_pendingWaylandPreedit.clear();
-    g_pendingWaylandCommit.clear();
-    g_pendingWaylandPreeditSet = false;
-    g_pendingWaylandCommitSet = false;
-    g_pendingWaylandDeleteBefore = 0;
-    g_pendingWaylandDeleteAfter = 0;
-    g_pendingWaylandDeleteSet = false;
 }
 
 static const zwp_text_input_v3_listener g_textInputListener = {
@@ -3628,7 +4414,7 @@ static void ApplyWaylandTextInputV1(JaliumPlatformWindow* window)
         window->imeCursorByteOffset, 0, textLength));
     const uint32_t anchor = static_cast<uint32_t>(std::clamp(
         window->imeAnchorByteOffset, 0, textLength));
-    const int32_t scale = std::max(window->waylandScale, 1);
+    const double scale = window->waylandScale;
 
     zwp_text_input_v1_activate(
         g_waylandTextInputV1, g_waylandSeat, window->waylandSurface);
@@ -3639,10 +4425,10 @@ static void ApplyWaylandTextInputV1(JaliumPlatformWindow* window)
         ZWP_TEXT_INPUT_V1_CONTENT_PURPOSE_NORMAL);
     zwp_text_input_v1_set_cursor_rectangle(
         g_waylandTextInputV1,
-        window->imeCaretX / scale,
-        window->imeCaretY / scale,
-        std::max(1, (window->imeCaretWidth + scale - 1) / scale),
-        std::max(1, (window->imeCaretHeight + scale - 1) / scale));
+        static_cast<int32_t>(std::floor(window->imeCaretX / scale)),
+        static_cast<int32_t>(std::floor(window->imeCaretY / scale)),
+        std::max(1, static_cast<int32_t>(std::ceil(window->imeCaretWidth / scale))),
+        std::max(1, static_cast<int32_t>(std::ceil(window->imeCaretHeight / scale))));
     zwp_text_input_v1_commit_state(
         g_waylandTextInputV1, ++g_waylandTextInputSerialV1);
 }
@@ -3652,12 +4438,11 @@ static void HandleTextInputV1Enter(void*, zwp_text_input_v1*, wl_surface*)
     g_waylandTextInputV1Active = true;
 }
 
-static void HandleTextInputV1Leave(void*, zwp_text_input_v1*)
+static void HandleTextInputV1Leave(void*, zwp_text_input_v1* textInput)
 {
-    if (g_waylandCompositionActive && g_keyboardFocus)
-        DispatchComposition(g_keyboardFocus, JALIUM_EVENT_COMPOSITION_END, {}, 0);
-    g_waylandCompositionActive = false;
+    if (textInput != g_waylandTextInputV1) return;
     g_waylandTextInputV1Active = false;
+    ResetWaylandComposition(g_keyboardFocus);
 }
 
 static void HandleTextInputV1ModifiersMap(void*, zwp_text_input_v1*, wl_array*) {}
@@ -3666,21 +4451,28 @@ static void HandleTextInputV1PanelState(void*, zwp_text_input_v1*, uint32_t) {}
 static void HandleTextInputV1PreeditString(
     void*, zwp_text_input_v1*, uint32_t, const char* text, const char*)
 {
-    if (!g_keyboardFocus) return;
+    auto* window = g_keyboardFocus;
+    if (!IsLiveWindow(window)) return;
+    const uint64_t identity = window->waylandInputIdentity;
+    const uint64_t revision = ++g_waylandTextInputRevision;
+    if (!IsWaylandTextInputCurrent(window, identity, revision)) return;
     const std::string preedit = text ? text : "";
     if (!preedit.empty())
     {
-        if (!g_waylandCompositionActive)
-            DispatchComposition(g_keyboardFocus, JALIUM_EVENT_COMPOSITION_START, {}, 0);
+        const bool start = !g_waylandCompositionActive;
         g_waylandCompositionActive = true;
-        DispatchComposition(
-            g_keyboardFocus, JALIUM_EVENT_COMPOSITION_UPDATE, preedit,
+        if (start)
+        {
+            DispatchComposition(window, JALIUM_EVENT_COMPOSITION_START, {}, 0);
+            if (!IsWaylandTextInputCurrent(window, identity, revision)) return;
+        }
+        DispatchComposition(window, JALIUM_EVENT_COMPOSITION_UPDATE, preedit,
             Utf8ByteOffsetToUtf16(preedit, g_waylandTextInputCursorV1));
     }
     else if (g_waylandCompositionActive)
     {
-        DispatchComposition(g_keyboardFocus, JALIUM_EVENT_COMPOSITION_END, {}, 0);
         g_waylandCompositionActive = false;
+        DispatchComposition(window, JALIUM_EVENT_COMPOSITION_END, {}, 0);
     }
 }
 
@@ -3694,11 +4486,16 @@ static void HandleTextInputV1PreeditCursor(void*, zwp_text_input_v1*, int32_t in
 static void HandleTextInputV1CommitString(
     void*, zwp_text_input_v1*, uint32_t, const char* text)
 {
-    if (!g_keyboardFocus) return;
+    auto* window = g_keyboardFocus;
+    if (!IsLiveWindow(window)) return;
+    const uint64_t identity = window->waylandInputIdentity;
+    const uint64_t revision = ++g_waylandTextInputRevision;
+    if (!IsWaylandTextInputCurrent(window, identity, revision)) return;
     const std::string commit = text ? text : "";
-    if (!commit.empty() || g_waylandCompositionActive)
-        DispatchComposition(g_keyboardFocus, JALIUM_EVENT_COMPOSITION_END, commit, 0);
+    const bool composing = g_waylandCompositionActive;
     g_waylandCompositionActive = false;
+    if (!commit.empty() || composing)
+        DispatchComposition(window, JALIUM_EVENT_COMPOSITION_END, commit, 0);
 }
 
 static void HandleTextInputV1CursorPosition(void*, zwp_text_input_v1*, int32_t, int32_t) {}
@@ -3781,14 +4578,16 @@ static void HandlePointerEnter(void*, wl_pointer*, uint32_t serial, wl_surface* 
 
 static void HandlePointerLeave(void*, wl_pointer*, uint32_t, wl_surface*)
 {
-    if (g_pointerFocus)
+    auto* target = g_pointerFocus;
+    g_pointerFocus = nullptr;
+    if (IsLiveWindow(target))
     {
+        target->waylandPointerPresses.clear();
         JaliumPlatformEvent event{};
         event.type = JALIUM_EVENT_MOUSE_LEAVE;
-        event.window = g_pointerFocus;
-        g_pointerFocus->DispatchEvent(event);
+        event.window = target;
+        target->DispatchEvent(event);
     }
-    g_pointerFocus = nullptr;
 }
 
 static void HandlePointerMotion(void*, wl_pointer*, uint32_t, wl_fixed_t x, wl_fixed_t y)
@@ -3834,6 +4633,10 @@ static void HandlePointerButton(void*, wl_pointer*, uint32_t serial, uint32_t ti
     else
         g_waylandPointerButtons &= ~dragButton;
     if (!g_pointerFocus) return;
+    if (state == WL_POINTER_BUTTON_STATE_PRESSED)
+        g_pointerFocus->waylandPointerPresses[button] = serial;
+    else
+        g_pointerFocus->waylandPointerPresses.erase(button);
     JaliumPlatformEvent event{};
     event.type = state == WL_POINTER_BUTTON_STATE_PRESSED ? JALIUM_EVENT_MOUSE_DOWN : JALIUM_EVENT_MOUSE_UP;
     event.window = g_pointerFocus;
@@ -3845,7 +4648,7 @@ static void HandlePointerButton(void*, wl_pointer*, uint32_t serial, uint32_t ti
         ? RegisterClick(g_waylandClickTracker, g_pointerFocus, event.mouse.button,
                         time, g_pointerX, g_pointerY)
         : g_waylandClickTracker.count;
-    g_pointerFocus->DispatchEvent(event);
+    g_pointerFocus->DispatchEvent(event, serial);
 }
 
 static void HandlePointerAxis(void*, wl_pointer*, uint32_t, uint32_t axis, wl_fixed_t value)
@@ -3955,30 +4758,31 @@ static int32_t ProcessWaylandRepeatReady()
     // Coalesce a stalled client to a bounded number of callbacks while still
     // preserving normal repeat cadence.
     expirations = std::min<uint64_t>(expirations, 8);
+    const uint64_t inputEpoch = g_waylandMenuInputEpoch.load(std::memory_order_acquire);
     for (uint64_t index = 0; index < expirations; ++index)
     {
+        auto* target = g_waylandRepeatWindow;
+        if (!target || !IsLiveWindow(target) || g_keyboardFocus != target) break;
         JaliumPlatformEvent event{};
         event.type = JALIUM_EVENT_KEY_DOWN;
-        event.window = g_waylandRepeatWindow;
+        event.window = target;
         event.key.keyCode = KeySymToJaliumVK(static_cast<KeySym>(g_waylandRepeatSymbol));
         event.key.scanCode = static_cast<int32_t>(g_waylandRepeatKey);
         event.key.modifiers = g_waylandModifiers;
         event.key.isRepeat = 1;
-        g_waylandRepeatWindow->DispatchEvent(event);
+        target->DispatchEvent(event);
+        if (!IsLiveWindow(target) || g_waylandRepeatWindow != target || g_keyboardFocus != target ||
+            inputEpoch != g_waylandMenuInputEpoch.load(std::memory_order_acquire)) break;
 
         const uint32_t codePoint = g_xkbState
             ? xkb_state_key_get_utf32(g_xkbState, g_waylandRepeatKeycode) : 0;
-        if (codePoint && !g_waylandCompositionActive
-#ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V1
-            && !g_waylandTextInputV1Active
-#endif
-           )
+        if (codePoint && !g_waylandCompositionActive)
         {
             JaliumPlatformEvent character{};
             character.type = JALIUM_EVENT_CHAR_INPUT;
-            character.window = g_waylandRepeatWindow;
+            character.window = target;
             character.character.codepoint = codePoint;
-            g_waylandRepeatWindow->DispatchEvent(character);
+            target->DispatchEvent(character);
         }
     }
     return 1;
@@ -3988,7 +4792,13 @@ static void HandleKeyboardEnter(void*, wl_keyboard*, uint32_t serial,
                                 wl_surface* surface, wl_array* keys)
 {
     g_waylandInputSerial = serial;
-    g_keyboardFocus = WaylandWindowFromSurface(surface);
+    auto* previous = g_keyboardFocus;
+    auto* target = WaylandWindowFromSurface(surface);
+    if (target && (target->destroying || !target->enabled || !target->waylandVisible.load(std::memory_order_acquire)))
+        target = nullptr;
+    g_keyboardFocus = target;
+    const uint64_t revision = ResetWaylandComposition(previous);
+    if (g_waylandTextInputRevision != revision || g_keyboardFocus != target || !IsLiveWindow(target)) return;
     ClearPressedKeyStates();
     if (keys && g_xkbState)
     {
@@ -4014,8 +4824,10 @@ static void HandleKeyboardEnter(void*, wl_keyboard*, uint32_t serial,
     if (g_waylandDisplay) wl_display_flush(g_waylandDisplay);
 }
 
-static void HandleKeyboardLeave(void*, wl_keyboard*, uint32_t, wl_surface*)
+static void ClearWaylandKeyboardFocus(bool cancelComposition)
 {
+    auto* target = g_keyboardFocus;
+    g_keyboardFocus = nullptr;
 #ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V1
     if (g_waylandTextInputV1 && g_waylandSeat && g_waylandTextInputV1Active)
     {
@@ -4026,14 +4838,40 @@ static void HandleKeyboardLeave(void*, wl_keyboard*, uint32_t, wl_surface*)
 #endif
     StopWaylandRepeat();
     ClearPressedKeyStates();
-    if (g_keyboardFocus)
+    if (cancelComposition)
+    {
+#ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V3
+        g_pendingWaylandPreedit.clear();
+        g_pendingWaylandCommit.clear();
+        g_pendingWaylandPreeditSet = false;
+        g_pendingWaylandCommitSet = false;
+        g_pendingWaylandPreeditCursor = 0;
+        g_pendingWaylandDeleteBefore = 0;
+        g_pendingWaylandDeleteAfter = 0;
+        g_pendingWaylandDeleteSet = false;
+        if (g_waylandTextInput)
+        {
+            zwp_text_input_v3_disable(g_waylandTextInput);
+            zwp_text_input_v3_commit(g_waylandTextInput);
+        }
+#endif
+#ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V1
+        g_waylandTextInputCursorV1 = 0;
+#endif
+    }
+    ResetWaylandComposition(target);
+    if (IsLiveWindow(target) && g_keyboardFocus != target)
     {
         JaliumPlatformEvent event{};
         event.type = JALIUM_EVENT_FOCUS_LOST;
-        event.window = g_keyboardFocus;
-        g_keyboardFocus->DispatchEvent(event);
+        event.window = target;
+        target->DispatchEvent(event);
     }
-    g_keyboardFocus = nullptr;
+}
+
+static void HandleKeyboardLeave(void*, wl_keyboard*, uint32_t, wl_surface*)
+{
+    ClearWaylandKeyboardFocus(false);
 }
 
 static void HandleKeyboardKey(void*, wl_keyboard*, uint32_t serial, uint32_t,
@@ -4041,11 +4879,13 @@ static void HandleKeyboardKey(void*, wl_keyboard*, uint32_t serial, uint32_t,
 {
     g_waylandInputSerial = serial;
     if (!g_keyboardFocus) return;
+    auto* target = g_keyboardFocus;
+    const uint64_t inputEpoch = g_waylandMenuInputEpoch.load(std::memory_order_acquire);
     const xkb_keycode_t keycode = key + 8;
     const xkb_keysym_t symbol = g_xkbState ? xkb_state_key_get_one_sym(g_xkbState, keycode) : XKB_KEY_NoSymbol;
     JaliumPlatformEvent event{};
     event.type = state == WL_KEYBOARD_KEY_STATE_PRESSED ? JALIUM_EVENT_KEY_DOWN : JALIUM_EVENT_KEY_UP;
-    event.window = g_keyboardFocus;
+    event.window = target;
     event.key.keyCode = KeySymToJaliumVK(static_cast<KeySym>(symbol));
     event.key.scanCode = static_cast<int32_t>(key);
     event.key.modifiers = g_waylandModifiers;
@@ -4053,23 +4893,26 @@ static void HandleKeyboardKey(void*, wl_keyboard*, uint32_t serial, uint32_t,
     const bool toggled = event.key.keyCode == 0x14 || event.key.keyCode == 0x90 ||
                          event.key.keyCode == 0x91;
     SetKeyState(event.key.keyCode, pressed, toggled);
-    g_keyboardFocus->DispatchEvent(event);
+    target->DispatchEvent(event, serial);
+    if (!IsLiveWindow(target) || g_keyboardFocus != target ||
+        inputEpoch != g_waylandMenuInputEpoch.load(std::memory_order_acquire)) return;
     if (state == WL_KEYBOARD_KEY_STATE_PRESSED && g_xkbState)
     {
         const uint32_t codepoint = xkb_state_key_get_utf32(g_xkbState, keycode);
-        if (codepoint && !g_waylandCompositionActive
-#ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V1
-            && !g_waylandTextInputV1Active
-#endif
-           )
+        // A wl_keyboard event is a key the input method did not consume.
+        // v1 activation alone does not imply composition or a keyboard grab;
+        // ordinary hardware text must still work beside a virtual keyboard.
+        if (codepoint && !g_waylandCompositionActive)
         {
             JaliumPlatformEvent character{};
             character.type = JALIUM_EVENT_CHAR_INPUT;
-            character.window = g_keyboardFocus;
+            character.window = target;
             character.character.codepoint = codepoint;
-            g_keyboardFocus->DispatchEvent(character);
+            target->DispatchEvent(character, serial);
         }
-        StartWaylandRepeat(g_keyboardFocus, key, keycode, symbol);
+        if (!IsLiveWindow(target) || g_keyboardFocus != target ||
+            inputEpoch != g_waylandMenuInputEpoch.load(std::memory_order_acquire)) return;
+        StartWaylandRepeat(target, key, keycode, symbol);
     }
     else if (key == g_waylandRepeatKey)
         StopWaylandRepeat();
@@ -4107,7 +4950,7 @@ static const wl_keyboard_listener g_keyboardListener = {
 
 #ifdef JALIUM_HAS_WAYLAND_TABLET_V2
 static void DispatchWaylandTabletTool(
-    WaylandTabletToolState* state, JaliumEventType type)
+    WaylandTabletToolState* state, JaliumEventType type, uint32_t menuInputSerial = 0)
 {
     if (!state || !state->window) return;
     JaliumPlatformEvent event{};
@@ -4142,7 +4985,7 @@ static void DispatchWaylandTabletTool(
     event.pointer.flags = flags;
     event.pointer.toolType = state->toolType;
     event.pointer.buttons = state->buttons;
-    state->window->DispatchEvent(event);
+    state->window->DispatchEvent(event, menuInputSerial);
 }
 
 static int32_t WaylandTabletToolType(uint32_t type)
@@ -4244,6 +5087,8 @@ static void TabletToolDown(void* data, zwp_tablet_tool_v2*, uint32_t serial)
     g_waylandInputSerial = serial;
     auto* state = static_cast<WaylandTabletToolState*>(data);
     if (!state) return;
+    state->pressSerial = serial;
+    state->menuInputSerial = serial;
     state->down = true;
     state->inRange = true;
     state->buttons |= JALIUM_POINTER_BUTTON_PRIMARY;
@@ -4257,6 +5102,7 @@ static void TabletToolUp(void* data, zwp_tablet_tool_v2*)
 {
     auto* state = static_cast<WaylandTabletToolState*>(data);
     if (!state) return;
+    state->menuInputSerial = state->pressSerial;
     state->down = false;
     state->pressure = 0.0f;
     state->buttons &= ~JALIUM_POINTER_BUTTON_PRIMARY;
@@ -4359,6 +5205,7 @@ static void TabletToolButton(
     g_waylandInputSerial = serial;
     auto* state = static_cast<WaylandTabletToolState*>(data);
     if (!state) return;
+    state->menuInputSerial = serial;
     const uint32_t mask = WaylandTabletButtonMask(button);
     if (buttonState == ZWP_TABLET_TOOL_V2_BUTTON_STATE_PRESSED)
         state->buttons |= mask;
@@ -4376,11 +5223,11 @@ static void TabletToolFrame(void* data, zwp_tablet_tool_v2*, uint32_t)
         if (state->pendingCancel)
             DispatchWaylandTabletTool(state, JALIUM_EVENT_POINTER_CANCEL);
         else if (state->pendingDown)
-            DispatchWaylandTabletTool(state, JALIUM_EVENT_POINTER_DOWN);
+            DispatchWaylandTabletTool(state, JALIUM_EVENT_POINTER_DOWN, state->menuInputSerial);
         else if (state->pendingUp)
-            DispatchWaylandTabletTool(state, JALIUM_EVENT_POINTER_UP);
+            DispatchWaylandTabletTool(state, JALIUM_EVENT_POINTER_UP, state->menuInputSerial);
         else
-            DispatchWaylandTabletTool(state, JALIUM_EVENT_POINTER_MOVE);
+            DispatchWaylandTabletTool(state, JALIUM_EVENT_POINTER_MOVE, state->menuInputSerial);
     }
     const bool clearWindow = state->pendingProximityOut;
     state->pendingDown = false;
@@ -4388,6 +5235,7 @@ static void TabletToolFrame(void* data, zwp_tablet_tool_v2*, uint32_t)
     state->pendingCancel = false;
     state->pendingProximityOut = false;
     state->dirty = false;
+    state->menuInputSerial = 0;
     if (clearWindow) state->window = nullptr;
 }
 
@@ -4505,7 +5353,7 @@ static uint32_t WaylandTouchPointerId(int32_t touchId)
 
 static void DispatchWaylandTouch(
     JaliumPlatformWindow* window, JaliumEventType type, int32_t touchId,
-    float x, float y, float pressure, bool primary)
+    float x, float y, float pressure, bool primary, uint32_t menuInputSerial = 0)
 {
     if (!window) return;
     JaliumPlatformEvent event{};
@@ -4526,7 +5374,7 @@ static void DispatchWaylandTouch(
         event.pointer.buttons = JALIUM_POINTER_BUTTON_PRIMARY;
     }
     event.pointer.toolType = JALIUM_POINTER_TOOL_UNKNOWN;
-    window->DispatchEvent(event);
+    window->DispatchEvent(event, menuInputSerial);
 }
 
 static void PromoteNextWaylandPrimaryTouch()
@@ -4547,7 +5395,7 @@ static void HandleTouchDown(
 {
     g_waylandInputSerial = serial;
     JaliumPlatformWindow* window = WaylandWindowFromSurface(surface);
-    if (!window) return;
+    if (!window || window->destroying || !window->enabled || !window->waylandVisible.load(std::memory_order_acquire)) return;
     const float scale = static_cast<float>(
         window->waylandScale > 0 ? window->waylandScale : 1);
     WaylandTouchContact contact{};
@@ -4555,11 +5403,12 @@ static void HandleTouchDown(
     contact.x = static_cast<float>(wl_fixed_to_double(x)) * scale;
     contact.y = static_cast<float>(wl_fixed_to_double(y)) * scale;
     contact.order = ++g_waylandTouchOrder;
+    contact.pressSerial = serial;
     contact.primary = g_waylandTouchContacts.empty();
     g_waylandTouchContacts[id] = contact;
     DispatchWaylandTouch(
         window, JALIUM_EVENT_POINTER_DOWN, id,
-        contact.x, contact.y, 1.0f, contact.primary);
+        contact.x, contact.y, 1.0f, contact.primary, serial);
 }
 
 static void HandleTouchUp(void*, wl_touch*, uint32_t serial, uint32_t, int32_t id)
@@ -4568,11 +5417,11 @@ static void HandleTouchUp(void*, wl_touch*, uint32_t serial, uint32_t, int32_t i
     const auto iterator = g_waylandTouchContacts.find(id);
     if (iterator == g_waylandTouchContacts.end()) return;
     const WaylandTouchContact contact = iterator->second;
+    g_waylandTouchContacts.erase(iterator);
     DispatchWaylandTouch(
         contact.window, JALIUM_EVENT_POINTER_UP, id,
-        contact.x, contact.y, 0.0f, contact.primary);
+        contact.x, contact.y, 0.0f, contact.primary, serial);
     const bool wasPrimary = contact.primary;
-    g_waylandTouchContacts.erase(iterator);
     if (wasPrimary) PromoteNextWaylandPrimaryTouch();
 }
 
@@ -4596,14 +5445,15 @@ static void HandleTouchFrame(void*, wl_touch*) {}
 
 static void HandleTouchCancel(void*, wl_touch*)
 {
-    for (const auto& [id, contact] : g_waylandTouchContacts)
+    auto contacts = std::move(g_waylandTouchContacts);
+    g_waylandTouchContacts.clear();
+    g_waylandTouchOrder = 0;
+    for (const auto& [id, contact] : contacts)
     {
-        DispatchWaylandTouch(
+        if (IsLiveWindow(contact.window)) DispatchWaylandTouch(
             contact.window, JALIUM_EVENT_POINTER_CANCEL, id,
             contact.x, contact.y, 0.0f, contact.primary);
     }
-    g_waylandTouchContacts.clear();
-    g_waylandTouchOrder = 0;
 }
 
 #ifdef WL_TOUCH_SHAPE_SINCE_VERSION
@@ -4629,16 +5479,15 @@ static const wl_touch_listener g_touchListener = {
 
 static void CancelWaylandTouchesForWindow(JaliumPlatformWindow* window)
 {
+    const uint64_t identity = window->waylandInputIdentity;
     bool removedPrimary = false;
+    std::vector<std::pair<int32_t, WaylandTouchContact>> contacts;
     for (auto iterator = g_waylandTouchContacts.begin();
          iterator != g_waylandTouchContacts.end();)
     {
         if (iterator->second.window == window)
         {
-            DispatchWaylandTouch(
-                window, JALIUM_EVENT_POINTER_CANCEL, iterator->first,
-                iterator->second.x, iterator->second.y, 0.0f,
-                iterator->second.primary);
+            contacts.emplace_back(iterator->first, iterator->second);
             removedPrimary |= iterator->second.primary;
             iterator = g_waylandTouchContacts.erase(iterator);
         }
@@ -4648,21 +5497,27 @@ static void CancelWaylandTouchesForWindow(JaliumPlatformWindow* window)
         }
     }
     if (removedPrimary) PromoteNextWaylandPrimaryTouch();
+    for (const auto& [id, contact] : contacts)
+    {
+        if (!IsLiveWindow(window) || window->waylandInputIdentity != identity) break;
+        DispatchWaylandTouch(window, JALIUM_EVENT_POINTER_CANCEL, id,
+            contact.x, contact.y, 0.0f, contact.primary);
+    }
 }
 
 static void HandleSeatCapabilities(void*, wl_seat* seat, uint32_t capabilities)
 {
+    if (seat != g_waylandSeat) return;
+    if (g_waylandSeatTeardown && capabilities != 0) return;
+    const uint64_t revision = ++g_waylandSeatCapabilitiesRevision;
     const bool hadPointer = g_waylandPointer != nullptr;
     const bool hadTouch = g_waylandTouch != nullptr;
-    if ((capabilities & WL_SEAT_CAPABILITY_POINTER) && !g_waylandPointer)
+    if ((g_waylandPointer && !(capabilities & WL_SEAT_CAPABILITY_POINTER)) ||
+        (g_waylandKeyboard && !(capabilities & WL_SEAT_CAPABILITY_KEYBOARD)) ||
+        (g_waylandTouch && !(capabilities & WL_SEAT_CAPABILITY_TOUCH)))
     {
-        g_waylandPointer = wl_seat_get_pointer(seat);
-        wl_pointer_add_listener(g_waylandPointer, &g_pointerListener, nullptr);
-    }
-    else if (!(capabilities & WL_SEAT_CAPABILITY_POINTER) && g_waylandPointer)
-    {
-        wl_pointer_destroy(g_waylandPointer);
-        g_waylandPointer = nullptr;
+        g_waylandMenuInputEpoch.fetch_add(1, std::memory_order_acq_rel);
+        g_waylandInputSerial = 0;
     }
     if ((capabilities & WL_SEAT_CAPABILITY_KEYBOARD) && !g_waylandKeyboard)
     {
@@ -4671,8 +5526,49 @@ static void HandleSeatCapabilities(void*, wl_seat* seat, uint32_t capabilities)
     }
     else if (!(capabilities & WL_SEAT_CAPABILITY_KEYBOARD) && g_waylandKeyboard)
     {
-        wl_keyboard_destroy(g_waylandKeyboard);
+        auto* keyboard = g_waylandKeyboard;
         g_waylandKeyboard = nullptr;
+        if (wl_keyboard_get_version(keyboard) >= WL_KEYBOARD_RELEASE_SINCE_VERSION)
+            wl_keyboard_release(keyboard);
+        else wl_keyboard_destroy(keyboard);
+        g_waylandModifiers = 0;
+        if (g_xkbState) xkb_state_update_mask(g_xkbState, 0, 0, 0, 0, 0, 0);
+        ClearWaylandKeyboardFocus(true);
+        if (revision != g_waylandSeatCapabilitiesRevision || seat != g_waylandSeat) return;
+    }
+    if ((capabilities & WL_SEAT_CAPABILITY_POINTER) && !g_waylandPointer)
+    {
+        g_waylandPointer = wl_seat_get_pointer(seat);
+        wl_pointer_add_listener(g_waylandPointer, &g_pointerListener, nullptr);
+    }
+    else if (!(capabilities & WL_SEAT_CAPABILITY_POINTER) && g_waylandPointer)
+    {
+        auto* pointer = g_waylandPointer;
+        g_waylandPointer = nullptr;
+        if (wl_pointer_get_version(pointer) >= WL_POINTER_RELEASE_SINCE_VERSION)
+            wl_pointer_release(pointer);
+        else wl_pointer_destroy(pointer);
+        g_waylandPointerSerial = 0;
+        g_waylandPointerEnterSerial = 0;
+        g_waylandPointerButtons = 0;
+        g_waylandClickTracker = {};
+        std::vector<JaliumPlatformWindow*> windows;
+        {
+            std::lock_guard<std::mutex> lock(g_windowMapMutex);
+            windows.assign(g_waylandWindows.begin(), g_waylandWindows.end());
+        }
+        for (auto* window : windows)
+        {
+            if (!IsLiveWindow(window)) continue;
+            window->waylandPointerPresses.clear();
+            JaliumPlatformEvent event{};
+            event.type = JALIUM_EVENT_MOUSE_CANCEL;
+            event.window = window;
+            window->DispatchEvent(event);
+            if (revision != g_waylandSeatCapabilitiesRevision || seat != g_waylandSeat) return;
+        }
+        HandlePointerLeave(nullptr, nullptr, 0, nullptr);
+        if (revision != g_waylandSeatCapabilitiesRevision || seat != g_waylandSeat) return;
     }
     if ((capabilities & WL_SEAT_CAPABILITY_TOUCH) && !g_waylandTouch)
     {
@@ -4681,9 +5577,13 @@ static void HandleSeatCapabilities(void*, wl_seat* seat, uint32_t capabilities)
     }
     else if (!(capabilities & WL_SEAT_CAPABILITY_TOUCH) && g_waylandTouch)
     {
-        HandleTouchCancel(nullptr, g_waylandTouch);
-        wl_touch_destroy(g_waylandTouch);
+        auto* touch = g_waylandTouch;
         g_waylandTouch = nullptr;
+        if (wl_touch_get_version(touch) >= WL_TOUCH_RELEASE_SINCE_VERSION)
+            wl_touch_release(touch);
+        else wl_touch_destroy(touch);
+        HandleTouchCancel(nullptr, nullptr);
+        if (revision != g_waylandSeatCapabilitiesRevision || seat != g_waylandSeat) return;
     }
     if (hadPointer != (g_waylandPointer != nullptr) ||
         hadTouch != (g_waylandTouch != nullptr))
@@ -4765,6 +5665,124 @@ static uint32_t WaylandBindVersion(
                              static_cast<uint32_t>(generatedInterface.version)));
 }
 
+static void BindAvailableWaylandSeat(wl_registry* registry)
+{
+    if (g_waylandSeat || g_waylandSeatTeardown || g_waylandSeatGlobals.empty()) return;
+    const auto [name, version] = g_waylandSeatGlobals.front();
+    g_waylandSeat = static_cast<wl_seat*>(wl_registry_bind(
+        registry, name, &wl_seat_interface,
+        WaylandBindVersion(version, wl_seat_interface, 9)));
+    g_waylandSeatRegistryName = name;
+    wl_seat_add_listener(g_waylandSeat, &g_seatListener, nullptr);
+    EnsureWaylandDataDevice();
+#ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V3
+    EnsureWaylandTextInput();
+#endif
+#ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V1
+    EnsureWaylandTextInputV1();
+#endif
+    EnsureWaylandTabletSeat();
+}
+
+static void RemoveWaylandSeat()
+{
+    // Defer replacement binding until every callback and seat-scoped resource
+    // has retired. A callback may dispatch more registry events or close a window.
+    g_waylandSeatTeardown = true;
+    g_waylandMenuInputEpoch.fetch_add(1, std::memory_order_acq_rel);
+    g_waylandInputSerial = 0;
+    CancelWaylandActivationRequests(nullptr);
+    HandleSeatCapabilities(nullptr, g_waylandSeat, 0);
+    ClearWaylandKeyboardFocus(true);
+    g_waylandRepeatRate = 0;
+    g_waylandRepeatDelay = 0;
+    g_waylandModifiers = 0;
+    if (g_xkbState) { xkb_state_unref(g_xkbState); g_xkbState = nullptr; }
+    if (g_xkbKeymap) { xkb_keymap_unref(g_xkbKeymap); g_xkbKeymap = nullptr; }
+
+    auto* dragWindow = g_waylandDragWindow;
+    g_waylandDragWindow = nullptr;
+    g_waylandDragOffer = nullptr;
+    g_waylandDropPending = false;
+    g_waylandDragSerial = 0;
+    g_waylandDragMime.clear();
+    if (IsLiveWindow(dragWindow))
+    {
+        JaliumPlatformEvent event{};
+        event.type = JALIUM_EVENT_DRAG_LEAVE;
+        event.window = dragWindow;
+        event.drag.x = dragWindow->xdndX;
+        event.drag.y = dragWindow->xdndY;
+        event.drag.sessionId = dragWindow->dragSessionId;
+        dragWindow->dragSessionId = 0;
+        dragWindow->dragSelectedEffect = JALIUM_DRAG_EFFECT_NONE;
+        dragWindow->DispatchEvent(event);
+    }
+    g_waylandSelectionOffer = nullptr;
+    while (!g_waylandOffers.empty())
+    {
+        auto* offer = g_waylandOffers.begin()->second;
+        DestroyWaylandOffer(offer);
+    }
+    if (g_waylandClipboardSource)
+    {
+        wl_data_source_destroy(g_waylandClipboardSource);
+        g_waylandClipboardSource = nullptr;
+    }
+    if (g_waylandDataDevice)
+    {
+        if (wl_data_device_get_version(g_waylandDataDevice) >= WL_DATA_DEVICE_RELEASE_SINCE_VERSION)
+            wl_data_device_release(g_waylandDataDevice);
+        else wl_data_device_destroy(g_waylandDataDevice);
+        g_waylandDataDevice = nullptr;
+    }
+#ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V3
+    if (g_waylandTextInput) zwp_text_input_v3_destroy(g_waylandTextInput);
+    g_waylandTextInput = nullptr;
+#endif
+#ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V1
+    if (g_waylandTextInputV1) zwp_text_input_v1_destroy(g_waylandTextInputV1);
+    g_waylandTextInputV1 = nullptr;
+    g_waylandTextInputV1Active = false;
+    g_waylandTextInputSerialV1 = 0;
+#endif
+#ifdef JALIUM_HAS_WAYLAND_TABLET_V2
+    auto tools = std::move(g_waylandTabletTools);
+    g_waylandTabletTools.clear();
+    for (auto* state : tools)
+    {
+        if (state->tool) zwp_tablet_tool_v2_destroy(state->tool);
+        state->tool = nullptr;
+    }
+    for (auto* tablet : g_waylandTablets) zwp_tablet_v2_destroy(tablet);
+    g_waylandTablets.clear();
+    if (g_waylandTabletSeat) zwp_tablet_seat_v2_destroy(g_waylandTabletSeat);
+    g_waylandTabletSeat = nullptr;
+    for (auto* state : tools)
+    {
+        if ((state->down || state->inRange) && IsLiveWindow(state->window))
+        {
+            state->down = false;
+            state->inRange = false;
+            state->buttons = JALIUM_POINTER_BUTTON_NONE;
+            state->pressure = 0;
+            DispatchWaylandTabletTool(state, JALIUM_EVENT_POINTER_CANCEL);
+        }
+        delete state;
+    }
+    if (!tools.empty()) NotifyPointingDevicesChanged();
+#endif
+    if (g_waylandSeat)
+    {
+        if (wl_seat_get_version(g_waylandSeat) >= WL_SEAT_RELEASE_SINCE_VERSION)
+            wl_seat_release(g_waylandSeat);
+        else wl_seat_destroy(g_waylandSeat);
+        g_waylandSeat = nullptr;
+    }
+    g_waylandSeatRegistryName = 0;
+    g_waylandSeatTeardown = false;
+}
+
 static void HandleRegistryGlobal(void*, wl_registry* registry, uint32_t name,
                                  const char* interface, uint32_t version)
 {
@@ -4779,7 +5797,7 @@ static void HandleRegistryGlobal(void*, wl_registry* registry, uint32_t name,
     {
         g_xdgWmBase = static_cast<xdg_wm_base*>(wl_registry_bind(
             registry, name, &xdg_wm_base_interface,
-            WaylandBindVersion(version, xdg_wm_base_interface, 6)));
+            WaylandBindVersion(version, xdg_wm_base_interface, 7)));
         xdg_wm_base_add_listener(g_xdgWmBase, &g_wmBaseListener, nullptr);
     }
 #ifdef JALIUM_HAS_XDG_ACTIVATION_V1
@@ -4791,20 +5809,10 @@ static void HandleRegistryGlobal(void*, wl_registry* registry, uint32_t name,
             WaylandBindVersion(version, xdg_activation_v1_interface, 1)));
     }
 #endif
-    else if (strcmp(interface, wl_seat_interface.name) == 0 && !g_waylandSeat)
+    else if (strcmp(interface, wl_seat_interface.name) == 0)
     {
-        g_waylandSeat = static_cast<wl_seat*>(wl_registry_bind(
-            registry, name, &wl_seat_interface,
-            WaylandBindVersion(version, wl_seat_interface, 9)));
-        wl_seat_add_listener(g_waylandSeat, &g_seatListener, nullptr);
-        EnsureWaylandDataDevice();
-#ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V3
-        EnsureWaylandTextInput();
-#endif
-#ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V1
-        EnsureWaylandTextInputV1();
-#endif
-        EnsureWaylandTabletSeat();
+        g_waylandSeatGlobals.emplace_back(name, version);
+        BindAvailableWaylandSeat(registry);
     }
     else if (strcmp(interface, wl_data_device_manager_interface.name) == 0 &&
              !g_waylandDataDeviceManager)
@@ -4859,6 +5867,27 @@ static void HandleRegistryGlobal(void*, wl_registry* registry, uint32_t name,
                         version, zxdg_decoration_manager_v1_interface, 2)));
     }
 #endif
+#ifdef JALIUM_HAS_FRACTIONAL_SCALE_V1
+    else if (strcmp(interface, wp_fractional_scale_manager_v1_interface.name) == 0)
+    {
+        if (g_waylandFractionalScaleManager)
+        {
+#ifdef JALIUM_PLATFORM_TEST_HOOKS
+            // The Weston fixture is the last advertised manager. Modern Weston
+            // may also advertise its own manager; this override exists only in tests.
+            if (!getenv("JALIUM_TEST_FRACTIONAL_SCALE")) return;
+            wp_fractional_scale_manager_v1_destroy(g_waylandFractionalScaleManager);
+#else
+            return;
+#endif
+        }
+        g_waylandFractionalScaleManager = static_cast<wp_fractional_scale_manager_v1*>(
+            wl_registry_bind(registry, name, &wp_fractional_scale_manager_v1_interface, 1));
+    }
+    else if (strcmp(interface, wp_viewporter_interface.name) == 0 && !g_waylandViewporter)
+        g_waylandViewporter = static_cast<wp_viewporter*>(
+            wl_registry_bind(registry, name, &wp_viewporter_interface, 1));
+#endif
 #ifdef JALIUM_HAS_XDG_TOPLEVEL_ICON_V1
     else if (strcmp(interface, xdg_toplevel_icon_manager_v1_interface.name) == 0 &&
              !g_waylandToplevelIconManager)
@@ -4899,8 +5928,17 @@ static void HandleRegistryGlobal(void*, wl_registry* registry, uint32_t name,
     }
 }
 
-static void HandleRegistryRemove(void*, wl_registry*, uint32_t name)
+static void HandleRegistryRemove(void*, wl_registry* registry, uint32_t name)
 {
+    g_waylandSeatGlobals.erase(std::remove_if(g_waylandSeatGlobals.begin(),
+        g_waylandSeatGlobals.end(), [name](const auto& entry) { return entry.first == name; }),
+        g_waylandSeatGlobals.end());
+    if (g_waylandSeatRegistryName == name && !g_waylandSeatTeardown)
+    {
+        RemoveWaylandSeat();
+        BindAvailableWaylandSeat(registry);
+        return;
+    }
     for (size_t i = 0; i < g_waylandOutputs.size(); ++i)
     {
         if (g_waylandOutputs[i]->registryName == name)
@@ -4918,6 +5956,7 @@ static const wl_registry_listener g_registryListener = { HandleRegistryGlobal, H
 
 static void ShutdownWayland()
 {
+    g_waylandMenuInputEpoch.fetch_add(1, std::memory_order_acq_rel);
     g_pointerFocus = nullptr;
     g_keyboardFocus = nullptr;
     g_waylandDragOffer = nullptr;
@@ -5018,6 +6057,13 @@ static void ShutdownWayland()
         g_waylandDecorationManager = nullptr;
     }
 #endif
+#ifdef JALIUM_HAS_FRACTIONAL_SCALE_V1
+    if (g_waylandFractionalScaleManager)
+        wp_fractional_scale_manager_v1_destroy(g_waylandFractionalScaleManager);
+    if (g_waylandViewporter) wp_viewporter_destroy(g_waylandViewporter);
+    g_waylandFractionalScaleManager = nullptr;
+    g_waylandViewporter = nullptr;
+#endif
 #ifdef JALIUM_HAS_XDG_TOPLEVEL_ICON_V1
     if (g_waylandToplevelIconManager)
     {
@@ -5054,6 +6100,9 @@ static void ShutdownWayland()
     if (g_waylandPointer) { wl_pointer_destroy(g_waylandPointer); g_waylandPointer = nullptr; }
     if (g_waylandKeyboard) { wl_keyboard_destroy(g_waylandKeyboard); g_waylandKeyboard = nullptr; }
     if (g_waylandSeat) { wl_seat_destroy(g_waylandSeat); g_waylandSeat = nullptr; }
+    g_waylandSeatRegistryName = 0;
+    g_waylandSeatGlobals.clear();
+    g_waylandSeatTeardown = false;
     if (g_waylandDataDeviceManager)
     {
         wl_data_device_manager_destroy(g_waylandDataDeviceManager);
@@ -5485,6 +6534,18 @@ JaliumPlatformWindow* jalium_window_create(const JaliumWindowParams* params)
     win->x = params->x == JALIUM_DEFAULT_POS ? 0 : params->x;
     win->y = params->y == JALIUM_DEFAULT_POS ? 0 : params->y;
     win->parentHandle = params->parentHandle;
+    if (win->parentHandle != 0)
+    {
+        JaliumPlatformWindow* parent = nullptr;
+#ifdef JALIUM_HAS_WAYLAND
+        if (g_windowSystem == LinuxWindowSystem::Wayland)
+            parent = FindWaylandWindowBySurface(reinterpret_cast<wl_surface*>(win->parentHandle));
+        else
+#endif
+            parent = FindWindow(static_cast<Window>(win->parentHandle));
+        if (parent) win->desktopApplicationId = parent->desktopApplicationId;
+    }
+    SaveNormalGeometry(win);
 
 #ifdef JALIUM_HAS_WAYLAND
     if (g_windowSystem == LinuxWindowSystem::Wayland && g_waylandCompositor)
@@ -5500,8 +6561,10 @@ JaliumPlatformWindow* jalium_window_create(const JaliumWindowParams* params)
         wl_surface_set_user_data(win->waylandSurface, win);
         // enter/leave drive per-output HiDPI scale; listener data == user data.
         wl_surface_add_listener(win->waylandSurface, &g_surfaceListener, win);
+        CreateWaylandFractionalScale(win);
         if (!CreateWaylandRole(win))
         {
+            DestroyWaylandFractionalScale(win);
             wl_surface_destroy(win->waylandSurface);
             delete win;
             return nullptr;
@@ -5599,6 +6662,8 @@ JaliumPlatformWindow* jalium_window_create(const JaliumWindowParams* params)
         return nullptr;
     }
 
+    (void)jalium_linux_window_set_application_id(win, win->desktopApplicationId.c_str());
+
     X11MonitorMetrics initialMonitor{};
     if (GetX11MonitorMetricsForRect(
             createX, createY, win->width, win->height, initialMonitor))
@@ -5645,21 +6710,8 @@ JaliumPlatformWindow* jalium_window_create(const JaliumWindowParams* params)
         XSetWMNormalHints(g_display, win->xwindow, &hints);
     }
 
-    // Borderless: set _MOTIF_WM_HINTS
-    if (params->style & JALIUM_WINDOW_STYLE_BORDERLESS)
-    {
-        Atom motifHints = XInternAtom(g_display, "_MOTIF_WM_HINTS", False);
-        struct {
-            unsigned long flags;
-            unsigned long functions;
-            unsigned long decorations;
-            long          inputMode;
-            unsigned long status;
-        } hints = {2, 0, 0, 0, 0}; // flags=MWM_HINTS_DECORATIONS, decorations=0
-        XChangeProperty(g_display, win->xwindow, motifHints, motifHints,
-                       32, PropModeReplace,
-                       reinterpret_cast<unsigned char*>(&hints), 5);
-    }
+    // Apply decoration and all caption-function hints before the first map.
+    (void)jalium_linux_window_set_style(win, params->style);
 
     // Topmost: set _NET_WM_STATE_ABOVE
     if (params->style & JALIUM_WINDOW_STYLE_TOPMOST)
@@ -5724,11 +6776,13 @@ JaliumPlatformWindow* jalium_window_create(const JaliumWindowParams* params)
 
 void jalium_window_destroy(JaliumPlatformWindow* window)
 {
-    if (!window) return;
+    if (!IsLiveWindow(window) || window->destroying) return;
+    window->destroying = true;
 
 #ifdef JALIUM_HAS_WAYLAND
     if (window->waylandSurface)
     {
+        if (g_keyboardFocus == window) ClearWaylandKeyboardFocus(true);
         CancelWaylandTouchesForWindow(window);
         CancelWaylandTabletToolsForWindow(window);
         {
@@ -5739,6 +6793,7 @@ void jalium_window_destroy(JaliumPlatformWindow* window)
         if (g_keyboardFocus == window) g_keyboardFocus = nullptr;
         if (g_waylandRepeatWindow == window) StopWaylandRepeat();
         DestroyWaylandRole(window);
+        DestroyWaylandFractionalScale(window);
         wl_surface_destroy(window->waylandSurface);
         window->waylandSurface = nullptr;
         if (g_waylandDisplay) wl_display_flush(g_waylandDisplay);
@@ -5770,11 +6825,16 @@ void jalium_window_destroy(JaliumPlatformWindow* window)
 
 void jalium_window_show(JaliumPlatformWindow* window)
 {
+    jalium_linux_window_show(window, 1);
+}
+
+void jalium_linux_window_show(JaliumPlatformWindow* window, int32_t activate)
+{
 #ifdef JALIUM_HAS_WAYLAND
     if (window && window->waylandSurface)
     {
+        if (!CreateWaylandRole(window)) return;
         window->waylandVisible.store(true, std::memory_order_release);
-        (void)CreateWaylandRole(window);
         wl_surface_commit(window->waylandSurface);
         wl_display_flush(g_waylandDisplay);
         DispatchWaylandPaint(window);
@@ -5783,7 +6843,23 @@ void jalium_window_show(JaliumPlatformWindow* window)
 #endif
     if (window && g_display)
     {
-        XMapRaised(g_display, window->xwindow);
+        window->x11Visible = true;
+        const Atom userTime = XInternAtom(g_display, "_NET_WM_USER_TIME", False);
+        if (activate)
+        {
+            XDeleteProperty(g_display, window->xwindow, userTime);
+            XMapRaised(g_display, window->xwindow);
+        }
+        else
+        {
+            // EWMH explicitly uses zero user-time for an initial map that
+            // should preserve the active window. Input remains enabled so a
+            // later click can activate the window normally.
+            const unsigned long zero = 0;
+            XChangeProperty(g_display, window->xwindow, userTime, XA_CARDINAL,
+                32, PropModeReplace, reinterpret_cast<const unsigned char*>(&zero), 1);
+            XMapWindow(g_display, window->xwindow);
+        }
         if (window->style & JALIUM_WINDOW_STYLE_POPUP_GRAB)
         {
             const int pointerResult = XGrabPointer(
@@ -5797,16 +6873,26 @@ void jalium_window_show(JaliumPlatformWindow* window)
             window->x11PopupKeyboardGrabbed = keyboardResult == GrabSuccess;
         }
         XFlush(g_display);
+        RefreshX11ResizeConstraints(window, true);
     }
 }
 
 void jalium_window_hide(JaliumPlatformWindow* window)
 {
 #ifdef JALIUM_HAS_WAYLAND
-    if (window && window->waylandSurface)
+    if (IsLiveWindow(window) && window->waylandSurface)
     {
+        if (window->destroying) return;
+        window->waylandInputIdentity = g_waylandWindowInputIdentity.fetch_add(1, std::memory_order_relaxed) + 1;
+        const uint64_t identity = window->waylandInputIdentity;
         window->waylandVisible.store(false, std::memory_order_release);
         window->waylandPaintPending.store(false, std::memory_order_release);
+        if (g_keyboardFocus == window) ClearWaylandKeyboardFocus(true);
+        if (!IsLiveWindow(window) || window->waylandInputIdentity != identity || window->destroying) return;
+        CancelWaylandTouchesForWindow(window);
+        if (!IsLiveWindow(window) || window->waylandInputIdentity != identity || window->destroying) return;
+        CancelWaylandTabletToolsForWindow(window);
+        if (!IsLiveWindow(window) || window->waylandInputIdentity != identity || window->destroying) return;
         wl_surface_attach(window->waylandSurface, nullptr, 0, 0);
         wl_surface_commit(window->waylandSurface);
         DestroyWaylandRole(window);
@@ -5816,6 +6902,11 @@ void jalium_window_hide(JaliumPlatformWindow* window)
 #endif
     if (window && g_display)
     {
+        window->x11Visible = false;
+        window->x11WmGrab = false;
+        window->userResizing = false;
+        window->x11ResizeRequests.clear();
+        window->lastPressActive = false;
         if (window->x11PopupPointerGrabbed)
         {
             XUngrabPointer(g_display, CurrentTime);
@@ -5828,6 +6919,7 @@ void jalium_window_hide(JaliumPlatformWindow* window)
         }
         XUnmapWindow(g_display, window->xwindow);
         XFlush(g_display);
+        RefreshX11ResizeConstraints(window);
     }
 }
 
@@ -5850,24 +6942,36 @@ void jalium_window_set_title(JaliumPlatformWindow* window, const JaliumUtf16Char
 
 void jalium_window_resize(JaliumPlatformWindow* window, int32_t width, int32_t height)
 {
+    if (!window || width <= 0 || height <= 0) return;
 #ifdef JALIUM_HAS_WAYLAND
     if (window && window->waylandSurface && width > 0 && height > 0)
     {
+        window->userResizing = false;
         // Requested size is physical pixels; keep the logical mirror in sync
         // so a later scale change re-derives the right physical size.
-        window->waylandLogicalWidth = width / window->waylandScale;
-        window->waylandLogicalHeight = height / window->waylandScale;
-        if (window->width != width || window->height != height)
+        window->waylandLogicalWidth = WaylandLogicalSize(width, window->waylandScale);
+        window->waylandLogicalHeight = WaylandLogicalSize(height, window->waylandScale);
+        width = WaylandPhysicalSize(window->waylandLogicalWidth, window->waylandScale);
+        height = WaylandPhysicalSize(window->waylandLogicalHeight, window->waylandScale);
+        UpdateWaylandSurfaceScale(window);
+        const bool sizeChanged = window->width != width || window->height != height;
+        window->width = width;
+        window->height = height;
+        // An explicit resize while hidden defines the next floating size.
+        // No toplevel role remains to constrain it to the previous tile.
+        if (!window->xdgToplevel) window->waylandTiled = false;
+        SaveNormalGeometry(window);
+        if (sizeChanged)
         {
-            window->width = width;
-            window->height = height;
             JaliumPlatformEvent event{};
             event.type = JALIUM_EVENT_RESIZE;
             event.window = window;
             event.resize.width = width;
             event.resize.height = height;
             window->DispatchEvent(event);
+            if (!IsLiveWindow(window)) return;
         }
+        ApplyWaylandSizeConstraints(window);
         if (window->xdgPopup)
         {
 #ifdef XDG_POPUP_REPOSITION_SINCE_VERSION
@@ -5890,7 +6994,24 @@ void jalium_window_resize(JaliumPlatformWindow* window, int32_t width, int32_t h
 #endif
     if (window && g_display)
     {
-        XResizeWindow(g_display, window->xwindow, width, height);
+        // Fixed-size windows may still be resized by the application. Move the
+        // equal min/max hints to the new size before asking the WM to resize.
+        if (!(window->style & JALIUM_WINDOW_STYLE_RESIZABLE))
+        {
+            XSizeHints hints{};
+            long supplied = 0;
+            XGetWMNormalHints(g_display, window->xwindow, &hints, &supplied);
+            hints.flags |= PMinSize | PMaxSize;
+            hints.min_width = hints.max_width = width;
+            hints.min_height = hints.max_height = height;
+            XSetWMNormalHints(g_display, window->xwindow, &hints);
+        }
+        if (!window->x11Visible && window->state == JALIUM_WINDOW_STATE_NORMAL)
+        {
+            window->normalWidth = width;
+            window->normalHeight = height;
+        }
+        RequestX11Resize(window, width, height);
         XFlush(g_display);
     }
 }
@@ -5939,77 +7060,148 @@ void jalium_window_move(JaliumPlatformWindow* window, int32_t x, int32_t y)
     }
 }
 
+static void ChangeX11StateAtoms(JaliumPlatformWindow* window, bool add, Atom first, Atom second = None)
+{
+    const Atom property = XInternAtom(g_display, "_NET_WM_STATE", False);
+    if (!window->x11Visible)
+    {
+        Atom type = None;
+        int format = 0;
+        unsigned long count = 0, remaining = 0;
+        unsigned char* raw = nullptr;
+        std::vector<Atom> states;
+        if (XGetWindowProperty(g_display, window->xwindow, property, 0, 4096,
+                False, XA_ATOM, &type, &format, &count, &remaining, &raw) == Success &&
+            raw && type == XA_ATOM && format == 32)
+            states.assign(reinterpret_cast<Atom*>(raw), reinterpret_cast<Atom*>(raw) + count);
+        if (raw) XFree(raw);
+        for (Atom atom : {first, second})
+        {
+            if (atom == None) continue;
+            states.erase(std::remove(states.begin(), states.end(), atom), states.end());
+            if (add) states.push_back(atom);
+        }
+        XChangeProperty(g_display, window->xwindow, property, XA_ATOM, 32,
+            PropModeReplace, reinterpret_cast<const unsigned char*>(states.data()),
+            static_cast<int>(states.size()));
+        return;
+    }
+    XEvent event{};
+    event.xclient.type = ClientMessage;
+    event.xclient.window = window->xwindow;
+    event.xclient.message_type = property;
+    event.xclient.format = 32;
+    event.xclient.data.l[0] = add ? 1 : 0;
+    event.xclient.data.l[1] = static_cast<long>(first);
+    event.xclient.data.l[2] = static_cast<long>(second);
+    event.xclient.data.l[3] = 1; // normal application
+    XSendEvent(g_display, g_rootWindow, False,
+        SubstructureRedirectMask | SubstructureNotifyMask, &event);
+}
+
 void jalium_window_set_state(JaliumPlatformWindow* window, JaliumWindowState state)
 {
+    if (!window || state < JALIUM_WINDOW_STATE_NORMAL || state > JALIUM_WINDOW_STATE_FULLSCREEN) return;
+    if (!SupportsWindowState(window->capabilities, state)) return;
+    SaveNormalGeometry(window);
+    const JaliumWindowState previousRequest = window->requestedState;
+    window->requestedState = state;
+    window->stateRequestPending = state != window->state;
 #ifdef JALIUM_HAS_WAYLAND
     if (window && window->waylandSurface)
     {
-        if ((!window->xdgToplevel && !window->xdgPopup) && !CreateWaylandRole(window)) return;
-        if (window->xdgPopup) return;
+        window->waylandMaximizeAfterFullscreen = false;
+        // Hidden windows keep their requested state without recreating a role
+        // or becoming mapped. Show recreates the complete toplevel metadata.
+        if (!window->xdgToplevel) return;
         switch (state)
         {
         case JALIUM_WINDOW_STATE_NORMAL:
-            xdg_toplevel_unset_maximized(window->xdgToplevel);
-            xdg_toplevel_unset_fullscreen(window->xdgToplevel);
+            if (window->state == JALIUM_WINDOW_STATE_MAXIMIZED || previousRequest == JALIUM_WINDOW_STATE_MAXIMIZED ||
+                window->state == JALIUM_WINDOW_STATE_MINIMIZED)
+                xdg_toplevel_unset_maximized(window->xdgToplevel);
+            if (window->state == JALIUM_WINDOW_STATE_FULLSCREEN || previousRequest == JALIUM_WINDOW_STATE_FULLSCREEN ||
+                window->state == JALIUM_WINDOW_STATE_MINIMIZED)
+                xdg_toplevel_unset_fullscreen(window->xdgToplevel);
             break;
         case JALIUM_WINDOW_STATE_MINIMIZED:
             xdg_toplevel_set_minimized(window->xdgToplevel);
             break;
         case JALIUM_WINDOW_STATE_MAXIMIZED:
-            xdg_toplevel_set_maximized(window->xdgToplevel);
+            if (window->state == JALIUM_WINDOW_STATE_FULLSCREEN || previousRequest == JALIUM_WINDOW_STATE_FULLSCREEN)
+            {
+                xdg_toplevel_unset_fullscreen(window->xdgToplevel);
+                window->waylandMaximizeAfterFullscreen = true;
+            }
+            else
+                xdg_toplevel_set_maximized(window->xdgToplevel);
             break;
         case JALIUM_WINDOW_STATE_FULLSCREEN:
+            if (window->state == JALIUM_WINDOW_STATE_MAXIMIZED || previousRequest == JALIUM_WINDOW_STATE_MAXIMIZED)
+                xdg_toplevel_unset_maximized(window->xdgToplevel);
             xdg_toplevel_set_fullscreen(window->xdgToplevel, nullptr);
             break;
         }
-        window->state = state;
         wl_display_flush(g_waylandDisplay);
+        // Minimize has no compositor acknowledgement in xdg-shell. All other
+        // states are published only by the compositor configure callback.
+        if (state == JALIUM_WINDOW_STATE_MINIMIZED && window->state != state)
+        {
+            window->state = state;
+            window->stateRequestPending = false;
+            JaliumPlatformEvent event{};
+            event.type = JALIUM_EVENT_STATE_CHANGED;
+            event.window = window;
+            event.stateChanged.newState = state;
+            window->DispatchEvent(event);
+        }
         return;
     }
 #endif
     if (!window || !g_display) return;
 
-    Atom netWmState = XInternAtom(g_display, "_NET_WM_STATE", False);
     Atom netMaxH = XInternAtom(g_display, "_NET_WM_STATE_MAXIMIZED_HORZ", False);
     Atom netMaxV = XInternAtom(g_display, "_NET_WM_STATE_MAXIMIZED_VERT", False);
     Atom netFullscreen = XInternAtom(g_display, "_NET_WM_STATE_FULLSCREEN", False);
-    Atom netHidden = XInternAtom(g_display, "_NET_WM_STATE_HIDDEN", False);
+    XWMHints hints{};
+    if (XWMHints* existing = XGetWMHints(g_display, window->xwindow))
+    {
+        hints = *existing;
+        XFree(existing);
+    }
+    hints.flags |= StateHint;
+    hints.initial_state = state == JALIUM_WINDOW_STATE_MINIMIZED ? IconicState : NormalState;
+    XSetWMHints(g_display, window->xwindow, &hints);
 
-    XEvent ev{};
-    ev.type = ClientMessage;
-    ev.xclient.window = window->xwindow;
-    ev.xclient.message_type = netWmState;
-    ev.xclient.format = 32;
+    if (state != JALIUM_WINDOW_STATE_MINIMIZED && window->x11Visible &&
+        jalium_window_get_state(window) == JALIUM_WINDOW_STATE_MINIMIZED)
+    {
+        // A compositing WM may keep the client mapped while minimized.
+        // Mapping it again does not request restore; reuse the normal EWMH
+        // activation request as well.
+        (void)jalium_window_activate(window);
+    }
 
     switch (state)
     {
     case JALIUM_WINDOW_STATE_NORMAL:
         // Remove maximized and fullscreen
-        ev.xclient.data.l[0] = 0; // _NET_WM_STATE_REMOVE
-        ev.xclient.data.l[1] = netMaxH;
-        ev.xclient.data.l[2] = netMaxV;
-        XSendEvent(g_display, g_rootWindow, False, SubstructureRedirectMask | SubstructureNotifyMask, &ev);
-        ev.xclient.data.l[1] = netFullscreen;
-        ev.xclient.data.l[2] = 0;
-        XSendEvent(g_display, g_rootWindow, False, SubstructureRedirectMask | SubstructureNotifyMask, &ev);
+        ChangeX11StateAtoms(window, false, netMaxH, netMaxV);
+        ChangeX11StateAtoms(window, false, netFullscreen);
         break;
 
     case JALIUM_WINDOW_STATE_MINIMIZED:
-        XIconifyWindow(g_display, window->xwindow, g_screen);
+        if (window->x11Visible) XIconifyWindow(g_display, window->xwindow, g_screen);
         break;
 
     case JALIUM_WINDOW_STATE_MAXIMIZED:
-        ev.xclient.data.l[0] = 1; // _NET_WM_STATE_ADD
-        ev.xclient.data.l[1] = netMaxH;
-        ev.xclient.data.l[2] = netMaxV;
-        XSendEvent(g_display, g_rootWindow, False, SubstructureRedirectMask | SubstructureNotifyMask, &ev);
+        ChangeX11StateAtoms(window, false, netFullscreen);
+        ChangeX11StateAtoms(window, true, netMaxH, netMaxV);
         break;
 
     case JALIUM_WINDOW_STATE_FULLSCREEN:
-        ev.xclient.data.l[0] = 1; // _NET_WM_STATE_ADD
-        ev.xclient.data.l[1] = netFullscreen;
-        ev.xclient.data.l[2] = 0;
-        XSendEvent(g_display, g_rootWindow, False, SubstructureRedirectMask | SubstructureNotifyMask, &ev);
+        ChangeX11StateAtoms(window, false, netMaxH, netMaxV);
+        ChangeX11StateAtoms(window, true, netFullscreen);
         break;
     }
 
@@ -6189,6 +7381,7 @@ int32_t jalium_wayland_surface_is_ready(intptr_t waylandSurface)
         if (reinterpret_cast<intptr_t>(window->waylandSurface) == waylandSurface)
         {
             return window->waylandVisible.load(std::memory_order_acquire) &&
+                   !window->waylandSuspended.load(std::memory_order_acquire) &&
                    window->waylandConfigured.load(std::memory_order_acquire)
                 ? 1 : 0;
         }
@@ -6242,7 +7435,7 @@ void jalium_window_set_cursor(JaliumPlatformWindow* window, JaliumCursorShape cu
             return;
         }
 
-        const int scale = window->waylandScale > 0 ? window->waylandScale : 1;
+        const int scale = static_cast<int>(std::ceil(window->waylandScale));
         if (!g_waylandCursorTheme || g_waylandCursorThemeScale != scale)
         {
             if (g_waylandCursorTheme)
@@ -7021,6 +8214,18 @@ static bool ProcessXInputEvent(XEvent& xev)
             }
             else if (!(device->detail >= Button4 && device->detail <= 7))
             {
+                if (eventType == XI_ButtonPress)
+                {
+                    window->lastPressRootX = static_cast<int32_t>(std::lround(device->root_x));
+                    window->lastPressRootY = static_cast<int32_t>(std::lround(device->root_y));
+                    window->lastPressButton = static_cast<uint32_t>(device->detail);
+                    window->lastPressActive = true;
+                }
+                else if (window->lastPressButton == static_cast<uint32_t>(device->detail))
+                {
+                    window->lastPressActive = false;
+                    if (!window->x11WmGrab) window->userResizing = false;
+                }
                 event.type = eventType == XI_ButtonPress
                     ? JALIUM_EVENT_MOUSE_DOWN : JALIUM_EVENT_MOUSE_UP;
                 event.mouse.x = static_cast<float>(device->event_x);
@@ -7123,6 +8328,23 @@ static void ProcessXEvent(XEvent& xev)
     if (ProcessXRandREvent(xev)) return;
     if (ProcessClipboardXEvent(xev)) return;
     if (ProcessXdndXEvent(xev)) return;
+    const bool constraintsChanged = xev.type == PropertyNotify &&
+        xev.xproperty.atom == XInternAtom(g_display, "_GTK_EDGE_CONSTRAINTS", False);
+    if (constraintsChanged || xev.type == ReparentNotify)
+    {
+        const Window changed = constraintsChanged ? xev.xproperty.window : xev.xreparent.window;
+        std::vector<JaliumPlatformWindow*> affected;
+        {
+            std::lock_guard<std::mutex> lock(g_windowMapMutex);
+            for (const auto& [handle, candidate] : g_windowMap)
+                if (handle == changed || std::find(candidate->x11ConstraintAncestors.begin(),
+                    candidate->x11ConstraintAncestors.end(), changed) != candidate->x11ConstraintAncestors.end())
+                    affected.push_back(candidate);
+        }
+        for (auto* candidate : affected)
+            if (IsLiveWindow(candidate)) RefreshX11ResizeConstraints(candidate, xev.type == ReparentNotify);
+        return;
+    }
     JaliumPlatformWindow* win = FindWindow(xev.xany.window);
     if (!win) return;
 
@@ -7141,6 +8363,17 @@ static void ProcessXEvent(XEvent& xev)
 
     case ConfigureNotify:
         {
+            // Consult the current server property before accepting geometry so
+            // a tile cannot overwrite floating bounds due to event ordering.
+            if (!RefreshX11ResizeConstraints(win)) return;
+            const auto configuredState = jalium_window_get_state(win);
+            const bool layoutTransition = configuredState != JALIUM_WINDOW_STATE_NORMAL ||
+                win->x11ConfiguredState != JALIUM_WINDOW_STATE_NORMAL ||
+                win->x11ConfiguredTiled != win->x11Tiled || win->stateRequestPending;
+            win->x11ConfiguredState = configuredState;
+            win->x11ConfiguredTiled = win->x11Tiled;
+            const bool applicationResize = ConsumeX11ResizeRequest(
+                win, xev.xconfigure.width, xev.xconfigure.height);
             const bool sizeChanged =
                 xev.xconfigure.width != win->width ||
                 xev.xconfigure.height != win->height;
@@ -7166,6 +8399,7 @@ static void ProcessXEvent(XEvent& xev)
             const bool dpiChanged = GetX11MonitorMetricsForRect(
                 rootX, rootY, win->width, win->height, monitor) &&
                 UpdateX11WindowDpi(win, monitor);
+            if (!IsLiveWindow(win)) return;
 
             // A DPI transition schedules a scaled XResizeWindow above. Wait
             // for that authoritative ConfigureNotify instead of publishing an
@@ -7175,7 +8409,10 @@ static void ProcessXEvent(XEvent& xev)
                 evt.type = JALIUM_EVENT_RESIZE;
                 evt.resize.width = win->width;
                 evt.resize.height = win->height;
+                evt.resize.isUserInitiated = win->x11Visible && !applicationResize && !layoutTransition &&
+                    (win->userResizing || win->x11WmGrab) ? 1 : 0;
                 win->DispatchEvent(evt);
+                if (!IsLiveWindow(win)) return;
             }
 
             int reportedX = rootX;
@@ -7197,14 +8434,29 @@ static void ProcessXEvent(XEvent& xev)
                 evt.move.x = reportedX;
                 evt.move.y = reportedY;
                 win->DispatchEvent(evt);
+                if (!IsLiveWindow(win)) return;
             }
+            if (jalium_window_get_state(win) == JALIUM_WINDOW_STATE_NORMAL)
+                SaveNormalGeometry(win);
         }
         break;
 
     case PropertyNotify:
-        if (xev.xproperty.atom == XInternAtom(g_display, "_NET_WM_STATE", False))
+        if (xev.xproperty.atom == XInternAtom(g_display, "_NET_WM_ALLOWED_ACTIONS", False))
         {
+            if (!RefreshX11WindowCapabilities(win)) return;
+            break;
+        }
+        if (xev.xproperty.atom == XInternAtom(g_display, "_NET_WM_STATE", False) ||
+            xev.xproperty.atom == XInternAtom(g_display, "WM_STATE", False))
+        {
+            if (!RefreshX11ResizeConstraints(win)) return;
             JaliumWindowState queried = jalium_window_get_state(win);
+            if (!win->stateRequestPending || queried == win->requestedState)
+            {
+                win->requestedState = queried;
+                win->stateRequestPending = false;
+            }
             if (queried != win->state)
             {
                 win->state = queried;
@@ -7216,20 +8468,66 @@ static void ProcessXEvent(XEvent& xev)
         break;
 
     case ClientMessage:
-        if (static_cast<Atom>(xev.xclient.data.l[0]) == g_wmDeleteWindow)
+        if (xev.xclient.message_type == g_wmProtocols && xev.xclient.format == 32 &&
+            static_cast<Atom>(xev.xclient.data.l[0]) == g_wmDeleteWindow)
         {
             evt.type = JALIUM_EVENT_CLOSE_REQUESTED;
             win->DispatchEvent(evt);
         }
         break;
 
+    case DestroyNotify:
+        {
+            const Window handle = win->xwindow;
+            win->xwindow = 0;
+            {
+                std::lock_guard<std::mutex> lock(g_windowMapMutex);
+                g_windowMap.erase(handle);
+            }
+            evt.type = JALIUM_EVENT_DESTROYED;
+            win->DispatchEvent(evt);
+        }
+        break;
+
     case FocusIn:
+        // Grab notifications redirect key delivery without changing the X
+        // input focus. Publishing deactivation would dismiss our own popups.
+        if (xev.xfocus.mode == NotifyGrab) break;
+        if (xev.xfocus.mode == NotifyUngrab)
+        {
+            win->x11WmGrab = false;
+            win->userResizing = false;
+            win->x11ResizeRequests.clear();
+            break;
+        }
+        win->x11WmGrab = false;
+        win->userResizing = false;
+        win->x11ResizeRequests.clear();
         if (win->xic) XSetICFocus(win->xic);
         evt.type = JALIUM_EVENT_FOCUS_GAINED;
         win->DispatchEvent(evt);
         break;
 
     case FocusOut:
+        if (xev.xfocus.mode == NotifyGrab)
+        {
+            const bool ownedGrab = HasX11PopupKeyboardGrab();
+            win->x11WmGrab = win->x11Visible && !(win->style & JALIUM_WINDOW_STYLE_POPUP) &&
+                !ownedGrab;
+            win->x11ResizeRequests.clear();
+            if (!ownedGrab) ClearPressedKeyStates();
+            break;
+        }
+        if (xev.xfocus.mode == NotifyUngrab)
+        {
+            win->x11WmGrab = false;
+            win->userResizing = false;
+            win->x11ResizeRequests.clear();
+            break;
+        }
+        win->x11WmGrab = false;
+        win->userResizing = false;
+        win->x11ResizeRequests.clear();
         if (win->xic) XUnsetICFocus(win->xic);
         ClearPressedKeyStates();
         evt.type = JALIUM_EVENT_FOCUS_LOST;
@@ -7270,6 +8568,7 @@ static void ProcessXEvent(XEvent& xev)
             win->lastPressRootX = xev.xbutton.x_root;
             win->lastPressRootY = xev.xbutton.y_root;
             win->lastPressButton = xev.xbutton.button;
+            win->lastPressActive = true;
 
             evt.type = JALIUM_EVENT_MOUSE_DOWN;
             evt.mouse.x = static_cast<float>(xev.xbutton.x);
@@ -7289,6 +8588,13 @@ static void ProcessXEvent(XEvent& xev)
 #endif
         if (xev.xbutton.button >= Button4 && xev.xbutton.button <= 7)
             break; // Ignore scroll button releases
+
+        if (win->lastPressButton == xev.xbutton.button)
+        {
+            win->lastPressActive = false;
+            // The WM may decline our request and leave input with the client.
+            if (!win->x11WmGrab) win->userResizing = false;
+        }
 
         evt.type = JALIUM_EVENT_MOUSE_UP;
         evt.mouse.x = static_cast<float>(xev.xbutton.x);
@@ -7327,6 +8633,7 @@ static void ProcessXEvent(XEvent& xev)
         evt.key.modifiers = GetX11Modifiers(xev.xkey.state);
         evt.key.isRepeat = wasDown ? 1 : 0;
         win->DispatchEvent(evt);
+        if (!IsLiveWindow(win)) return;
 
         std::string committedText;
         // Text input via XIC. XBufferOverflow is common for multi-character
@@ -9720,6 +11027,263 @@ JaliumResult jalium_drag_begin(
 }
 
 #ifdef JALIUM_PLATFORM_TEST_HOOKS
+uint32_t jalium_test_wayland_get_seat_capabilities()
+{
+#ifdef JALIUM_HAS_WAYLAND
+    return (g_waylandPointer ? WL_SEAT_CAPABILITY_POINTER : 0u) |
+        (g_waylandKeyboard ? WL_SEAT_CAPABILITY_KEYBOARD : 0u) |
+        (g_waylandTouch ? WL_SEAT_CAPABILITY_TOUCH : 0u);
+#else
+    return 0;
+#endif
+}
+
+int32_t jalium_test_wayland_inject_seat_capabilities(uint32_t capabilities)
+{
+#ifdef JALIUM_HAS_WAYLAND
+    if (!g_waylandSeat) return JALIUM_ERROR_INVALID_STATE;
+    if (capabilities & ~7u) return JALIUM_ERROR_INVALID_ARGUMENT;
+    HandleSeatCapabilities(nullptr, g_waylandSeat, capabilities);
+    return JALIUM_OK;
+#else
+    (void)capabilities;
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
+int32_t jalium_test_wayland_inject_preedit(JaliumPlatformWindow* window, const char* text)
+{
+#ifdef JALIUM_HAS_WAYLAND
+    if (!IsLiveWindow(window) || g_keyboardFocus != window || !text)
+        return JALIUM_ERROR_INVALID_STATE;
+#ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V3
+    if (g_waylandTextInput)
+    {
+        HandleTextInputPreedit(nullptr, g_waylandTextInput, text,
+            static_cast<int32_t>(strlen(text)), static_cast<int32_t>(strlen(text)));
+        HandleTextInputDone(nullptr, g_waylandTextInput, 0);
+        return JALIUM_OK;
+    }
+#endif
+#ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V1
+    if (g_waylandTextInputV1)
+    {
+        HandleTextInputV1PreeditCursor(nullptr, g_waylandTextInputV1, static_cast<int32_t>(strlen(text)));
+        HandleTextInputV1PreeditString(nullptr, g_waylandTextInputV1, 0, text, "");
+        return JALIUM_OK;
+    }
+#endif
+#else
+    (void)window; (void)text;
+#endif
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+int32_t jalium_test_wayland_inject_commit(JaliumPlatformWindow* window, const char* text)
+{
+#ifdef JALIUM_HAS_WAYLAND
+    if (!IsLiveWindow(window) || g_keyboardFocus != window || !text) return JALIUM_ERROR_INVALID_STATE;
+#ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V3
+    if (g_waylandTextInput)
+    {
+        HandleTextInputCommit(nullptr, g_waylandTextInput, text);
+        HandleTextInputDone(nullptr, g_waylandTextInput, 0);
+        return JALIUM_OK;
+    }
+#endif
+#ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V1
+    if (g_waylandTextInputV1)
+    {
+        HandleTextInputV1CommitString(nullptr, g_waylandTextInputV1, 0, text);
+        return JALIUM_OK;
+    }
+#endif
+#endif
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+int32_t jalium_test_wayland_inject_text_input_leave(JaliumPlatformWindow* window)
+{
+#ifdef JALIUM_HAS_WAYLAND
+    if (!IsLiveWindow(window) || g_keyboardFocus != window) return JALIUM_ERROR_INVALID_STATE;
+#ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V3
+    if (g_waylandTextInput)
+    {
+        HandleTextInputLeave(nullptr, g_waylandTextInput, window->waylandSurface);
+        return JALIUM_OK;
+    }
+#endif
+#ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V1
+    if (g_waylandTextInputV1)
+    {
+        HandleTextInputV1Leave(nullptr, g_waylandTextInputV1);
+        return JALIUM_OK;
+    }
+#endif
+#endif
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+int32_t jalium_test_wayland_inject_text_input_batch(JaliumPlatformWindow* window,
+    uint32_t before, uint32_t after, const char* commit, const char* preedit, int32_t sendDone)
+{
+#if defined(JALIUM_HAS_WAYLAND) && defined(JALIUM_HAS_WAYLAND_TEXT_INPUT_V3)
+    if (!IsLiveWindow(window) || g_keyboardFocus != window || !g_waylandTextInput)
+        return JALIUM_ERROR_NOT_SUPPORTED;
+    if (before || after) HandleTextInputDeleteSurrounding(nullptr, g_waylandTextInput, before, after);
+    if (commit) HandleTextInputCommit(nullptr, g_waylandTextInput, commit);
+    if (preedit) HandleTextInputPreedit(nullptr, g_waylandTextInput, preedit,
+        static_cast<int32_t>(strlen(preedit)), static_cast<int32_t>(strlen(preedit)));
+    if (sendDone) HandleTextInputDone(nullptr, g_waylandTextInput, 0);
+    return JALIUM_OK;
+#else
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
+int32_t jalium_test_wayland_inject_keyboard(
+    JaliumPlatformWindow* window, JaliumEventType type, uint32_t key, uint32_t modifiers)
+{
+#ifdef JALIUM_HAS_WAYLAND
+    if (!IsLiveWindow(window) || !window->waylandSurface || !g_waylandKeyboard)
+        return JALIUM_ERROR_INVALID_STATE;
+    const uint32_t serial = ++g_waylandInputSerial;
+    if (type == JALIUM_EVENT_FOCUS_GAINED)
+    {
+        wl_array keys{};
+        HandleKeyboardEnter(nullptr, g_waylandKeyboard, serial, window->waylandSurface, &keys);
+        return JALIUM_OK;
+    }
+    if (type == JALIUM_EVENT_FOCUS_LOST)
+    {
+        HandleKeyboardLeave(nullptr, g_waylandKeyboard, serial, window->waylandSurface);
+        return JALIUM_OK;
+    }
+    if (type != JALIUM_EVENT_KEY_DOWN && type != JALIUM_EVENT_KEY_UP)
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    if (g_keyboardFocus != window || !g_xkbState || !g_xkbKeymap)
+        return JALIUM_ERROR_INVALID_STATE;
+    xkb_mod_mask_t depressed = 0;
+    const char* names[] = {XKB_MOD_NAME_SHIFT, XKB_MOD_NAME_CTRL, XKB_MOD_NAME_ALT, XKB_MOD_NAME_LOGO};
+    for (uint32_t index = 0; index < 4; ++index)
+    {
+        const xkb_mod_index_t mod = xkb_keymap_mod_get_index(g_xkbKeymap, names[index]);
+        if ((modifiers & (1u << index)) && mod != XKB_MOD_INVALID && mod < 32)
+            depressed |= 1u << mod;
+    }
+    HandleKeyboardModifiers(nullptr, g_waylandKeyboard, serial, depressed, 0, 0, 0);
+    HandleKeyboardKey(nullptr, g_waylandKeyboard, serial, 1, key,
+        type == JALIUM_EVENT_KEY_DOWN ? WL_KEYBOARD_KEY_STATE_PRESSED : WL_KEYBOARD_KEY_STATE_RELEASED);
+    return JALIUM_OK;
+#else
+    (void)window; (void)type; (void)key; (void)modifiers;
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
+int32_t jalium_test_wayland_inject_mouse(
+    JaliumPlatformWindow* window, JaliumEventType type, int32_t button, float x, float y)
+{
+#ifdef JALIUM_HAS_WAYLAND
+    if (!IsLiveWindow(window) || !window->waylandSurface || !g_waylandPointer)
+        return JALIUM_ERROR_INVALID_STATE;
+    const uint32_t serial = ++g_waylandInputSerial;
+    const double scale = window->waylandScale > 0 ? window->waylandScale : 1;
+    if (type == JALIUM_EVENT_MOUSE_ENTER)
+        HandlePointerEnter(nullptr, g_waylandPointer, serial, window->waylandSurface,
+            wl_fixed_from_double(x / scale), wl_fixed_from_double(y / scale));
+    else if (type == JALIUM_EVENT_MOUSE_LEAVE)
+        HandlePointerLeave(nullptr, g_waylandPointer, serial, window->waylandSurface);
+    else if (g_pointerFocus != window)
+        return JALIUM_ERROR_INVALID_STATE;
+    else if (type == JALIUM_EVENT_MOUSE_MOVE)
+        HandlePointerMotion(nullptr, g_waylandPointer, 1,
+            wl_fixed_from_double(x / scale), wl_fixed_from_double(y / scale));
+    else if (type == JALIUM_EVENT_MOUSE_DOWN || type == JALIUM_EVENT_MOUSE_UP)
+    {
+        const uint32_t buttons[] = {0x110, 0x111, 0x112, 0x113, 0x114};
+        if (button < 0 || button >= 5) return JALIUM_ERROR_INVALID_ARGUMENT;
+        HandlePointerButton(nullptr, g_waylandPointer, serial, 1, buttons[button],
+            type == JALIUM_EVENT_MOUSE_DOWN ? WL_POINTER_BUTTON_STATE_PRESSED : WL_POINTER_BUTTON_STATE_RELEASED);
+    }
+    else return JALIUM_ERROR_INVALID_ARGUMENT;
+    return JALIUM_OK;
+#else
+    (void)window; (void)type; (void)button; (void)x; (void)y;
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
+int32_t jalium_test_keysym_to_virtual_key(uint32_t keysym)
+{
+    return KeySymToJaliumVK(static_cast<KeySym>(keysym));
+}
+
+int32_t jalium_test_wayland_inject_toplevel_configure(
+    JaliumPlatformWindow* window, int32_t width, int32_t height, const uint32_t* states, uint32_t count)
+{
+#ifdef JALIUM_HAS_WAYLAND
+    if (!IsLiveWindow(window) || !window->xdgToplevel) return JALIUM_ERROR_INVALID_STATE;
+    if (width < 0 || height < 0 || count > 4096 || (count && !states)) return JALIUM_ERROR_INVALID_ARGUMENT;
+    wl_array values{};
+    values.data = const_cast<uint32_t*>(states);
+    values.size = static_cast<size_t>(count) * sizeof(uint32_t);
+    HandleXdgToplevelConfigure(window, nullptr, width, height, &values);
+    return JALIUM_OK;
+#else
+    (void)window; (void)width; (void)height; (void)states; (void)count;
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
+int32_t jalium_test_wayland_inject_configure_bounds(JaliumPlatformWindow* window, int32_t width, int32_t height)
+{
+#ifdef JALIUM_HAS_WAYLAND
+    if (!IsLiveWindow(window) || !window->xdgToplevel) return JALIUM_ERROR_INVALID_STATE;
+    if (width < 0 || height < 0) return JALIUM_ERROR_INVALID_ARGUMENT;
+    HandleXdgToplevelConfigureBounds(window, nullptr, width, height);
+    return JALIUM_OK;
+#else
+    (void)window; (void)width; (void)height;
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
+int32_t jalium_test_wayland_inject_suspended_configure(JaliumPlatformWindow* window, int32_t suspended)
+{
+#ifdef JALIUM_HAS_WAYLAND
+    if (!IsLiveWindow(window) || !window->xdgToplevel) return JALIUM_ERROR_INVALID_STATE;
+    if (suspended != 0 && suspended != 1) return JALIUM_ERROR_INVALID_ARGUMENT;
+    std::vector<uint32_t> states;
+    if (window->state == JALIUM_WINDOW_STATE_MAXIMIZED) states.push_back(XDG_TOPLEVEL_STATE_MAXIMIZED);
+    if (window->state == JALIUM_WINDOW_STATE_FULLSCREEN) states.push_back(XDG_TOPLEVEL_STATE_FULLSCREEN);
+    if (window->waylandActivated) states.push_back(XDG_TOPLEVEL_STATE_ACTIVATED);
+    if (suspended) states.push_back(9); // suspended, introduced in xdg-shell v6
+    wl_array values{};
+    values.data = states.data();
+    values.size = states.size() * sizeof(uint32_t);
+    HandleXdgToplevelConfigure(window, nullptr, 0, 0, &values);
+    return JALIUM_OK;
+#else
+    (void)window; (void)suspended;
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
+int32_t jalium_test_wayland_apply_surface_configuration(JaliumPlatformWindow* window)
+{
+#ifdef JALIUM_HAS_WAYLAND
+    if (!IsLiveWindow(window) || !window->waylandSurface) return JALIUM_ERROR_INVALID_STATE;
+    // No fake wire serial is acknowledged. Apply the production continuation
+    // that follows a real surface ack, including rendering and callback guards.
+    ApplyAcknowledgedWaylandSurfaceConfiguration(window);
+    return JALIUM_OK;
+#else
+    (void)window;
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
 int32_t jalium_test_external_transfer_fits(
     uint64_t currentSize, uint64_t incomingSize)
 {
@@ -9941,10 +11505,66 @@ int32_t jalium_test_wayland_inject_decoration_configure(
 uint32_t jalium_test_wayland_get_decoration_mode(JaliumPlatformWindow* window)
 {
 #if defined(JALIUM_HAS_WAYLAND) && defined(JALIUM_HAS_XDG_DECORATION_V1)
-    return window ? window->xdgDecorationMode : 0;
+    return window ? window->pendingXdgDecorationMode : 0;
 #else
     (void)window;
     return 0;
+#endif
+}
+
+int32_t jalium_test_wayland_apply_pending_decoration(JaliumPlatformWindow* window)
+{
+#if defined(JALIUM_HAS_WAYLAND) && defined(JALIUM_HAS_XDG_DECORATION_V1)
+    if (!IsLiveWindow(window) || !window->waylandSurface) return JALIUM_ERROR_INVALID_STATE;
+    ApplyPendingWaylandDecoration(window);
+    return JALIUM_OK;
+#else
+    (void)window;
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
+int32_t jalium_test_wayland_inject_wm_capabilities(JaliumPlatformWindow* window, const uint32_t* capabilities, uint32_t count)
+{
+#ifdef JALIUM_HAS_WAYLAND
+    if (!IsLiveWindow(window) || !window->waylandSurface) return JALIUM_ERROR_INVALID_STATE;
+    if (count > 4096 || (count && !capabilities)) return JALIUM_ERROR_INVALID_ARGUMENT;
+    wl_array values{};
+    values.data = const_cast<uint32_t*>(capabilities);
+    values.size = static_cast<size_t>(count) * sizeof(uint32_t);
+    HandleXdgToplevelWmCapabilities(window, nullptr, &values);
+    return JALIUM_OK;
+#else
+    (void)window; (void)capabilities; (void)count;
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
+int32_t jalium_test_wayland_apply_pending_capabilities(JaliumPlatformWindow* window)
+{
+#ifdef JALIUM_HAS_WAYLAND
+    if (!IsLiveWindow(window) || !window->waylandSurface) return JALIUM_ERROR_INVALID_STATE;
+    ApplyPendingWaylandCapabilities(window);
+    return JALIUM_OK;
+#else
+    (void)window;
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
+int32_t jalium_test_wayland_inject_fractional_scale(JaliumPlatformWindow* window, uint32_t scale120)
+{
+#ifdef JALIUM_HAS_FRACTIONAL_SCALE_V1
+    if (!IsLiveWindow(window) || !window->waylandSurface) return JALIUM_ERROR_INVALID_STATE;
+    if (scale120 == 0) return JALIUM_ERROR_INVALID_ARGUMENT;
+    if (!g_waylandViewporter) return JALIUM_ERROR_NOT_SUPPORTED;
+    if (!window->waylandViewport)
+        window->waylandViewport = wp_viewporter_get_viewport(g_waylandViewporter, window->waylandSurface);
+    HandleFractionalPreferredScale(window, nullptr, scale120);
+    return JALIUM_OK;
+#else
+    (void)window; (void)scale120;
+    return JALIUM_ERROR_NOT_SUPPORTED;
 #endif
 }
 
@@ -10336,6 +11956,11 @@ int32_t jalium_window_set_min_max_size(
     if (!window)
         return JALIUM_ERROR_INVALID_ARGUMENT;
 
+    if (minWidth < 0 || minHeight < 0 || maxWidth < 0 || maxHeight < 0 ||
+        (maxWidth > 0 && maxWidth < minWidth) ||
+        (maxHeight > 0 && maxHeight < minHeight))
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+
     window->requestedMinWidth = std::max(0, minWidth);
     window->requestedMinHeight = std::max(0, minHeight);
     window->requestedMaxWidth = std::max(0, maxWidth);
@@ -10344,21 +11969,8 @@ int32_t jalium_window_set_min_max_size(
 #ifdef JALIUM_HAS_WAYLAND
     if (window->waylandSurface)
     {
-        if (!window->xdgToplevel && !CreateWaylandRole(window))
-            return JALIUM_ERROR_INVALID_STATE;
-        // xdg_toplevel speaks compositor-logical units.
-        const int32_t scale = window->waylandScale > 0 ? window->waylandScale : 1;
-        const bool resizable = (window->style & JALIUM_WINDOW_STYLE_RESIZABLE) != 0;
-        const int32_t effectiveMinWidth = resizable ? window->requestedMinWidth : window->width;
-        const int32_t effectiveMinHeight = resizable ? window->requestedMinHeight : window->height;
-        const int32_t effectiveMaxWidth = resizable ? window->requestedMaxWidth : window->width;
-        const int32_t effectiveMaxHeight = resizable ? window->requestedMaxHeight : window->height;
-        xdg_toplevel_set_min_size(window->xdgToplevel,
-                                  effectiveMinWidth > 0 ? effectiveMinWidth / scale : 0,
-                                  effectiveMinHeight > 0 ? effectiveMinHeight / scale : 0);
-        xdg_toplevel_set_max_size(window->xdgToplevel,
-                                  effectiveMaxWidth > 0 ? effectiveMaxWidth / scale : 0,
-                                  effectiveMaxHeight > 0 ? effectiveMaxHeight / scale : 0);
+        ApplyWaylandSizeConstraints(window);
+        if (!window->xdgToplevel) return JALIUM_OK;
         wl_surface_commit(window->waylandSurface);
         wl_display_flush(g_waylandDisplay);
         return JALIUM_OK;
@@ -10398,14 +12010,38 @@ namespace {
 // _NET_WM_MOVERESIZE directions.
 constexpr long kNetWmMoveResizeMove = 8;
 
-int32_t BeginX11MoveResize(JaliumPlatformWindow* window, long direction)
+#ifdef JALIUM_HAS_WAYLAND
+uint32_t WaylandMoveResizeSerial(JaliumPlatformWindow* window)
+{
+    if (g_pointerFocus == window && !window->waylandPointerPresses.empty())
+        return window->waylandPointerPresses.begin()->second;
+    for (const auto& [id, contact] : g_waylandTouchContacts)
+    {
+        (void)id;
+        if (contact.window == window && contact.primary && contact.pressSerial != 0)
+            return contact.pressSerial;
+    }
+#ifdef JALIUM_HAS_WAYLAND_TABLET_V2
+    for (const auto* tool : g_waylandTabletTools)
+        if (tool->window == window && tool->down && tool->pressSerial != 0)
+            return tool->pressSerial;
+#endif
+    return 0;
+}
+#endif
+
+int32_t BeginX11MoveResize(JaliumPlatformWindow* window, long direction, bool keyboard = false)
 {
     if (!g_display || !window->xwindow)
+        return JALIUM_ERROR_INVALID_STATE;
+    if (!window->enabled || (!keyboard && !window->lastPressActive) ||
+        (window->style & JALIUM_WINDOW_STYLE_POPUP))
         return JALIUM_ERROR_INVALID_STATE;
 
     // The pointer grab from the triggering press blocks the WM from taking
     // over; hand it back before delegating.
     XUngrabPointer(g_display, CurrentTime);
+    if (keyboard) XUngrabKeyboard(g_display, CurrentTime);
 
     Atom moveResizeAtom = XInternAtom(g_display, "_NET_WM_MOVERESIZE", False);
     XEvent ev{};
@@ -10413,10 +12049,10 @@ int32_t BeginX11MoveResize(JaliumPlatformWindow* window, long direction)
     ev.xclient.window = window->xwindow;
     ev.xclient.message_type = moveResizeAtom;
     ev.xclient.format = 32;
-    ev.xclient.data.l[0] = window->lastPressRootX;
-    ev.xclient.data.l[1] = window->lastPressRootY;
+    ev.xclient.data.l[0] = keyboard ? 0 : window->lastPressRootX;
+    ev.xclient.data.l[1] = keyboard ? 0 : window->lastPressRootY;
     ev.xclient.data.l[2] = direction;
-    ev.xclient.data.l[3] = static_cast<long>(
+    ev.xclient.data.l[3] = keyboard ? 0 : static_cast<long>(
         window->lastPressButton > 0 ? window->lastPressButton : Button1);
     ev.xclient.data.l[4] = 1; // source: normal application
     XSendEvent(g_display, g_rootWindow, False,
@@ -10427,17 +12063,76 @@ int32_t BeginX11MoveResize(JaliumPlatformWindow* window, long direction)
 
 } // namespace
 
+uint32_t jalium_linux_window_get_keyboard_operations(JaliumPlatformWindow* window)
+{
+    if (!window) return 0;
+#ifdef JALIUM_HAS_WAYLAND
+    // The tested compositors validate a pointer/touch/tablet grab for move and
+    // resize. A keyboard serial alone is not proof of an accepted operation.
+    if (window->waylandSurface) return 0;
+#endif
+    if (!g_display || !window->xwindow || !window->x11Visible || !window->enabled ||
+        (window->style & JALIUM_WINDOW_STYLE_POPUP) ||
+        jalium_window_get_state(window) != JALIUM_WINDOW_STATE_NORMAL) return 0;
+
+    Atom type = None;
+    int format = 0;
+    unsigned long count = 0, remaining = 0;
+    unsigned char* data = nullptr;
+    const Atom moveresize = XInternAtom(g_display, "_NET_WM_MOVERESIZE", False);
+    bool supported = false;
+    if (XGetWindowProperty(g_display, g_rootWindow, XInternAtom(g_display, "_NET_SUPPORTED", False),
+            0, 4096, False, XA_ATOM, &type, &format, &count, &remaining, &data) == Success &&
+        data && type == XA_ATOM && format == 32 && remaining == 0)
+    {
+        const auto* atoms = reinterpret_cast<const Atom*>(data);
+        supported = std::find(atoms, atoms + count, moveresize) != atoms + count;
+    }
+    if (data) XFree(data);
+    if (!supported) return 0;
+    uint32_t operations = 0;
+    if (window->capabilities & JALIUM_WINDOW_CAPABILITY_MOVE)
+        operations |= JALIUM_WINDOW_KEYBOARD_MOVE;
+    if ((window->style & JALIUM_WINDOW_STYLE_RESIZABLE) &&
+        (window->capabilities & JALIUM_WINDOW_CAPABILITY_RESIZE) &&
+        jalium_linux_window_get_resizable_edges(window) != 0)
+        operations |= JALIUM_WINDOW_KEYBOARD_RESIZE;
+    return operations;
+}
+
+int32_t jalium_linux_window_begin_keyboard_move_resize(JaliumPlatformWindow* window, int32_t resize)
+{
+    if (!window || (resize != 0 && resize != 1)) return JALIUM_ERROR_INVALID_ARGUMENT;
+#ifdef JALIUM_HAS_WAYLAND
+    if (window->waylandSurface) return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+    if (!g_display || !window->xwindow || !window->x11Visible || !window->enabled ||
+        (window->style & JALIUM_WINDOW_STYLE_POPUP) ||
+        jalium_window_get_state(window) != JALIUM_WINDOW_STATE_NORMAL)
+        return JALIUM_ERROR_INVALID_STATE;
+    const uint32_t operation = resize ? JALIUM_WINDOW_KEYBOARD_RESIZE : JALIUM_WINDOW_KEYBOARD_MOVE;
+    if (!(jalium_linux_window_get_keyboard_operations(window) & operation))
+        return JALIUM_ERROR_NOT_SUPPORTED;
+    // Do not mark resize until the WM actually takes an input grab and changes
+    // geometry. Sending an unacknowledged request must preserve auto sizing.
+    return BeginX11MoveResize(window, resize ? 9 : 10, true);
+}
+
 int32_t jalium_window_begin_move_drag(JaliumPlatformWindow* window)
 {
     if (!window)
         return JALIUM_ERROR_INVALID_ARGUMENT;
+    if (!(window->capabilities & JALIUM_WINDOW_CAPABILITY_MOVE))
+        return JALIUM_ERROR_NOT_SUPPORTED;
 
 #ifdef JALIUM_HAS_WAYLAND
     if (window->waylandSurface)
     {
-        if (!window->xdgToplevel || !g_waylandSeat)
+        const uint32_t serial = WaylandMoveResizeSerial(window);
+        if (!window->enabled || !window->xdgToplevel || !g_waylandSeat ||
+            serial == 0)
             return JALIUM_ERROR_INVALID_STATE;
-        xdg_toplevel_move(window->xdgToplevel, g_waylandSeat, g_waylandPointerSerial);
+        xdg_toplevel_move(window->xdgToplevel, g_waylandSeat, serial);
         wl_display_flush(g_waylandDisplay);
         return JALIUM_OK;
     }
@@ -10450,16 +12145,37 @@ int32_t jalium_window_begin_resize_drag(JaliumPlatformWindow* window, int32_t ed
     if (!window)
         return JALIUM_ERROR_INVALID_ARGUMENT;
 
+    // Only the eight xdg-shell edges are valid. Passing an arbitrary integer to
+    // xdg_toplevel.resize is a fatal compositor protocol error.
+    switch (edge)
+    {
+    case JALIUM_RESIZE_EDGE_TOP: case JALIUM_RESIZE_EDGE_TOP_RIGHT:
+    case JALIUM_RESIZE_EDGE_RIGHT: case JALIUM_RESIZE_EDGE_BOTTOM_RIGHT:
+    case JALIUM_RESIZE_EDGE_BOTTOM: case JALIUM_RESIZE_EDGE_BOTTOM_LEFT:
+    case JALIUM_RESIZE_EDGE_LEFT: case JALIUM_RESIZE_EDGE_TOP_LEFT: break;
+    default: return JALIUM_ERROR_INVALID_ARGUMENT;
+    }
+    if (!(window->style & JALIUM_WINDOW_STYLE_RESIZABLE))
+        return JALIUM_ERROR_INVALID_STATE;
+    if (!(window->capabilities & JALIUM_WINDOW_CAPABILITY_RESIZE))
+        return JALIUM_ERROR_NOT_SUPPORTED;
+
+    if ((jalium_linux_window_get_resizable_edges(window) & static_cast<uint32_t>(edge)) != static_cast<uint32_t>(edge))
+        return JALIUM_ERROR_NOT_SUPPORTED;
+
 #ifdef JALIUM_HAS_WAYLAND
     if (window->waylandSurface)
     {
-        if (!window->xdgToplevel || !g_waylandSeat)
+        const uint32_t serial = WaylandMoveResizeSerial(window);
+        if (!window->enabled || !window->xdgToplevel || !g_waylandSeat ||
+            serial == 0)
             return JALIUM_ERROR_INVALID_STATE;
         // JaliumResizeEdge deliberately mirrors xdg_toplevel_resize_edge.
         xdg_toplevel_resize(window->xdgToplevel, g_waylandSeat,
-                            g_waylandPointerSerial,
+                            serial,
                             static_cast<uint32_t>(edge));
         wl_display_flush(g_waylandDisplay);
+        window->userResizing = true;
         return JALIUM_OK;
     }
 #endif
@@ -10477,7 +12193,9 @@ int32_t jalium_window_begin_resize_drag(JaliumPlatformWindow* window, int32_t ed
     case JALIUM_RESIZE_EDGE_TOP_LEFT:     direction = 0; break;
     default: return JALIUM_ERROR_INVALID_ARGUMENT;
     }
-    return BeginX11MoveResize(window, direction);
+    const int32_t result = BeginX11MoveResize(window, direction);
+    if (result == JALIUM_OK) window->userResizing = true;
+    return result;
 }
 
 #if defined(JALIUM_HAS_WAYLAND) && defined(JALIUM_HAS_XDG_TOPLEVEL_ICON_V1)
@@ -10575,10 +12293,24 @@ int32_t jalium_window_set_icon(
 {
     if (!window)
         return JALIUM_ERROR_INVALID_ARGUMENT;
+    if (bgraPixels && (width <= 0 || height <= 0 || width > 4096 || height > 4096))
+        return JALIUM_ERROR_INVALID_ARGUMENT;
 
 #ifdef JALIUM_HAS_WAYLAND
     if (window->waylandSurface)
     {
+        if (!bgraPixels)
+        {
+            window->waylandIcon.clear();
+            window->waylandIconWidth = window->waylandIconHeight = 0;
+        }
+        else if (bgraPixels != window->waylandIcon.data())
+        {
+            try { window->waylandIcon.assign(bgraPixels, bgraPixels + static_cast<size_t>(width) * height); }
+            catch (const std::bad_alloc&) { return JALIUM_ERROR_OUT_OF_MEMORY; }
+            window->waylandIconWidth = width;
+            window->waylandIconHeight = height;
+        }
 #ifdef JALIUM_HAS_XDG_TOPLEVEL_ICON_V1
         if (!window->xdgToplevel || !g_waylandToplevelIconManager)
             return JALIUM_ERROR_NOT_SUPPORTED;
@@ -10670,17 +12402,8 @@ int32_t jalium_window_set_topmost(JaliumPlatformWindow* window, int32_t topmost)
     if (!g_display || !window->xwindow)
         return JALIUM_ERROR_INVALID_STATE;
 
-    Atom netWmState = XInternAtom(g_display, "_NET_WM_STATE", False);
     Atom aboveAtom = XInternAtom(g_display, "_NET_WM_STATE_ABOVE", False);
-    XEvent ev{};
-    ev.type = ClientMessage;
-    ev.xclient.window = window->xwindow;
-    ev.xclient.message_type = netWmState;
-    ev.xclient.format = 32;
-    ev.xclient.data.l[0] = topmost ? 1 : 0; // _NET_WM_STATE_ADD / _REMOVE
-    ev.xclient.data.l[1] = static_cast<long>(aboveAtom);
-    XSendEvent(g_display, g_rootWindow, False,
-               SubstructureRedirectMask | SubstructureNotifyMask, &ev);
+    ChangeX11StateAtoms(window, topmost != 0, aboveAtom);
     XFlush(g_display);
     return JALIUM_OK;
 }
@@ -10690,6 +12413,16 @@ int32_t jalium_window_set_enabled(JaliumPlatformWindow* window, int32_t enabled)
     if (!window)
         return JALIUM_ERROR_INVALID_ARGUMENT;
     window->enabled = enabled != 0;
+    if (!window->enabled)
+    {
+        window->lastPressActive = false;
+#ifdef JALIUM_HAS_WAYLAND
+        if (window->waylandSurface)
+            window->waylandInputIdentity = g_waylandWindowInputIdentity.fetch_add(1, std::memory_order_relaxed) + 1;
+        window->waylandPointerPresses.clear();
+        if (g_keyboardFocus == window) ClearWaylandKeyboardFocus(true);
+#endif
+    }
     return JALIUM_OK;
 }
 
@@ -10790,12 +12523,155 @@ int32_t jalium_window_set_resizable(JaliumPlatformWindow* window, int32_t resiza
     else
         window->style &= ~static_cast<uint32_t>(JALIUM_WINDOW_STYLE_RESIZABLE);
 
-    return jalium_window_set_min_max_size(
+    const int32_t result = jalium_window_set_min_max_size(
         window,
         window->requestedMinWidth,
         window->requestedMinHeight,
         window->requestedMaxWidth,
         window->requestedMaxHeight);
+    if (result == JALIUM_OK && g_display && window->xwindow)
+        return jalium_linux_window_set_style(window, window->style);
+    return result;
+}
+
+int32_t jalium_linux_window_set_style(JaliumPlatformWindow* window, uint32_t style)
+{
+    if (!window) return JALIUM_ERROR_INVALID_ARGUMENT;
+    window->style = style;
+#ifdef JALIUM_HAS_WAYLAND
+    if (window->waylandSurface)
+    {
+        ApplyWaylandSizeConstraints(window);
+        const int32_t result = jalium_window_set_decorated(window,
+            (style & JALIUM_WINDOW_STYLE_BORDERLESS) == 0);
+        // Core xdg-shell already uses client-side decorations. A missing
+        // optional decoration manager does not prevent applying custom chrome.
+        if (result == JALIUM_ERROR_NOT_SUPPORTED &&
+            (style & JALIUM_WINDOW_STYLE_BORDERLESS)) return JALIUM_OK;
+        return result;
+    }
+#endif
+    if (!g_display || !window->xwindow) return JALIUM_ERROR_INVALID_STATE;
+    const Atom property = XInternAtom(g_display, "_MOTIF_WM_HINTS", False);
+    unsigned long functions = 4; // MWM_FUNC_MOVE
+    if (style & JALIUM_WINDOW_STYLE_RESIZABLE) functions |= 2;
+    if (style & JALIUM_WINDOW_STYLE_MINIMIZABLE) functions |= 8;
+    if (style & JALIUM_WINDOW_STYLE_MAXIMIZABLE) functions |= 16;
+    if (style & JALIUM_WINDOW_STYLE_CLOSABLE) functions |= 32;
+    const unsigned long hints[] = {3, functions,
+        (style & JALIUM_WINDOW_STYLE_BORDERLESS) ? 0ul : 1ul, 0, 0};
+    XChangeProperty(g_display, window->xwindow, property, property, 32,
+        PropModeReplace, reinterpret_cast<const unsigned char*>(hints), 5);
+    return jalium_window_set_min_max_size(window, window->requestedMinWidth,
+        window->requestedMinHeight, window->requestedMaxWidth, window->requestedMaxHeight);
+}
+
+int32_t jalium_linux_window_get_restore_bounds(JaliumPlatformWindow* window,
+    int32_t* x, int32_t* y, int32_t* width, int32_t* height)
+{
+    if (!window || !x || !y || !width || !height) return JALIUM_ERROR_INVALID_ARGUMENT;
+    *x = window->normalX;
+    *y = window->normalY;
+    *width = window->normalWidth;
+    *height = window->normalHeight;
+    return *width > 0 && *height > 0 ? JALIUM_OK : JALIUM_ERROR_INVALID_STATE;
+}
+
+int32_t jalium_linux_window_set_application_id(JaliumPlatformWindow* window, const char* applicationId)
+{
+    if (!window || !applicationId) return JALIUM_ERROR_INVALID_ARGUMENT;
+    const size_t length = strnlen(applicationId, 256);
+    if (length == 0 || length > 255) return JALIUM_ERROR_INVALID_ARGUMENT;
+    for (size_t i = 0; i < length; ++i)
+    {
+        const unsigned char c = static_cast<unsigned char>(applicationId[i]);
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+              c == '.' || c == '_' || c == '-')) return JALIUM_ERROR_INVALID_ARGUMENT;
+    }
+#ifdef JALIUM_HAS_WAYLAND
+    if (window->waylandSurface)
+    {
+        window->desktopApplicationId.assign(applicationId, length);
+        if (window->xdgToplevel) xdg_toplevel_set_app_id(window->xdgToplevel, window->desktopApplicationId.c_str());
+        const int flushed = wl_display_flush(g_waylandDisplay);
+        return flushed < 0 && errno != EAGAIN && errno != EWOULDBLOCK ? JALIUM_ERROR_UNKNOWN : JALIUM_OK;
+    }
+#endif
+    if (!g_display || !window->xwindow) return JALIUM_ERROR_INVALID_STATE;
+    if (window->x11Visible) return JALIUM_ERROR_INVALID_STATE;
+    const Atom wmState = XInternAtom(g_display, "WM_STATE", False);
+    Atom stateType = None;
+    int stateFormat = 0;
+    unsigned long stateCount = 0, remaining = 0;
+    unsigned char* stateData = nullptr;
+    const int status = XGetWindowProperty(g_display, window->xwindow, wmState, 0, 2,
+        False, wmState, &stateType, &stateFormat, &stateCount, &remaining, &stateData);
+    const bool withdrawn = status == Success && (stateType == None ||
+        (stateType == wmState && stateFormat == 32 && stateCount > 0 && stateData &&
+         reinterpret_cast<const long*>(stateData)[0] == WithdrawnState));
+    if (stateData) XFree(stateData);
+    if (!withdrawn) return JALIUM_ERROR_INVALID_STATE;
+    window->desktopApplicationId.assign(applicationId, length);
+    const char* instance = getenv("RESOURCE_NAME");
+    bool validInstance = instance && strnlen(instance, 256) > 0 && strnlen(instance, 256) <= 255;
+    if (validInstance)
+        for (const unsigned char* c = reinterpret_cast<const unsigned char*>(instance); *c; ++c)
+            if (*c < 32 || *c > 126) { validInstance = false; break; }
+    XClassHint hints{};
+    hints.res_name = const_cast<char*>(validInstance ? instance : window->desktopApplicationId.c_str());
+    hints.res_class = const_cast<char*>(window->desktopApplicationId.c_str());
+    XSetClassHint(g_display, window->xwindow, &hints);
+    XFlush(g_display);
+    return JALIUM_OK;
+}
+
+uint32_t jalium_linux_window_get_capabilities(JaliumPlatformWindow* window)
+{
+    return window ? window->capabilities : 0;
+}
+
+uint32_t jalium_linux_window_get_resizable_edges(JaliumPlatformWindow* window)
+{
+    if (!window) return 0;
+#ifdef JALIUM_HAS_WAYLAND
+    if (window->waylandSurface) return window->waylandResizableEdges;
+#endif
+    return window->x11Visible ? window->x11ResizableEdges : 15;
+}
+
+int32_t jalium_linux_window_is_tiled(JaliumPlatformWindow* window)
+{
+    if (!window) return 0;
+#ifdef JALIUM_HAS_WAYLAND
+    if (window->waylandSurface) return window->xdgToplevel && window->acknowledgedWaylandTiled ? 1 : 0;
+#endif
+    return window->x11Visible && window->x11Tiled ? 1 : 0;
+}
+
+int32_t jalium_linux_window_is_rendering_suspended(JaliumPlatformWindow* window)
+{
+#ifdef JALIUM_HAS_WAYLAND
+    return window && window->waylandSurface && window->waylandSuspended.load(std::memory_order_acquire) ? 1 : 0;
+#else
+    (void)window;
+    return 0;
+#endif
+}
+
+int32_t jalium_linux_window_get_decoration_mode(JaliumPlatformWindow* window)
+{
+    if (!window) return 0;
+#ifdef JALIUM_HAS_WAYLAND
+    if (window->waylandSurface)
+    {
+#ifdef JALIUM_HAS_XDG_DECORATION_V1
+        return window->xdgDecorationMode == ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE ? 2 : 1;
+#else
+        return 1;
+#endif
+    }
+#endif
+    return (window->style & JALIUM_WINDOW_STYLE_BORDERLESS) ? 1 : 2;
 }
 
 int32_t jalium_window_set_decorated(JaliumPlatformWindow* window, int32_t decorated)
@@ -10829,23 +12705,11 @@ int32_t jalium_window_set_decorated(JaliumPlatformWindow* window, int32_t decora
     if (!g_display || !window->xwindow)
         return JALIUM_ERROR_INVALID_STATE;
 
-    const Atom motifHints = XInternAtom(g_display, "_MOTIF_WM_HINTS", False);
-    struct MotifHints {
-        unsigned long flags;
-        unsigned long functions;
-        unsigned long decorations;
-        long inputMode;
-        unsigned long status;
-    } hints{2, 0, decorated ? 1ul : 0ul, 0, 0};
-    XChangeProperty(g_display, window->xwindow, motifHints, motifHints, 32,
-                    PropModeReplace,
-                    reinterpret_cast<const unsigned char*>(&hints), 5);
     if (decorated)
         window->style &= ~static_cast<uint32_t>(JALIUM_WINDOW_STYLE_BORDERLESS);
     else
         window->style |= JALIUM_WINDOW_STYLE_BORDERLESS;
-    XFlush(g_display);
-    return JALIUM_OK;
+    return jalium_linux_window_set_style(window, window->style);
 }
 
 int32_t jalium_window_set_owner(
@@ -10854,12 +12718,11 @@ int32_t jalium_window_set_owner(
     if (!window || ownerNativeHandle == jalium_window_get_native_handle(window))
         return JALIUM_ERROR_INVALID_ARGUMENT;
 
-    window->parentHandle = ownerNativeHandle;
 #ifdef JALIUM_HAS_WAYLAND
     if (window->waylandSurface)
     {
-        if (!window->xdgToplevel && !CreateWaylandRole(window))
-            return JALIUM_ERROR_INVALID_STATE;
+        if (window->style & JALIUM_WINDOW_STYLE_POPUP)
+            return ownerNativeHandle == window->parentHandle ? JALIUM_OK : JALIUM_ERROR_INVALID_STATE;
         xdg_toplevel* parentToplevel = nullptr;
         if (ownerNativeHandle != 0)
         {
@@ -10870,12 +12733,15 @@ int32_t jalium_window_set_owner(
                 if (candidate && candidate->waylandSurface == parentSurface)
                 {
                     parentToplevel = candidate->xdgToplevel;
+                    if (!parentToplevel) return JALIUM_ERROR_INVALID_STATE;
                     break;
                 }
             }
             if (!parentToplevel)
                 return JALIUM_ERROR_INVALID_ARGUMENT;
         }
+        window->parentHandle = ownerNativeHandle;
+        if (!window->xdgToplevel) return JALIUM_OK;
         xdg_toplevel_set_parent(window->xdgToplevel, parentToplevel);
         wl_surface_commit(window->waylandSurface);
         wl_display_flush(g_waylandDisplay);
@@ -10884,6 +12750,8 @@ int32_t jalium_window_set_owner(
 #endif
     if (!g_display || !window->xwindow)
         return JALIUM_ERROR_INVALID_STATE;
+
+    window->parentHandle = ownerNativeHandle;
 
     if (ownerNativeHandle != 0)
         XSetTransientForHint(g_display, window->xwindow, static_cast<Window>(ownerNativeHandle));
@@ -10978,28 +12846,38 @@ int32_t jalium_window_show_system_menu(
 {
     if (!window)
         return JALIUM_ERROR_INVALID_ARGUMENT;
+    if (!IsLiveWindow(window) || !window->enabled || (window->style & JALIUM_WINDOW_STYLE_POPUP))
+        return JALIUM_ERROR_INVALID_STATE;
 #ifdef JALIUM_HAS_WAYLAND
     if (window->waylandSurface)
     {
+        if (!window->waylandVisible.load(std::memory_order_acquire) ||
+            !window->waylandConfigured.load(std::memory_order_acquire)) return JALIUM_ERROR_INVALID_STATE;
+        if (!(window->capabilities & JALIUM_WINDOW_CAPABILITY_WINDOW_MENU)) return JALIUM_ERROR_NOT_SUPPORTED;
+        const auto active = g_waylandMenuInputAction;
+        const uint64_t epoch = g_waylandMenuInputEpoch.load(std::memory_order_acquire);
+        if (active.callback && (active.window != window || active.identity != window->waylandInputIdentity || active.epoch != epoch))
+            return JALIUM_ERROR_NOT_SUPPORTED;
+        const auto input = active.callback && active.serial ? active : g_lastWaylandMenuInputAction;
         if (!window->xdgToplevel || !g_waylandSeat ||
-            g_waylandInputSerial == 0)
+            input.window != window || input.identity != window->waylandInputIdentity || input.serial == 0 || input.epoch != epoch)
             return JALIUM_ERROR_NOT_SUPPORTED;
 
-        const int32_t scale = std::max(window->waylandScale, 1);
+        const double scale = window->waylandScale;
 #ifdef JALIUM_PLATFORM_TEST_HOOKS
         g_testSystemMenuWindow = window;
         g_testSystemMenuX = x;
         g_testSystemMenuY = y;
-        g_testSystemMenuSerial = g_waylandInputSerial;
+        g_testSystemMenuSerial = input.serial;
 #endif
         xdg_toplevel_show_window_menu(
-            window->xdgToplevel, g_waylandSeat, g_waylandInputSerial,
-            x / scale, y / scale);
+            window->xdgToplevel, g_waylandSeat, input.serial,
+            static_cast<int32_t>(std::round(x / scale)), static_cast<int32_t>(std::round(y / scale)));
         return wl_display_flush(g_waylandDisplay) < 0
             ? JALIUM_ERROR_UNKNOWN : JALIUM_OK;
     }
 #endif
-    if (!g_display || !window->xwindow)
+    if (!g_display || !window->xwindow || !window->x11Visible)
         return JALIUM_ERROR_INVALID_STATE;
 
     const Atom showMenu = XInternAtom(g_display, "_GTK_SHOW_WINDOW_MENU", False);
@@ -11079,6 +12957,11 @@ int32_t jalium_window_update_ime_context(
             window->imeSurroundingText.clear();
             window->imeCursorByteOffset = 0;
             window->imeAnchorByteOffset = 0;
+            if (g_keyboardFocus == window)
+            {
+                ResetWaylandComposition(window);
+                if (!IsLiveWindow(window)) return JALIUM_OK;
+            }
         }
 
         bool supported = false;

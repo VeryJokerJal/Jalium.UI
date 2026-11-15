@@ -116,4 +116,11 @@
   </PropertyGroup>
   <Import Project="$(MSBuildThisFileDirectory)../../../eng/msbuild/JaliumStaleNativeGuard.targets" />
 
+
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)../../native/thirdparty/sheenbidi/LICENSE" Pack="true" PackagePath="licenses/SheenBidi-LICENSE.txt" Visible="false" />
+    <None Include="$(MSBuildThisFileDirectory)../../native/thirdparty/UNICODE-LICENSE.txt" Pack="true" PackagePath="licenses/Unicode-LICENSE.txt" Visible="false" />
+    <None Include="$(MSBuildThisFileDirectory)../../native/thirdparty/LICENSES.md" Pack="true" PackagePath="licenses/Native-Third-Party.md" Visible="false" />
+  </ItemGroup>
+
 </Project>

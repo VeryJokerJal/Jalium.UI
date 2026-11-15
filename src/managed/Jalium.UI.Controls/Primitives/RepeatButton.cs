@@ -1,6 +1,7 @@
 using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Input;
+using Jalium.UI.Data;
 using Jalium.UI.Media;
 using Jalium.UI.Media.Animation;
 using Jalium.UI.Threading;
@@ -109,6 +110,12 @@ public class RepeatButton : ButtonBase
 
     private Jalium.UI.Shapes.Path? _arrowPath;
     private ScaleTransform? _arrowScaleTransform;
+    private Brush? _arrowOriginalFill;
+    private Transform? _arrowOriginalTransform;
+    private Brush? _arrowOriginalForeground;
+    private bool _arrowHadLocalFill, _arrowHadLocalTransform, _arrowHadLocalForeground;
+    private bool _hasArrowVisualSnapshot;
+
     private readonly SolidColorBrush _animatedArrowBrush = new(Color.FromRgb(210, 210, 210));
     private DispatcherTimer? _arrowStateTimer;
 
@@ -219,38 +226,61 @@ public class RepeatButton : ButtonBase
     {
         base.OnApplyTemplate();
 
+        RestoreArrowTemplateVisuals();
+        if (!UseScrollBarArrowAnimation) return;
+        _arrowOriginalForeground = Foreground;
+        _arrowHadLocalForeground = HasLocalValue(ForegroundProperty) || BindingOperations.IsDataBound(this, ForegroundProperty);
+        _hasArrowVisualSnapshot = true;
         _arrowPath = GetTemplateChild("PART_Arrow") as Jalium.UI.Shapes.Path;
         if (_arrowPath != null)
         {
-            _arrowScaleTransform = _arrowPath.RenderTransform as ScaleTransform;
-            if (_arrowScaleTransform == null)
+            _arrowOriginalFill = _arrowPath.Fill;
+            _arrowOriginalTransform = _arrowPath.RenderTransform;
+            _arrowHadLocalFill = _arrowPath.HasLocalValue(Jalium.UI.Shapes.Shape.FillProperty) || BindingOperations.IsDataBound(_arrowPath, Jalium.UI.Shapes.Shape.FillProperty);
+            _arrowHadLocalTransform = _arrowPath.HasLocalValue(RenderTransformProperty) || BindingOperations.IsDataBound(_arrowPath, RenderTransformProperty);
+            _arrowScaleTransform = new ScaleTransform { ScaleX = ArrowNormalScale, ScaleY = ArrowNormalScale };
+            Transform transform = _arrowScaleTransform;
+            if (_arrowOriginalTransform != null)
             {
-                _arrowScaleTransform = new ScaleTransform
-                {
-                    ScaleX = ArrowNormalScale,
-                    ScaleY = ArrowNormalScale,
-                    // Shapes.Path applies RenderTransform around its own visual center.
-                    // Keeping transform centers at 0 avoids double-centering offsets.
-                    CenterX = 0,
-                    CenterY = 0
-                };
-                _arrowPath.RenderTransform = _arrowScaleTransform;
+                var group = new TransformGroup();
+                group.Children.Add(_arrowOriginalTransform);
+                group.Children.Add(_arrowScaleTransform);
+                transform = group;
             }
-            else
-            {
-                _arrowScaleTransform.CenterX = 0;
-                _arrowScaleTransform.CenterY = 0;
-            }
-
-            _arrowPath.Fill = _animatedArrowBrush;
-        }
-        else
-        {
-            _arrowScaleTransform = null;
+            if (_arrowHadLocalTransform) _arrowPath.SetCurrentValue(RenderTransformProperty, transform);
+            else _arrowPath.RenderTransform = transform;
         }
 
         RefreshArrowPalette();
         StartArrowVisualTransition(immediate: true);
+    }
+
+    internal override void OnTemplateContentClearing()
+    {
+        StopArrowTimer();
+        RestoreArrowTemplateVisuals();
+        base.OnTemplateContentClearing();
+    }
+
+    private void RestoreArrowTemplateVisuals()
+    {
+        if (_hasArrowVisualSnapshot && _arrowPath != null)
+        {
+            if (_arrowHadLocalFill) _arrowPath.SetCurrentValue(Jalium.UI.Shapes.Shape.FillProperty, _arrowOriginalFill);
+            else _arrowPath.ClearValue(Jalium.UI.Shapes.Shape.FillProperty);
+            if (_arrowHadLocalTransform) _arrowPath.SetCurrentValue(RenderTransformProperty, _arrowOriginalTransform);
+            else _arrowPath.ClearValue(RenderTransformProperty);
+        }
+        if (_hasArrowVisualSnapshot)
+        {
+            if (_arrowHadLocalForeground) SetCurrentValue(ForegroundProperty, _arrowOriginalForeground);
+            else ClearValue(ForegroundProperty);
+        }
+        _hasArrowVisualSnapshot = false;
+        _arrowPath = null;
+        _arrowScaleTransform = null;
+        _arrowOriginalFill = _arrowOriginalForeground = null;
+        _arrowOriginalTransform = null;
     }
 
     /// <inheritdoc />
@@ -319,8 +349,8 @@ public class RepeatButton : ButtonBase
     {
         if (d is RepeatButton button)
         {
-            button.RefreshArrowPalette();
-            button.StartArrowVisualTransition(immediate: true);
+            button.StopArrowTimer();
+            button.OnApplyTemplate();
         }
     }
 
@@ -508,11 +538,13 @@ public class RepeatButton : ButtonBase
     private void ApplyCurrentArrowVisuals()
     {
         _animatedArrowBrush.Color = _arrowCurrentColor;
-        Foreground = _animatedArrowBrush;
+        if (_arrowHadLocalForeground) SetCurrentValue(ForegroundProperty, _animatedArrowBrush);
+        else Foreground = _animatedArrowBrush;
 
         if (_arrowPath != null)
         {
-            _arrowPath.Fill = _animatedArrowBrush;
+            if (_arrowHadLocalFill) _arrowPath.SetCurrentValue(Jalium.UI.Shapes.Shape.FillProperty, _animatedArrowBrush);
+            else _arrowPath.Fill = _animatedArrowBrush;
             _arrowPath.InvalidateVisual();
         }
 

@@ -48,7 +48,7 @@ internal static class WindowQuitChecks
         var style = index < 4 ? WindowTitleBarStyle.Native : WindowTitleBarStyle.Custom;
         JaliumMacApplication.Initialize();
         var nativeApplication = NSApplication.SharedApplication;
-        nativeApplication.ActivationPolicy = NSApplicationActivationPolicy.Prohibited;
+        nativeApplication.ActivationPolicy = NSApplicationActivationPolicy.Accessory;
         RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
         var main = CreateWindow("Quit policy main", style);
         var other = CreateWindow("Quit policy independent", style);
@@ -157,7 +157,7 @@ internal static class WindowQuitChecks
         var style = index < 5 ? WindowTitleBarStyle.Native : WindowTitleBarStyle.Custom;
         JaliumMacApplication.Initialize();
         var nativeApplication = NSApplication.SharedApplication;
-        nativeApplication.ActivationPolicy = NSApplicationActivationPolicy.Prohibited;
+        nativeApplication.ActivationPolicy = NSApplicationActivationPolicy.Accessory;
         RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
         var first = CreateWindow("Reentrant Closing window", style);
         var other = CreateWindow("Reentrant Quit remaining window", style);

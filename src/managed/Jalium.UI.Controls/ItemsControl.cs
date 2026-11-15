@@ -548,6 +548,9 @@ public partial class ItemsControl : Control, Jalium.UI.Markup.IAddChild, IContai
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
+        // Resolve the theme before choosing the template or fallback path. A root
+        // ItemsControl may be measured before it has joined a visual tree.
+        UpdateDefaultStyle();
         // If we have a template, let Control handle it (this will also apply the template)
         if (HasTemplate)
         {
@@ -921,13 +924,24 @@ public partial class ItemsControl : Control, Jalium.UI.Markup.IAddChild, IContai
     /// <summary>
     /// Public wrapper for GetContainerForItem used by ItemContainerGenerator.
     /// </summary>
-    internal FrameworkElement GetContainerForItemPublic(object item) => GetContainerForItem(item);
+    internal FrameworkElement GetContainerForItemPublic(object item)
+    {
+        // Containers can apply an initial theme before they are attached to the
+        // items host. Exclude that construction, including any retired template.
+        using var ignoredCreation = IsDiagnosticsIgnored
+            ? Diagnostics.DiagnosticsScope.BeginIgnoredCreation()
+            : (Diagnostics.DiagnosticsScope.IgnoredCreationScope?)null;
+        return GetContainerForItem(item);
+    }
 
     /// <summary>
     /// Internal wrapper for PrepareContainerForItem used by ItemContainerGenerator.
     /// </summary>
     internal void PrepareContainerForItemInternal(FrameworkElement element, object item)
     {
+        using var ignoredCreation = IsDiagnosticsIgnored
+            ? Diagnostics.DiagnosticsScope.BeginIgnoredCreation()
+            : (Diagnostics.DiagnosticsScope.IgnoredCreationScope?)null;
         PrepareContainerForItemOverride(element, item);
     }
 

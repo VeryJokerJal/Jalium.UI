@@ -1,0 +1,34 @@
+{
+  "source": "https://raw.githubusercontent.com/web-platform-tests/wpt/0bdf849f55a13ecf4ae972aef0a583110d32089e/css/css-fonts/variations/resources/variabletest_box.ttf",
+  "commit": "0bdf849f55a13ecf4ae972aef0a583110d32089e",
+  "sha256": "9270b7f6b2b8b34215a80c63a9c1348e704a0e3803ee49f2531bd62fdb5139c4",
+  "bytes": 4032,
+  "axes": [
+    {
+      "tag": "UPWD",
+      "minimum": 0.0,
+      "default": 0.0,
+      "maximum": 350.0
+    },
+    {
+      "tag": "FVTT",
+      "minimum": 0.0,
+      "default": 0.0,
+      "maximum": 10.0
+    },
+    {
+      "tag": "VM2B",
+      "minimum": 0.0,
+      "default": 0.0,
+      "maximum": 1000.0
+    },
+    {
+      "tag": "opsz",
+      "minimum": 6.0,
+      "default": 12.0,
+      "maximum": 128.0
+    }
+  ],
+  "license": "SIL Open Font License 1.1, recorded in font name IDs 13 and 14",
+  "license_text_source": "https://raw.githubusercontent.com/silnrsi/font-abyssinica/master/OFL.txt"
+}

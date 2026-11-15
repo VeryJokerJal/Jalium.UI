@@ -1,0 +1,46 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:local="clr-namespace:Jalium.UI.DesktopDemo"
+                    x:Class="Jalium.UI.DesktopDemo.Themes.RotationReproTheme">
+    <Style x:Key="RotationRepro.Window" TargetType="Window"><Setter Property="Background" Value="#181820" /></Style>
+    <ItemsPanelTemplate x:Key="RotationRepro.Row"><WrapPanel /></ItemsPanelTemplate>
+    <Style TargetType="local:RotationReproFrame">
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="local:RotationReproFrame">
+            <StackPanel HorizontalAlignment="Center">
+                <Border Width="120" Height="120" Margin="10" Background="#32323C" BorderBrush="#78788C" BorderThickness="1"><ContentPresenter ContentSource="Content" HorizontalAlignment="Center" VerticalAlignment="Center" /></Border>
+                <ContentPresenter ContentSource="Header" HorizontalAlignment="Center" Margin="0,2,0,0" />
+            </StackPanel>
+        </ControlTemplate></Setter.Value></Setter>
+    </Style>
+    <Style TargetType="local:RotationImageSpecimen">
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="local:RotationImageSpecimen">
+            <Grid Width="80" Height="80"><Image Source="{TemplateBinding Source}" Width="80" Height="80" RenderTransformOrigin="0.5,0.5" RenderTransform="{TemplateBinding Rotation}" /></Grid>
+        </ControlTemplate></Setter.Value></Setter>
+    </Style>
+    <Style TargetType="local:RotationBorderSpecimen">
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="local:RotationBorderSpecimen">
+            <Grid Width="80" Height="80"><Border Width="80" Height="80" Background="#50B4DC" CornerRadius="34,0,0,0" RenderTransformOrigin="0.5,0.5" RenderTransform="{TemplateBinding Rotation}" /></Grid>
+        </ControlTemplate></Setter.Value></Setter>
+    </Style>
+    <Style TargetType="local:RotationContainerSpecimen">
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="local:RotationContainerSpecimen">
+            <Grid Width="90" Height="90"><Border Width="90" Height="90" Background="#282830" RenderTransformOrigin="0.5,0.5" RenderTransform="{TemplateBinding Rotation}">
+                
+                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center"><Border Width="50" Height="16" Margin="2" Background="#E65050" /><Border Width="50" Height="16" Margin="2" Background="#50C878" CornerRadius="8,0,0,0" /><Border Width="50" Height="16" Margin="2" Background="#788CF0" /></StackPanel>
+            </Border></Grid>
+        </ControlTemplate></Setter.Value></Setter>
+    </Style>
+    <Style TargetType="local:RotationReproSurface">
+        <Setter Property="Foreground" Value="White" /><Setter Property="FontSize" Value="12" />
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="local:RotationReproSurface">
+            <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto" Padding="20">
+                <StackPanel>
+                    <TextBlock Text="{TemplateBinding Description}" FontSize="14" Foreground="{TemplateBinding Foreground}" TextWrapping="Wrap" Margin="0,0,0,12" Focusable="False" />
+                    <ItemsControl ItemsSource="{TemplateBinding ImageCases}" ItemsPanel="{StaticResource RotationRepro.Row}"><ItemsControl.ItemTemplate><DataTemplate><local:RotationReproFrame Header="{Binding Caption}"><local:RotationImageSpecimen Angle="{Binding Angle}" Source="{Binding QuadrantBitmap, RelativeSource={RelativeSource AncestorType=local:RotationReproSurface}}" /></local:RotationReproFrame></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+                    <ItemsControl ItemsSource="{TemplateBinding BorderCases}" ItemsPanel="{StaticResource RotationRepro.Row}"><ItemsControl.ItemTemplate><DataTemplate><local:RotationReproFrame Header="{Binding Caption}"><local:RotationBorderSpecimen Angle="{Binding Angle}" /></local:RotationReproFrame></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+                    <ItemsControl ItemsSource="{TemplateBinding ContainerCases}" ItemsPanel="{StaticResource RotationRepro.Row}"><ItemsControl.ItemTemplate><DataTemplate><local:RotationReproFrame Header="{Binding Caption}"><local:RotationContainerSpecimen Angle="{Binding Angle}" /></local:RotationReproFrame></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+                </StackPanel>
+            </ScrollViewer>
+        </ControlTemplate></Setter.Value></Setter>
+    </Style>
+</ResourceDictionary>

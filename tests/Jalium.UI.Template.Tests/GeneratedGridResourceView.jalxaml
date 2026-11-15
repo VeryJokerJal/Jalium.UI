@@ -1,0 +1,12 @@
+<UserControl xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Jalium.UI.Tests.GeneratedGridResourceView">
+    <UserControl.Resources>
+        <x:String x:Key="GridColumnTitle">Name</x:String>
+    </UserControl.Resources>
+    <DataGrid x:Name="Grid">
+        <DataGrid.Columns>
+            <DataGridTextColumn Header="{DynamicResource GridColumnTitle}" Width="250" />
+        </DataGrid.Columns>
+    </DataGrid>
+</UserControl>

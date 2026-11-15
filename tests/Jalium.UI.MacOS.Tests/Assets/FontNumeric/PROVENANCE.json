@@ -1,0 +1,66 @@
+{
+  "repository": "https://github.com/web-platform-tests/wpt",
+  "commit": "850b36a56cfc15b9117a9d222d32a63104662f49",
+  "commit_evidence": "git ls-remote refs/heads/master",
+  "license": "BSD-3-Clause; retained in LICENSE.md",
+  "font_family": "FontWithFeaturesOTF",
+  "numeric_feature_characters": {
+    "lining-nums": "P",
+    "oldstyle-nums": "Q",
+    "proportional-nums": "R",
+    "tabular-nums": "S",
+    "diagonal-fractions": "T",
+    "stacked-fractions": "U",
+    "ordinal": "V",
+    "slashed-zero": "W"
+  },
+  "expected_enabled_glyph_character": "A",
+  "expected_disabled_glyph_character": "B",
+  "files": {
+    "FontWithFancyFeatures.otf": {
+      "url": "https://raw.githubusercontent.com/web-platform-tests/wpt/850b36a56cfc15b9117a9d222d32a63104662f49/css/css-fonts/support/fonts/FontWithFancyFeatures.otf",
+      "sha256": "0f7e550009d5d7348fdbaf79365e9cdbe010feb04e3af00bacc49f825e1f93f2"
+    },
+    "LICENSE.md": {
+      "url": "https://raw.githubusercontent.com/web-platform-tests/wpt/850b36a56cfc15b9117a9d222d32a63104662f49/LICENSE.md",
+      "sha256": "5fac07febb0e2a97fb0d7b0def149ec08b642e1ba4b9c345283ab1cbd2af6570"
+    },
+    "font-variant-numeric-01.html": {
+      "url": "https://raw.githubusercontent.com/web-platform-tests/wpt/850b36a56cfc15b9117a9d222d32a63104662f49/css/css-fonts/font-variant-numeric-01.html",
+      "sha256": "0dd49ec35cde0b455604e579208fee6306f49f2e0dc2fcbc51ef4b0093baaa50"
+    },
+    "font-variant-numeric-02.html": {
+      "url": "https://raw.githubusercontent.com/web-platform-tests/wpt/850b36a56cfc15b9117a9d222d32a63104662f49/css/css-fonts/font-variant-numeric-02.html",
+      "sha256": "2a741bb18ac442216eaf7ae67667ff7b5249e0e917a53698078114fb5a540ded"
+    },
+    "font-variant-numeric-03.html": {
+      "url": "https://raw.githubusercontent.com/web-platform-tests/wpt/850b36a56cfc15b9117a9d222d32a63104662f49/css/css-fonts/font-variant-numeric-03.html",
+      "sha256": "1344a147bd254a46993bf27049a1938b5a2ab32e29367b5f2594a761cb628a31"
+    },
+    "font-variant-numeric-04.html": {
+      "url": "https://raw.githubusercontent.com/web-platform-tests/wpt/850b36a56cfc15b9117a9d222d32a63104662f49/css/css-fonts/font-variant-numeric-04.html",
+      "sha256": "c6f0ef8f4e88a49c76454e7cdb148f5149203d153c10daf88198b52243ceda7e"
+    },
+    "font-variant-numeric-05.html": {
+      "url": "https://raw.githubusercontent.com/web-platform-tests/wpt/850b36a56cfc15b9117a9d222d32a63104662f49/css/css-fonts/font-variant-numeric-05.html",
+      "sha256": "c1a9c49efba409d9ec8c7fc75bbfe1d0b1489da02b078c0284c1546e5a2ac6da"
+    },
+    "font-variant-numeric-06.html": {
+      "url": "https://raw.githubusercontent.com/web-platform-tests/wpt/850b36a56cfc15b9117a9d222d32a63104662f49/css/css-fonts/font-variant-numeric-06.html",
+      "sha256": "64a37ada78960740d628d1cbc5b57a10935b6fda98db4d7921d51edf7534b278"
+    },
+    "font-variant-numeric-07.html": {
+      "url": "https://raw.githubusercontent.com/web-platform-tests/wpt/850b36a56cfc15b9117a9d222d32a63104662f49/css/css-fonts/font-variant-numeric-07.html",
+      "sha256": "da25fad405369ea05dcbf5540b467e441a330337cd48d54178d3f6ff856c4b7a"
+    },
+    "font-variant-numeric-08.html": {
+      "url": "https://raw.githubusercontent.com/web-platform-tests/wpt/850b36a56cfc15b9117a9d222d32a63104662f49/css/css-fonts/font-variant-numeric-08.html",
+      "sha256": "2b4b7b60edb28fc2341431e6676895e1773fc409b9400f2d4fcffbcbacbf2526"
+    },
+    "font-variant-numeric-09.html": {
+      "url": "https://raw.githubusercontent.com/web-platform-tests/wpt/850b36a56cfc15b9117a9d222d32a63104662f49/css/css-fonts/font-variant-numeric-09.html",
+      "sha256": "5d358b2833511f1c676b7b20c6df3fbb9ab54105cbe2960ec8c6f416e55b82da"
+    }
+  },
+  "scope": "Adapted numeric feature reftest font; not a claim that the browser WPT suite ran."
+}

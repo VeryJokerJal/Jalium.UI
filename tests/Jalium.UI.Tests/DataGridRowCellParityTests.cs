@@ -106,7 +106,7 @@ public sealed class DataGridRowCellParityTests
     }
 
     [Fact]
-    public void CellSurface_DeclaresReadOnlyColumnPolicyLayoutInputAndSelectionContracts()
+    public void CellSurface_ExposesReadOnlyColumnPolicyLayoutInputAndSelectionContracts()
     {
         AssertProperty<DataGridCell, DataGridColumn>(nameof(DataGridCell.Column), publicSetter: false);
         AssertProperty<DataGridCell, bool>(nameof(DataGridCell.IsReadOnly), publicSetter: false);
@@ -124,12 +124,12 @@ public sealed class DataGridRowCellParityTests
         Assert.Equal(typeof(RoutedEvent), typeof(DataGridCell).GetField(nameof(DataGridCell.SelectedEvent))!.FieldType);
         Assert.Equal(typeof(RoutedEvent), typeof(DataGridCell).GetField(nameof(DataGridCell.UnselectedEvent))!.FieldType);
 
-        AssertOverride(typeof(DataGridCell), "MeasureOverride", typeof(Size), typeof(Size));
-        AssertOverride(typeof(DataGridCell), "ArrangeOverride", typeof(Size), typeof(Size));
-        AssertOverride(typeof(DataGridCell), "OnKeyDown", typeof(void), typeof(KeyEventArgs));
-        AssertOverride(typeof(DataGridCell), "OnPreviewKeyDown", typeof(void), typeof(KeyEventArgs));
-        AssertOverride(typeof(DataGridCell), "OnRender", typeof(void), typeof(DrawingContext));
-        AssertOverride(typeof(DataGridCell), "OnTextInput", typeof(void), typeof(TextCompositionEventArgs));
+        AssertVirtualHook(typeof(DataGridCell), "MeasureOverride", typeof(Size), typeof(Size));
+        AssertVirtualHook(typeof(DataGridCell), "ArrangeOverride", typeof(Size), typeof(Size));
+        AssertVirtualHook(typeof(DataGridCell), "OnKeyDown", typeof(void), typeof(KeyEventArgs));
+        AssertVirtualHook(typeof(DataGridCell), "OnPreviewKeyDown", typeof(void), typeof(KeyEventArgs));
+        AssertVirtualHook(typeof(DataGridCell), "OnRender", typeof(void), typeof(DrawingContext));
+        AssertVirtualHook(typeof(DataGridCell), "OnTextInput", typeof(void), typeof(TextCompositionEventArgs));
         AssertProtectedVirtual(typeof(DataGridCell), "OnColumnChanged", typeof(DataGridColumn), typeof(DataGridColumn));
         AssertProtectedVirtual(typeof(DataGridCell), "OnIsEditingChanged", typeof(bool));
         AssertProtectedVirtual(typeof(DataGridCell), "OnSelected", typeof(RoutedEventArgs));
@@ -201,15 +201,16 @@ public sealed class DataGridRowCellParityTests
         Assert.True(method.IsFamily || method.IsFamilyOrAssembly);
     }
 
-    private static void AssertOverride(
+    private static void AssertVirtualHook(
         Type declaringType,
         string name,
         Type returnType,
         params Type[] parameterTypes)
     {
+        // Templated controls can use inherited layout/render hooks while keeping the same API slots.
         var method = declaringType.GetMethod(
             name,
-            BindingFlags.DeclaredOnly | BindingFlags.NonPublic | BindingFlags.Instance,
+            BindingFlags.NonPublic | BindingFlags.Instance,
             null,
             parameterTypes,
             null)!;

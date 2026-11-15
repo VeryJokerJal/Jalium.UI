@@ -29,6 +29,7 @@ target_include_directories(${PROJECT_NAME}
     PRIVATE
         ${JALIUM_AUDIO_PRIVATE_INCLUDES}
         ${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty
+        ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include
 )
 
 target_link_libraries(${PROJECT_NAME}
@@ -73,6 +74,16 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
 )
 
 option(JALIUM_MEDIA_LINUX_BUILD_TESTS "Build Linux native media smoke tests" OFF)
+if(JALIUM_GSTREAMER_FOUND AND (JALIUM_MEDIA_LINUX_BUILD_TESTS OR JALIUM_VULKAN_BUILD_TESTS))
+    enable_testing()
+    add_executable(jalium.native.media.linux.dmabuf.tests tests/linux_dmabuf_export_tests.cpp)
+    target_include_directories(jalium.native.media.linux.dmabuf.tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.media.core/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include)
+    target_link_libraries(jalium.native.media.linux.dmabuf.tests PRIVATE PkgConfig::JALIUM_GSTREAMER)
+    add_test(NAME jalium.native.media.linux.dmabuf COMMAND jalium.native.media.linux.dmabuf.tests)
+endif()
 if(JALIUM_MEDIA_LINUX_BUILD_TESTS AND NOT JALIUM_BUILD_STATIC)
     enable_testing()
     add_executable(jalium.native.media.linux.tests

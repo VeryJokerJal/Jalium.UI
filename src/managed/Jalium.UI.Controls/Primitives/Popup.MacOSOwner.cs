@@ -136,7 +136,19 @@ public partial class Popup
         return false;
     }
 
-    private void OnMacOSPopupOwnerStateChanged(object? sender, DependencyPropertyChangedEventArgs e) => QueueMacOSPopupOwnerCheck();
+    private void OnMacOSPopupOwnerStateChanged(object? sender, DependencyPropertyChangedEventArgs e)
+    {
+        // A native owner's explicit hide ends the popup's input lifetime even
+        // when Show follows in the same dispatcher batch. Keep deferred checks
+        // for anchor moves so a detach/reattach does not close a valid popup.
+        if (_macOSObservedOwner is { } owner && ReferenceEquals(sender, owner) &&
+            owner.Visibility != Visibility.Visible)
+        {
+            SetCurrentValue(IsOpenProperty, false);
+            return;
+        }
+        QueueMacOSPopupOwnerCheck();
+    }
     private void OnMacOSPopupOwnerLayoutUpdated(object? sender, EventArgs e)
     {
         _macOSOwnerLayoutDirty = true;

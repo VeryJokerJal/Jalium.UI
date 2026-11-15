@@ -56,7 +56,7 @@ internal static class WindowVisibilityChecks
         int scenario = index / 2;
         var titleBar = index % 2 == 0 ? WindowTitleBarStyle.Native : WindowTitleBarStyle.Custom;
         JaliumMacApplication.Initialize();
-        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Prohibited;
+        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Accessory;
         RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
         Window window = scenario == 18 ? new DerivedWindow() : Create("Visibility check");
         window.Width = 320; window.Height = 240; window.TitleBarStyle = titleBar; window.ShowActivated = false;

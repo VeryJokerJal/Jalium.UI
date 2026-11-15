@@ -4,8 +4,10 @@ using Jalium.UI.Input;
 
 namespace Jalium.UI.Tests;
 
-public sealed class ScrollBarParityTests
+public sealed class ScrollBarParityTests : IDisposable
 {
+    public ScrollBarParityTests() => ScrollBarTemplateTestHelper.Register();
+
     private static readonly string[] s_commandFields =
     [
         nameof(ScrollBar.LineUpCommand), nameof(ScrollBar.LineDownCommand),
@@ -34,6 +36,8 @@ public sealed class ScrollBarParityTests
         }
 
         var bar = new ScrollBar();
+        bar.Measure(new Size(16, 200));
+        bar.Arrange(new Rect(0, 0, 16, 200));
         Assert.NotNull(bar.Track);
         Assert.IsType<Thumb>(bar.Track.Thumb);
     }
@@ -65,4 +69,6 @@ public sealed class ScrollBarParityTests
             [ScrollEventType.SmallDecrement, ScrollEventType.LargeIncrement, ScrollEventType.ThumbPosition, ScrollEventType.Last],
             events);
     }
+    public void Dispose() => ScrollBarTemplateTestHelper.Reset();
+
 }

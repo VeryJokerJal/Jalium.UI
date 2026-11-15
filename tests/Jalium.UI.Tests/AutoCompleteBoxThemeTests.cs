@@ -49,8 +49,8 @@ public class AutoCompleteBoxThemeTests
             Assert.NotNull(autoCompleteBox.BorderBrush);
             Assert.NotNull(autoCompleteBox.SelectionBrush);
             Assert.NotNull(autoCompleteBox.CaretBrush);
-            Assert.Equal(36, autoCompleteBox.MinHeight);
-            Assert.True(autoCompleteBox.RenderSize.Height >= 36);
+            Assert.Equal(38, autoCompleteBox.MinHeight);
+            Assert.True(autoCompleteBox.RenderSize.Height >= 38);
         }
         finally
         {
@@ -59,7 +59,7 @@ public class AutoCompleteBoxThemeTests
     }
 
     [Fact]
-    public void AutoCompleteBox_InternalResolvers_ShouldUseThemeResources()
+    public void AutoCompleteBox_TextEngineAndSuggestionTemplate_ShouldUseThemeResources()
     {
         ResetApplicationState();
         var app = new Application();
@@ -67,18 +67,24 @@ public class AutoCompleteBoxThemeTests
         try
         {
             Assert.True(app.Resources.TryGetValue("TextPlaceholder", out var placeholderObj));
-            Assert.True(app.Resources.TryGetValue("AccentBrush", out var accentObj));
             Assert.True(app.Resources.TryGetValue("ControlBorderFocused", out var focusedObj));
             var selectionBrush = Assert.IsAssignableFrom<Brush>(app.Resources["SelectionBackground"]);
             var caretBrush = Assert.IsAssignableFrom<Brush>(app.Resources["TextPrimary"]);
 
-            var autoCompleteBox = new AutoCompleteBox();
+            var autoCompleteBox = new AutoCompleteBox { ItemsSource = new[] { "apple", "apricot" }, Text = "ap" };
+            autoCompleteBox.Measure(new Size(320, 80));
+            autoCompleteBox.Arrange(new Rect(0, 0, 320, 80));
+            var list = Assert.IsType<ListBox>(autoCompleteBox.FindName("PART_SuggestionsList"));
+            list.Measure(new Size(300, 200));
+            list.Arrange(new Rect(0, 0, 300, 200));
+            var row = Assert.IsType<ListBoxItem>(list.ItemContainerGenerator.ContainerFromIndex(0));
+            var surface = Assert.IsType<Border>(row.FindName("SuggestionSurface"));
+            Assert.Same(selectionBrush, surface.Background);
+            Assert.False(row.Focusable);
 
-            var placeholderMethod = typeof(AutoCompleteBox).GetMethod("ResolvePlaceholderBrush",
+            var placeholderMethod = typeof(TextBox).GetMethod("ResolvePlaceholderBrush",
                 BindingFlags.Instance | BindingFlags.NonPublic);
-            var selectedMethod = typeof(AutoCompleteBox).GetMethod("ResolveSelectedSuggestionBackground",
-                BindingFlags.Instance | BindingFlags.NonPublic);
-            var focusedMethod = typeof(AutoCompleteBox).GetMethod("ResolveFocusedBorderBrush",
+            var focusedMethod = typeof(TextBox).GetMethod("ResolveFocusedBorderBrush",
                 BindingFlags.Instance | BindingFlags.NonPublic);
             var selectionMethod = typeof(TextBoxBase).GetMethod("ResolveSelectionBrush",
                 BindingFlags.Instance | BindingFlags.NonPublic);
@@ -86,13 +92,11 @@ public class AutoCompleteBoxThemeTests
                 BindingFlags.Instance | BindingFlags.NonPublic);
 
             Assert.NotNull(placeholderMethod);
-            Assert.NotNull(selectedMethod);
             Assert.NotNull(focusedMethod);
             Assert.NotNull(selectionMethod);
             Assert.NotNull(caretMethod);
 
             Assert.Same(placeholderObj, placeholderMethod!.Invoke(autoCompleteBox, null));
-            Assert.Same(accentObj, selectedMethod!.Invoke(autoCompleteBox, null));
             Assert.Same(focusedObj, focusedMethod!.Invoke(autoCompleteBox, null));
             Assert.Same(selectionBrush, selectionMethod!.Invoke(autoCompleteBox, null));
             Assert.Same(caretBrush, caretMethod!.Invoke(autoCompleteBox, null));

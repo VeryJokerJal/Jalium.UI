@@ -221,8 +221,9 @@ public static class TileBrushHelper
             return result;
         }
 
-        if (brush is ImageBrush { CssBackgroundLayout: { } cssLayout })
-            return ComputeCssBackgroundTiles(cssLayout, shapeBounds, contentWidth, contentHeight,
+        if (brush is ImageBrush { CssBackgroundLayout: { } cssLayout } imageBrush)
+            return ComputeCssBackgroundTiles(imageBrush.ImageSource is { } source
+                    ? cssLayout.TilePattern(shapeBounds, source) : cssLayout.TilePattern(shapeBounds, contentWidth, contentHeight),
                 coverageBounds ?? shapeBounds);
 
         var viewport = ComputeViewport(brush, shapeBounds);
@@ -289,11 +290,9 @@ public static class TileBrushHelper
     }
 
     private static List<TilePlacement> ComputeCssBackgroundTiles(
-        CssBackgroundImageLayout layout, Rect area, double intrinsicWidth, double intrinsicHeight,
-        Rect coverage)
+        CssBackgroundTilePattern pattern, Rect coverage)
     {
         var result = new List<TilePlacement>();
-        var pattern = layout.TilePattern(area, intrinsicWidth, intrinsicHeight);
         var image = pattern.ImageRect;
         if (image.IsEmpty) return result;
 

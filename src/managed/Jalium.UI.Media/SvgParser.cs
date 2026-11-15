@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Xml.Linq;
 using Jalium.UI.Interop;
 using Jalium.UI.Media.Imaging;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Media;
 
@@ -11,6 +12,21 @@ namespace Jalium.UI.Media;
 /// </summary>
 internal static partial class SvgParser
 {
+    [ThreadStatic] private static int t_elementDepth;
+    [ThreadStatic] private static SvgCssStyles? t_styles;
+    private sealed class StyleScope(SvgCssStyles? previous) : IDisposable
+    { public void Dispose() => t_styles = previous; }
+    private static IDisposable EnterStyles(SvgCssStyles styles)
+    { var previous = t_styles; t_styles = styles; return new StyleScope(previous); }
+    [ThreadStatic] private static Stack<(XElement Target, XElement Use)>? t_useInheritance;
+    [ThreadStatic] private static bool t_rasterTextOutlines;
+
+    internal static (DrawingGroup Drawing, double Width, double Height) ParseWithTextOutlines(string content)
+    {
+        var previous = t_rasterTextOutlines;
+        try { t_rasterTextOutlines = true; return Parse(content); }
+        finally { t_rasterTextOutlines = previous; }
+    }
     private static readonly XNamespace SvgNs = "http://www.w3.org/2000/svg";
     private static readonly XNamespace XlinkNs = "http://www.w3.org/1999/xlink";
 
@@ -36,11 +52,51 @@ internal static partial class SvgParser
     /// Parses an SVG document string into a DrawingGroup with optional viewport dimensions.
     /// </summary>
     public static (DrawingGroup Drawing, double Width, double Height) Parse(string svgContent)
+        => ParseDocument(svgContent, null, out _);
+
+    internal static (DrawingGroup Drawing, double Width, double Height, SvgIntrinsicDimensions Intrinsic) ParseImage(string content, bool textOutlines)
     {
+        var old = t_rasterTextOutlines;
+        try
+        {
+            t_rasterTextOutlines = textOutlines;
+            var parsed = ParseDocument(content, null, out var intrinsic);
+            return (parsed.Drawing, parsed.Width, parsed.Height, intrinsic);
+        }
+        finally { t_rasterTextOutlines = old; }
+    }
+
+    internal static (DrawingGroup Drawing, double Width, double Height) ParseViewport(string content, Size viewport, bool textOutlines)
+    {
+        var old = t_rasterTextOutlines;
+        try { t_rasterTextOutlines = textOutlines; return ParseDocument(content, viewport, out _); }
+        finally { t_rasterTextOutlines = old; }
+    }
+
+    private static (DrawingGroup Drawing, double Width, double Height) ParseDocument(string content, Size? viewport, out SvgIntrinsicDimensions intrinsic)
+    {
+        var oldWidth = t_viewportWidth; var oldHeight = t_viewportHeight;
+        var oldUse = t_useDepth; var oldDepth = t_elementDepth; var oldInheritance = t_useInheritance;
+        try
+        {
+            t_useDepth = 0; t_elementDepth = 0; t_useInheritance = null;
+            return ParseCore(content, viewport, out intrinsic);
+        }
+        finally
+        {
+            t_viewportWidth = oldWidth; t_viewportHeight = oldHeight;
+            t_useDepth = oldUse; t_elementDepth = oldDepth; t_useInheritance = oldInheritance;
+        }
+    }
+
+    private static (DrawingGroup Drawing, double Width, double Height) ParseCore(string svgContent, Size? concreteViewport, out SvgIntrinsicDimensions intrinsic)
+    {
+        intrinsic = default;
         var doc = XDocument.Parse(svgContent);
         var svgElement = doc.Root;
         if (svgElement == null)
             return (new DrawingGroup(), 0, 0);
+        using var markerScope = EnterMarkers();
 
         var defs = new Dictionary<string, XElement>(StringComparer.Ordinal);
         CollectDefs(svgElement, defs);
@@ -51,11 +107,58 @@ internal static partial class SvgParser
         // Percentage lengths inside the document resolve against the viewport, which is
         // the explicit width/height when present, else the viewBox size.
         t_useDepth = 0;
-        t_viewportWidth = width > 0 ? width : (viewBox?.Width ?? 0);
-        t_viewportHeight = height > 0 ? height : (viewBox?.Height ?? 0);
+        t_viewportWidth = concreteViewport?.Width ?? (width > 0 ? width : (viewBox?.Width ?? 0));
+        t_viewportHeight = concreteViewport?.Height ?? (height > 0 ? height : (viewBox?.Height ?? 0));
 
-        var group = new DrawingGroup();
-        ParseChildren(svgElement, group, defs);
+        var styles = new SvgCssStyles(svgElement, new(t_viewportWidth, t_viewportHeight));
+        using var styling = EnterStyles(styles);
+        var styledWidth = styles.Get(svgElement, "width"); var styledHeight = styles.Get(svgElement, "height");
+        if (styledWidth is not null && styledWidth != "auto") width = ParseDouble(svgElement, "width");
+        if (styledHeight is not null && styledHeight != "auto") height = ParseDouble(svgElement, "height");
+        if (concreteViewport is { } concrete)
+        {
+            if (styledWidth is null or "auto") width = concrete.Width;
+            if (styledHeight is null or "auto") height = concrete.Height;
+        }
+        // Percentages measure the viewport in user coordinates after viewBox.
+        // Media queries continue to see the document's CSS viewport dimensions.
+        var cssViewport = concreteViewport ?? new Size(width > 0 ? width : viewBox?.Width ?? 0, height > 0 ? height : viewBox?.Height ?? 0);
+        if (styles.Viewport != cssViewport) t_styles = styles = new SvgCssStyles(svgElement, cssViewport);
+        double? NaturalLength(string axis)
+        {
+            var value = styles.Get(svgElement, axis);
+            if (value is null) return null;
+            var reader = new CssTokenReader(value, new CssNumericReadContext(styles.Lengths(svgElement)));
+            return reader.TryReadLength(out var length) && reader.AtEnd && !length.UsesPercent &&
+                TryResolveSvgLength(svgElement, axis, value, out var pixels) && pixels >= 0 && double.IsFinite(pixels) ? pixels : null;
+        }
+        var naturalWidth = NaturalLength("width"); var naturalHeight = NaturalLength("height");
+        var ratio = naturalWidth.HasValue && naturalHeight.HasValue
+            ? naturalWidth > 0 && naturalHeight > 0 ? naturalWidth / naturalHeight : 0 :
+            viewBox is { Width: > 0, Height: > 0 } naturalBox ? naturalBox.Width / naturalBox.Height : 0;
+        intrinsic = new(naturalWidth ?? 0, naturalHeight ?? 0, ratio ?? 0)
+        { HasWidth = naturalWidth.HasValue, HasHeight = naturalHeight.HasValue };
+        t_viewportWidth = viewBox is { Width: > 0 } vbWidth ? vbWidth.Width : width > 0 ? width : cssViewport.Width;
+        t_viewportHeight = viewBox is { Height: > 0 } vbHeight ? vbHeight.Height : height > 0 ? height : cssViewport.Height;
+        var group = new DrawingGroup { IsSvgViewport = true };
+        ApplyOpacity(svgElement, group);
+        group.Isolated = true; // An SVG image cannot blend with pixels outside that image.
+        group.BlendMode = CssBlendMode.Normal; // The root's own blend sees a transparent image backdrop.
+        if (GetResolvedAttribute(svgElement, "display") != "none") ParseChildren(svgElement, group, defs);
+
+        if (concreteViewport is { } output)
+        {
+            // Without a viewBox, absolute root dimensions provide an intrinsic
+            // user space. Percent/auto dimensions use the allocated viewport.
+            // CSS media and viewport units still see the concrete image size.
+            if (viewBox is null)
+            {
+                var sx = width > 0 ? output.Width / width : 1;
+                var sy = height > 0 ? output.Height / height : 1;
+                if (sx != 1 || sy != 1) group.Transform = new ScaleTransform(sx, sy);
+            }
+            width = output.Width; height = output.Height;
+        }
 
         // Apply viewBox transform if needed
         if (viewBox != null && width > 0 && height > 0)
@@ -63,19 +166,9 @@ internal static partial class SvgParser
             var vb = viewBox.Value;
             if (vb.Width > 0 && vb.Height > 0 &&
                 (vb.X != 0 || vb.Y != 0 ||
-                 Math.Abs(vb.Width - width) > 0.001 || Math.Abs(vb.Height - height) > 0.001))
+                 vb.Width != width || vb.Height != height))
             {
-                var scaleX = width / vb.Width;
-                var scaleY = height / vb.Height;
-                var scale = Math.Min(scaleX, scaleY);
-
-                var translateX = (width - vb.Width * scale) / 2 - vb.X * scale;
-                var translateY = (height - vb.Height * scale) / 2 - vb.Y * scale;
-
-                var transforms = new TransformGroup();
-                transforms.Add(new ScaleTransform { ScaleX = scale, ScaleY = scale });
-                transforms.Add(new TranslateTransform { X = translateX, Y = translateY });
-                group.Transform = transforms;
+                group.Transform = new MatrixTransform(MarkerViewBox(svgElement.Attribute("preserveAspectRatio")?.Value, vb, width, height));
             }
         }
         else if (viewBox != null && (width <= 0 || height <= 0))
@@ -93,6 +186,8 @@ internal static partial class SvgParser
             }
         }
 
+        ApplyTransform(svgElement, group);
+        ResolveMarkerContextPaints(group);
         return (group, width, height);
     }
 
@@ -146,7 +241,7 @@ internal static partial class SvgParser
             var localName = child.Name.LocalName;
 
             // Skip defs, they are referenced not rendered directly
-            if (localName == "defs" || localName == "metadata" || localName == "title" || localName == "desc")
+            if (localName is "defs" or "mask" or "style" or "metadata" or "title" or "desc")
                 continue;
 
             ParseElement(child, group, defs);
@@ -155,17 +250,17 @@ internal static partial class SvgParser
 
     private static void ParseElement(XElement element, DrawingGroup parentGroup, Dictionary<string, XElement> defs)
     {
+        if (t_elementDepth >= 256) throw new InvalidDataException("SVG nesting exceeds the rendering depth budget");
+        t_elementDepth++;
+        try { ParseElementCore(element, parentGroup, defs); }
+        finally { t_elementDepth--; }
+    }
+
+    private static void ParseElementCore(XElement element, DrawingGroup parentGroup, Dictionary<string, XElement> defs)
+    {
         var localName = element.Name.LocalName;
 
-        // display:none removes the element (checked via GetAttribute — display is NOT
-        // inheritable); visibility:hidden/collapse hides it and IS inheritable, so it
-        // resolves through the ancestor chain like fill/stroke do.
-        var style = GetAttribute(element, "style");
-        if (style != null && (style.Contains("display:none") || style.Contains("display: none")))
-            return;
-        var display = GetAttribute(element, "display");
-        if (display == "none")
-            return;
+        if (GetResolvedAttribute(element, "display") == "none") return;
         var visibility = GetResolvedAttribute(element, "visibility");
         if (localName is not ("g" or "svg" or "text") &&
             (visibility is "hidden" or "collapse"))
@@ -173,9 +268,15 @@ internal static partial class SvgParser
 
         switch (localName)
         {
+            case "mask":
+            case "defs":
+            case "style":
+                return;
             case "g":
-            case "svg":
                 ParseGroup(element, parentGroup, defs);
+                break;
+            case "svg":
+                ParseNestedSvg(element, parentGroup, defs);
                 break;
             case "rect":
                 ParseRect(element, parentGroup, defs);
@@ -223,19 +324,50 @@ internal static partial class SvgParser
 
     #region Shape Parsing
 
+    private static void ParseNestedSvg(XElement element, DrawingGroup parent, Dictionary<string, XElement> defs)
+    {
+        var width = GetResolvedAttribute(element, "width") is null or "auto" ? t_viewportWidth : ParseDouble(element, "width");
+        var height = GetResolvedAttribute(element, "height") is null or "auto" ? t_viewportHeight : ParseDouble(element, "height");
+        if (!(width > 0 && height > 0 && double.IsFinite(width) && double.IsFinite(height))) return;
+        var x = ParseDouble(element, "x"); var y = ParseDouble(element, "y");
+        Rect? box = null;
+        if (element.Attribute("viewBox")?.Value is { } raw)
+        {
+            var values = ParseNumberList(raw);
+            if (values.Count == 4 && values.All(double.IsFinite))
+            {
+                if (values[2] <= 0 || values[3] <= 0) return;
+                box = new(values[0], values[1], values[2], values[3]);
+            }
+        }
+        var oldWidth = t_viewportWidth; var oldHeight = t_viewportHeight;
+        var contents = new DrawingGroup { Transform = new MatrixTransform(MarkerViewBox(element.Attribute("preserveAspectRatio")?.Value, box, width, height)) };
+        try { t_viewportWidth = box?.Width ?? width; t_viewportHeight = box?.Height ?? height; ParseChildren(element, contents, defs); }
+        finally { t_viewportWidth = oldWidth; t_viewportHeight = oldHeight; }
+        var viewport = new DrawingGroup { Transform = new TranslateTransform(x, y) };
+        viewport.Children.Add(contents);
+        // Nested SVG establishes a viewport; it does not reset the host space
+        // used by vector-effect. Its overflow clip precedes x/y and transform.
+        if (!t_styles!.IsSpecified(element, "overflow") || GetResolvedAttribute(element, "overflow") != "visible")
+            viewport.ClipGeometry = new RectangleGeometry(new Rect(0, 0, width, height));
+        AddDrawing(element, viewport, parent, defs);
+    }
+
     private static void ParseGroup(XElement element, DrawingGroup parentGroup, Dictionary<string, XElement> defs)
     {
         var childGroup = new DrawingGroup();
 
         // Apply group-level attributes
-        ApplyTransform(element, childGroup);
         ApplyOpacity(element, childGroup);
-
         ParseChildren(element, childGroup, defs);
+        ApplyTransform(element, childGroup);
 
         if (childGroup.Children.Count > 0)
         {
             ApplyClipPath(element, childGroup, defs);
+            var bounds = Rect.Empty;
+            foreach (var child in childGroup.Children) bounds.Union(SvgObjectBounds(child));
+            childGroup.SvgMask = ResolveLocalMask(element, defs, bounds);
             parentGroup.Children.Add(childGroup);
         }
     }
@@ -306,7 +438,7 @@ internal static partial class SvgParser
         if (string.IsNullOrWhiteSpace(pointsStr)) return;
 
         var numbers = ParseNumberList(pointsStr);
-        if (numbers.Count < 4) return;
+        if (numbers.Count < 2) return;
 
         var figure = new PathFigure
         {
@@ -366,23 +498,28 @@ internal static partial class SvgParser
     /// &lt;tspan&gt; elements can change the font, fill, and scalar x/y/dx/dy
     /// coordinates; text-anchor is applied to each absolute-position chunk.
     ///
-    /// <para>
-    /// Note: the pure-CPU SVG rasterizer (<c>SoftwareVectorRasterizer</c>) cannot render
-    /// glyphs, so on the primary SVG path the text is parsed
-    /// but not painted; it becomes visible when the Drawing tree is replayed through the GPU
-    /// <c>DrawText</c> fallback. The native outline source supplies measured width and
-    /// baseline for alignment; software painting still needs to consume those outlines.
-    /// </para>
+    /// Stroked text uses the measured glyph outlines on every drawing path.
+    /// Fill-only text retains glyph/font metadata together with the vector ink
+    /// required by software drawing and cached image rasterization.
     /// </summary>
     private static void ParseText(XElement element, DrawingGroup group, Dictionary<string, XElement> defs)
     {
-        if (TryLayoutSvgText(element, requireOutlines: false, out var runs))
+        if (TryLayoutSvgText(element, requireOutlines: t_rasterTextOutlines, out var runs))
         {
             var contents = new DrawingGroup();
             var openSpans = new List<(XElement Element, DrawingGroup Drawing)>();
+            var paintRuns = new List<SvgTextRun>();
+            DrawingGroup? paintTarget = null;
+            void FlushPaint()
+            {
+                if (paintRuns.Count == 0) return;
+                if (CreateSvgTextOutlinePaint(paintRuns, defs) is { } painted)
+                    paintTarget!.Children.Add(painted);
+                paintRuns.Clear();
+            }
             foreach (var run in runs)
             {
-                if (!run.Visible || string.IsNullOrWhiteSpace(run.Text) || run.Fill == "none")
+                if (!run.Visible || string.IsNullOrWhiteSpace(run.Text))
                     continue;
 
                 // Keep the text/tspan tree so each span's opacity, transform and
@@ -397,6 +534,7 @@ internal static partial class SvgParser
                 while (shared < openSpans.Count && shared < ancestors.Count &&
                        ReferenceEquals(openSpans[shared].Element, ancestors[shared]))
                     shared++;
+                if (shared != openSpans.Count || shared != ancestors.Count) FlushPaint();
                 while (openSpans.Count > shared)
                 {
                     var last = openSpans[^1];
@@ -407,44 +545,22 @@ internal static partial class SvgParser
                 for (var index = shared; index < ancestors.Count; index++)
                     openSpans.Add((ancestors[index], new DrawingGroup()));
 
-                var brush = ResolveFillBrush(run.Element, defs) ??
-                    new SolidColorBrush(Color.FromRgb(0, 0, 0));
-                var formatted = new FormattedText(run.Text, run.Family, run.FontSize)
-                {
-                    Foreground = brush,
-                    FontWeight = run.Weight,
-                    FontStyle = run.Style,
-                };
                 var target = openSpans.Count == 0 ? contents : openSpans[^1].Drawing;
-                Drawing glyphDrawing = new GlyphRunDrawing(formatted,
-                    new Point(run.X, run.Y - run.Baseline)) { ForegroundBrush = brush };
-                if (run.ScaleX != 1)
+                if (RequiresSvgTextOutline(run))
                 {
-                    var scaled = new DrawingGroup
-                    {
-                        Transform = new ScaleTransform
-                        {
-                            ScaleX = run.ScaleX, ScaleY = 1,
-                            CenterX = run.X, CenterY = run.Y,
-                        },
-                    };
-                    scaled.Children.Add(glyphDrawing);
-                    glyphDrawing = scaled;
+                    if (paintRuns.Count > 0 && (!ReferenceEquals(paintTarget, target) ||
+                        paintRuns[0].ChunkId != run.ChunkId || !SameSvgTextPaint(paintRuns[0], run)))
+                        FlushPaint();
+                    paintTarget = target;
+                    paintRuns.Add(run);
+                    continue;
                 }
-                if (run.Rotate != 0)
-                {
-                    var rotated = new DrawingGroup
-                    {
-                        Transform = new RotateTransform
-                        {
-                            Angle = run.Rotate, CenterX = run.X, CenterY = run.Y,
-                        },
-                    };
-                    rotated.Children.Add(glyphDrawing);
-                    glyphDrawing = rotated;
-                }
-                target.Children.Add(glyphDrawing);
+                FlushPaint();
+                var glyphDrawing = CreateSvgTextFill(run, defs);
+                if (glyphDrawing is null) continue;
+                target.Children.Add(TransformSvgTextRun(glyphDrawing, run));
             }
+            FlushPaint();
             while (openSpans.Count > 0)
             {
                 var last = openSpans[^1];
@@ -458,6 +574,9 @@ internal static partial class SvgParser
             return;
         }
 
+        if (t_rasterTextOutlines)
+            throw new NotSupportedException("SVG image text requires native glyph outlines");
+
         // Retain the old single-run fallback for unsupported character-position
         // lists and invalid positioning values.
         var sb = new System.Text.StringBuilder();
@@ -468,7 +587,7 @@ internal static partial class SvgParser
         var x = ParseDoubleAttribute(element, "x", 0);
         var y = ParseDoubleAttribute(element, "y", 0);
         var fontSize = ParseDoubleAttribute(element, "font-size", 16);
-        if (fontSize <= 0) fontSize = 16;
+        if (fontSize <= 0) return;
 
         var fontFamily = ParseSvgFontFamily(element);
 
@@ -577,6 +696,10 @@ internal static partial class SvgParser
         ApplyTransform(element, useGroup);
 
         t_useDepth++;
+        var inheritance = t_useInheritance ??= new();
+        inheritance.Push((referenced, element));
+        using var paintContext = EnterUseContext(element, useGroup, defs);
+        using var styleInstance = t_styles?.EnterUse(referenced, element);
         try
         {
             // Parse the referenced element
@@ -591,12 +714,18 @@ internal static partial class SvgParser
         }
         finally
         {
+            inheritance.Pop();
             t_useDepth--;
         }
 
         if (useGroup.Children.Count > 0)
         {
             ApplyClipPath(element, useGroup, defs);
+            ApplyOpacity(element, useGroup);
+            var bounds = Rect.Empty;
+            foreach (var child in useGroup.Children) bounds.Union(SvgObjectBounds(child));
+            if (t_markers?.Contexts.TryGetValue(useGroup, out var useContext) == true) useContext.Bounds = bounds;
+            useGroup.SvgMask = ResolveLocalMask(element, defs, bounds);
             group.Children.Add(useGroup);
         }
     }
@@ -709,7 +838,7 @@ internal static partial class SvgParser
     private static void AddShapeDrawing(XElement element, Geometry geometry, DrawingGroup group, Dictionary<string, XElement> defs)
     {
         var fill = ResolveFillBrush(element, defs);
-        var pen = ResolveStrokePen(element, defs);
+        var pen = ResolveStrokePen(element, defs, geometry);
 
         // SVG's initial value for fill is black, independent of stroke: a shape that
         // declares only a stroke still paints a black interior. The old code skipped the
@@ -721,7 +850,15 @@ internal static partial class SvgParser
                 fill = new SolidColorBrush(Color.FromRgb(0, 0, 0));
         }
 
-        var drawing = new GeometryDrawing(fill, pen, geometry);
+        var context = CreateMarkerContext(element, geometry, defs);
+        var markers = CreateMarkers(element, geometry, defs, context);
+        var drawing = SvgPaintOrder.Create(fill, pen, geometry, GetResolvedAttribute(element, "paint-order"), markers,
+            GetResolvedAttribute(element, "vector-effect") == "non-scaling-stroke");
+        if (markers is not null)
+        {
+            t_markers!.Contexts.Add(drawing, context!);
+            t_markers.ObjectBounds.Add(drawing, geometry.Bounds);
+        }
         AddDrawing(element, drawing, group, defs);
     }
 
@@ -735,11 +872,15 @@ internal static partial class SvgParser
     private static void AddDrawing(XElement element, Drawing drawing, DrawingGroup group,
         Dictionary<string, XElement> defs)
     {
-        var transform = ParseTransform(element);
+        var transform = ParseTransform(element, SvgObjectBounds(drawing));
         var opacity = ParseDoubleAttribute(element, "opacity", 1.0);
         var clip = ResolveLocalClipPath(element, defs, SvgObjectBounds(drawing));
+        var mask = ResolveLocalMask(element, defs, SvgObjectBounds(drawing));
+        var blendReader = new CssTokenReader(GetResolvedAttribute(element, "mix-blend-mode") ?? "normal");
+        CssCompositingProperties.TryRead(ref blendReader, out var blend);
+        var isolated = GetResolvedAttribute(element, "isolation") == "isolate";
 
-        if (transform != null || opacity < 1.0 || clip != null)
+        if (transform != null || opacity < 1.0 || clip != null || mask != null || blend != CssBlendMode.Normal || isolated)
         {
             var wrapper = new DrawingGroup();
             if (transform != null)
@@ -747,6 +888,9 @@ internal static partial class SvgParser
             if (opacity < 1.0)
                 wrapper.Opacity = opacity;
             wrapper.ClipGeometry = clip;
+            wrapper.SvgMask = mask;
+            wrapper.BlendMode = blend;
+            wrapper.Isolated = isolated;
             wrapper.Children.Add(drawing);
             group.Children.Add(wrapper);
         }
@@ -788,7 +932,7 @@ internal static partial class SvgParser
         return brush;
     }
 
-    private static Pen? ResolveStrokePen(XElement element, Dictionary<string, XElement> defs)
+    private static Pen? ResolveStrokePen(XElement element, Dictionary<string, XElement> defs, Geometry geometry)
     {
         var strokeStr = GetResolvedAttribute(element, "stroke");
         if (string.IsNullOrEmpty(strokeStr) || strokeStr == "none") return null;
@@ -797,7 +941,8 @@ internal static partial class SvgParser
         var strokeBrush = ResolveBrush(strokeStr, defs);
         if (strokeBrush == null) return null;
 
-        var strokeWidth = ParseDoubleAttribute(element, "stroke-width", 1.0);
+        var strokeWidth = ResolveStrokeLength(element, "stroke-width", 1.0);
+        if (strokeWidth <= 0 || !double.IsFinite(strokeWidth)) return null;
         var strokeOpacity = ParseDoubleAttribute(element, "stroke-opacity", 1.0);
         if (strokeOpacity < 1.0)
             strokeBrush.Opacity = strokeOpacity;
@@ -805,14 +950,15 @@ internal static partial class SvgParser
         var pen = new Pen
         {
             Brush = strokeBrush,
-            Thickness = strokeWidth
+            Thickness = strokeWidth,
+            DashCap = PenLineCap.Flat,
         };
 
         // Stroke line cap
         var lineCap = GetResolvedAttribute(element, "stroke-linecap");
         if (lineCap != null)
         {
-            pen.StartLineCap = pen.EndLineCap = lineCap switch
+            pen.StartLineCap = pen.EndLineCap = pen.DashCap = lineCap switch
             {
                 "round" => PenLineCap.Round,
                 "square" => PenLineCap.Square,
@@ -837,31 +983,12 @@ internal static partial class SvgParser
         if (miterLimit > 0)
             pen.MiterLimit = miterLimit;
 
-        // Dash array
-        var dashArray = GetResolvedAttribute(element, "stroke-dasharray");
-        if (!string.IsNullOrEmpty(dashArray) && dashArray != "none")
-        {
-            var dashes = ParseNumberList(dashArray);
-            if (dashes.Count > 0)
-            {
-                var dashStyle = new DashStyle();
-                // Normalize dashes by stroke width
-                foreach (var d in dashes)
-                    dashStyle.Dashes.Add(strokeWidth > 0 ? d / strokeWidth : d);
-
-                var dashOffset = ParseDoubleAttribute(element, "stroke-dashoffset", 0);
-                if (dashOffset != 0 && strokeWidth > 0)
-                    dashStyle.Offset = dashOffset / strokeWidth;
-
-                pen.DashStyle = dashStyle;
-            }
-        }
-
-        return pen;
+        return ApplyStrokeDashes(element, geometry, pen) ? pen : null;
     }
 
     private static Brush? ResolveBrush(string value, Dictionary<string, XElement> defs)
     {
+        if (value is "context-fill" or "context-stroke") return ResolveMarkerContextBrush(value);
         if (string.IsNullOrEmpty(value) || value == "none")
             return null;
 
@@ -886,23 +1013,49 @@ internal static partial class SvgParser
 
     private static Brush? ParseGradient(XElement element, Dictionary<string, XElement> defs)
     {
-        var localName = element.Name.LocalName;
-
-        // Handle xlink:href inheritance
-        var href = element.Attribute(XlinkNs + "href")?.Value ?? element.Attribute("href")?.Value;
-        XElement? parent = null;
-        if (!string.IsNullOrEmpty(href))
+        // Templates may be indirect. Keep original elements for stop styling;
+        // cloning XML here would lose the definition's computed CSS context.
+        var templates = new List<XElement>(); var seen = new HashSet<XElement>();
+        var current = element;
+        while (seen.Add(current))
         {
-            var parentId = href.TrimStart('#');
-            defs.TryGetValue(parentId, out parent);
+            if (templates.Count >= 256) return null;
+            templates.Add(current);
+            var href = current.Attribute("href")?.Value ?? current.Attribute(XlinkNs + "href")?.Value;
+            if (href is null || !href.StartsWith('#') || !defs.TryGetValue(href[1..], out var next) ||
+                next.Name.LocalName is not ("linearGradient" or "radialGradient")) break;
+            current = next;
         }
+        return element.Name.LocalName switch
+        {
+            "linearGradient" => ParseLinearGradient(element, templates),
+            "radialGradient" => ParseRadialGradient(element, templates),
+            _ => null,
+        };
+    }
 
-        if (localName == "linearGradient")
-            return ParseLinearGradient(element, parent, defs);
-        if (localName == "radialGradient")
-            return ParseRadialGradient(element, parent, defs);
-
+    private static string? GradientAttribute(IReadOnlyList<XElement> templates, string name)
+    {
+        foreach (var template in templates)
+            if (template.Attribute(name)?.Value is { } value) return value;
         return null;
+    }
+
+    private static void ApplyGradientTransform(GradientBrush brush, IReadOnlyList<XElement> templates)
+    {
+        foreach (var template in templates)
+        {
+            Transform? transform;
+            if (t_styles?.IsSpecified(template, "transform") == true)
+                transform = ParseTransform(template, brush.MappingMode == BrushMappingMode.Absolute
+                    ? new Rect(0, 0, t_viewportWidth, t_viewportHeight) : new Rect(0, 0, 1, 1));
+            else if (template.Attribute("gradientTransform")?.Value is { } legacy)
+                transform = ParseTransformString(legacy);
+            else continue;
+            if (brush.MappingMode == BrushMappingMode.Absolute) brush.Transform = transform;
+            else brush.RelativeTransform = transform;
+            return;
+        }
     }
 
     /// <summary>
@@ -914,16 +1067,16 @@ internal static partial class SvgParser
     /// percentage coordinates fell back to the default direction.
     /// </summary>
     private static double ParseGradientCoordinate(
-        XElement element, XElement? parent, string attribute,
+        IReadOnlyList<XElement> templates, string attribute,
         bool userSpace, double viewportBasis, double defaultValue)
     {
-        var str = GetAttribute(element, attribute) ?? (parent != null ? GetAttribute(parent, attribute) : null);
+        var str = GradientAttribute(templates, attribute);
         if (str == null) return defaultValue;
 
         str = str.Trim();
         if (str.EndsWith('%'))
         {
-            if (double.TryParse(str.AsSpan(0, str.Length - 1), CultureInfo.InvariantCulture, out var pct))
+            if (double.TryParse(str.AsSpan(0, str.Length - 1), CultureInfo.InvariantCulture, out var pct) && double.IsFinite(pct))
             {
                 var fraction = pct / 100.0;
                 return userSpace ? fraction * viewportBasis : fraction;
@@ -933,27 +1086,29 @@ internal static partial class SvgParser
 
         if (str.EndsWith("px", StringComparison.OrdinalIgnoreCase))
             str = str.Substring(0, str.Length - 2);
-        return double.TryParse(str, CultureInfo.InvariantCulture, out var val) ? val : defaultValue;
+        return double.TryParse(str, CultureInfo.InvariantCulture, out var val) && double.IsFinite(val) ? val : defaultValue;
     }
 
     /// <summary>Normalized diagonal (SVG spec basis for undirected percentage lengths like r).</summary>
     private static double ViewportDiagonal()
         => Math.Sqrt((t_viewportWidth * t_viewportWidth + t_viewportHeight * t_viewportHeight) / 2.0);
 
-    private static LinearGradientBrush ParseLinearGradient(XElement element, XElement? parent, Dictionary<string, XElement> defs)
+    private static LinearGradientBrush ParseLinearGradient(XElement element, IReadOnlyList<XElement> templates)
     {
-        var unitsAttr = element.Attribute("gradientUnits")?.Value ?? parent?.Attribute("gradientUnits")?.Value;
+        var unitsAttr = GradientAttribute(templates, "gradientUnits");
         var userSpace = unitsAttr == "userSpaceOnUse";
 
-        var x1 = ParseGradientCoordinate(element, parent, "x1", userSpace, t_viewportWidth, 0);
-        var y1 = ParseGradientCoordinate(element, parent, "y1", userSpace, t_viewportHeight, 0);
-        var x2 = ParseGradientCoordinate(element, parent, "x2", userSpace, t_viewportWidth, 1);
-        var y2 = ParseGradientCoordinate(element, parent, "y2", userSpace, t_viewportHeight, 0);
+        var x1 = ParseGradientCoordinate(templates, "x1", userSpace, t_viewportWidth, 0);
+        var y1 = ParseGradientCoordinate(templates, "y1", userSpace, t_viewportHeight, 0);
+        var x2 = ParseGradientCoordinate(templates, "x2", userSpace, t_viewportWidth, userSpace ? t_viewportWidth : 1);
+        var y2 = ParseGradientCoordinate(templates, "y2", userSpace, t_viewportHeight, 0);
 
         var brush = new LinearGradientBrush
         {
             StartPoint = new Point(x1, y1),
-            EndPoint = new Point(x2, y2)
+            EndPoint = new Point(x2, y2),
+            UsesNormalizedInterpolation = !userSpace,
+            ColorInterpolationMode = GradientInterpolationMode(element)
         };
 
         // gradientUnits
@@ -961,7 +1116,7 @@ internal static partial class SvgParser
             brush.MappingMode = BrushMappingMode.Absolute;
 
         // Spread method
-        var spread = element.Attribute("spreadMethod")?.Value ?? parent?.Attribute("spreadMethod")?.Value;
+        var spread = GradientAttribute(templates, "spreadMethod");
         if (spread != null)
         {
             brush.SpreadMethod = spread switch
@@ -973,35 +1128,39 @@ internal static partial class SvgParser
         }
 
         // Gradient stops
-        var stops = CollectGradientStops(element, parent);
+        var stops = CollectGradientStops(templates);
         foreach (var stop in stops)
             brush.GradientStops.Add(stop);
 
         // Gradient transform
-        var transformStr = element.Attribute("gradientTransform")?.Value ?? parent?.Attribute("gradientTransform")?.Value;
-        if (!string.IsNullOrEmpty(transformStr))
-            brush.Transform = ParseTransformString(transformStr);
+        ApplyGradientTransform(brush, templates);
 
         return brush;
     }
 
-    private static RadialGradientBrush ParseRadialGradient(XElement element, XElement? parent, Dictionary<string, XElement> defs)
+    private static RadialGradientBrush? ParseRadialGradient(XElement element, IReadOnlyList<XElement> templates)
     {
-        var unitsAttr = element.Attribute("gradientUnits")?.Value ?? parent?.Attribute("gradientUnits")?.Value;
+        var unitsAttr = GradientAttribute(templates, "gradientUnits");
         var userSpace = unitsAttr == "userSpaceOnUse";
 
-        var cx = ParseGradientCoordinate(element, parent, "cx", userSpace, t_viewportWidth, 0.5);
-        var cy = ParseGradientCoordinate(element, parent, "cy", userSpace, t_viewportHeight, 0.5);
-        var r = ParseGradientCoordinate(element, parent, "r", userSpace, ViewportDiagonal(), 0.5);
-        var fx = ParseGradientCoordinate(element, parent, "fx", userSpace, t_viewportWidth, cx);
-        var fy = ParseGradientCoordinate(element, parent, "fy", userSpace, t_viewportHeight, cy);
+        var cx = ParseGradientCoordinate(templates, "cx", userSpace, t_viewportWidth, userSpace ? t_viewportWidth / 2 : 0.5);
+        var cy = ParseGradientCoordinate(templates, "cy", userSpace, t_viewportHeight, userSpace ? t_viewportHeight / 2 : 0.5);
+        var r = ParseGradientCoordinate(templates, "r", userSpace, ViewportDiagonal(), userSpace ? ViewportDiagonal() / 2 : 0.5);
+        var fx = ParseGradientCoordinate(templates, "fx", userSpace, t_viewportWidth, cx);
+        var fy = ParseGradientCoordinate(templates, "fy", userSpace, t_viewportHeight, cy);
+        var fr = ParseGradientCoordinate(templates, "fr", userSpace, ViewportDiagonal(), 0);
+        if (r < 0 || fr < 0) return null;
 
         var brush = new RadialGradientBrush
         {
             Center = new Point(cx, cy),
             GradientOrigin = new Point(fx, fy),
             RadiusX = r,
-            RadiusY = r
+            RadiusY = r,
+            SvgFocalRadius = fr,
+            UsesSvgRadialInterpolation = true,
+            UsesNormalizedInterpolation = !userSpace,
+            ColorInterpolationMode = GradientInterpolationMode(element)
         };
 
         // gradientUnits
@@ -1009,7 +1168,7 @@ internal static partial class SvgParser
             brush.MappingMode = BrushMappingMode.Absolute;
 
         // Spread method
-        var spread = element.Attribute("spreadMethod")?.Value ?? parent?.Attribute("spreadMethod")?.Value;
+        var spread = GradientAttribute(templates, "spreadMethod");
         if (spread != null)
         {
             brush.SpreadMethod = spread switch
@@ -1021,26 +1180,28 @@ internal static partial class SvgParser
         }
 
         // Gradient stops
-        var stops = CollectGradientStops(element, parent);
+        var stops = CollectGradientStops(templates);
         foreach (var stop in stops)
             brush.GradientStops.Add(stop);
 
         // Gradient transform
-        var transformStr = element.Attribute("gradientTransform")?.Value ?? parent?.Attribute("gradientTransform")?.Value;
-        if (!string.IsNullOrEmpty(transformStr))
-            brush.Transform = ParseTransformString(transformStr);
+        ApplyGradientTransform(brush, templates);
 
         return brush;
     }
 
-    private static List<GradientStop> CollectGradientStops(XElement element, XElement? parent)
+    // This inherited CSS property comes from the gradient actually referenced,
+    // even when its stops and geometry are obtained through href templates.
+    private static ColorInterpolationMode GradientInterpolationMode(XElement element) =>
+        GetResolvedAttribute(element, "color-interpolation")?.Equals("linearRGB", StringComparison.OrdinalIgnoreCase) == true
+            ? ColorInterpolationMode.ScRgbLinearInterpolation : ColorInterpolationMode.SRgbLinearInterpolation;
+
+    private static List<GradientStop> CollectGradientStops(IReadOnlyList<XElement> templates)
     {
         var stops = new List<GradientStop>();
 
-        // Collect stops from this element first; if none, inherit from parent
-        var stopElements = element.Elements().Where(e => e.Name.LocalName == "stop").ToList();
-        if (stopElements.Count == 0 && parent != null)
-            stopElements = parent.Elements().Where(e => e.Name.LocalName == "stop").ToList();
+        var stopElements = templates.Select(template => template.Elements().Where(e => e.Name.LocalName == "stop").ToList())
+            .FirstOrDefault(stops => stops.Count > 0) ?? [];
 
         // SVG stop-offset rules: clamp into [0,1], and force the sequence
         // non-decreasing — an out-of-order stop is promoted to the largest
@@ -1067,7 +1228,7 @@ internal static partial class SvgParser
 
         if (offsetStr.EndsWith('%'))
         {
-            if (double.TryParse(offsetStr.AsSpan(0, offsetStr.Length - 1), CultureInfo.InvariantCulture, out var pct))
+            if (double.TryParse(offsetStr.AsSpan(0, offsetStr.Length - 1), CultureInfo.InvariantCulture, out var pct) && double.IsFinite(pct))
                 return pct / 100.0;
         }
         else
@@ -1082,30 +1243,18 @@ internal static partial class SvgParser
     {
         var color = Color.FromRgb(0, 0, 0);
 
-        // Check style attribute first for stop-color and stop-opacity
-        var style = stopElement.Attribute("style")?.Value;
-        string? stopColorStr = null;
-        string? stopOpacityStr = null;
-
-        if (style != null)
-        {
-            var properties = ParseStyleProperties(style);
-            properties.TryGetValue("stop-color", out stopColorStr);
-            properties.TryGetValue("stop-opacity", out stopOpacityStr);
-        }
-
-        stopColorStr ??= stopElement.Attribute("stop-color")?.Value;
-        stopOpacityStr ??= stopElement.Attribute("stop-opacity")?.Value;
+        var stopColorStr = GetResolvedAttribute(stopElement, "stop-color");
+        var stopOpacityStr = GetResolvedAttribute(stopElement, "stop-opacity");
 
         if (stopColorStr != null)
         {
-            var parsed = ParseSvgColor(stopColorStr);
+            var parsed = ParseSvgColor(ResolveCurrentColor(stopElement, stopColorStr));
             if (parsed != null) color = parsed.Value;
         }
 
         if (stopOpacityStr != null && double.TryParse(stopOpacityStr, CultureInfo.InvariantCulture, out var opacity))
         {
-            color = Color.FromArgb((byte)(Math.Clamp(opacity, 0, 1) * 255), color.R, color.G, color.B);
+            color = Color.FromArgb((byte)Math.Round(Math.Clamp(opacity, 0, 1) * color.A), color.R, color.G, color.B);
         }
 
         return color;
@@ -1117,7 +1266,7 @@ internal static partial class SvgParser
 
     private static void ApplyTransform(XElement element, DrawingGroup group)
     {
-        var transform = ParseTransform(element);
+        var transform = ParseTransform(element, group.LocalBounds);
         if (transform != null)
         {
             if (group.Transform != null)
@@ -1136,6 +1285,9 @@ internal static partial class SvgParser
 
     private static void ApplyOpacity(XElement element, DrawingGroup group)
     {
+        var reader = new CssTokenReader(GetResolvedAttribute(element, "mix-blend-mode") ?? "normal");
+        if (CssCompositingProperties.TryRead(ref reader, out var blend)) group.BlendMode = blend;
+        group.Isolated = GetResolvedAttribute(element, "isolation") == "isolate";
         var opacity = ParseDoubleAttribute(element, "opacity", 1.0);
         if (opacity < 1.0)
             group.Opacity = opacity;
@@ -1214,12 +1366,16 @@ internal static partial class SvgParser
         return geo;
     }
 
-    private static Transform? ParseTransform(XElement element)
+    private static Transform? ParseTransform(XElement element, Rect referenceBounds = default)
     {
-        var transformStr = element.Attribute("transform")?.Value;
+        var transformStr = GetResolvedAttribute(element, "transform");
         if (string.IsNullOrWhiteSpace(transformStr)) return null;
+        var reader = new CssTokenReader(transformStr);
+        if (CssTransformParser.TryParseTransformList(ref reader, out var parsed, t_styles?.Lengths(element), referenceBounds.Size) && reader.AtEnd) return parsed;
         return ParseTransformString(transformStr);
     }
+
+    internal static bool TryParseLegacyTransform(string value) => ParseTransformString(value) is not null;
 
     private static Transform? ParseTransformString(string transformStr)
     {
@@ -1297,121 +1453,9 @@ internal static partial class SvgParser
 
     private static Color? ParseSvgColor(string value)
     {
-        if (string.IsNullOrWhiteSpace(value))
-            return null;
-
-        value = value.Trim();
-
-        if (value == "none" || value == "transparent")
-            return Color.FromArgb(0, 0, 0, 0);
-
-        if (value == "currentColor")
-            return Color.FromRgb(0, 0, 0); // Default to black
-
-        // Hex colors
-        if (value.StartsWith('#'))
-        {
-            var hex = value.AsSpan(1);
-            if (hex.Length == 3)
-            {
-                var r = ParseHexChar(hex[0]);
-                var g = ParseHexChar(hex[1]);
-                var b = ParseHexChar(hex[2]);
-                return Color.FromRgb((byte)(r * 17), (byte)(g * 17), (byte)(b * 17));
-            }
-            if (hex.Length == 4)
-            {
-                var a = ParseHexChar(hex[0]);
-                var r = ParseHexChar(hex[1]);
-                var g = ParseHexChar(hex[2]);
-                var b = ParseHexChar(hex[3]);
-                return Color.FromArgb((byte)(a * 17), (byte)(r * 17), (byte)(g * 17), (byte)(b * 17));
-            }
-            if (hex.Length == 6)
-            {
-                var r = byte.Parse(hex.Slice(0, 2), NumberStyles.HexNumber);
-                var g = byte.Parse(hex.Slice(2, 2), NumberStyles.HexNumber);
-                var b = byte.Parse(hex.Slice(4, 2), NumberStyles.HexNumber);
-                return Color.FromRgb(r, g, b);
-            }
-            if (hex.Length == 8)
-            {
-                var r = byte.Parse(hex.Slice(0, 2), NumberStyles.HexNumber);
-                var g = byte.Parse(hex.Slice(2, 2), NumberStyles.HexNumber);
-                var b = byte.Parse(hex.Slice(4, 2), NumberStyles.HexNumber);
-                var a = byte.Parse(hex.Slice(6, 2), NumberStyles.HexNumber);
-                return Color.FromArgb(a, r, g, b);
-            }
-        }
-
-        // rgb() / rgba()
-        if (value.StartsWith("rgb", StringComparison.OrdinalIgnoreCase))
-        {
-            var parenStart = value.IndexOf('(');
-            var parenEnd = value.IndexOf(')');
-            if (parenStart >= 0 && parenEnd > parenStart)
-            {
-                var inner = value.Substring(parenStart + 1, parenEnd - parenStart - 1);
-                var parts = inner.Split(new[] { ',', ' ', '/' }, StringSplitOptions.RemoveEmptyEntries);
-
-                if (parts.Length >= 3)
-                {
-                    var r = ParseColorComponent(parts[0]);
-                    var g = ParseColorComponent(parts[1]);
-                    var b = ParseColorComponent(parts[2]);
-                    byte a = 255;
-                    if (parts.Length >= 4)
-                    {
-                        var aStr = parts[3].Trim();
-                        if (aStr.EndsWith('%'))
-                        {
-                            if (double.TryParse(aStr.AsSpan(0, aStr.Length - 1), CultureInfo.InvariantCulture, out var pct))
-                                a = (byte)Math.Clamp(pct * 2.55, 0, 255);
-                        }
-                        else if (double.TryParse(aStr, CultureInfo.InvariantCulture, out var aVal))
-                        {
-                            a = (byte)Math.Clamp(aVal <= 1.0 ? aVal * 255 : aVal, 0, 255);
-                        }
-                    }
-                    return Color.FromArgb(a, r, g, b);
-                }
-            }
-        }
-
-        // Named SVG colors
-        if (s_svgColors.TryGetValue(value, out var named))
-            return named;
-
-        // Try the framework's ColorConverter as fallback
-        var frameworkColor = ColorConverter.ConvertFromString(value);
-        if (frameworkColor is Color c)
-            return c;
-
-        return null;
+        var reader = new CssTokenReader(value);
+        return CssColorParser.TryParse(ref reader, out var color, out _) && reader.AtEnd ? color : null;
     }
-
-    private static byte ParseColorComponent(string part)
-    {
-        part = part.Trim();
-        if (part.EndsWith('%'))
-        {
-            if (double.TryParse(part.AsSpan(0, part.Length - 1), CultureInfo.InvariantCulture, out var pct))
-                return (byte)Math.Clamp(pct * 2.55, 0, 255);
-        }
-        else if (int.TryParse(part, CultureInfo.InvariantCulture, out var val))
-        {
-            return (byte)Math.Clamp(val, 0, 255);
-        }
-        return 0;
-    }
-
-    private static int ParseHexChar(char c) => c switch
-    {
-        >= '0' and <= '9' => c - '0',
-        >= 'a' and <= 'f' => c - 'a' + 10,
-        >= 'A' and <= 'F' => c - 'A' + 10,
-        _ => 0
-    };
 
     #endregion
 
@@ -1419,6 +1463,7 @@ internal static partial class SvgParser
 
     private static string? GetAttribute(XElement element, string name)
     {
+        if (t_styles?.Get(element, name) is { } computed) return computed;
         // Direct attribute
         var attr = element.Attribute(name)?.Value;
         if (attr != null) return attr;
@@ -1440,31 +1485,23 @@ internal static partial class SvgParser
     /// </summary>
     private static string? GetResolvedAttribute(XElement element, string name)
     {
-        // Check style attribute first (highest priority)
-        var style = element.Attribute("style")?.Value;
-        if (style != null)
+        if (t_styles?.Get(element, name) is { } computed) return computed;
+        // A use instance inherits from the use element, not the original defs
+        // container. Keep XML identities for local URL references and substitute
+        // only the inheritance edge while parsing that instance.
+        XElement? current = element;
+        for (var depth = 0; current is not null && depth < 512; depth++)
         {
-            var properties = ParseStyleProperties(style);
-            if (properties.TryGetValue(name, out var styleVal))
-                return styleVal;
+            var style = current.Attribute("style")?.Value;
+            if (style is not null && ParseStyleProperties(style).TryGetValue(name, out var styled)) return styled;
+            if (current.Attribute(name)?.Value is { } value) return value;
+            if (!IsInheritableProperty(name)) return null;
+            var parent = current.Parent;
+            if (t_useInheritance is { Count: > 0 } instances)
+                foreach (var instance in instances)
+                    if (ReferenceEquals(instance.Target, current)) { parent = instance.Use; break; }
+            current = parent;
         }
-
-        // Then direct attribute
-        var attr = element.Attribute(name)?.Value;
-        if (attr != null) return attr;
-
-        // Inherit from ancestors, INCLUDING the root <svg> element. Presentation
-        // attributes placed on the root are the standard authoring form for stroke
-        // icon sets (lucide/feather put fill="none" stroke="..." stroke-width="2"
-        // there and leave every <path> bare) — stopping short of the root dropped
-        // the stroke entirely and let the fill default to black. Recursion ends
-        // naturally at the document root, whose Parent is null.
-        var parent = element.Parent;
-        if (parent != null && IsInheritableProperty(name))
-        {
-            return GetResolvedAttribute(parent, name);
-        }
-
         return null;
     }
 
@@ -1499,10 +1536,28 @@ internal static partial class SvgParser
         return result;
     }
 
+    private static bool TryResolveSvgLength(XElement element, string attribute, string value, out double result)
+    {
+        result = 0; var lengths = t_styles!.Lengths(element);
+        var reader = new CssTokenReader(value, new CssNumericReadContext(lengths));
+        if (!reader.TryReadLength(out var length) || !reader.AtEnd) return false;
+        var basis = attribute switch
+        {
+            "x" or "cx" or "x1" or "x2" or "width" or "rx" or "dx" => t_viewportWidth,
+            "y" or "cy" or "y1" or "y2" or "height" or "ry" or "dy" => t_viewportHeight,
+            "opacity" or "fill-opacity" or "stroke-opacity" or "stop-opacity" => 1,
+            _ => ViewportDiagonal(),
+        };
+        return length.Expression is { } expression ? expression.TryEvaluate(lengths, basis, out result)
+            : length.Unit == CssUnit.Percent ? double.IsFinite(result = length.Value * basis / 100)
+            : length.TryResolve(lengths, CssPercentBasis.NotSupported, out result);
+    }
+
     private static double ParseDouble(XElement element, string attribute)
     {
-        var str = element.Attribute(attribute)?.Value;
-        if (str == null) return 0;
+        var str = SvgCssStyles.ApplicableGeometry(element, attribute) ? t_styles?.Get(element, attribute) ?? element.Attribute(attribute)?.Value : element.Attribute(attribute)?.Value;
+        if (str == null || str == "auto") return 0;
+        if (t_styles is not null && TryResolveSvgLength(element, attribute, str, out var resolved)) return resolved;
 
         str = str.Trim();
 
@@ -1513,7 +1568,7 @@ internal static partial class SvgParser
         // background idiom — parse as 0×0 and vanish.
         if (str.EndsWith('%'))
         {
-            if (!double.TryParse(str.AsSpan(0, str.Length - 1), CultureInfo.InvariantCulture, out var pct))
+            if (!double.TryParse(str.AsSpan(0, str.Length - 1), CultureInfo.InvariantCulture, out var pct) && double.IsFinite(pct))
                 return 0;
             var basis = attribute switch
             {
@@ -1535,6 +1590,7 @@ internal static partial class SvgParser
     private static double ParseDoubleAttribute(XElement element, string attribute, double defaultValue)
     {
         var str = GetResolvedAttribute(element, attribute);
+        if (str is not null && t_styles is not null && TryResolveSvgLength(element, attribute, str, out var resolved)) return resolved;
         if (str != null)
         {
             str = str.Trim();
@@ -1557,7 +1613,7 @@ internal static partial class SvgParser
         // Handle percentage (treat as the value itself for now)
         if (str.EndsWith('%'))
         {
-            if (double.TryParse(str.AsSpan(0, str.Length - 1), CultureInfo.InvariantCulture, out var pct))
+            if (double.TryParse(str.AsSpan(0, str.Length - 1), CultureInfo.InvariantCulture, out var pct) && double.IsFinite(pct))
                 return pct; // Percentage needs context; return raw value
             return defaultValue;
         }

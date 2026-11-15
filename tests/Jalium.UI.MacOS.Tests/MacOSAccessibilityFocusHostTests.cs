@@ -131,14 +131,19 @@ public sealed partial class MacOSAccessibilityFocusHostTests
     {
         if (!OperatingSystem.IsMacOS()) return;
         using var h = new Host(kind); using var foreign = new Host("owner");
-        FocusManager.SetFocusedElement(h.Owner, h.Before);
+        Assert.True(h.Other.Focus());
+        h.SendResponder(false); Assert.Null(Keyboard.FocusedElement);
         h.SetActivation(() =>
         {
-            typeof(Window).GetMethod("RestoreMacOSKeyboardFocus", Private)!.Invoke(h.Owner, null);
+            Assert.Equal(1, (int)typeof(Window).GetField("_macOSAccessibilityFocusActivationDepth", Private)!.GetValue(h.Owner)!);
+            h.SendResponder(true); Assert.Null(Keyboard.FocusedElement);
             return true;
         });
         Assert.True(h.Focus(h.Target)); h.Process();
         Assert.Equal(1, h.ActivationCalls); Assert.Same(h.Target, Keyboard.FocusedElement);
+        Assert.Equal(0, (int)typeof(Window).GetField("_macOSAccessibilityFocusActivationDepth", Private)!.GetValue(h.Owner)!);
+        h.SendResponder(false); Assert.Null(Keyboard.FocusedElement); h.SendResponder(true);
+        Assert.Same(h.Target, Keyboard.FocusedElement); Assert.Equal(1, h.ActivationCalls);
     }
 
     [Theory] [InlineData("owner")] [InlineData("overlay")] [InlineData("native")]
@@ -230,6 +235,8 @@ public sealed partial class MacOSAccessibilityFocusHostTests
         internal void Accept() { Assert.True(Focus(Target)); Assert.Same(Before, Keyboard.FocusedElement); }
         internal void Process()
         { Dispatcher.CurrentDispatcher.ProcessQueue(); Dispatcher.CurrentDispatcher.ProcessQueue(); }
+        internal void SendResponder(bool gained) => typeof(Window).GetMethod("OnPlatformEvent", Private)!.Invoke(Source,
+            [new PlatformEvent { Type = gained ? PlatformEventType.ResponderFocusGained : PlatformEventType.ResponderFocusLost }]);
         internal void SetActivation(Func<bool> callback) { if (Popup?.Host is { } host) host.Activation = callback; else Owner.Activation = callback; }
         internal void Change(string change)
         {

@@ -360,7 +360,7 @@ internal class AnsiParser
                     case 0: _buffer.EraseToEndOfScreen(); break;
                     case 1: _buffer.EraseToStartOfScreen(); break;
                     case 2: _buffer.ClearScreen(); break;
-                    case 3: _buffer.ClearScreen(); break; // Also clear scrollback (simplified)
+                    case 3: _buffer.ClearScrollback(); break;
                 }
                 break;
             case 'K': // EL - erase in line

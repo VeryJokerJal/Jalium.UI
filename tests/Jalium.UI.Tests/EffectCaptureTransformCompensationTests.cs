@@ -160,6 +160,8 @@ public sealed class EffectCaptureTransformCompensationTests
             Assert.False(frame.Transformed);
             Assert.Equal(5, frame.ScreenX, Tolerance);
             Assert.Equal(6, frame.ScreenY, Tolerance);
+            Assert.Equal(70, frame.ScreenWidth, Tolerance);
+            Assert.Equal(80, frame.ScreenHeight, Tolerance);
         });
     }
 
@@ -180,6 +182,8 @@ public sealed class EffectCaptureTransformCompensationTests
                 rt.DpiScaleX, rt.DpiScaleY);
             Assert.Equal(expected.X, frame.ScreenX, Tolerance);
             Assert.Equal(expected.Y, frame.ScreenY, Tolerance);
+            Assert.Equal(expected.Width, frame.ScreenWidth, Tolerance);
+            Assert.Equal(expected.Height, frame.ScreenHeight, Tolerance);
         });
     }
 
@@ -301,6 +305,8 @@ public sealed class EffectCaptureTransformCompensationTests
             untransformed, m, rt.DpiScaleX, rt.DpiScaleY);
         Assert.Equal(expected.X, frame.ScreenX, 1e-6);
         Assert.Equal(expected.Y, frame.ScreenY, 1e-6);
+        Assert.Equal(expected.Width, frame.ScreenWidth, 1e-6);
+        Assert.Equal(expected.Height, frame.ScreenHeight, 1e-6);
         Assert.True(Math.Abs(untransformed.X - frame.ScreenX) > 1e-6,
             "the recorded capture origin must be the transformed one");
     }

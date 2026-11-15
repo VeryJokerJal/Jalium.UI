@@ -1,0 +1,97 @@
+{
+  "origin": "Generated offline from Jalium geometric fixtures; no external font or package dependency.",
+  "sourceScalars": [
+    32,
+    40,
+    65,
+    72,
+    8212,
+    12290,
+    20013,
+    65288
+  ],
+  "files": [
+    {
+      "file": "VerticalBoth.ttf",
+      "sha256": "59af2d585957abbc443784a482ae46b365da4d381e952258773098b0ce8a17a0",
+      "source": "FontSizeAdjust/Primary.ttf",
+      "sourceSha256": "f737abcccf464b621ebb5d0a5679b0ddad4dbd5d9dfbd3b8383b522fb49d12f3",
+      "features": [
+        "salt",
+        "vert",
+        "vrt2"
+      ],
+      "glyphs": {
+        "normal": 2,
+        "vert": 6,
+        "vrt2": 4
+      },
+      "unitsPerEm": 1000,
+      "verticalAdvance": 1200,
+      "verticalHighWeightGlyph": null,
+      "variableWaterAdvance": null
+    },
+    {
+      "file": "VerticalOnly.ttf",
+      "sha256": "fdf070dc90ca14c4496cd9a124dc9b3323fb6b66c2bf07e62e79d9bf63653b3f",
+      "source": "FontSizeAdjust/Primary.ttf",
+      "sourceSha256": "f737abcccf464b621ebb5d0a5679b0ddad4dbd5d9dfbd3b8383b522fb49d12f3",
+      "features": [
+        "salt",
+        "vert"
+      ],
+      "glyphs": {
+        "normal": 2,
+        "vert": 6,
+        "vrt2": null
+      },
+      "unitsPerEm": 1000,
+      "verticalAdvance": 1200,
+      "verticalHighWeightGlyph": null,
+      "variableWaterAdvance": null
+    },
+    {
+      "file": "RotationOnly.ttf",
+      "sha256": "f6e0ad7c14ed31d2395bbc99b96a1df2cc17cce9fc0785860e03f9a8641dcdc5",
+      "source": "FontSizeAdjust/Primary.ttf",
+      "sourceSha256": "f737abcccf464b621ebb5d0a5679b0ddad4dbd5d9dfbd3b8383b522fb49d12f3",
+      "features": [
+        "salt",
+        "vrt2"
+      ],
+      "glyphs": {
+        "normal": 2,
+        "vert": null,
+        "vrt2": 4
+      },
+      "unitsPerEm": 1000,
+      "verticalAdvance": 1200,
+      "verticalHighWeightGlyph": null,
+      "variableWaterAdvance": null
+    },
+    {
+      "file": "VerticalVariable.ttf",
+      "sha256": "45b1fba65bdac7c283b198e85aba13e02fbbe4dba7c88f7ef2ae0c69b9a0fd25",
+      "source": "FontSizeAdjust/VerticalVariable.ttf",
+      "sourceSha256": "3a5117763cca66779effa671d5aab97cf563883ac709f381ebf4e3334cd1fbc7",
+      "features": [
+        "salt",
+        "vert",
+        "vrt2"
+      ],
+      "glyphs": {
+        "normal": 2,
+        "vert": 7,
+        "vrt2": 5
+      },
+      "unitsPerEm": 1000,
+      "verticalAdvance": 1200,
+      "verticalHighWeightGlyph": 6,
+      "variableWaterAdvance": {
+        "wght400": 1200,
+        "wght550": 1300,
+        "wght700": 1400
+      }
+    }
+  ]
+}

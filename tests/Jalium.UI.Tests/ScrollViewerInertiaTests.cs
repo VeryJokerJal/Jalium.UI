@@ -6,8 +6,10 @@ using Jalium.UI.Input;
 
 namespace Jalium.UI.Tests;
 
-public class ScrollViewerInertiaTests
+public class ScrollViewerInertiaTests : IDisposable
 {
+    public ScrollViewerInertiaTests() => ScrollBarTemplateTestHelper.Register();
+    public void Dispose() => ScrollBarTemplateTestHelper.Reset();
     [Fact]
     public void ScrollViewerInertia_DefaultSettings_ShouldBeEnabled()
     {
@@ -70,6 +72,25 @@ public class ScrollViewerInertiaTests
 
         Assert.Equal(350.0, viewer.HorizontalOffset, precision: 3);
         Assert.True(viewer.VerticalOffset > 100);
+    }
+
+    [Fact]
+    public void SmoothScroll_HighRefreshFrames_ReachesWholePixelTarget()
+    {
+        var viewer = CreateConfiguredViewer(initialVerticalOffset: 0);
+        SetPrivateField(viewer, "_smoothTargetY", 160.0);
+        SetPrivateField(viewer, "_smoothTargetX", 0.0);
+        SetPrivateField(viewer, "_isSmoothScrolling", true);
+
+        for (var frame = 0;
+             frame < 512 && GetPrivateField<bool>(viewer, "_isSmoothScrolling");
+             frame++)
+        {
+            InvokePrivateMethod(viewer, "AdvanceSmoothScrollByMilliseconds", 4L);
+        }
+
+        Assert.False(GetPrivateField<bool>(viewer, "_isSmoothScrolling"));
+        Assert.Equal(160.0, viewer.VerticalOffset, precision: 3);
     }
 
     [Fact]
@@ -140,6 +161,7 @@ public class ScrollViewerInertiaTests
         viewer.ScrollInertiaDurationMs = 3000;
         SetPrivateField(viewer, "_smoothTargetY", 800.0);
         SetPrivateField(viewer, "_isSmoothScrolling", true);
+        SetPrivateField(viewer, "_verticalScrollBarShown", true);
 
         var trackHeight = viewer.RenderSize.Height - 32; // minus 2 * ScrollButtonSize
         var thumbHeight = Math.Max(20, (viewer.ViewportHeight / viewer.ExtentHeight) * trackHeight);
@@ -152,6 +174,8 @@ public class ScrollViewerInertiaTests
         viewer.RaiseEvent(CreateMouseMove(end, MouseButtonState.Pressed, timestamp: 4));
 
         var scrollRange = trackHeight - thumbHeight;
+        // Thumb dragging commits its precise proportional offset immediately.
+        // Device-pixel quantization applies to animated smooth-scroll frames.
         var expected = 100 + ((end.Y - start.Y) / scrollRange) * viewer.ScrollableHeight;
 
         Assert.False(GetPrivateField<bool>(viewer, "_isSmoothScrolling"));
@@ -297,6 +321,7 @@ public class ScrollViewerInertiaTests
         double height = 140)
     {
         var viewer = new ScrollViewer { IsOverlayScrollBarEnabled = false };
+        viewer.UpdateDefaultStyle(); viewer.ApplyTemplate();
         GetPrivateField<ScrollBar>(viewer, "_verticalScrollBar").UseMacOSScrollBarBehavior = false;
         GetPrivateField<ScrollBar>(viewer, "_horizontalScrollBar").UseMacOSScrollBarBehavior = false;
         viewer.Arrange(new Rect(0, 0, width, height));

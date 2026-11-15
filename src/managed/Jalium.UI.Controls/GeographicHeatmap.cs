@@ -1,33 +1,21 @@
-﻿using Jalium.UI.Interop;
+using Jalium.UI.Interop;
 using Jalium.UI.Media;
 using Jalium.UI.Media.Imaging;
 
 namespace Jalium.UI.Controls;
 
 /// <summary>
-/// A FrameworkElement that renders a geographic heatmap visualization.
+/// A templated control that renders a geographic heatmap visualization.
 /// Data points are projected using Mercator projection and rendered as a Gaussian-blurred
 /// intensity field colorized by a configurable gradient.
 /// </summary>
-public class GeographicHeatmap : FrameworkElement
+public partial class GeographicHeatmap : Control
 {
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
         return new Jalium.UI.Automation.Peers.GeographicHeatmapAutomationPeer(this);
     }
-
-    // Cached brushes
-    private static readonly SolidColorBrush s_legendBackground = new(Color.FromArgb(200, 255, 255, 255));
-    private static readonly SolidColorBrush s_legendBorder = new(Color.FromRgb(180, 180, 180));
-    private static readonly SolidColorBrush s_legendTextBrush = new(Color.FromRgb(60, 60, 60));
-    private static readonly Pen s_legendBorderPen = new(s_legendBorder, 0.5);
-
-    // 图例的渐变条按 1px 高的横条画，条数 = legendHeight = 120。原本每次绘制都新建 120 支画刷，
-    // 而渲染后端那份原生画刷缓存上限只有 256 条 —— 一次图例绘制就能把近半数条目挤掉。
-    // 改成一条一支、跨帧复用只改颜色：条目稳定命中，且每支画刷每帧只被改一次色、只画一次，
-    // 录制型 DrawingContext 回放时拿到的仍是本条应有的颜色。
-    private SolidColorBrush[]? _legendSliceBrushes;
 
     // Cached heatmap image
     private ImageSource? _cachedHeatmapImage;
@@ -244,6 +232,7 @@ public class GeographicHeatmap : FrameworkElement
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
+        base.MeasureOverride(availableSize);
         double w = double.IsInfinity(availableSize.Width) ? 400 : availableSize.Width;
         double h = double.IsInfinity(availableSize.Height) ? 300 : availableSize.Height;
         return new Size(w, h);
@@ -256,7 +245,19 @@ public class GeographicHeatmap : FrameworkElement
     /// <inheritdoc />
     protected override void OnRender(DrawingContext drawingContext)
     {
-        var dc = drawingContext;
+        RefreshHeatmapPresentation();
+        base.OnRender(drawingContext);
+        if (TemplateRootInternal is null) RenderHeatmapContent(drawingContext);
+    }
+
+    protected override Size ArrangeOverride(Size finalSize)
+    {
+        base.ArrangeOverride(finalSize);
+        return finalSize;
+    }
+
+    internal void RenderHeatmapContent(DrawingContext dc)
+    {
 
         var renderBounds = new Rect(RenderSize);
         if (renderBounds.Width <= 0 || renderBounds.Height <= 0) return;
@@ -264,8 +265,6 @@ public class GeographicHeatmap : FrameworkElement
         var points = Points;
         if (points == null || points.Count == 0)
         {
-            if (ShowLegend)
-                DrawLegend(dc, renderBounds);
             return;
         }
 
@@ -294,8 +293,6 @@ public class GeographicHeatmap : FrameworkElement
             dc.Pop();
         }
 
-        if (ShowLegend)
-            DrawLegend(dc, renderBounds);
     }
 
     private ImageSource RenderHeatmapImage(HeatPointCollection points, int width, int height, Rect renderBounds)
@@ -434,115 +431,6 @@ public class GeographicHeatmap : FrameworkElement
             (maxLng - minLng) + 2 * lngPad, (maxLat - minLat) + 2 * latPad);
     }
 
-    private void DrawLegend(DrawingContext dc, Rect renderBounds)
-    {
-        const double legendWidth = 20;
-        const double legendHeight = 120;
-        const double margin = 10;
-        const double padding = 6;
-        const double fontSize = 9;
-        const double totalWidth = legendWidth + padding * 2 + 30; // extra space for labels
-        const double totalHeight = legendHeight + padding * 2 + 20; // extra for title
-
-        double x, y;
-        switch (LegendPosition)
-        {
-            case HeatmapLegendPosition.TopLeft:
-                x = margin;
-                y = margin;
-                break;
-            case HeatmapLegendPosition.TopRight:
-                x = renderBounds.Width - totalWidth - margin;
-                y = margin;
-                break;
-            case HeatmapLegendPosition.BottomLeft:
-                x = margin;
-                y = renderBounds.Height - totalHeight - margin;
-                break;
-            case HeatmapLegendPosition.BottomRight:
-            default:
-                x = renderBounds.Width - totalWidth - margin;
-                y = renderBounds.Height - totalHeight - margin;
-                break;
-        }
-
-        // Draw background
-        var bgRect = new Rect(x, y, totalWidth, totalHeight);
-        dc.DrawRoundedRectangle(s_legendBackground, s_legendBorderPen, bgRect, 3, 3);
-
-        // Draw title
-        var titleText = new FormattedText("Intensity", FrameworkElement.DefaultFontFamilyName, fontSize)
-        {
-            Foreground = s_legendTextBrush
-        };
-        TextMeasurement.MeasureText(titleText);
-        dc.DrawText(titleText, new Point(x + padding, y + padding));
-
-        // Draw gradient bar
-        double barX = x + padding;
-        double barY = y + padding + titleText.Height + 4;
-        double barH = legendHeight;
-
-        var gradient = Gradient;
-        var lut = gradient.BuildLookupTable();
-
-        // Draw the gradient bar as horizontal slices
-        int sliceCount = (int)barH;
-        var sliceBrushes = _legendSliceBrushes;
-        if (sliceBrushes is null || sliceBrushes.Length != sliceCount)
-        {
-            sliceBrushes = new SolidColorBrush[sliceCount];
-            _legendSliceBrushes = sliceBrushes;
-        }
-
-        for (int i = 0; i < sliceCount; i++)
-        {
-            double t = 1.0 - (i / barH); // Top = high, bottom = low
-            int lutIndex = (int)(t * 255);
-            var color = lut[Math.Clamp(lutIndex, 0, 255)];
-
-            var sliceBrush = sliceBrushes[i];
-            if (sliceBrush is null || sliceBrush.IsFrozen)
-            {
-                sliceBrush = new SolidColorBrush(color);
-                sliceBrushes[i] = sliceBrush;
-            }
-            else
-            {
-                sliceBrush.Color = color;
-            }
-
-            dc.DrawRectangle(sliceBrush, null, new Rect(barX, barY + i, legendWidth, 1));
-        }
-
-        // Draw border around gradient bar
-        dc.DrawRectangle(null, s_legendBorderPen, new Rect(barX, barY, legendWidth, barH));
-
-        // Draw labels
-        double labelX = barX + legendWidth + 4;
-
-        var highLabel = new FormattedText("High", FrameworkElement.DefaultFontFamilyName, fontSize)
-        {
-            Foreground = s_legendTextBrush
-        };
-        TextMeasurement.MeasureText(highLabel);
-        dc.DrawText(highLabel, new Point(labelX, barY));
-
-        var midLabel = new FormattedText("Mid", FrameworkElement.DefaultFontFamilyName, fontSize)
-        {
-            Foreground = s_legendTextBrush
-        };
-        TextMeasurement.MeasureText(midLabel);
-        dc.DrawText(midLabel, new Point(labelX, barY + barH / 2 - midLabel.Height / 2));
-
-        var lowLabel = new FormattedText("Low", FrameworkElement.DefaultFontFamilyName, fontSize)
-        {
-            Foreground = s_legendTextBrush
-        };
-        TextMeasurement.MeasureText(lowLabel);
-        dc.DrawText(lowLabel, new Point(labelX, barY + barH - lowLabel.Height));
-    }
-
     #endregion
 
     #region Property Changed Callbacks
@@ -552,16 +440,16 @@ public class GeographicHeatmap : FrameworkElement
         if (d is GeographicHeatmap heatmap)
         {
             heatmap._pointsVersion++;
-            heatmap.InvalidateVisual();
+            heatmap.InvalidateHeatmapView();
         }
     }
 
-    private static void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    private new static void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is GeographicHeatmap heatmap)
         {
             heatmap._pointsVersion++; // Force cache invalidation
-            heatmap.InvalidateVisual();
+            heatmap.InvalidateHeatmapView();
         }
     }
 

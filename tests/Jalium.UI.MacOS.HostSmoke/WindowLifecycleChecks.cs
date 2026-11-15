@@ -46,7 +46,7 @@ internal static class WindowLifecycleChecks
         if (!int.TryParse(argument.AsSpan("--window-case=".Length), out int index) || index < 0 || index >= CaseCount)
             return 2;
         JaliumMacApplication.Initialize();
-        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Prohibited;
+        NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Accessory;
         RenderContext.GetOrCreateCurrent(RenderBackend.Metal).DefaultRenderingEngine = RenderingEngine.Impeller;
         if (index >= 11) return RunOwnerCase(index);
         Window window = index >= 9 ? new PropertyRequestWindow() : new Window();

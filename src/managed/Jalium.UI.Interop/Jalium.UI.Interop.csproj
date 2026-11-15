@@ -137,7 +137,7 @@
   <ItemGroup>
     <None Include="build\Jalium.UI.Interop.targets" Pack="true" PackagePath="build" />
     <None Include="buildTransitive\Jalium.UI.Interop.targets" Pack="true" PackagePath="buildTransitive" />
-    <PackageReference Include="System.Security.Cryptography.Xml" Version="10.0.10" />
+    <PackageReference Include="System.Security.Cryptography.Xml" Version="10.0.13" />
     <!-- NuGet considers linux-<arch> compatible with android-<arch> during
          restore. Exact empty Android native groups stop those glibc assets
          from shadowing the 16 KB-aligned libraries carried by the Android
@@ -157,5 +157,12 @@
     <JaliumNativeGuardWarnIfEmpty>true</JaliumNativeGuardWarnIfEmpty>
   </PropertyGroup>
   <Import Project="$(MSBuildThisFileDirectory)../../../eng/msbuild/JaliumStaleNativeGuard.targets" />
+
+
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)../../native/thirdparty/sheenbidi/LICENSE" Pack="true" PackagePath="licenses/SheenBidi-LICENSE.txt" Visible="false" />
+    <None Include="$(MSBuildThisFileDirectory)../../native/thirdparty/UNICODE-LICENSE.txt" Pack="true" PackagePath="licenses/Unicode-LICENSE.txt" Visible="false" />
+    <None Include="$(MSBuildThisFileDirectory)../../native/thirdparty/LICENSES.md" Pack="true" PackagePath="licenses/Native-Third-Party.md" Visible="false" />
+  </ItemGroup>
 
 </Project>

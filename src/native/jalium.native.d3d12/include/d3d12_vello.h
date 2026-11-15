@@ -134,6 +134,7 @@ public:
     bool IsGPUPipeline() const { return true; }
 
     ID3D12Resource* GetOutputTexture() const { return outputTexture_.Get(); }
+    // Physical capacity; LastRegion describes the valid portion to composite.
     uint32_t GetOutputW() const { return outputW_; }
     uint32_t GetOutputH() const { return outputH_; }
 

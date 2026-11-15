@@ -37,6 +37,9 @@ internal static class BindingValueCoercion
             if (string.IsNullOrWhiteSpace(stringValue) && Nullable.GetUnderlyingType(targetType) != null)
                 return null;
 
+            if (underlyingType == typeof(Uri))
+                return Uri.TryCreate(stringValue, UriKind.RelativeOrAbsolute, out var uri) ? uri : value;
+
             if (underlyingType.IsEnum && Enum.TryParse(underlyingType, stringValue, ignoreCase: true, out var enumValue))
                 return enumValue;
 

@@ -18,6 +18,8 @@
 // caller does not have to allocate a temp buffer per vertex.
 
 #include "jalium_rendering_engine.h"
+#include "jalium_gradient_transform.h"
+#include "jalium_radial_geometry.h"
 #include "jalium_triangulate.h"
 #include <cmath>
 #include <cstdint>
@@ -39,7 +41,7 @@ namespace jalium {
 inline GradientColor SampleSweepGradient(float px, float py,
                                          float centerX, float centerY,
                                          float startAngle, float endAngle,
-                                         const float* stops, uint32_t stopCount) {
+                                         const float* stops, uint32_t stopCount, uint32_t colorInterpolationMode = 1) {
     if (stopCount == 0) return { 0, 0, 0, 0 };
 
     float dx = px - centerX;
@@ -57,7 +59,7 @@ inline GradientColor SampleSweepGradient(float px, float py,
     if (t < 0.0f) t = 0.0f;
     if (t > 1.0f) t = 1.0f;
 
-    return SampleGradientStops(t, stops, stopCount);
+    return SampleGradientStops(t, stops, stopCount, colorInterpolationMode);
 }
 
 // ---------------------------------------------------------------------------
@@ -137,6 +139,18 @@ inline void BuildGradientRampBreakpoints(
                         break;
                     }
                 }
+                // Collinear straight RGBA can still curve after premultiplying
+                // varying alpha. Preserve the adaptive bands required by the
+                // vertex-color pipelines rather than collapsing them again.
+                const double previousRgb[]={previousStop.r,previousStop.g,previousStop.b};
+                const double rgb[]={stop.r,stop.g,stop.b};
+                const double nextRgb[]={nextStop.r,nextStop.g,nextStop.b};
+                for (uint32_t channel=0;channel<3 && !changesRamp;++channel) {
+                    const double a=previousRgb[channel]*previousStop.a;
+                    const double b=nextRgb[channel]*nextStop.a;
+                    if (std::fabs(rgb[channel]*stop.a-(a+(b-a)*fraction))>kCollinearTolerance)
+                        changesRamp=true;
+                }
             }
         }
         if (changesRamp) {
@@ -156,24 +170,53 @@ inline void BuildGradientRampBreakpoints(
 //
 // stopData/stopCount must already be flattened (see FlattenGradientStops).
 // ---------------------------------------------------------------------------
+inline float GradientParameter(const EngineBrushData& brush, float px, float py)
+{
+    TransformGradientPoint(brush.userToGradient,px,py,px,py);
+    if (brush.type == 1) {
+        const float dx=brush.endX-brush.startX,dy=brush.endY-brush.startY;
+        const float length=dx*dx+dy*dy;
+        return length>1e-12f?((px-brush.startX)*dx+(py-brush.startY)*dy)/length:0.0f;
+    }
+    if (brush.type == 2) {
+        if (brush.radialFlags & 1) return float(SvgRadialParameter(px,py,brush.centerX,brush.centerY,
+            brush.originX,brush.originY,brush.radiusX,brush.radiusY,brush.focalRadius,brush.radialFlags));
+        const float rx=std::fabs(brush.radiusX),ry=std::fabs(brush.radiusY);
+        if (rx<=1e-12f||ry<=1e-12f) return 1.0f;
+        float fx=(brush.originX-brush.centerX)/rx,fy=(brush.originY-brush.centerY)/ry;
+        const float focusLength=std::sqrt(fx*fx+fy*fy);
+        if(focusLength>0.99f){fx*=0.99f/focusLength;fy*=0.99f/focusLength;}
+        const float dx=(px-brush.centerX)/rx-fx,dy=(py-brush.centerY)/ry-fy;
+        const float a=dx*dx+dy*dy,b=fx*dx+fy*dy;
+        return a>1e-12f?a/std::max(-b+std::sqrt(std::max(b*b+a*(1-fx*fx-fy*fy),0.0f)),1e-12f):0.0f;
+    }
+    return 0;
+}
+
 inline GradientColor SampleBrushGradient(const EngineBrushData& brush,
                                          const float* stopData,
                                          float px, float py) {
     switch (brush.type) {
-        case 1: // linear
-            return SampleLinearGradient(px, py,
-                brush.startX, brush.startY, brush.endX, brush.endY,
-                stopData, brush.stopCount);
-        case 2: // radial
-            return SampleRadialGradient(px, py,
-                brush.centerX, brush.centerY,
-                brush.radiusX, brush.radiusY,
-                stopData, brush.stopCount);
+        case 1: case 2: {
+            float t=GradientParameter(brush,px,py);
+            if (std::isnan(t)) return {0,0,0,0};
+            if (std::isinf(t) && brush.type==2 && (brush.radialFlags&1) && brush.spreadMethod!=0) {
+                GradientColor average;
+                AverageGradientStops(brush.stops,brush.stopCount,brush.colorInterpolationMode,
+                    average.r,average.g,average.b,average.a);
+                return average;
+            }
+            if (brush.spreadMethod==1) t-=std::floor(t);
+            else if(brush.spreadMethod==2){t=std::fmod(t,2.0f);if(t<0)t+=2.0f;if(t>1)t=2-t;}
+            else t=std::clamp(t,0.0f,1.0f);
+            return SampleGradientStops(t,stopData,brush.stopCount,brush.colorInterpolationMode);
+        }
         case 3: // sweep
+            TransformGradientPoint(brush.userToGradient,px,py,px,py);
             return SampleSweepGradient(px, py,
                 brush.centerX, brush.centerY,
                 brush.startX, brush.endX,
-                stopData, brush.stopCount);
+                stopData, brush.stopCount, brush.colorInterpolationMode);
         default:
             return { brush.r, brush.g, brush.b, brush.a };
     }

@@ -11,12 +11,23 @@ namespace Jalium.UI.Controls.Primitives;
 /// <summary>
 /// Represents a control that provides a scroll bar for scrolling content.
 /// </summary>
+[TemplatePart(Name = "PART_Track", Type = typeof(Track))]
+[TemplatePart(Name = "PART_LineDecreaseButton", Type = typeof(RepeatButton))]
+[TemplatePart(Name = "PART_LineIncreaseButton", Type = typeof(RepeatButton))]
+[TemplateVisualState(Name = "Normal", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Disabled", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Vertical", GroupName = "OrientationStates")]
+[TemplateVisualState(Name = "Horizontal", GroupName = "OrientationStates")]
+[TemplateVisualState(Name = "Persistent", GroupName = "PresentationStates")]
+[TemplateVisualState(Name = "Overlay", GroupName = "PresentationStates")]
+[TemplateVisualState(Name = "Expanded", GroupName = "ThumbStates")]
+[TemplateVisualState(Name = "Slim", GroupName = "ThumbStates")]
 public class ScrollBar : RangeBase
 {
     private bool HasCssBackdropEffect => GetEffectiveValueLayer(BackdropEffectProperty) is
         DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState;
 
-    internal override bool RendersBackdropEffectInOnRender => !HasCssBackdropEffect;
+    internal override bool RendersBackdropEffectInOnRender => TemplateRootInternal is null && !HasCssBackdropEffect;
 
     /// <summary>
     /// Set by a host that creates this bar and lays it out at a rectangle it derives
@@ -25,7 +36,7 @@ public class ScrollBar : RangeBase
     /// its invalidations — including the ones the auto-hide animation raises by
     /// toggling the line buttons — are not propagated past the host.
     /// </summary>
-    internal bool IsHostOwnedLayout { get; init; }
+    internal bool IsHostOwnedLayout { get; set; }
 
     /// <inheritdoc />
     internal override bool IsLayoutIsolated => IsHostOwnedLayout;
@@ -61,9 +72,6 @@ public class ScrollBar : RangeBase
     private static readonly SolidColorBrush s_defaultArrowBrush = new(Color.FromRgb(210, 210, 210));
     private static readonly SolidColorBrush s_transparentBrush = new(Color.Transparent);
     private static readonly BackdropBlurEffect s_defaultTrackBackdropEffect = new(0f, BackdropBlurType.Gaussian);
-    private static readonly Style s_internalRepeatButtonStyle = new(typeof(RepeatButton));
-    private static readonly Style s_internalThumbStyle = CreateInternalThumbStyle();
-    private static readonly ControlTemplate s_cssColorThumbTemplate = CreatePlainThumbTemplate();
 
     #endregion
 
@@ -74,6 +82,55 @@ public class ScrollBar : RangeBase
     private Border? _cssBorderPainter;
     private CssScrollBarColors? _ownerCssColors;
     private Brush? _fallbackThumbLocalBrush;
+    private double _elasticOverscroll;
+
+    private static readonly DependencyPropertyKey PartsInsetsPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(PartsInsets), typeof(Thickness), typeof(ScrollBar), new PropertyMetadata(default(Thickness)));
+    public static readonly DependencyProperty PartsInsetsProperty = PartsInsetsPropertyKey.DependencyProperty;
+    public Thickness PartsInsets => (Thickness)GetValue(PartsInsetsProperty)!;
+
+    private static readonly DependencyPropertyKey ChromeInsetsPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(ChromeInsets), typeof(Thickness), typeof(ScrollBar), new PropertyMetadata(new Thickness(2)));
+    public static readonly DependencyProperty ChromeInsetsProperty = ChromeInsetsPropertyKey.DependencyProperty;
+    public Thickness ChromeInsets => (Thickness)GetValue(ChromeInsetsProperty)!;
+
+    private static readonly DependencyPropertyKey NaturalThicknessPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(NaturalThickness), typeof(double), typeof(ScrollBar), new PropertyMetadata(16d));
+    public static readonly DependencyProperty NaturalThicknessProperty = NaturalThicknessPropertyKey.DependencyProperty;
+    public double NaturalThickness => (double)GetValue(NaturalThicknessProperty)!;
+
+    private static readonly DependencyPropertyKey HasLineButtonsPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(HasLineButtons), typeof(bool), typeof(ScrollBar), new PropertyMetadata(true));
+    public static readonly DependencyProperty HasLineButtonsProperty = HasLineButtonsPropertyKey.DependencyProperty;
+    public bool HasLineButtons => (bool)GetValue(HasLineButtonsProperty)!;
+
+    private static readonly DependencyPropertyKey ChromeOpacityPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(ChromeOpacity), typeof(double), typeof(ScrollBar), new PropertyMetadata(1d));
+    public static readonly DependencyProperty ChromeOpacityProperty = ChromeOpacityPropertyKey.DependencyProperty;
+    public double ChromeOpacity => (double)GetValue(ChromeOpacityProperty)!;
+
+    private static readonly DependencyPropertyKey LineButtonsVisibilityPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(LineButtonsVisibility), typeof(Visibility), typeof(ScrollBar), new PropertyMetadata(Visibility.Visible));
+    public static readonly DependencyProperty LineButtonsVisibilityProperty = LineButtonsVisibilityPropertyKey.DependencyProperty;
+    public Visibility LineButtonsVisibility => (Visibility)GetValue(LineButtonsVisibilityProperty)!;
+
+    private static readonly DependencyPropertyKey DecreaseDirectionPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(DecreaseDirection), typeof(string), typeof(ScrollBar), new PropertyMetadata("Up"));
+    public static readonly DependencyProperty DecreaseDirectionProperty = DecreaseDirectionPropertyKey.DependencyProperty;
+    public string DecreaseDirection => (string)GetValue(DecreaseDirectionProperty)!;
+
+    private static readonly DependencyPropertyKey IncreaseDirectionPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(IncreaseDirection), typeof(string), typeof(ScrollBar), new PropertyMetadata("Down"));
+    public static readonly DependencyProperty IncreaseDirectionProperty = IncreaseDirectionPropertyKey.DependencyProperty;
+    public string IncreaseDirection => (string)GetValue(IncreaseDirectionProperty)!;
+
+    public static readonly DependencyProperty LineButtonStyleProperty = DependencyProperty.Register(
+        nameof(LineButtonStyle), typeof(Style), typeof(ScrollBar), new PropertyMetadata(null, OnPartStylePropertyChanged));
+    public Style? LineButtonStyle { get => (Style?)GetValue(LineButtonStyleProperty); set => SetValue(LineButtonStyleProperty, value); }
+
+    public static readonly DependencyProperty PageButtonStyleProperty = DependencyProperty.Register(
+        nameof(PageButtonStyle), typeof(Style), typeof(ScrollBar), new PropertyMetadata(null, OnPartStylePropertyChanged));
+    public Style? PageButtonStyle { get => (Style?)GetValue(PageButtonStyleProperty); set => SetValue(PageButtonStyleProperty, value); }
 
     #region Dependency Properties
 
@@ -197,9 +254,16 @@ public class ScrollBar : RangeBase
     }
 
     /// <summary>Gets the track that owns the thumb and page buttons.</summary>
-    public Track Track => _track!;
+    public Track? Track => _track;
 
     internal bool IsThumbDragging => _isDragging;
+
+    internal void SetElasticOverscroll(double overscroll)
+    {
+        _elasticOverscroll = double.IsFinite(overscroll) ? overscroll : 0;
+        _track?.Thumb?.SetVisualCompression(Orientation,
+            UseMacOSScrollBarBehavior && !IsThumbDragging ? _elasticOverscroll : 0);
+    }
 
     internal bool UseMacOSScrollBarBehavior { get; set; } = OperatingSystem.IsMacOS();
     private bool UsesLineButtons => !IsOverlayStyle && !UseMacOSScrollBarBehavior;
@@ -239,6 +303,7 @@ public class ScrollBar : RangeBase
     private bool _hasOverlayThumbPaddingSnapshot;
     private bool _overlayThumbHadLocalPadding;
     private Thickness _overlayThumbLocalPadding;
+    private Thickness? _appliedOverlayThumbPadding;
     private bool _hasOverlayTrackPresentationSnapshot;
     private bool _overlayTrackHadLocalOpacity;
     private double _overlayTrackLocalOpacity;
@@ -288,6 +353,13 @@ public class ScrollBar : RangeBase
     /// <summary>
     /// Initializes a new instance of the <see cref="ScrollBar"/> class.
     /// </summary>
+    static ScrollBar()
+    {
+        BorderBrushProperty.OverrideMetadata(typeof(ScrollBar), new PropertyMetadata(s_transparentBrush));
+        BorderThicknessProperty.OverrideMetadata(typeof(ScrollBar), new PropertyMetadata(default(Thickness)));
+        PaddingProperty.OverrideMetadata(typeof(ScrollBar), new PropertyMetadata(new Thickness(2)));
+    }
+
     public ScrollBar()
     {
         // Set default values for range base
@@ -295,12 +367,8 @@ public class ScrollBar : RangeBase
         Maximum = 100;
         SmallChange = 1;
         LargeChange = 10;
-        SetCurrentValue(BorderBrushProperty, s_transparentBrush);
-        SetCurrentValue(BorderThicknessProperty, new Thickness(0));
-        SetCurrentValue(PaddingProperty, new Thickness(2));
 
-        // Create visual children
-        CreateVisualChildren();
+        // Default visuals are supplied by the theme template.
 
         // Register event handlers.
         // MouseWheel is intentionally NOT handled here: when a ScrollBar is hosted inside a
@@ -329,6 +397,113 @@ public class ScrollBar : RangeBase
             Controls.Platform.MacOSScrollBarSettings.ApplyDefault(this, IsOverlayStyleProperty,
                 Controls.Platform.MacOSScrollBarSettings.PrefersOverlayScrollBars);
         }
+        DefaultStyleKey = typeof(ScrollBar);
+    }
+
+    public override void OnApplyTemplate()
+    {
+        base.OnApplyTemplate();
+        _track = GetTemplateChild("PART_Track") as Track;
+        _lineUpButton = GetTemplateChild("PART_LineDecreaseButton") as RepeatButton;
+        _lineDownButton = GetTemplateChild("PART_LineIncreaseButton") as RepeatButton;
+        if (_lineUpButton is not null) _lineUpButton.Click += OnLineUpClick;
+        if (_lineDownButton is not null) _lineDownButton.Click += OnLineDownClick;
+        if (_track is not null)
+        {
+            _track.HandlesThumbDragInternally = false;
+            if (_track.DecreaseRepeatButton is { } decrease) { decrease.Click += OnPageUpClick; WirePageButtonTrackPaging(decrease); }
+            if (_track.IncreaseRepeatButton is { } increase) { increase.Click += OnPageDownClick; WirePageButtonTrackPaging(increase); }
+            if (_track.Thumb is { } thumb)
+            {
+                thumb.DragStarted += OnThumbDragStarted;
+                thumb.DragDelta += OnThumbDragDelta;
+                thumb.DragCompleted += OnThumbDragCompleted;
+                thumb.AddHandler(TouchDownEvent, new RoutedEventHandler(OnOverlayThumbTouchDown), handledEventsToo: true);
+                thumb.AddHandler(TouchMoveEvent, new RoutedEventHandler(OnOverlayThumbTouchMove), handledEventsToo: true);
+                thumb.AddHandler(TouchUpEvent, new RoutedEventHandler(OnOverlayThumbTouchUp), handledEventsToo: true);
+                thumb.AddHandler(LostTouchCaptureEvent, new RoutedEventHandler(OnOverlayThumbLostTouchCapture), handledEventsToo: true);
+            }
+        }
+        _hasCustomLineButtonStyle = _lineUpButton?.Style is not null || _lineDownButton?.Style is not null;
+        UpdateTemplateLayout(RenderSize.Width);
+        UpdateTrackBindings();
+        if (_ownerCssColors is { } colors) { _ownerCssColors = null; SetOwnerCssColors(colors); }
+        ApplyAutoHideVisualState(_autoHideCollapseProgress, null, suppressArrangeInvalidation: true);
+        ApplyAutoHideVisibilityState(_autoHideVisibilityProgress);
+    }
+
+    internal override void OnTemplateContentClearing()
+    {
+        CompleteInteractionForDetach();
+        _hasTrackPagingTarget = false;
+        _isDragging = false;
+        if (_track is not null) RestoreTrackPresentationAfterOverlay(_track);
+        if (_track?.Thumb is { } retiredThumb)
+        {
+            RestoreThumbPaddingAfterOverlay(retiredThumb);
+            if (_ownerCssColors is not null)
+            {
+                retiredThumb.ClearLayerValue(BackgroundProperty, DependencyObject.LayerValueSource.ParentTemplate);
+                retiredThumb.ClearLayerValue(TemplateProperty, DependencyObject.LayerValueSource.ParentTemplate);
+            }
+        }
+        if (_lineUpButton is not null) _lineUpButton.Click -= OnLineUpClick;
+        if (_lineDownButton is not null) _lineDownButton.Click -= OnLineDownClick;
+        if (_track?.DecreaseRepeatButton is { } decrease) { decrease.Click -= OnPageUpClick; UnwirePageButton(decrease); }
+        if (_track?.IncreaseRepeatButton is { } increase) { increase.Click -= OnPageDownClick; UnwirePageButton(increase); }
+        if (_track?.Thumb is { } thumb)
+        {
+            thumb.DragStarted -= OnThumbDragStarted;
+            thumb.DragDelta -= OnThumbDragDelta;
+            thumb.DragCompleted -= OnThumbDragCompleted;
+            thumb.RemoveHandler(TouchDownEvent, new RoutedEventHandler(OnOverlayThumbTouchDown));
+            thumb.RemoveHandler(TouchMoveEvent, new RoutedEventHandler(OnOverlayThumbTouchMove));
+            thumb.RemoveHandler(TouchUpEvent, new RoutedEventHandler(OnOverlayThumbTouchUp));
+            thumb.RemoveHandler(LostTouchCaptureEvent, new RoutedEventHandler(OnOverlayThumbLostTouchCapture));
+        }
+        _track = null;
+        _lineUpButton = _lineDownButton = null;
+        _fallbackThumbLocalBrush = null;
+        base.OnTemplateContentClearing();
+    }
+
+    private void UnwirePageButton(RepeatButton button)
+    {
+        button.RemoveHandler(PreviewMouseDownEvent, new MouseButtonEventHandler(OnPageButtonPreviewMouseDown));
+        button.RemoveHandler(MouseMoveEvent, new MouseEventHandler(OnPageButtonMouseMove));
+        button.RemoveHandler(MouseUpEvent, new MouseButtonEventHandler(OnPageButtonMouseUp));
+        button.RemoveHandler(LostMouseCaptureEvent, new RoutedEventHandler(OnPageButtonLostMouseCapture));
+    }
+
+    private void UpdateTemplateLayout(double availableWidth)
+    {
+        double width = double.IsFinite(availableWidth) ? availableWidth : RenderSize.Width;
+        var insets = GetPartsInsets(width);
+        SetValue(PartsInsetsPropertyKey, insets);
+        double thickness = Orientation == Orientation.Vertical
+            ? double.IsNaN(Width) ? DefaultThickness : Math.Max(0, Width - insets.Left - insets.Right)
+            : double.IsNaN(Height) ? DefaultThickness : Math.Max(0, Height - insets.Top - insets.Bottom);
+        SetValue(NaturalThicknessPropertyKey, thickness);
+        SetValue(HasLineButtonsPropertyKey, UsesLineButtons);
+        bool css = CssBackgroundPaintProperties.Get(this) is not null || CssBorderPaintProperties.Get(this) is not null ||
+            GetEffectiveValueLayer(BackgroundProperty) is DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState ||
+            GetEffectiveValueLayer(PaddingProperty) is DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState ||
+            GetEffectiveValueLayer(BorderThicknessProperty) is DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState;
+        SetValue(ChromeInsetsPropertyKey, css ? default(Thickness) : Padding);
+        UpdateLineButtonDirectionTags();
+        if (TemplateRootInternal is not null)
+        {
+            VisualStateManager.GoToState(this, IsEnabled ? "Normal" : "Disabled", false);
+            VisualStateManager.GoToState(this, Orientation == Orientation.Vertical ? "Vertical" : "Horizontal", false);
+            VisualStateManager.GoToState(this, IsOverlayStyle ? "Overlay" : "Persistent", false);
+            VisualStateManager.GoToState(this, _autoHideCollapseProgress >= .999 ? "Slim" : "Expanded", false);
+        }
+    }
+
+    protected override void OnIsEnabledChanged(bool oldValue, bool newValue)
+    {
+        base.OnIsEnabledChanged(oldValue, newValue);
+        UpdateTemplateLayout(RenderSize.Width);
     }
 
     private void OnMacOSScrollBarLoaded(object sender, RoutedEventArgs e)
@@ -402,7 +577,7 @@ public class ScrollBar : RangeBase
             return;
         }
 
-        Value = value;
+        SetCurrentValue(ValueProperty, value);
         RaiseScrollEvent(eventType);
     }
 
@@ -429,124 +604,7 @@ public class ScrollBar : RangeBase
         return false;
     }
 
-    private void CreateVisualChildren()
-    {
-        // Create line up/left button
-        _lineUpButton = new RepeatButton
-        {
-            Style = s_internalRepeatButtonStyle,
-            Focusable = false,
-            TransitionProperty = "None",
-            Background = s_transparentBrush,
-            BorderBrush = s_transparentBrush,
-            BorderThickness = new Thickness(0),
-            Padding = new Thickness(0),
-            CornerRadius = new CornerRadius(0),
-            MinWidth = 0,
-            MinHeight = 0
-        };
-        _lineUpButton.Cursor = Jalium.UI.Input.Cursors.Arrow;
-        _lineUpButton.Click += OnLineUpClick;
-        AddVisualChild(_lineUpButton);
 
-        // Create track
-        _track = new Track
-        {
-            // ScrollBar owns thumb dragging so we do not pay for a second Track.Value update
-            // and Arrange invalidation on every pointer move.
-            HandlesThumbDragInternally = false
-        };
-        _track.SetCurrentValue(UIElement.TransitionPropertyProperty, TransitionPropertyCollection.None());
-        _track.Thumb = new Thumb
-        {
-            Style = s_internalThumbStyle,
-            BorderBrush = s_transparentBrush,
-            BorderThickness = new Thickness(0),
-            // Keep scrollbar thumb length controlled by Track.ArrangeOverride.
-            // This prevents unrelated implicit Thumb styles (e.g. generic Thumb height)
-            // from forcing a fixed square/rect thumb size.
-            Width = double.NaN,
-            Height = double.NaN
-        };
-        _track.Thumb.SetCurrentValue(UIElement.TransitionPropertyProperty, TransitionPropertyCollection.None());
-        _track.Thumb.Cursor = Jalium.UI.Input.Cursors.Arrow;
-        _track.Thumb.DragStarted += OnThumbDragStarted;
-        _track.Thumb.DragDelta += OnThumbDragDelta;
-        _track.Thumb.DragCompleted += OnThumbDragCompleted;
-        _track.Thumb.AddHandler(TouchDownEvent, new RoutedEventHandler(OnOverlayThumbTouchDown), handledEventsToo: true);
-        _track.Thumb.AddHandler(TouchMoveEvent, new RoutedEventHandler(OnOverlayThumbTouchMove), handledEventsToo: true);
-        _track.Thumb.AddHandler(TouchUpEvent, new RoutedEventHandler(OnOverlayThumbTouchUp), handledEventsToo: true);
-        _track.Thumb.AddHandler(LostTouchCaptureEvent, new RoutedEventHandler(OnOverlayThumbLostTouchCapture), handledEventsToo: true);
-
-        _track.DecreaseRepeatButton = new RepeatButton
-        {
-            Style = s_internalRepeatButtonStyle,
-            // Page on press (not release) so the first trough step fires the instant the button
-            // goes down, without waiting out the RepeatButton's initial Delay. Auto-repeat still
-            // kicks in after Delay via the RepeatButton timer.
-            ClickMode = ClickMode.Press,
-            Focusable = false,
-            TransitionProperty = "None",
-            Opacity = 0,
-            Background = s_transparentBrush,
-            BorderBrush = s_transparentBrush,
-            BorderThickness = new Thickness(0),
-            Padding = new Thickness(0),
-            CornerRadius = new CornerRadius(0),
-            MinWidth = 0,
-            MinHeight = 0
-        };
-        _track.DecreaseRepeatButton.Cursor = Jalium.UI.Input.Cursors.Arrow;
-        _track.DecreaseRepeatButton.Click += OnPageUpClick;
-        WirePageButtonTrackPaging(_track.DecreaseRepeatButton);
-
-        _track.IncreaseRepeatButton = new RepeatButton
-        {
-            Style = s_internalRepeatButtonStyle,
-            // Page on press (not release) so the first trough step fires the instant the button
-            // goes down, without waiting out the RepeatButton's initial Delay. Auto-repeat still
-            // kicks in after Delay via the RepeatButton timer.
-            ClickMode = ClickMode.Press,
-            Focusable = false,
-            TransitionProperty = "None",
-            Opacity = 0,
-            Background = s_transparentBrush,
-            BorderBrush = s_transparentBrush,
-            BorderThickness = new Thickness(0),
-            Padding = new Thickness(0),
-            CornerRadius = new CornerRadius(0),
-            MinWidth = 0,
-            MinHeight = 0
-        };
-        _track.IncreaseRepeatButton.Cursor = Jalium.UI.Input.Cursors.Arrow;
-        _track.IncreaseRepeatButton.Click += OnPageDownClick;
-        WirePageButtonTrackPaging(_track.IncreaseRepeatButton);
-
-        AddVisualChild(_track);
-
-        // Create line down/right button
-        _lineDownButton = new RepeatButton
-        {
-            Style = s_internalRepeatButtonStyle,
-            Focusable = false,
-            TransitionProperty = "None",
-            Background = s_transparentBrush,
-            BorderBrush = s_transparentBrush,
-            BorderThickness = new Thickness(0),
-            Padding = new Thickness(0),
-            CornerRadius = new CornerRadius(0),
-            MinWidth = 0,
-            MinHeight = 0
-        };
-        _lineDownButton.Cursor = Jalium.UI.Input.Cursors.Arrow;
-        _lineDownButton.Click += OnLineDownClick;
-        AddVisualChild(_lineDownButton);
-
-        ApplySelfStyle();
-        ApplyPartStyles();
-        UpdateLineButtonDirectionTags();
-        UpdateTrackBindings();
-    }
 
     /// <inheritdoc />
     protected override void OnVisualParentChanged(Visual? oldParent)
@@ -558,7 +616,7 @@ public class ScrollBar : RangeBase
             CompleteOverlayThumbGesture();
         }
         ApplySelfStyle();
-        ApplyPartStyles();
+        UpdateTemplateLayout(RenderSize.Width);
         ApplyAutoHideVisualState(_autoHideCollapseProgress, null, suppressArrangeInvalidation: true);
         ApplyAutoHideVisibilityState(_autoHideVisibilityProgress);
         if (VisualParent == null) CompleteInteractionForDetach();
@@ -585,7 +643,7 @@ public class ScrollBar : RangeBase
     private void OnResourcesChangedHandler(object? sender, EventArgs e)
     {
         ApplySelfStyle();
-        ApplyPartStyles();
+        UpdateTemplateLayout(RenderSize.Width);
         UpdateTrackBindings();
         ApplyAutoHideVisualState(_autoHideCollapseProgress);
         ApplyAutoHideVisibilityState(_autoHideVisibilityProgress);
@@ -597,11 +655,11 @@ public class ScrollBar : RangeBase
     {
         if (_track != null)
         {
-            _track.Minimum = Minimum;
-            _track.Maximum = Maximum;
-            _track.Value = Value;
-            _track.ViewportSize = ViewportSize;
-            _track.Orientation = Orientation;
+            _track.SetCurrentValue(Track.MinimumProperty, Minimum);
+            _track.SetCurrentValue(Track.MaximumProperty, Maximum);
+            _track.SetCurrentValue(Track.ValueProperty, Value);
+            _track.SetCurrentValue(Track.ViewportSizeProperty, ViewportSize);
+            _track.SetCurrentValue(Track.OrientationProperty, Orientation);
             ApplyAutoHideVisualState(_autoHideCollapseProgress, null, suppressArrangeInvalidation: true);
 
             if (_track.Thumb != null)
@@ -622,88 +680,15 @@ public class ScrollBar : RangeBase
                     _track.Thumb.MinWidth = minimumThumbLength;
                     _track.Thumb.MinHeight = 0;
                 }
+
+                SetElasticOverscroll(_elasticOverscroll);
             }
         }
 
         UpdateLineButtonDirectionTags();
     }
 
-    private void ApplyPartStyles()
-    {
-        var lineButtonStyle = ResolveStyleResource(LineButtonStyleKey);
-        _hasCustomLineButtonStyle = lineButtonStyle != null;
 
-        if (_lineUpButton != null)
-        {
-            if (lineButtonStyle != null && !ReferenceEquals(_lineUpButton.Style, lineButtonStyle))
-            {
-                ClearLineButtonDefaultsIfNeededForStyle(_lineUpButton);
-                _lineUpButton.Style = lineButtonStyle;
-            }
-        }
-
-        if (_lineDownButton != null)
-        {
-            if (lineButtonStyle != null && !ReferenceEquals(_lineDownButton.Style, lineButtonStyle))
-            {
-                ClearLineButtonDefaultsIfNeededForStyle(_lineDownButton);
-                _lineDownButton.Style = lineButtonStyle;
-            }
-        }
-
-        if (_lineUpButton != null && _lineDownButton != null)
-        {
-            if (_hasCustomLineButtonStyle)
-            {
-                // Ensure themed line-button visuals are visible when keyed style is available,
-                // but only when the scrollbar is expanded.  During collapse the opacity is
-                // managed by ApplyAutoHideVisualState and must not be cleared.
-                if (_autoHideCollapseProgress <= 0.001)
-                {
-                    ClearLocalIfValueEquals(_lineUpButton, OpacityProperty, 0.0);
-                    ClearLocalIfValueEquals(_lineDownButton, OpacityProperty, 0.0);
-                }
-            }
-            else
-            {
-                // Prevent default RepeatButton pressed/hover fill (square overlay) from covering fallback arrows.
-                _lineUpButton.Opacity = 0;
-                _lineDownButton.Opacity = 0;
-            }
-        }
-
-        var pageButtonStyle = ResolveStyleResource(PageButtonStyleKey);
-        if (_track?.DecreaseRepeatButton != null)
-        {
-            if (pageButtonStyle != null && !ReferenceEquals(_track.DecreaseRepeatButton.Style, pageButtonStyle))
-            {
-                ClearPageButtonDefaultsIfNeededForStyle(_track.DecreaseRepeatButton);
-                _track.DecreaseRepeatButton.Style = pageButtonStyle;
-            }
-        }
-
-        if (_track?.IncreaseRepeatButton != null)
-        {
-            if (pageButtonStyle != null && !ReferenceEquals(_track.IncreaseRepeatButton.Style, pageButtonStyle))
-            {
-                ClearPageButtonDefaultsIfNeededForStyle(_track.IncreaseRepeatButton);
-                _track.IncreaseRepeatButton.Style = pageButtonStyle;
-            }
-        }
-
-        // Prefer the keyed ScrollBar thumb style so the control follows theme XAML directly.
-        var thumbStyle = ResolveStyleResource(ThumbStyleKey) ?? ThumbStyle;
-        if (_track?.Thumb != null)
-        {
-            if (thumbStyle != null && !ReferenceEquals(_track.Thumb.Style, thumbStyle))
-            {
-                ClearThumbDefaultsIfNeededForStyle(_track.Thumb);
-                _track.Thumb.Style = thumbStyle;
-            }
-
-            EnsureThumbVisibilityFallback(_track.Thumb);
-        }
-    }
 
     private void ApplySelfStyle()
     {
@@ -714,14 +699,12 @@ public class ScrollBar : RangeBase
 
         if (ResolveStyleResource(ScrollBarStyleKey) is Style explicitStyle)
         {
-            ClearScrollBarDefaultsIfNeededForStyle();
             Style = explicitStyle;
             return;
         }
 
         if (TryFindResource(typeof(ScrollBar)) is Style implicitStyle)
         {
-            ClearScrollBarDefaultsIfNeededForStyle();
             Style = implicitStyle;
         }
     }
@@ -799,8 +782,8 @@ public class ScrollBar : RangeBase
                 // The theme template supplies unrelated fixed hover and drag colors.
                 // Use a plain background-bound template while CSS colors apply.
                 // An explicit native local template still has higher priority.
-                thumb?.SetLayerValue(TemplateProperty, s_cssColorThumbTemplate,
-                    DependencyObject.LayerValueSource.ParentTemplate);
+                if (thumb?.TryFindResource("ScrollBarPlainThumbTemplate") is ControlTemplate plain)
+                    thumb.SetLayerValue(TemplateProperty, plain, DependencyObject.LayerValueSource.ParentTemplate);
             }
         }
         else if (wasStyled)
@@ -824,140 +807,10 @@ public class ScrollBar : RangeBase
         }
     }
 
-    private void ClearScrollBarDefaultsIfNeededForStyle()
-    {
-        ClearLocalIfReferenceEquals(this, BackgroundProperty, ResolveTrackBrush());
-        ClearLocalIfReferenceEquals(this, BackgroundProperty, s_defaultTrackBrush);
-        ClearLocalIfReferenceEquals(this, BorderBrushProperty, s_transparentBrush);
-        ClearLocalIfValueEquals(this, BorderThicknessProperty, new Thickness(0));
-        ClearLocalIfValueEquals(this, PaddingProperty, new Thickness(2));
-    }
-
-    private void ClearLineButtonDefaultsIfNeededForStyle(RepeatButton button)
-    {
-        ClearLocalIfReferenceEquals(button, BackgroundProperty, s_transparentBrush);
-        ClearLocalIfReferenceEquals(button, BorderBrushProperty, s_transparentBrush);
-        ClearLocalIfValueEquals(button, BorderThicknessProperty, new Thickness(0));
-        ClearLocalIfReferenceEquals(button, ForegroundProperty, ResolveArrowBrush());
-        ClearLocalIfReferenceEquals(button, ForegroundProperty, s_defaultArrowBrush);
-        ClearLocalIfValueEquals(button, PaddingProperty, new Thickness(0));
-        ClearLocalIfValueEquals(button, CornerRadiusProperty, new CornerRadius(0));
-        ClearLocalIfValueEquals(button, MinWidthProperty, 0.0);
-        ClearLocalIfValueEquals(button, MinHeightProperty, 0.0);
-    }
-
-    private static void ClearPageButtonDefaultsIfNeededForStyle(RepeatButton button)
-    {
-        ClearLocalIfValueEquals(button, OpacityProperty, 0.0);
-        ClearLocalIfReferenceEquals(button, BackgroundProperty, s_transparentBrush);
-        ClearLocalIfReferenceEquals(button, BorderBrushProperty, s_transparentBrush);
-        ClearLocalIfValueEquals(button, BorderThicknessProperty, new Thickness(0));
-        ClearLocalIfValueEquals(button, PaddingProperty, new Thickness(0));
-        ClearLocalIfValueEquals(button, CornerRadiusProperty, new CornerRadius(0));
-        ClearLocalIfValueEquals(button, MinWidthProperty, 0.0);
-        ClearLocalIfValueEquals(button, MinHeightProperty, 0.0);
-    }
-
-    private void ClearThumbDefaultsIfNeededForStyle(Thumb thumb)
-    {
-        ClearLocalIfReferenceEquals(thumb, BackgroundProperty, ResolveThumbBrush());
-        ClearLocalIfReferenceEquals(thumb, BackgroundProperty, s_defaultThumbBrush);
-        ClearLocalIfReferenceEquals(thumb, BorderBrushProperty, s_transparentBrush);
-        ClearLocalIfValueEquals(thumb, BorderThicknessProperty, new Thickness(0));
-        ClearLocalIfValueEquals(thumb, CornerRadiusProperty, new CornerRadius(999));
-        ClearLocalIfValueEquals(thumb, Thumb.ShowGripProperty, false);
-    }
-
-    private static Style CreateInternalThumbStyle()
-    {
-        var style = new Style(typeof(Thumb));
-        style.Setters.Add(new Setter(BorderBrushProperty, s_transparentBrush));
-        style.Setters.Add(new Setter(BorderThicknessProperty, new Thickness(0)));
-        style.Setters.Add(new Setter(CornerRadiusProperty, new CornerRadius(999)));
-        style.Setters.Add(new Setter(Thumb.ShowGripProperty, false));
-        style.Setters.Add(new Setter(Control.TemplateProperty, CreatePlainThumbTemplate()));
-        return style;
-    }
-
-    private static ControlTemplate CreatePlainThumbTemplate()
-    {
-        var template = new ControlTemplate(typeof(Thumb));
-        template.SetVisualTree(() =>
-        {
-            var border = new Border
-            {
-                Name = "ThumbBorder"
-            };
-            border.SetCurrentValue(UIElement.TransitionPropertyProperty,
-                TransitionPropertyCollection.None());
-            border.SetTemplateBinding(Border.BackgroundProperty, BackgroundProperty);
-            border.SetTemplateBinding(Border.BorderBrushProperty, BorderBrushProperty);
-            border.SetTemplateBinding(Border.BorderThicknessProperty, BorderThicknessProperty);
-            border.SetTemplateBinding(Border.CornerRadiusProperty, CornerRadiusProperty);
-            border.SetTemplateBinding(FrameworkElement.MarginProperty, PaddingProperty);
-            return border;
-        });
-        return template;
-    }
-
-    private static void ClearLocalIfReferenceEquals(DependencyObject target, DependencyProperty property, object expectedValue)
-    {
-        if (!target.HasLocalValue(property))
-            return;
-
-        var localValue = target.ReadLocalValue(property);
-        if (ReferenceEquals(localValue, expectedValue))
-        {
-            target.ClearValue(property);
-        }
-    }
-
-    private static void ClearLocalIfValueEquals<T>(DependencyObject target, DependencyProperty property, T expectedValue)
-    {
-        if (!target.HasLocalValue(property))
-            return;
-
-        var localValue = target.ReadLocalValue(property);
-        if (localValue is T typedValue && EqualityComparer<T>.Default.Equals(typedValue, expectedValue))
-        {
-            target.ClearValue(property);
-        }
-    }
-
     private void UpdateLineButtonDirectionTags()
     {
-        if (_lineUpButton == null || _lineDownButton == null)
-            return;
-
-        if (Orientation == Orientation.Vertical)
-        {
-            _lineUpButton.Tag = "Up";
-            _lineDownButton.Tag = "Down";
-        }
-        else
-        {
-            _lineUpButton.Tag = "Left";
-            _lineDownButton.Tag = "Right";
-        }
-    }
-
-    #endregion
-
-    #region Visual Children
-
-    /// <inheritdoc />
-    protected override int VisualChildrenCount => 3; // LineUp, Track, LineDown
-
-    /// <inheritdoc />
-    protected override Visual? GetVisualChild(int index)
-    {
-        return index switch
-        {
-            0 => _lineUpButton,
-            1 => _track,
-            2 => _lineDownButton,
-            _ => throw new ArgumentOutOfRangeException(nameof(index))
-        };
+        SetValue(DecreaseDirectionPropertyKey, Orientation == Orientation.Vertical ? "Up" : "Left");
+        SetValue(IncreaseDirectionPropertyKey, Orientation == Orientation.Vertical ? "Down" : "Right");
     }
 
     #endregion
@@ -998,109 +851,20 @@ public class ScrollBar : RangeBase
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
-        var insets = GetPartsInsets(availableSize.Width);
-        var innerAvailable = CssBoxMetrics.InnerSize(availableSize, insets);
-        if (Orientation == Orientation.Vertical)
-        {
-            var explicitWidth = !double.IsNaN(Width) && Width > 0;
-            var width = explicitWidth
-                ? Math.Max(0, Width - insets.Left - insets.Right)
-                : DefaultThickness;
-            var buttonHeight = UsesLineButtons ? width : 0.0;
-
-            _lineUpButton?.Measure(new Size(width, buttonHeight));
-            _lineDownButton?.Measure(new Size(width, buttonHeight));
-
-            var trackHeight = Math.Max(0, innerAvailable.Height - buttonHeight * 2);
-            _track?.Measure(new Size(width, trackHeight));
-
-            var height = double.IsPositiveInfinity(availableSize.Height)
-                ? buttonHeight * 2 + MinThumbLength * 2 + insets.Top + insets.Bottom
-                : availableSize.Height;
-
-            return new Size(explicitWidth ? Width : Math.Max(0, width + insets.Left + insets.Right), height);
-        }
-        else
-        {
-            var explicitHeight = !double.IsNaN(Height) && Height > 0;
-            var height = explicitHeight
-                ? Math.Max(0, Height - insets.Top - insets.Bottom)
-                : DefaultThickness;
-            var buttonWidth = UsesLineButtons ? height : 0.0;
-
-            _lineUpButton?.Measure(new Size(buttonWidth, height));
-            _lineDownButton?.Measure(new Size(buttonWidth, height));
-
-            var trackWidth = Math.Max(0, innerAvailable.Width - buttonWidth * 2);
-            _track?.Measure(new Size(trackWidth, height));
-
-            var width = double.IsPositiveInfinity(availableSize.Width)
-                ? buttonWidth * 2 + MinThumbLength * 2 + insets.Left + insets.Right
-                : availableSize.Width;
-
-            return new Size(width, explicitHeight ? Height : Math.Max(0, height + insets.Top + insets.Bottom));
-        }
+        UpdateDefaultStyle();
+        ApplyTemplate();
+        UpdateTemplateLayout(availableSize.Width);
+        return base.MeasureOverride(availableSize);
     }
 
-    /// <inheritdoc />
     protected override Size ArrangeOverride(Size finalSize)
     {
-        ApplySelfStyle();
-        ApplyPartStyles();
+        UpdateTemplateLayout(finalSize.Width);
         UpdateTrackBindings();
         var inner = GetPartsRect(finalSize);
-        var crossAxisSize = Orientation == Orientation.Vertical ? inner.Width : inner.Height;
-        ApplyAutoHideVisualState(_autoHideCollapseProgress, crossAxisSize, suppressArrangeInvalidation: true);
-
-        if (!UsesLineButtons)
-        {
-            // macOS and mobile bars have no line buttons. The track spans the axis
-            // with a small end inset, including the persistent macOS presentation.
-            _lineUpButton?.Arrange(default);
-            _lineDownButton?.Arrange(default);
-
-            if (Orientation == Orientation.Vertical)
-            {
-                var endInset = Math.Min(OverlayTrackEndInset, Math.Max(0, inner.Height / 2));
-                _track?.Arrange(new Rect(
-                    inner.Left,
-                    inner.Top + endInset,
-                    inner.Width,
-                    Math.Max(0, inner.Height - endInset * 2)));
-            }
-            else
-            {
-                var endInset = Math.Min(OverlayTrackEndInset, Math.Max(0, inner.Width / 2));
-                _track?.Arrange(new Rect(
-                    inner.Left + endInset,
-                    inner.Top,
-                    Math.Max(0, inner.Width - endInset * 2),
-                    inner.Height));
-            }
-
-            return finalSize;
-        }
-
-        if (Orientation == Orientation.Vertical)
-        {
-            var buttonSize = ControlRenderGeometry.GetAvailableLength(inner.Width, inner.Height / 2.0);
-            var trackHeight = Math.Max(0, inner.Height - buttonSize * 2);
-
-            _lineUpButton?.Arrange(new Rect(inner.Left, inner.Top, inner.Width, buttonSize));
-            _track?.Arrange(new Rect(inner.Left, inner.Top + buttonSize, inner.Width, trackHeight));
-            _lineDownButton?.Arrange(new Rect(inner.Left, inner.Bottom - buttonSize, inner.Width, buttonSize));
-        }
-        else
-        {
-            var buttonSize = ControlRenderGeometry.GetAvailableLength(inner.Height, inner.Width / 2.0);
-            var trackWidth = Math.Max(0, inner.Width - buttonSize * 2);
-
-            _lineUpButton?.Arrange(new Rect(inner.Left, inner.Top, buttonSize, inner.Height));
-            _track?.Arrange(new Rect(inner.Left + buttonSize, inner.Top, trackWidth, inner.Height));
-            _lineDownButton?.Arrange(new Rect(inner.Right - buttonSize, inner.Top, buttonSize, inner.Height));
-        }
-
-        return finalSize;
+        ApplyAutoHideVisualState(_autoHideCollapseProgress,
+            Orientation == Orientation.Vertical ? inner.Width : inner.Height, suppressArrangeInvalidation: true);
+        return base.ArrangeOverride(finalSize);
     }
 
     #endregion
@@ -1112,7 +876,7 @@ public class ScrollBar : RangeBase
         var newValue = Math.Max(Minimum, Value - SmallChange);
         if (Math.Abs(newValue - Value) > double.Epsilon)
         {
-            Value = newValue;
+            SetCurrentValue(ValueProperty, newValue);
             RaiseScrollEvent(ScrollEventType.SmallDecrement);
         }
     }
@@ -1122,7 +886,7 @@ public class ScrollBar : RangeBase
         var newValue = Math.Min(Maximum, Value + SmallChange);
         if (Math.Abs(newValue - Value) > double.Epsilon)
         {
-            Value = newValue;
+            SetCurrentValue(ValueProperty, newValue);
             RaiseScrollEvent(ScrollEventType.SmallIncrement);
         }
     }
@@ -1145,7 +909,7 @@ public class ScrollBar : RangeBase
 
         if (Math.Abs(newValue - Value) > double.Epsilon)
         {
-            Value = newValue;
+            SetCurrentValue(ValueProperty, newValue);
             RaiseScrollEvent(ScrollEventType.LargeDecrement);
         }
     }
@@ -1168,7 +932,7 @@ public class ScrollBar : RangeBase
 
         if (Math.Abs(newValue - Value) > double.Epsilon)
         {
-            Value = newValue;
+            SetCurrentValue(ValueProperty, newValue);
             RaiseScrollEvent(ScrollEventType.LargeIncrement);
         }
     }
@@ -1322,7 +1086,7 @@ public class ScrollBar : RangeBase
 
             if (Math.Abs(newValue - Value) > double.Epsilon)
             {
-                Value = newValue;
+                SetCurrentValue(ValueProperty, newValue);
                 RaiseScrollEvent(ScrollEventType.ThumbTrack);
             }
         }
@@ -1496,6 +1260,7 @@ public class ScrollBar : RangeBase
     {
         if (d is ScrollBar scrollBar)
         {
+            scrollBar.UpdateTemplateLayout(scrollBar.RenderSize.Width);
             scrollBar.UpdateTrackBindings();
             scrollBar.InvalidateMeasure();
         }
@@ -1524,7 +1289,7 @@ public class ScrollBar : RangeBase
     {
         if (d is ScrollBar scrollBar)
         {
-            scrollBar.ApplyPartStyles();
+            scrollBar.UpdateTemplateLayout(scrollBar.RenderSize.Width);
             scrollBar.UpdateTrackBindings();
             scrollBar.InvalidateMeasure();
             scrollBar.InvalidateVisual();
@@ -1548,6 +1313,7 @@ public class ScrollBar : RangeBase
             scrollBar.CompleteOverlayThumbGesture();
         }
 
+        scrollBar.UpdateTemplateLayout(scrollBar.RenderSize.Width);
         scrollBar.UpdateTrackBindings();
         scrollBar.ApplyAutoHideVisualState(
             scrollBar._autoHideCollapseProgress,
@@ -1670,63 +1436,11 @@ public class ScrollBar : RangeBase
         _autoHideCollapseProgress = collapseProgress;
         _chromeOpacity = IsOverlayStyle ? 0.0 : 1.0 - collapseProgress;
 
-        if (_lineUpButton != null && _lineDownButton != null)
-        {
-            if (!UsesLineButtons)
-            {
-                _lineUpButton.Visibility = Visibility.Collapsed;
-                _lineDownButton.Visibility = Visibility.Collapsed;
-                _lineUpButton.Opacity = 0;
-                _lineDownButton.Opacity = 0;
-                _lineUpButton.IsHitTestVisible = false;
-                _lineDownButton.IsHitTestVisible = false;
-            }
-            else
-            {
-                _lineUpButton.IsHitTestVisible = true;
-                _lineDownButton.IsHitTestVisible = true;
-
-                // Use Visibility.Collapsed when fully collapsed so the rendering pipeline
-                // skips the buttons entirely (Opacity alone may not hide them reliably).
-                var fullyCollapsed = collapseProgress >= 0.999;
-
-                if (_hasCustomLineButtonStyle)
-                {
-                    var targetVisibility = fullyCollapsed ? Visibility.Collapsed : Visibility.Visible;
-                    if (_lineUpButton.Visibility != targetVisibility)
-                        _lineUpButton.Visibility = targetVisibility;
-                    if (_lineDownButton.Visibility != targetVisibility)
-                        _lineDownButton.Visibility = targetVisibility;
-
-                    if (!fullyCollapsed)
-                    {
-                        var arrowOpacity = 1.0 - collapseProgress;
-                        _lineUpButton.Opacity = arrowOpacity;
-                        _lineDownButton.Opacity = arrowOpacity;
-                    }
-                }
-                else
-                {
-                    // Keep fallback mode line buttons transparent to avoid default square overlays.
-                    _lineUpButton.Opacity = 0;
-                    _lineDownButton.Opacity = 0;
-                    if (fullyCollapsed)
-                    {
-                        if (_lineUpButton.Visibility != Visibility.Collapsed)
-                            _lineUpButton.Visibility = Visibility.Collapsed;
-                        if (_lineDownButton.Visibility != Visibility.Collapsed)
-                            _lineDownButton.Visibility = Visibility.Collapsed;
-                    }
-                    else
-                    {
-                        if (_lineUpButton.Visibility != Visibility.Visible)
-                            _lineUpButton.Visibility = Visibility.Visible;
-                        if (_lineDownButton.Visibility != Visibility.Visible)
-                            _lineDownButton.Visibility = Visibility.Visible;
-                    }
-                }
-            }
-        }
+        SetValue(ChromeOpacityPropertyKey, _chromeOpacity);
+        SetValue(LineButtonsVisibilityPropertyKey, UsesLineButtons && collapseProgress < .999 ? Visibility.Visible : Visibility.Collapsed);
+        SetValue(HasLineButtonsPropertyKey, UsesLineButtons);
+        if (TemplateRootInternal is not null)
+            VisualStateManager.GoToState(this, collapseProgress >= .999 ? "Slim" : "Expanded", false);
 
         if (_track?.DecreaseRepeatButton != null && _track.IncreaseRepeatButton != null)
         {
@@ -1827,10 +1541,7 @@ public class ScrollBar : RangeBase
         if (!_hasOverlayThumbPaddingSnapshot)
         {
             _overlayThumbHadLocalPadding = thumb.HasLocalValue(PaddingProperty);
-            if (_overlayThumbHadLocalPadding && thumb.ReadLocalValue(PaddingProperty) is Thickness localPadding)
-            {
-                _overlayThumbLocalPadding = localPadding;
-            }
+            if (_overlayThumbHadLocalPadding) _overlayThumbLocalPadding = thumb.Padding;
 
             _hasOverlayThumbPaddingSnapshot = true;
         }
@@ -1846,9 +1557,11 @@ public class ScrollBar : RangeBase
             ? new Thickness(leadingInset, 0, edgeInset, 0)
             : new Thickness(0, leadingInset, 0, edgeInset);
 
+        _appliedOverlayThumbPadding = padding;
         if (thumb.Padding != padding)
         {
-            thumb.Padding = padding;
+            if (_overlayThumbHadLocalPadding) thumb.SetCurrentValue(PaddingProperty, padding);
+            else thumb.Padding = padding;
             if (!suppressArrangeInvalidation)
             {
                 _track?.RefreshThumbVisualLayout();
@@ -1863,16 +1576,24 @@ public class ScrollBar : RangeBase
 
         if (_overlayThumbHadLocalPadding)
         {
-            thumb.Padding = _overlayThumbLocalPadding;
+            thumb.SetCurrentValue(PaddingProperty, _overlayThumbLocalPadding);
         }
         else
         {
             thumb.ClearValue(PaddingProperty);
+            // A containing control template can promote constructor-created
+            // visual children's local values into its parent-template layer.
+            // Remove only our calculated inset if it was promoted this way;
+            // a different padding supplied by the template must remain intact.
+            if (_appliedOverlayThumbPadding is { } applied && thumb.Padding == applied &&
+                thumb.GetEffectiveValueLayer(PaddingProperty) == DependencyValueStore.Layer.ParentTemplate)
+                thumb.ClearLayerValue(PaddingProperty, DependencyObject.LayerValueSource.ParentTemplate);
         }
 
         _hasOverlayThumbPaddingSnapshot = false;
         _overlayThumbHadLocalPadding = false;
         _overlayThumbLocalPadding = default;
+        _appliedOverlayThumbPadding = null;
     }
 
     private void ApplyAutoHideVisibilityState(double visibilityProgress)
@@ -1936,23 +1657,18 @@ public class ScrollBar : RangeBase
         if (!_hasOverlayTrackPresentationSnapshot)
         {
             _overlayTrackHadLocalOpacity = track.HasLocalValue(UIElement.OpacityProperty);
-            if (_overlayTrackHadLocalOpacity && track.ReadLocalValue(UIElement.OpacityProperty) is double localOpacity)
-            {
-                _overlayTrackLocalOpacity = localOpacity;
-            }
+            if (_overlayTrackHadLocalOpacity) _overlayTrackLocalOpacity = track.Opacity;
 
             _overlayTrackHadLocalHitTestVisibility = track.HasLocalValue(UIElement.IsHitTestVisibleProperty);
-            if (_overlayTrackHadLocalHitTestVisibility &&
-                track.ReadLocalValue(UIElement.IsHitTestVisibleProperty) is bool localHitTestVisibility)
-            {
-                _overlayTrackLocalHitTestVisibility = localHitTestVisibility;
-            }
+            if (_overlayTrackHadLocalHitTestVisibility) _overlayTrackLocalHitTestVisibility = track.IsHitTestVisible;
 
             _hasOverlayTrackPresentationSnapshot = true;
         }
 
-        track.Opacity = Math.Clamp(opacity, 0.0, 1.0);
-        track.IsHitTestVisible = isHitTestVisible;
+        if (_overlayTrackHadLocalOpacity) track.SetCurrentValue(UIElement.OpacityProperty, Math.Clamp(opacity, 0.0, 1.0));
+        else track.Opacity = Math.Clamp(opacity, 0.0, 1.0);
+        if (_overlayTrackHadLocalHitTestVisibility) track.SetCurrentValue(UIElement.IsHitTestVisibleProperty, isHitTestVisible);
+        else track.IsHitTestVisible = isHitTestVisible;
     }
 
     private void RestoreTrackPresentationAfterOverlay(Track track)
@@ -1962,7 +1678,7 @@ public class ScrollBar : RangeBase
 
         if (_overlayTrackHadLocalOpacity)
         {
-            track.Opacity = _overlayTrackLocalOpacity;
+            track.SetCurrentValue(UIElement.OpacityProperty, _overlayTrackLocalOpacity);
         }
         else
         {
@@ -1971,7 +1687,7 @@ public class ScrollBar : RangeBase
 
         if (_overlayTrackHadLocalHitTestVisibility)
         {
-            track.IsHitTestVisible = _overlayTrackLocalHitTestVisibility;
+            track.SetCurrentValue(UIElement.IsHitTestVisibleProperty, _overlayTrackLocalHitTestVisibility);
         }
         else
         {
@@ -2013,6 +1729,7 @@ public class ScrollBar : RangeBase
     private void BeginThumbDrag()
     {
         _isDragging = true;
+        SetElasticOverscroll(0);
         _hasTrackPagingTarget = false;
         _thumbDragStartValue = Value;
         _thumbDragAccumulatedHorizontal = 0;
@@ -2038,6 +1755,31 @@ public class ScrollBar : RangeBase
     #endregion
 
     #region Overrides
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (e.Handled || !IsEnabled) return;
+        switch (e.Key)
+        {
+            case Key.Up when Orientation == Orientation.Vertical:
+            case Key.Left when Orientation == Orientation.Horizontal:
+                ChangeBy(-SmallChange, ScrollEventType.SmallDecrement); break;
+            case Key.Down when Orientation == Orientation.Vertical:
+            case Key.Right when Orientation == Orientation.Horizontal:
+                ChangeBy(SmallChange, ScrollEventType.SmallIncrement); break;
+            case Key.PageUp:
+                ChangeBy(-LargeChange, ScrollEventType.LargeDecrement); break;
+            case Key.PageDown:
+                ChangeBy(LargeChange, ScrollEventType.LargeIncrement); break;
+            case Key.Home:
+                ChangeTo(Minimum, ScrollEventType.First); break;
+            case Key.End:
+                ChangeTo(Maximum, ScrollEventType.Last); break;
+            default:
+                base.OnKeyDown(e); return;
+        }
+        e.Handled = true;
+    }
 
     protected override void OnMouseEnter(MouseEventArgs e)
     {
@@ -2131,6 +1873,7 @@ public class ScrollBar : RangeBase
     /// <inheritdoc />
     protected override void OnRender(DrawingContext drawingContext)
     {
+        if (TemplateRootInternal is not null) return;
         var dc = drawingContext;
 
         var innerRect = new Rect(
@@ -2196,7 +1939,7 @@ public class ScrollBar : RangeBase
     protected override void OnPostRender(DrawingContext drawingContext)
     {
         base.OnPostRender(drawingContext);
-        if (CssBorderPaintProperties.Get(this) is null) return;
+        if (TemplateRootInternal is not null || CssBorderPaintProperties.Get(this) is null) return;
         var opacity = Math.Clamp(_chromeOpacity, 0.0, 1.0);
         if (opacity <= 0.001) return;
         drawingContext.PushOpacity(opacity);

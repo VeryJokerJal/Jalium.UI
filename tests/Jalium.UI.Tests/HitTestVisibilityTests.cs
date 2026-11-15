@@ -6,8 +6,10 @@ using Jalium.UI.Media;
 
 namespace Jalium.UI.Tests;
 
-public class HitTestVisibilityTests
+[Collection("macOS Window globals")]
+public class HitTestVisibilityTests : IDisposable
 {
+    private readonly HashSet<Window> _windows = [];
     [Fact]
     public void VisualTreeHelper_HitTest_ShouldSkipElement_WhenIsHitTestVisibleFalse()
     {
@@ -43,7 +45,7 @@ public class HitTestVisibilityTests
         root.Children.Add(back);
         root.Children.Add(blockedParent);
 
-        var window = new Window
+        var window = new DisplayedTestWindow
         {
             TitleBarStyle = WindowTitleBarStyle.Native,
             Width = 40,
@@ -79,7 +81,7 @@ public class HitTestVisibilityTests
         root.Children.Add(glass);
         root.Children.Add(overlay);
 
-        var window = new Window
+        var window = new DisplayedTestWindow
         {
             TitleBarStyle = WindowTitleBarStyle.Native,
             Width = 120,
@@ -120,7 +122,7 @@ public class HitTestVisibilityTests
         root.Children.Add(background);
         root.Children.Add(viewer);
 
-        var window = new Window
+        var window = new DisplayedTestWindow
         {
             TitleBarStyle = WindowTitleBarStyle.Native,
             Width = 200,
@@ -158,10 +160,12 @@ public class HitTestVisibilityTests
             }
         };
 
+        viewer.Resources.MergedDictionaries.Add(MenuFlyoutTemplateTestHelper.Themes.Value);
+
         var root = new Grid { Width = 120, Height = 120 };
         root.Children.Add(viewer);
 
-        var window = new Window
+        var window = new DisplayedTestWindow
         {
             TitleBarStyle = WindowTitleBarStyle.Native,
             Width = 120,
@@ -214,7 +218,7 @@ public class HitTestVisibilityTests
         stack.Children.Add(topBar);
         stack.Children.Add(viewer);
 
-        var window = new Window
+        var window = new DisplayedTestWindow
         {
             TitleBarStyle = WindowTitleBarStyle.Native,
             Width = 200,
@@ -274,11 +278,17 @@ public class HitTestVisibilityTests
         Assert.Equal(1, child.HitTestCount);
     }
 
-    private static UIElement? InvokeHitTestElement(Window window, Point point)
+    private UIElement? InvokeHitTestElement(Window window, Point point)
     {
+        _windows.Add(window);
         var method = typeof(Window).GetMethod("HitTestElement", BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(method);
         return method!.Invoke(window, [point, "hit-test-visible-test"]) as UIElement;
+    }
+
+    public void Dispose()
+    {
+        foreach (var window in _windows) window.Close();
     }
 
     private static T? FindVisualAncestor<T>(DependencyObject? start) where T : class

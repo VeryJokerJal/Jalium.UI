@@ -11,8 +11,29 @@ public partial class TextBlock
     private string _paintText = string.Empty;
     private int[]? _paintOffsets;
     private bool _hasPaintTextChanges;
+    private string _whitespaceVisualText = string.Empty;
+    private string _whitespacePaintText = string.Empty;
+    private int[]? _whitespacePaintOffsets;
+    private bool _whitespaceHasPaintChanges;
     private CssWhiteSpaceCollapse _whiteSpaceMode;
     private bool _countTrailingWhitespace;
+
+    private double UsedCssWhitespaceAdvance(int start, int length, double physicalWidth,
+        double availableWidth, bool forcedEnd, double tabOrigin)
+    {
+        if (!HasAuthoredWhiteSpace() || length == 0) return physicalWidth;
+        var end = start + length; var tail = end;
+        while (tail > start && CombinedUnitAt(tail - 1) is null && _visualText[tail - 1] is ' ' or '\t') tail--;
+        if (tail == end) return physicalWidth;
+        var collapse = _whiteSpaceMode is CssWhiteSpaceCollapse.Collapse or CssWhiteSpaceCollapse.PreserveBreaks;
+        var preserveWrap = _whiteSpaceMode == CssWhiteSpaceCollapse.Preserve && EffectiveTextWrapping() != TextWrapping.NoWrap;
+        if (!collapse && !preserveWrap) return physicalWidth;
+        var padding = GetLineStartPadding(start, end) + GetLineEndPadding(start, end);
+        if (preserveWrap && forcedEnd && !double.IsNaN(availableWidth) &&
+            physicalWidth + padding <= availableWidth + .000001) return physicalWidth;
+        var prefix = MeasureInlineRange(start, tail - start, includeTrailingWhitespace: true, tabOrigin: tabOrigin);
+        return preserveWrap && forcedEnd ? Math.Max(prefix, Math.Min(physicalWidth, availableWidth - padding)) : prefix;
+    }
 
     private void RebuildVisualWhitespace()
     {
@@ -21,15 +42,26 @@ public partial class TextBlock
         _paintText = _displayText;
         _paintOffsets = null;
         _hasPaintTextChanges = false;
+        SaveWhitespaceState();
         var explicitBreaks = GetExplicitLineBreaks();
         var trimMask = GetWhiteSpaceTrimMask(explicitBreaks);
+        if (_combinedWhiteSpaceMask is { } combinedTrim)
+        {
+            trimMask ??= new bool[combinedTrim.Length];
+            for (int i = 0; i < combinedTrim.Length; i++) trimMask[i] |= combinedTrim[i];
+        }
+        if (InlineDisplayMask() is { } displayMask)
+        {
+            trimMask ??= new bool[displayMask.Length];
+            for (var i=0;i<displayMask.Length;i++) trimMask[i] |= displayMask[i];
+        }
         var hasCssWhiteSpace = HasAuthoredWhiteSpace();
         _countTrailingWhitespace = hasCssWhiteSpace &&
             (_whiteSpaceMode == CssWhiteSpaceCollapse.BreakSpaces ||
              _whiteSpaceMode == CssWhiteSpaceCollapse.Preserve &&
              (CssTextWrapMode)GetValue(CssFlowProperties.TextWrapModeProperty)! == CssTextWrapMode.NoWrap);
         if (_displayText.Length == 0 ||
-            !hasCssWhiteSpace && trimMask is null && !_displayText.Contains('\u00AD')) return;
+            !hasCssWhiteSpace && _combinedTextUnits.Length == 0 && trimMask is null && !_displayText.Contains('\u00AD')) return;
 
         var collapse = _whiteSpaceMode is CssWhiteSpaceCollapse.Collapse or CssWhiteSpaceCollapse.PreserveBreaks;
         var preserveBreaks = _whiteSpaceMode == CssWhiteSpaceCollapse.PreserveBreaks;
@@ -40,7 +72,7 @@ public partial class TextBlock
         if (trimMask is not null)
             for (var index = 0; index < trimMask.Length; index++)
                 if (trimMask[index]) output![index] = '\uFEFF';
-        var atLineStart = true;
+        var atLineStart = !_cssInlineWhitespace;
         for (var index = 0; index < _displayText.Length;)
         {
             if (trimMask?[index] == true)
@@ -48,7 +80,18 @@ public partial class TextBlock
                 index++;
                 continue;
             }
+            if (!hasCssWhiteSpace && _combinedTextUnits.Length > 0 && CombinedUnitAt(index) is null)
+            {
+                index++;
+                continue;
+            }
             var value = _displayText[index];
+            if (CombinedUnitAt(index) is not null && (IsTextLineBreak(value) || value == '\f'))
+            {
+                output ??= _displayText.ToCharArray(); hidden ??= new bool[_displayText.Length];
+                output[index] = '\uFEFF'; hidden[index++] = true;
+                continue;
+            }
             if (value == '\u00AD')
             {
                 // A soft hyphen remains in source space for line breaking and
@@ -59,7 +102,7 @@ public partial class TextBlock
                 continue;
             }
             if (explicitBreaks?[index] == true ||
-                preserveBreaks && value is ('\r' or '\n' or '\f'))
+                preserveBreaks && IsSourceSegmentBreak(value))
             {
                 if (value == '\f')
                 {
@@ -81,7 +124,7 @@ public partial class TextBlock
                 continue;
             }
 
-            if (preserveSpaces && value is ('\t' or '\r' or '\n' or '\f'))
+            if (preserveSpaces && (value == '\t' || IsSourceSegmentBreak(value)))
             {
                 output ??= _displayText.ToCharArray();
                 output[index] = ' ';
@@ -103,13 +146,15 @@ public partial class TextBlock
                 var start = index;
                 while (index < _displayText.Length &&
                        trimMask?[index] != true &&
+                       (_combinedTextUnits.Length == 0 || hasCssWhiteSpace || CombinedUnitAt(index) is not null) &&
                        IsCssCollapsibleWhiteSpace(_displayText[index]) &&
                        explicitBreaks?[index] != true &&
-                       (!preserveBreaks || _displayText[index] is not ('\r' or '\n' or '\f')))
+                       (!preserveBreaks || !IsSourceSegmentBreak(_displayText[index])))
                     index++;
-                var beforeLineEnd = index == _displayText.Length ||
-                    explicitBreaks?[index] == true ||
-                    preserveBreaks && _displayText[index] is ('\r' or '\n' or '\f');
+                var beforeLineEnd = index == _displayText.Length && !_cssInlineWhitespace ||
+                    index < _displayText.Length && (explicitBreaks?[index] == true ||
+                    IsUnicodeForcedLineBreak(_displayText[index]) ||
+                    preserveBreaks && IsSourceSegmentBreak(_displayText[index]));
                 output ??= _displayText.ToCharArray();
                 for (var offset = start; offset < index; offset++)
                 {
@@ -131,7 +176,7 @@ public partial class TextBlock
                 output[index] = '\n';
                 atLineStart = true;
             }
-            else if (value is '\r' or '\n')
+            else if (IsTextLineBreak(value))
                 atLineStart = true;
             else
                 atLineStart = false;
@@ -145,6 +190,7 @@ public partial class TextBlock
         if (hidden is null)
         {
             _paintText = _visualText;
+            SaveWhitespaceState();
             return;
         }
 
@@ -159,6 +205,23 @@ public partial class TextBlock
         }
         _paintText = new string(painted, 0, paintLength);
         _paintOffsets = offsets;
+        SaveWhitespaceState();
+    }
+
+    private void SaveWhitespaceState()
+    {
+        _whitespaceVisualText = _visualText;
+        _whitespacePaintText = _paintText;
+        _whitespacePaintOffsets = _paintOffsets;
+        _whitespaceHasPaintChanges = _hasPaintTextChanges;
+    }
+
+    private string WhitespacePaintSlice(int start, int length)
+    {
+        if (length <= 0) return string.Empty;
+        if (_whitespacePaintOffsets is null) return _whitespacePaintText.Substring(start, length);
+        var paintStart = _whitespacePaintOffsets[start];
+        return _whitespacePaintText.Substring(paintStart, _whitespacePaintOffsets[start + length] - paintStart);
     }
 
     private string PaintSlice(int start, int length)
@@ -170,7 +233,7 @@ public partial class TextBlock
     }
 
     private static bool IsCssCollapsibleWhiteSpace(char value)
-        => value is ' ' or '\t' or '\r' or '\n' or '\f';
+        => value is ' ' or '\t' || IsSourceSegmentBreak(value);
 
     private bool[]? GetWhiteSpaceTrimMask(bool[]? explicitBreaks)
     {
@@ -256,7 +319,6 @@ public partial class TextBlock
     private bool IsTrimmableWhiteSpace(int index, bool[]? explicitBreaks)
         => explicitBreaks?[index] != true && IsCssCollapsibleWhiteSpace(_displayText[index]);
 
-    private static bool IsSourceSegmentBreak(char value) => value is '\r' or '\n' or '\f';
 
     private static void MarkTrim(bool[] mask, int start, int end)
     {
@@ -284,7 +346,8 @@ public partial class TextBlock
                 offset += run.Text.Length;
                 break;
             case LineBreak:
-                positions.Add(offset++);
+                if (!CssDisplayProperties.SuppressesBoxTree(inline)) positions.Add(offset);
+                offset++;
                 break;
             case Span span:
                 foreach (var child in span.Inlines)
@@ -295,6 +358,7 @@ public partial class TextBlock
 
     private bool HasAuthoredWhiteSpace()
     {
+        if (this is CssGeneratedText || UsesCssTextBody || _cssInlineWhitespace) return true;
         var trim = GetValueSourceInternal(CssFlowProperties.WhiteSpaceTrimProperty).BaseValueSource;
         if (trim is not BaseValueSource.Default and not BaseValueSource.Inherited) return true;
         for (DependencyObject? node = this; node is not null;)

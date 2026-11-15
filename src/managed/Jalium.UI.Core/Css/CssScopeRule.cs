@@ -24,7 +24,7 @@ internal sealed class CssScopeRule(CssSelector[]? starts, CssSelector[]? limits,
         {
             if (!ReadParentheses(ref reader, out var start)) return null;
             var mode = nesting is not null ? CssRelativeSelectorMode.Nesting : parent is not null ? CssRelativeSelectorMode.Scope : CssRelativeSelectorMode.None;
-            var selectors = CssSelectorParser.ParseGroup(start, out _, nesting, mode,namespaces);
+            var selectors = CssSelectorParser.ParseGroup(start, out _, nesting, mode,namespaces,allowPseudoElements:false);
             if (selectors is null) return null;
             starts = selectors.ToArray();
         }
@@ -35,7 +35,7 @@ internal sealed class CssScopeRule(CssSelector[]? starts, CssSelector[]? limits,
         {
             if (!reader.TryReadIdent(out var to) || !to.Equals("to", StringComparison.OrdinalIgnoreCase) ||
                 !ReadParentheses(ref reader, out var end) || !reader.AtEnd) return null;
-            var selectors = CssSelectorParser.ParseGroup(end, out _, relative: CssRelativeSelectorMode.Scope,namespaces:namespaces);
+            var selectors = CssSelectorParser.ParseGroup(end, out _, relative: CssRelativeSelectorMode.Scope,namespaces:namespaces,allowPseudoElements:false);
             if (selectors is null) return null;
             definition.Limits = selectors.ToArray();
         }

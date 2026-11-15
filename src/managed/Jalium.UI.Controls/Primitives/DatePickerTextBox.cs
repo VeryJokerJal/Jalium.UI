@@ -1,24 +1,16 @@
 namespace Jalium.UI.Controls.Primitives;
-
 /// <summary>
 /// Represents a text box used in DatePicker controls with placeholder support.
 /// </summary>
 public sealed class DatePickerTextBox : TextBox
 {
-    #region Constructor
-
+#region Constructor
     /// <summary>
-    /// Initializes a new instance of the <see cref="DatePickerTextBox"/> class.
+    /// Initializes a new instance of the <see cref = "DatePickerTextBox"/> class.
     /// </summary>
-    public DatePickerTextBox()
-    {
-        PlaceholderText = "Select a date";
-    }
-
-    #endregion
-
-    #region Date Validation
-
+    static DatePickerTextBox() => PlaceholderTextProperty.OverrideMetadata(typeof(DatePickerTextBox), new PropertyMetadata("Select a date"));
+#endregion
+#region Date Validation
     /// <summary>
     /// Validates that the text represents a valid date.
     /// </summary>
@@ -38,18 +30,18 @@ public sealed class DatePickerTextBox : TextBox
         {
             return date;
         }
+
         return null;
     }
 
     /// <summary>
     /// Sets the text to represent the specified date.
     /// </summary>
-    /// <param name="date">The date to set.</param>
-    /// <param name="format">The format string to use.</param>
+    /// <param name = "date">The date to set.</param>
+    /// <param name = "format">The format string to use.</param>
     public void SetDate(DateTime? date, string format = "d")
     {
-        Text = date?.ToString(format) ?? string.Empty;
+        SetCurrentValue(TextProperty, date?.ToString(format) ?? string.Empty);
     }
-
-    #endregion
+#endregion
 }

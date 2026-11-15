@@ -1,0 +1,275 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:dev="clr-namespace:Jalium.UI.Controls.DevTools"
+                    xmlns:automation="clr-namespace:Jalium.UI.Automation">
+    <!-- Instrument palette: local keys let consumers reskin DevTools independently. -->
+    <SolidColorBrush x:Key="DevTools.Chrome" Color="#0B0C0F" />
+    <SolidColorBrush x:Key="DevTools.Surface" Color="#111317" />
+    <SolidColorBrush x:Key="DevTools.SurfaceAlt" Color="#171A20" />
+    <SolidColorBrush x:Key="DevTools.RowAlt" Color="#1B1F27" />
+    <SolidColorBrush x:Key="DevTools.Control" Color="#21262F" />
+    <SolidColorBrush x:Key="DevTools.ControlHover" Color="#2A3039" />
+    <SolidColorBrush x:Key="DevTools.ControlPressed" Color="#191D24" />
+    <SolidColorBrush x:Key="DevTools.Border" Color="#2B313B" />
+    <SolidColorBrush x:Key="DevTools.BorderSubtle" Color="#1E222A" />
+    <SolidColorBrush x:Key="DevTools.GridLine" Color="#16191F" />
+    <SolidColorBrush x:Key="DevTools.TextPrimary" Color="#DDE2E9" />
+    <SolidColorBrush x:Key="DevTools.TextSecondary" Color="#949CA8" />
+    <SolidColorBrush x:Key="DevTools.TextMuted" Color="#646C79" />
+    <SolidColorBrush x:Key="DevTools.TextDisabled" Color="#454B55" />
+    <SolidColorBrush x:Key="DevTools.Accent" Color="#FFB22E" />
+    <SolidColorBrush x:Key="DevTools.AccentHover" Color="#FFC75C" />
+    <SolidColorBrush x:Key="DevTools.AccentPressed" Color="#E2991B" />
+    <SolidColorBrush x:Key="DevTools.AccentSoft" Color="#2EFFB22E" />
+    <SolidColorBrush x:Key="DevTools.Error" Color="#F2655C" />
+    <SolidColorBrush x:Key="DevTools.ErrorHover" Color="#F47674" />
+    <SolidColorBrush x:Key="DevTools.ErrorPressed" Color="#CD554E" />
+    <SolidColorBrush x:Key="DevTools.Success" Color="#56D98D" />
+    <SolidColorBrush x:Key="DevTools.Info" Color="#5FB7CB" />
+    <SolidColorBrush x:Key="DevTools.Warning" Color="#EDA63C" />
+    <SolidColorBrush x:Key="DevTools.TokenProperty" Color="#B7C3D2" />
+    <SolidColorBrush x:Key="DevTools.TokenString" Color="#D7A26B" />
+    <SolidColorBrush x:Key="DevTools.TokenNumber" Color="#8FD69E" />
+    <SolidColorBrush x:Key="DevTools.TokenType" Color="#5BC8BE" />
+    <SolidColorBrush x:Key="DevTools.TokenKeyword" Color="#C99BD6" />
+    <SolidColorBrush x:Key="DevTools.TokenEnum" Color="#E0C36A" />
+    <SolidColorBrush x:Key="DevTools.CategoryContent" Color="#6FA8C7" />
+    <SolidColorBrush x:Key="DevTools.CategoryInput" Color="#E0817C" />
+    <SolidColorBrush x:Key="DevTools.CategoryBehavior" Color="#9D8BD6" />
+    <SolidColorBrush x:Key="DevTools.CategoryState" Color="#9EC07A" />
+    <LinearGradientBrush x:Key="DevTools.Scanline" StartPoint="0,0" EndPoint="0,3" MappingMode="Absolute" SpreadMethod="Repeat">
+        <GradientStop Color="#00000000" Offset="0" /><GradientStop Color="#16000000" Offset="0.5" /><GradientStop Color="#00000000" Offset="1" />
+    </LinearGradientBrush>
+    <Style x:Key="DevTools.Text" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" /><Setter Property="FontSize" Value="12" />
+        <Setter Property="Foreground" Value="{DynamicResource DevTools.TextPrimary}" /><Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <Style x:Key="DevTools.MutedText" TargetType="TextBlock" BasedOn="{StaticResource DevTools.Text}"><Setter Property="Foreground" Value="{DynamicResource DevTools.TextSecondary}" /></Style>
+    <Style x:Key="DevTools.MonoText" TargetType="TextBlock" BasedOn="{StaticResource DevTools.Text}"><Setter Property="FontFamily" Value="{ThemeResource MonoFontFamily}" /></Style>
+    <Style x:Key="DevTools.SectionHeading" TargetType="TextBlock" BasedOn="{StaticResource DevTools.Text}">
+        <Setter Property="FontFamily" Value="Bahnschrift SemiBold" /><Setter Property="FontSize" Value="13" /><Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Foreground" Value="{DynamicResource DevTools.Accent}" /><Setter Property="Margin" Value="0,12,0,4" />
+    </Style>
+    <Style x:Key="DevTools.PanelHeading" TargetType="TextBlock" BasedOn="{StaticResource DevTools.Text}">
+        <Setter Property="FontFamily" Value="Bahnschrift SemiBold" /><Setter Property="FontWeight" Value="SemiBold" /><Setter Property="Margin" Value="0,0,0,4" />
+    </Style>
+    <Style x:Key="DevTools.Eyebrow" TargetType="TextBlock" BasedOn="{StaticResource DevTools.PanelHeading}">
+        <Setter Property="FontSize" Value="10" /><Setter Property="Margin" Value="0" /><Setter Property="Foreground" Value="{DynamicResource DevTools.TextSecondary}" />
+    </Style>
+    <Style x:Key="DevTools.GridCell" TargetType="TextBlock" BasedOn="{StaticResource DevTools.Text}">
+        <Setter Property="FontSize" Value="11" /><Setter Property="Margin" Value="8,2" /><Setter Property="TextTrimming" Value="CharacterEllipsis" />
+    </Style>
+    <Style x:Key="DevTools.MonoGridCell" TargetType="TextBlock" BasedOn="{StaticResource DevTools.GridCell}"><Setter Property="FontFamily" Value="{ThemeResource MonoFontFamily}" /></Style>
+    <Style x:Key="DevTools.TextInput" TargetType="TextBox">
+        <Setter Property="FontFamily" Value="{ThemeResource MonoFontFamily}" /><Setter Property="FontSize" Value="11" />
+        <Setter Property="Foreground" Value="{DynamicResource DevTools.TextPrimary}" /><Setter Property="Background" Value="{DynamicResource DevTools.Control}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource DevTools.Border}" /><Setter Property="BorderThickness" Value="1" /><Setter Property="Padding" Value="8,3" />
+    </Style>
+    <Style x:Key="DevTools.VerticalDivider" TargetType="Border">
+        <Setter Property="Width" Value="1" /><Setter Property="Background" Value="{DynamicResource DevTools.BorderSubtle}" />
+        <Setter Property="Margin" Value="4,0" /><Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <Style x:Key="DevTools.InspectorTree" TargetType="ListBox">
+        <Setter Property="Background" Value="{DynamicResource DevTools.SurfaceAlt}" /><Setter Property="Foreground" Value="{DynamicResource DevTools.TextPrimary}" />
+        <Setter Property="BorderThickness" Value="0" /><Setter Property="Padding" Value="0" /><Setter Property="Margin" Value="0" />
+    </Style>
+    <Style x:Key="DevTools.DiagnosticsItem" TargetType="ListBoxItem">
+        <Setter Property="Padding" Value="0" /><Setter Property="MinHeight" Value="0" />
+        <Setter Property="Background" Value="Transparent" /><Setter Property="BorderThickness" Value="0" />
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="Template"><ControlTemplate TargetType="ListBoxItem">
+            <Grid Background="{TemplateBinding Background}">
+                <ContentPresenter HorizontalAlignment="Stretch" Margin="{TemplateBinding Padding}" />
+                <Border Name="PART_Focus" BorderBrush="{DynamicResource DevTools.Accent}" BorderThickness="1" Visibility="Collapsed" IsHitTestVisible="False" />
+            </Grid>
+            <ControlTemplate.Triggers><Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter TargetName="PART_Focus" Property="Visibility" Value="Visible" /></Trigger></ControlTemplate.Triggers>
+        </ControlTemplate></Setter>
+    </Style>
+    <Style x:Key="DevTools.DiagnosticsList" TargetType="ListBox">
+        <Setter Property="Padding" Value="0" /><Setter Property="Margin" Value="0" /><Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Background" Value="Transparent" /><Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled" /><Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Auto" />
+        <Setter Property="ItemContainerStyle" Value="{StaticResource DevTools.DiagnosticsItem}" />
+        <Setter Property="ItemsPanel"><ItemsPanelTemplate><VirtualizingStackPanel /></ItemsPanelTemplate></Setter>
+    </Style>
+    <Style x:Key="DevTools.TreeItem" TargetType="TreeViewItem">
+        <Setter Property="Foreground" Value="{DynamicResource DevTools.TextPrimary}" />
+        <Setter Property="HoverBrush" Value="{DynamicResource DevTools.ControlHover}" />
+        <Setter Property="SelectionBrush" Value="{DynamicResource DevTools.AccentSoft}" />
+        <Setter Property="SelectionPointerOverBrush" Value="{DynamicResource DevTools.AccentSoft}" />
+        <Setter Property="SelectionBorderBrush" Value="{DynamicResource DevTools.Accent}" />
+        <Setter Property="CornerRadius" Value="3" />
+        <Style.Triggers><Trigger Property="IsEnabled" Value="False"><Setter Property="Foreground" Value="{DynamicResource DevTools.TextDisabled}" /></Trigger></Style.Triggers>
+    </Style>
+    <Style x:Key="DevTools.Tree" TargetType="TreeView">
+        <Setter Property="Foreground" Value="{DynamicResource DevTools.TextPrimary}" /><Setter Property="Background" Value="{DynamicResource DevTools.SurfaceAlt}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource DevTools.BorderSubtle}" /><Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="4" /><Setter Property="Margin" Value="0" /><Setter Property="ItemContainerStyle" Value="{StaticResource DevTools.TreeItem}" />
+    </Style>
+    <Style x:Key="DevTools.Console" TargetType="Terminal">
+        <Setter Property="Foreground" Value="{DynamicResource DevTools.TextPrimary}" /><Setter Property="Background" Value="{DynamicResource DevTools.Chrome}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource DevTools.Border}" /><Setter Property="BorderThickness" Value="1" /><Setter Property="FontFamily" Value="{ThemeResource MonoFontFamily}" />
+        <Style.Triggers><Trigger Property="IsKeyboardFocused" Value="True"><Setter Property="BorderBrush" Value="{DynamicResource DevTools.Accent}" /></Trigger></Style.Triggers>
+    </Style>
+    <Style TargetType="dev:DevToolsActionButton">
+        <Setter Property="Background" Value="{DynamicResource DevTools.Control}" /><Setter Property="BorderBrush" Value="{DynamicResource DevTools.Border}" />
+        <Setter Property="Foreground" Value="{DynamicResource DevTools.TextSecondary}" /><Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Padding" Value="8,3" /><Setter Property="CornerRadius" Value="3" /><Setter Property="Margin" Value="0,0,4,0" />
+        <Setter Property="MinWidth" Value="0" /><Setter Property="MinHeight" Value="0" /><Setter Property="FontFamily" Value="Bahnschrift SemiBold" />
+        <Setter Property="FontSize" Value="11" /><Setter Property="FontWeight" Value="SemiBold" /><Setter Property="TransitionProperty" Value="None" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsActionButton">
+            <Grid>
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup x:Name="AppearanceStates"><VisualState x:Name="Normal" />
+                        <VisualState x:Name="Hover"><VisualState.Setters><Setter TargetName="PART_Surface" Property="Background" Value="{DynamicResource DevTools.ControlHover}" /><Setter TargetName="PART_Surface" Property="BorderBrush" Value="{DynamicResource DevTools.Border}" /><Setter TargetName="PART_Label" Property="Foreground" Value="{DynamicResource DevTools.TextPrimary}" /><Setter TargetName="PART_Icon" Property="Foreground" Value="{DynamicResource DevTools.TextPrimary}" /></VisualState.Setters></VisualState>
+                        <VisualState x:Name="Pressed"><VisualState.Setters><Setter TargetName="PART_Surface" Property="Background" Value="{DynamicResource DevTools.ControlPressed}" /><Setter TargetName="PART_Surface" Property="BorderBrush" Value="{DynamicResource DevTools.Border}" /><Setter TargetName="PART_Label" Property="Foreground" Value="{DynamicResource DevTools.TextSecondary}" /><Setter TargetName="PART_Icon" Property="Foreground" Value="{DynamicResource DevTools.TextSecondary}" /></VisualState.Setters></VisualState>
+                        <VisualState x:Name="Active"><VisualState.Setters><Setter TargetName="PART_Surface" Property="Background" Value="{DynamicResource DevTools.AccentSoft}" /><Setter TargetName="PART_Surface" Property="BorderBrush" Value="{DynamicResource DevTools.Accent}" /><Setter TargetName="PART_Label" Property="Foreground" Value="{DynamicResource DevTools.Accent}" /><Setter TargetName="PART_Icon" Property="Foreground" Value="{DynamicResource DevTools.Accent}" /></VisualState.Setters></VisualState>
+                        <VisualState x:Name="Primary"><VisualState.Setters><Setter TargetName="PART_Surface" Property="Background" Value="{DynamicResource DevTools.Accent}" /><Setter TargetName="PART_Surface" Property="BorderBrush" Value="{DynamicResource DevTools.Accent}" /><Setter TargetName="PART_Label" Property="Foreground" Value="{DynamicResource DevTools.Chrome}" /><Setter TargetName="PART_Icon" Property="Foreground" Value="{DynamicResource DevTools.Chrome}" /></VisualState.Setters></VisualState>
+                        <VisualState x:Name="PrimaryHover"><VisualState.Setters><Setter TargetName="PART_Surface" Property="Background" Value="{DynamicResource DevTools.AccentHover}" /><Setter TargetName="PART_Surface" Property="BorderBrush" Value="{DynamicResource DevTools.AccentHover}" /><Setter TargetName="PART_Label" Property="Foreground" Value="{DynamicResource DevTools.Chrome}" /><Setter TargetName="PART_Icon" Property="Foreground" Value="{DynamicResource DevTools.Chrome}" /></VisualState.Setters></VisualState>
+                        <VisualState x:Name="PrimaryPressed"><VisualState.Setters><Setter TargetName="PART_Surface" Property="Background" Value="{DynamicResource DevTools.AccentPressed}" /><Setter TargetName="PART_Surface" Property="BorderBrush" Value="{DynamicResource DevTools.AccentPressed}" /><Setter TargetName="PART_Label" Property="Foreground" Value="{DynamicResource DevTools.Chrome}" /><Setter TargetName="PART_Icon" Property="Foreground" Value="{DynamicResource DevTools.Chrome}" /></VisualState.Setters></VisualState>
+                        <VisualState x:Name="Danger"><VisualState.Setters><Setter TargetName="PART_Surface" Property="Background" Value="{DynamicResource DevTools.Error}" /><Setter TargetName="PART_Surface" Property="BorderBrush" Value="{DynamicResource DevTools.Error}" /><Setter TargetName="PART_Label" Property="Foreground" Value="{DynamicResource DevTools.Chrome}" /><Setter TargetName="PART_Icon" Property="Foreground" Value="{DynamicResource DevTools.Chrome}" /></VisualState.Setters></VisualState>
+                        <VisualState x:Name="DangerHover"><VisualState.Setters><Setter TargetName="PART_Surface" Property="Background" Value="{DynamicResource DevTools.ErrorHover}" /><Setter TargetName="PART_Surface" Property="BorderBrush" Value="{DynamicResource DevTools.ErrorHover}" /><Setter TargetName="PART_Label" Property="Foreground" Value="{DynamicResource DevTools.Chrome}" /><Setter TargetName="PART_Icon" Property="Foreground" Value="{DynamicResource DevTools.Chrome}" /></VisualState.Setters></VisualState>
+                        <VisualState x:Name="DangerPressed"><VisualState.Setters><Setter TargetName="PART_Surface" Property="Background" Value="{DynamicResource DevTools.ErrorPressed}" /><Setter TargetName="PART_Surface" Property="BorderBrush" Value="{DynamicResource DevTools.ErrorPressed}" /><Setter TargetName="PART_Label" Property="Foreground" Value="{DynamicResource DevTools.Chrome}" /><Setter TargetName="PART_Icon" Property="Foreground" Value="{DynamicResource DevTools.Chrome}" /></VisualState.Setters></VisualState>
+                    </VisualStateGroup>
+                    <VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Enabled" /><VisualState x:Name="Disabled"><VisualState.Setters><Setter TargetName="PART_Surface" Property="Opacity" Value="0.45" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup x:Name="FocusStates"><VisualState x:Name="Unfocused" /><VisualState x:Name="Focused"><VisualState.Setters><Setter TargetName="PART_FocusRing" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup x:Name="IconStates"><VisualState x:Name="IconVisible" /><VisualState x:Name="IconHidden"><VisualState.Setters><Setter TargetName="PART_Icon" Property="Visibility" Value="Collapsed" /></VisualState.Setters></VisualState></VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <Border Name="PART_Surface" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="{TemplateBinding CornerRadius}" Padding="{TemplateBinding Padding}" TransitionProperty="None">
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="{TemplateBinding VerticalContentAlignment}">
+                        <TextBlock Name="PART_Icon" Text="{TemplateBinding Icon}" Foreground="{TemplateBinding Foreground}" FontFamily="{ThemeResource BodyFontFamily}" FontSize="{TemplateBinding FontSize}" Margin="0,0,4,0" VerticalAlignment="Center" />
+                        <TextBlock Name="PART_Label" Text="{TemplateBinding DisplayLabel}" Foreground="{TemplateBinding Foreground}" FontFamily="{TemplateBinding FontFamily}" FontSize="{TemplateBinding FontSize}" FontWeight="{TemplateBinding FontWeight}" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Border>
+                <Border Name="PART_FocusRing" BorderBrush="{DynamicResource DevTools.Accent}" BorderThickness="1" CornerRadius="{TemplateBinding CornerRadius}" Margin="-2" Visibility="Collapsed" IsHitTestVisible="False" />
+            </Grid>
+        </ControlTemplate></Setter>
+    </Style>
+    <Style TargetType="dev:DevToolsSegmentedSelector">
+        <Setter Property="Background" Value="{DynamicResource DevTools.Control}" /><Setter Property="BorderBrush" Value="{DynamicResource DevTools.BorderSubtle}" />
+        <Setter Property="BorderThickness" Value="1" /><Setter Property="Padding" Value="2" /><Setter Property="CornerRadius" Value="4" />
+        <Setter Property="Margin" Value="4,0" /><Setter Property="VerticalAlignment" Value="Center" /><Setter Property="MinHeight" Value="0" />
+        <Setter Property="SelectionMode" Value="Single" /><Setter Property="KeyboardNavigation.TabNavigation" Value="Once" />
+        <Setter Property="ItemsPanel"><ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate></Setter>
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsSegmentedSelector">
+            <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="{TemplateBinding CornerRadius}" Padding="{TemplateBinding Padding}"><ItemsPresenter Name="PART_ItemsPresenter" /></Border>
+        </ControlTemplate></Setter>
+    </Style>
+    <Style TargetType="dev:DevToolsSegmentItem">
+        <Setter Property="Width" Value="28" /><Setter Property="Height" Value="24" /><Setter Property="MinHeight" Value="0" />
+        <Setter Property="Background" Value="Transparent" /><Setter Property="BorderThickness" Value="0" /><Setter Property="Padding" Value="0" /><Setter Property="CornerRadius" Value="3" />
+        <Setter Property="FontSize" Value="13" /><Setter Property="Foreground" Value="{DynamicResource DevTools.TextSecondary}" /><Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsSegmentItem">
+            <Grid>
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup x:Name="SelectionStates"><VisualState x:Name="Unselected" /><VisualState x:Name="Selected"><VisualState.Setters>
+                        <Setter TargetName="PART_Selection" Property="Visibility" Value="Visible" /><Setter TargetName="PART_Dot" Property="Visibility" Value="Visible" />
+                        <Setter TargetName="PART_Content" Property="Foreground" Value="{DynamicResource DevTools.Accent}" />
+                    </VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Normal" /><VisualState x:Name="MouseOver"><VisualState.Setters><Setter TargetName="PART_Hover" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState><VisualState x:Name="Disabled"><VisualState.Setters><Setter Property="Opacity" Value="0.45" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup x:Name="FocusStates"><VisualState x:Name="Unfocused" /><VisualState x:Name="Focused"><VisualState.Setters><Setter TargetName="PART_FocusRing" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState></VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <Border Background="{TemplateBinding Background}" CornerRadius="{TemplateBinding CornerRadius}" />
+                <Border Name="PART_Hover" Background="{DynamicResource DevTools.ControlHover}" CornerRadius="{TemplateBinding CornerRadius}" Visibility="Collapsed" IsHitTestVisible="False" />
+                <Border Name="PART_Selection" Background="{DynamicResource DevTools.AccentSoft}" CornerRadius="{TemplateBinding CornerRadius}" Visibility="Collapsed" IsHitTestVisible="False" />
+                <ContentPresenter Name="PART_Content" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{TemplateBinding Foreground}" />
+                <Border Name="PART_Dot" Width="4" Height="4" CornerRadius="2" Background="{DynamicResource DevTools.Accent}" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,2" Visibility="Collapsed" IsHitTestVisible="False" />
+                <Border Name="PART_FocusRing" BorderBrush="{DynamicResource DevTools.Accent}" BorderThickness="1" CornerRadius="{TemplateBinding CornerRadius}" Visibility="Collapsed" IsHitTestVisible="False" />
+            </Grid>
+        </ControlTemplate></Setter>
+    </Style>
+    <Style TargetType="dev:DevToolsSurface">
+        <Setter Property="Background" Value="{DynamicResource DevTools.SurfaceAlt}" /><Setter Property="BorderBrush" Value="{DynamicResource DevTools.BorderSubtle}" />
+        <Setter Property="BorderThickness" Value="1" /><Setter Property="CornerRadius" Value="4" /><Setter Property="Padding" Value="8" /><Setter Property="ClipToBounds" Value="True" />
+        <Setter Property="TickBrush" Value="{DynamicResource DevTools.Accent}" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsSurface">
+            <Grid>
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup x:Name="SurfaceStates"><VisualState x:Name="Card" />
+                        <VisualState x:Name="AlternateCard"><VisualState.Setters><Setter TargetName="PART_Surface" Property="Background" Value="{DynamicResource DevTools.Surface}" /></VisualState.Setters></VisualState>
+                        <VisualState x:Name="Panel"><VisualState.Setters><Setter TargetName="PART_Header" Property="Visibility" Value="Visible" /><Setter TargetName="PART_Surface" Property="Padding" Value="12,8,12,12" /></VisualState.Setters></VisualState>
+                        <VisualState x:Name="Toolbar"><VisualState.Setters><Setter TargetName="PART_Surface" Property="Background" Value="{DynamicResource DevTools.Chrome}" /><Setter TargetName="PART_Surface" Property="BorderThickness" Value="0,0,0,1" /><Setter TargetName="PART_Surface" Property="CornerRadius" Value="0" /><Setter TargetName="PART_Surface" Property="Padding" Value="8,4" /><Setter TargetName="PART_Scanline" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState>
+                        <VisualState x:Name="StatusBar"><VisualState.Setters><Setter TargetName="PART_Surface" Property="Background" Value="{DynamicResource DevTools.Chrome}" /><Setter TargetName="PART_Surface" Property="BorderThickness" Value="0,1,0,0" /><Setter TargetName="PART_Surface" Property="CornerRadius" Value="0" /><Setter TargetName="PART_Surface" Property="Padding" Value="8,2" /><Setter TargetName="PART_Scanline" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState>
+                        <VisualState x:Name="CornerFrame"><VisualState.Setters><Setter TargetName="PART_Surface" Property="Background" Value="Transparent" /><Setter TargetName="PART_Surface" Property="BorderThickness" Value="0" /><Setter TargetName="PART_Surface" Property="CornerRadius" Value="0" /><Setter TargetName="PART_Surface" Property="Padding" Value="0" /><Setter TargetName="PART_Ticks" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState>
+                        <VisualState x:Name="Row"><VisualState.Setters><Setter TargetName="PART_Surface" Property="Background" Value="Transparent" /><Setter TargetName="PART_Surface" Property="BorderThickness" Value="0" /><Setter TargetName="PART_Surface" Property="CornerRadius" Value="0" /><Setter TargetName="PART_Surface" Property="Padding" Value="0" /></VisualState.Setters></VisualState>
+                        <VisualState x:Name="AlternateRow"><VisualState.Setters><Setter TargetName="PART_Surface" Property="Background" Value="{DynamicResource DevTools.RowAlt}" /><Setter TargetName="PART_Surface" Property="BorderThickness" Value="0" /><Setter TargetName="PART_Surface" Property="CornerRadius" Value="0" /><Setter TargetName="PART_Surface" Property="Padding" Value="0" /></VisualState.Setters></VisualState>
+                        <VisualState x:Name="TabShell"><VisualState.Setters><Setter TargetName="PART_Surface" Property="Background" Value="{DynamicResource DevTools.Surface}" /><Setter TargetName="PART_Surface" Property="BorderThickness" Value="0" /><Setter TargetName="PART_Surface" Property="CornerRadius" Value="0" /></VisualState.Setters></VisualState>
+                    </VisualStateGroup>
+                    <VisualStateGroup x:Name="IndicatorStates"><VisualState x:Name="IndicatorVisible" /><VisualState x:Name="IndicatorHidden"><VisualState.Setters><Setter TargetName="PART_Indicator" Property="Visibility" Value="Collapsed" /></VisualState.Setters></VisualState></VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <Border Name="PART_Surface" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="{TemplateBinding CornerRadius}" Padding="{TemplateBinding Padding}">
+                    <Grid>
+                        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                        <StackPanel Name="PART_Header" Visibility="Collapsed">
+                            <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                <TextBlock Text="{TemplateBinding DisplayHeading}" automation:AutomationProperties.Name="{TemplateBinding Heading}" Style="{StaticResource DevTools.Eyebrow}" Foreground="{DynamicResource DevTools.TextSecondary}" />
+                                <dev:DevToolsStatusIndicator Name="PART_Indicator" Grid.Column="1" Foreground="{TemplateBinding IndicatorBrush}" IsOn="{TemplateBinding IsIndicatorOn}" />
+                            </Grid>
+                            <Border Height="1" Background="{DynamicResource DevTools.BorderSubtle}" Margin="0,4,0,8" />
+                        </StackPanel>
+                        <ContentPresenter Name="PART_Body" Grid.Row="1" HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
+                    </Grid>
+                </Border>
+                <Border Name="PART_Scanline" Background="{DynamicResource DevTools.Scanline}" Visibility="Collapsed" IsHitTestVisible="False" />
+                <Grid Name="PART_Ticks" Visibility="Collapsed" IsHitTestVisible="False">
+                    <Border Width="{TemplateBinding TickSize}" Height="{TemplateBinding TickSize}" BorderBrush="{TemplateBinding TickBrush}" BorderThickness="1,1,0,0" HorizontalAlignment="Left" VerticalAlignment="Top" />
+                    <Border Width="{TemplateBinding TickSize}" Height="{TemplateBinding TickSize}" BorderBrush="{TemplateBinding TickBrush}" BorderThickness="0,1,1,0" HorizontalAlignment="Right" VerticalAlignment="Top" />
+                    <Border Width="{TemplateBinding TickSize}" Height="{TemplateBinding TickSize}" BorderBrush="{TemplateBinding TickBrush}" BorderThickness="1,0,0,1" HorizontalAlignment="Left" VerticalAlignment="Bottom" />
+                    <Border Width="{TemplateBinding TickSize}" Height="{TemplateBinding TickSize}" BorderBrush="{TemplateBinding TickBrush}" BorderThickness="0,0,1,1" HorizontalAlignment="Right" VerticalAlignment="Bottom" />
+                </Grid>
+            </Grid>
+        </ControlTemplate></Setter>
+    </Style>
+    <Style TargetType="dev:DevToolsStatusIndicator">
+        <Setter Property="Width" Value="8" /><Setter Property="Height" Value="8" /><Setter Property="Foreground" Value="{DynamicResource DevTools.Success}" /><Setter Property="VerticalAlignment" Value="Center" /><Setter Property="IsHitTestVisible" Value="False" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsStatusIndicator">
+            <Viewbox>
+                <VisualStateManager.VisualStateGroups><VisualStateGroup x:Name="IndicatorStates"><VisualState x:Name="On" /><VisualState x:Name="Off"><VisualState.Setters>
+                    <Setter TargetName="PART_Ring" Property="Opacity" Value="0.086" /><Setter TargetName="PART_Core" Property="Background" Value="{DynamicResource DevTools.TextDisabled}" />
+                </VisualState.Setters></VisualState></VisualStateGroup></VisualStateManager.VisualStateGroups>
+                <Grid Width="8" Height="8"><Border Name="PART_Ring" Background="{TemplateBinding Foreground}" CornerRadius="4" Opacity="0.2" />
+                <Border Name="PART_Core" Width="4" Height="4" Background="{TemplateBinding Foreground}" CornerRadius="2" HorizontalAlignment="Center" VerticalAlignment="Center" />
+            </Grid></Viewbox>
+        </ControlTemplate></Setter>
+    </Style>
+    <Style TargetType="dev:DevToolsReadout">
+        <Setter Property="Foreground" Value="{DynamicResource DevTools.TextSecondary}" /><Setter Property="ValueBrush" Value="{DynamicResource DevTools.TextPrimary}" /><Setter Property="FontSize" Value="11" /><Setter Property="Margin" Value="0,2" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsReadout">
+            <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                <TextBlock Name="PART_Label" Text="{TemplateBinding Label}" Foreground="{TemplateBinding Foreground}" FontSize="{TemplateBinding FontSize}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                <TextBlock Name="PART_Value" Grid.Column="1" Text="{TemplateBinding ValueText}" Foreground="{TemplateBinding ValueBrush}" FontSize="{TemplateBinding FontSize}" FontFamily="{ThemeResource MonoFontFamily}" VerticalAlignment="Center" TextAlignment="Right" Margin="12,0,0,0" />
+            </Grid>
+        </ControlTemplate></Setter>
+    </Style>
+    <Style TargetType="dev:DevToolsMeter">
+        <Setter Property="Background" Value="{DynamicResource DevTools.GridLine}" /><Setter Property="ProgressBrush" Value="{DynamicResource DevTools.Accent}" /><Setter Property="BorderThickness" Value="0" /><Setter Property="CornerRadius" Value="999" />
+        <Setter Property="Height" Value="5" /><Setter Property="MinHeight" Value="0" /><Setter Property="Maximum" Value="1" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsMeter">
+            <Grid ClipToBounds="True"><Border Name="PART_Track" Background="{TemplateBinding Background}" CornerRadius="{TemplateBinding CornerRadius}" /><Border Name="PART_Indicator" Background="{TemplateBinding ProgressBrush}" CornerRadius="{TemplateBinding CornerRadius}" HorizontalAlignment="Left" /></Grid>
+        </ControlTemplate></Setter>
+    </Style>
+    <Style TargetType="dev:DevToolsMeterRow">
+        <Setter Property="Foreground" Value="{DynamicResource DevTools.Accent}" /><Setter Property="Margin" Value="0,0,0,4" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsMeterRow">
+            <Grid><Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                <dev:DevToolsReadout Label="{TemplateBinding Label}" ValueText="{TemplateBinding ValueText}" Foreground="{DynamicResource DevTools.TextSecondary}" FontSize="10" Margin="0,0,0,2" />
+                <dev:DevToolsMeter Name="PART_Meter" Label="{TemplateBinding Label}" Grid.Row="1" Value="{TemplateBinding Fraction}" ProgressBrush="{TemplateBinding Foreground}" />
+            </Grid>
+        </ControlTemplate></Setter>
+    </Style>
+    <Style TargetType="dev:DevToolsTag">
+        <Setter Property="Foreground" Value="{DynamicResource DevTools.TextSecondary}" /><Setter Property="BorderThickness" Value="1" /><Setter Property="CornerRadius" Value="3" /><Setter Property="Padding" Value="5,1" /><Setter Property="Margin" Value="4,0,0,0" /><Setter Property="VerticalAlignment" Value="Center" />
+        <Setter Property="FontFamily" Value="Bahnschrift SemiBold" /><Setter Property="FontWeight" Value="SemiBold" /><Setter Property="FontSize" Value="10" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsTag">
+            <Grid><Border Background="{TemplateBinding Foreground}" CornerRadius="{TemplateBinding CornerRadius}" Opacity="{TemplateBinding TintOpacity}" /><Border Background="{TemplateBinding Background}" CornerRadius="{TemplateBinding CornerRadius}" /><Border BorderBrush="{TemplateBinding Foreground}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="{TemplateBinding CornerRadius}" Opacity="0.4" />
+                <TextBlock Name="PART_Text" Text="{TemplateBinding DisplayText}" automation:AutomationProperties.Name="{TemplateBinding Text}" Foreground="{TemplateBinding Foreground}" FontSize="{TemplateBinding FontSize}" FontFamily="{TemplateBinding FontFamily}" FontWeight="{TemplateBinding FontWeight}" Margin="{TemplateBinding Padding}" />
+            </Grid>
+        </ControlTemplate></Setter>
+    </Style>
+    <Style TargetType="dev:DevToolsStackedBar">
+        <Setter Property="Background" Value="{DynamicResource DevTools.GridLine}" /><Setter Property="Height" Value="10" /><Setter Property="CornerRadius" Value="999" /><Setter Property="ClipToBounds" Value="True" />
+        <Setter Property="ItemsPanel"><ItemsPanelTemplate><dev:DevToolsProportionalPanel /></ItemsPanelTemplate></Setter>
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsStackedBar"><Border Background="{TemplateBinding Background}" CornerRadius="{TemplateBinding CornerRadius}"><ItemsPresenter Name="PART_ItemsPresenter" /></Border></ControlTemplate></Setter>
+    </Style>
+    <Style TargetType="dev:DevToolsBarSegmentPresenter"><Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsBarSegmentPresenter"><Border Background="{TemplateBinding Background}" /></ControlTemplate></Setter></Style>
+</ResourceDictionary>

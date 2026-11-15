@@ -87,6 +87,10 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="include\vulkan_backend.h" />
+    <ClInclude Include="include\vulkan_capabilities.h" />
+    <ClInclude Include="include\vulkan_graphics_constants.h" />
+    <ClInclude Include="include\vulkan_video_format.h" />
+    <ClInclude Include="include\vulkan_video_shaders.h" />
     <ClInclude Include="include\vulkan_embedded_shaders.h" />
     <ClInclude Include="include\vulkan_glyph_atlas.h" />
     <ClInclude Include="include\vulkan_text_glyph_shaders.h" />
@@ -124,6 +128,7 @@
     <ClCompile Include="src\vulkan_vello_compute.cpp" />
     <ClCompile Include="src\vulkan_vello_engine.cpp" />
     <ClCompile Include="src\vulkan_video_surface.cpp" />
+    <ClCompile Include="src\vulkan_video_import.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="shaders\**\*" />

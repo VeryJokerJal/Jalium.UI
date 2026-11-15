@@ -192,7 +192,7 @@ internal sealed class ResourceReclaimer : IDisposable
             // The visual.LastRenderedTickMs == 0 case ("never rendered") cannot
             // occur here because OnVisualRendered only adds visuals that have
             // just rendered; their tick is non-zero by construction.
-            if (visual.LastRenderedTickMs <= threshold)
+            if (visual.LastRenderedTickMs <= threshold && IsProvenOffScreen(visual))
             {
                 // Idle — release reclaimable resources. Wrapped so a misbehaving
                 // implementation cannot take down the render-loop callback.
@@ -202,7 +202,7 @@ internal sealed class ResourceReclaimer : IDisposable
                     catch { /* swallow — never let cleanup poison the loop */ }
                 }
 
-                if (invokeReclaimable && IsProvenOffScreen(visual))
+                if (invokeReclaimable)
                 {
                     try
                     {
@@ -230,14 +230,14 @@ internal sealed class ResourceReclaimer : IDisposable
         // the idle window an element has to cross. ScanFrameInterval already
         // gates how often we get here; the timestamp guard just prevents
         // wasted native traffic when a user has set a very tight scan
-        // interval. Throttle is applied per process, not per window — every
-        // window's render target is reclaimed in the same tick.
+        // interval. Throttle is process-wide; each window's own presentation
+        // activity determines whether it is eligible during that scan.
         if (_options.ReclaimBackendCaches &&
             (_lastBackendReclaimTickMs == 0 ||
              nowMs - _lastBackendReclaimTickMs >= idleTimeoutMs))
         {
             _lastBackendReclaimTickMs = nowMs;
-            ReclaimBackendCaches();
+            ReclaimBackendCaches(nowMs, Math.Max(idleTimeoutMs, _options.BackendIdleTimeoutMs));
         }
     }
 
@@ -262,8 +262,8 @@ internal sealed class ResourceReclaimer : IDisposable
     /// A visual with no host window is unreachable from any presentation surface and needs no
     /// witness at all.</para>
     /// <para>Deliberately gates only <see cref="IReclaimableResource"/>. The retained drawing-cache
-    /// eviction above stays on the plain idle test: rebuilding a command list costs one render pass
-    /// and cannot make anything disappear.</para>
+    /// eviction uses the same witness: rebuilding visible drawing and GPU-layer caches on the
+    /// first input after a pause can trigger allocations and native memory-pressure collections.</para>
     /// </remarks>
     private static bool IsProvenOffScreen(Visual visual)
     {
@@ -290,7 +290,7 @@ internal sealed class ResourceReclaimer : IDisposable
         return host.LastFullFramePaintStartTickMs > visual.LastRenderedTickMs;
     }
 
-    private static void ReclaimBackendCaches()
+    private static void ReclaimBackendCaches(long nowMs, int idleTimeoutMs)
     {
         // Snapshot first so a window closing inside ReclaimIdleResources()
         // (e.g. a popup auto-dismiss) cannot invalidate iteration. Each call
@@ -301,7 +301,7 @@ internal sealed class ResourceReclaimer : IDisposable
         {
             try
             {
-                windows[i].ReclaimIdleBackendResources();
+                windows[i].ReclaimIdleBackendResources(nowMs, idleTimeoutMs);
             }
             catch
             {

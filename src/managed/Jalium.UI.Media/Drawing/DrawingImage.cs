@@ -5,6 +5,13 @@ namespace Jalium.UI.Media;
 /// </summary>
 public sealed class DrawingImage : ImageSource
 {
+    // The derived viewport is private/rebuildable; draw stamps belong to the
+    // original source retained by Image and its idle-reclamation bookkeeping.
+    internal ImageSource? DrawOwner { get; set; }
+    protected override void CloneCore(Freezable source) { base.CloneCore(source); DrawOwner = ((DrawingImage)source).DrawOwner; }
+    protected override void CloneCurrentValueCore(Freezable source) { base.CloneCurrentValueCore(source); DrawOwner = ((DrawingImage)source).DrawOwner; }
+    protected override void GetAsFrozenCore(Freezable source) { base.GetAsFrozenCore(source); DrawOwner = ((DrawingImage)source).DrawOwner; }
+    protected override void GetCurrentValueAsFrozenCore(Freezable source) { base.GetCurrentValueAsFrozenCore(source); DrawOwner = ((DrawingImage)source).DrawOwner; }
     private long _contentGeneration;
     internal override long ContentGeneration => Interlocked.Read(ref _contentGeneration);
 

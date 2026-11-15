@@ -1,6 +1,7 @@
 using Jalium.UI.Documents;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Controls;
 
@@ -12,7 +13,7 @@ public partial class TextBlock
     private bool HasInlineFontOverrides()
     {
         if (_inlines is null) return false;
-        var family = FontFamily.GetRenderingSource(this);
+        var family = CssFontFaces.ComparisonSource(FontFamily.GetRenderingSource(this));
         var size = FontSize;
         var weight = FontWeight.ToOpenTypeWeight();
         var style = FontStyle.ToOpenTypeStyle();
@@ -20,7 +21,7 @@ public partial class TextBlock
         foreach (var range in GetInlineTextRanges())
         {
             var run = range.Run;
-            if (!string.Equals(GetRunFontFamily(run), family, StringComparison.Ordinal) ||
+            if (!string.Equals(CssFontFaces.ComparisonSource(GetRunFontFamily(run)), family, StringComparison.Ordinal) ||
                 Math.Abs(GetRunFontSize(run) - size) > 0.001 ||
                 run.FontWeight.ToOpenTypeWeight() != weight ||
                 run.FontStyle.ToOpenTypeStyle() != style ||
@@ -31,7 +32,7 @@ public partial class TextBlock
     }
 
     private string GetRunFontFamily(Run run)
-        => run.FontFamily?.GetRenderingSource(run) ?? FontFamily.GetRenderingSource(this);
+        => (run.FontFamily ?? FontFamily).GetRenderingSource(run);
 
     private double GetRunFontSize(Run run)
         => run.FontSize;
@@ -44,18 +45,21 @@ public partial class TextBlock
 
         var text = PaintSlice(start, length);
         if (text.Length == 0) return default;
-        cached = MeasureRunText(run, text);
+        cached = MeasureRunText(run, text, start, length);
         if (_inlineFontMeasurements.Count >= MaxTextWidthCacheEntries)
             _inlineFontMeasurements.Clear();
         _inlineFontMeasurements[key] = cached;
         return cached;
     }
 
-    private TextMeasurementCacheEntry MeasureRunText(Run run, string text)
+    private TextMeasurementCacheEntry MeasureRunText(Run run, string text, int start = -1, int length = 0)
     {
         if (text.Length == 0) return default;
         var size = GetRunFontSize(run);
-        var formatted = new FormattedText(text, GetRunFontFamily(run), size)
+        var family = start >= 0 && _usesCapsShaping
+            ? CapsContextFamily(GetRunFontFamily(run), start, Math.Clamp(start + length, start, _visualText.Length), start)
+            : GetRunFontFamily(run);
+        var formatted = new FormattedText(text, family, size)
         {
             FontWeight = run.FontWeight.ToOpenTypeWeight(),
             FontStyle = run.FontStyle.ToOpenTypeStyle(),
@@ -81,6 +85,8 @@ public partial class TextBlock
         bool includeTrailingWhitespace = false, bool forceFragmented = false,
         double tabOrigin = 0)
     {
+        if (_hasPreservedTabs && !forceFragmented && TryMeasureCssBidiRange(start, length,
+            includeTrailingWhitespace || _countTrailingWhitespace, out var bidiTabs, tabOrigin)) return bidiTabs;
         if (ContainsPreservedTab(start, length))
             return MeasureTabbedInlineRange(start, length, includeTrailingWhitespace,
                 tabOrigin);
@@ -92,6 +98,16 @@ public partial class TextBlock
         bool includeTrailingWhitespace, bool forceFragmented)
     {
         includeTrailingWhitespace |= _countTrailingWhitespace;
+        if (!forceFragmented && TryMeasureCssBidiRange(start, length, includeTrailingWhitespace, out var bidiWidth))
+            return bidiWidth;
+        if ((_hasWordSpacing || _usesWordSpacingShaping || _usesCapsShaping || _usesAutospaceShaping || WantsShapedJustification) && !_hasLetterSpacing)
+        {
+            int wordEnd = start + length;
+            if (!includeTrailingWhitespace)
+                while (wordEnd > start && IsBreakableWhitespace(_visualText[wordEnd - 1])) wordEnd--;
+            if (TryShapedSpacing(start, wordEnd, Math.Max(1, FontSize), out var shaped))
+                return shaped.Lines[0].Metrics.Line.Width;
+        }
         if (_hasLetterSpacing)
         {
             var visibleEnd = start + length;
@@ -114,6 +130,8 @@ public partial class TextBlock
     {
         includeTrailingWhitespace |= _countTrailingWhitespace;
         if (length <= 0) return 0;
+        if (!forceFragmented && TryMeasureCssBidiRange(start, length, includeTrailingWhitespace, out var bidiWidth))
+            return bidiWidth;
         if (!_usesInlineFontLayout && !forceFragmented)
             return MeasureTextWidth(PaintSlice(start, length), includeTrailingWhitespace);
 
@@ -146,6 +164,7 @@ public partial class TextBlock
 
     private InlineLineMetrics GetInlineLineMetrics(int start, int length)
     {
+        if (UsesCssLineMetrics) return GetCssInlineLineMetrics(start, length);
         var baseSize = FontSize;
         var baseMetrics = TextMeasurement.GetFontMetrics(FontFamily.GetRenderingSource(this),
             baseSize, FontWeight.ToOpenTypeWeight(), FontStyle.ToOpenTypeStyle());
@@ -198,8 +217,10 @@ public partial class TextBlock
         double originX, double lineY, int visibleEnd = int.MaxValue)
     {
         var lineEnd = Math.Min(line.StartIndex + line.Length, visibleEnd);
+        if (TryDrawCoalescedHyphenatedLine(context, line, lineEnd, originX, lineY))
+            return;
         var x = originX;
-        DrawStyledInlineRange(context, line, line.StartIndex, lineEnd, ref x, lineY);
+        DrawStyledInlineRangeWithHyphenChange(context, line, line.StartIndex, lineEnd, ref x, lineY);
         if (line.SoftHyphenVisible && lineEnd == line.StartIndex + line.Length)
             DrawVisibleSoftHyphen(context, line, ref x, lineY);
     }
@@ -207,10 +228,14 @@ public partial class TextBlock
     private void DrawStyledInlineRange(DrawingContext context, in TextLayoutLine line,
         int start, int end, ref double x, double lineY)
     {
+        if ((_usesWordSpacingShaping || _usesCapsShaping || _usesAutospaceShaping || WantsShapedJustification) && TryDrawShapedSpacing(context, line, start, end, ref x, lineY)) return;
         if (_hasLetterSpacing)
             DrawLetterSpacedInlineRange(context, line, start, end, ref x, lineY);
         else if (_hasWordSpacing)
-            DrawWordSpacedInlineRange(context, line, start, end, ref x, lineY);
+        {
+            if (!TryDrawShapedSpacing(context, line, start, end, ref x, lineY))
+                DrawWordSpacedInlineRange(context, line, start, end, ref x, lineY);
+        }
         else
             DrawStyledInlineRangeCore(context, line, start, end, ref x, lineY);
     }
@@ -264,10 +289,13 @@ public partial class TextBlock
                 continue;
             DrawStyledFragmentRaw(context, run, cursor, unit.Start - cursor,
                 ref x, lineY, line);
+            var paintStart = _paintOffsets?[unit.Start] ?? unit.Start;
             for (var piece = 0; piece < unit.Pieces.Length; piece++)
             {
                 x += unit.GapsBefore[piece];
-                DrawMeasuredFragment(context, run, unit.Pieces[piece], ref x, lineY, line);
+                DrawMeasuredFragment(context, run, unit.Pieces[piece], ref x, lineY, line,
+                    unit.Start, unit.End - unit.Start, paintStart);
+                paintStart += unit.Pieces[piece].FormattedText?.Text.Length ?? 0;
             }
             cursor = unit.End;
         }
@@ -286,12 +314,12 @@ public partial class TextBlock
         var measurement = run is null
             ? MeasureText(PaintSlice(start, length))
             : MeasureInlineFragment(run, start, length);
-        DrawMeasuredFragment(context, run, measurement, ref x, lineY, line);
+        DrawMeasuredFragment(context, run, measurement, ref x, lineY, line, start, length);
     }
 
     private void DrawMeasuredFragment(DrawingContext context, Run? run,
         TextMeasurementCacheEntry measurement, ref double x, double lineY,
-        in TextLayoutLine line)
+        in TextLayoutLine line, int start, int length, int? paintStart = null, bool generated = false)
     {
         var formatted = measurement.FormattedText;
         if (formatted is null) return;
@@ -308,7 +336,8 @@ public partial class TextBlock
         formatted.MaxTextHeight = Math.Max(line.Height, size * 2);
         formatted.Trimming = TextTrimming.None;
         formatted.ApplyTextOptionsFrom(this);
-        context.DrawText(formatted, new Point(x, lineY + line.Baseline - ascent));
+        DrawDocumentGlyphs(context, formatted, UsesCssLineMetrics ? TextPaintOrigin(formatted, line, x, lineY)
+            : new Point(x, lineY + line.Baseline - ascent), start, length, paintStart, generated);
         x += measurement.WidthIncludingTrailingWhitespace;
     }
 

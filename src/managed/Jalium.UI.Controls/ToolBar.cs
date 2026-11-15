@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Media;
+using Jalium.UI.Input;
 
 using Jalium.UI.Styling;
 
@@ -9,6 +10,18 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Provides a container for a group of commands or controls.
 /// </summary>
+[TemplatePart(Name = "PART_LayoutPanel", Type = typeof(ToolBarLayoutPanel))]
+[TemplatePart(Name = "PART_ItemsPresenter", Type = typeof(ItemsPresenter))]
+[TemplatePart(Name = "PART_OverflowPanel", Type = typeof(ToolBarOverflowPanel))]
+[TemplatePart(Name = "PART_OverflowPopup", Type = typeof(Popup))]
+[TemplatePart(Name = "PART_OverflowButton", Type = typeof(ButtonBase))]
+[TemplateVisualState(Name = "Normal", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Disabled", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Horizontal", GroupName = "OrientationStates")]
+[TemplateVisualState(Name = "Vertical", GroupName = "OrientationStates")]
+[TemplateVisualState(Name = "OverflowUnavailable", GroupName = "OverflowStates")]
+[TemplateVisualState(Name = "OverflowClosed", GroupName = "OverflowStates")]
+[TemplateVisualState(Name = "OverflowOpen", GroupName = "OverflowStates")]
 public class ToolBar : HeaderedItemsControl
 {
     private Border? _cssBorderPainter;
@@ -21,7 +34,23 @@ public class ToolBar : HeaderedItemsControl
     private static readonly ResourceKey s_separatorStyleKey = new ComponentResourceKey(typeof(ToolBar), nameof(SeparatorStyleKey));
     private static readonly ResourceKey s_textBoxStyleKey = new ComponentResourceKey(typeof(ToolBar), nameof(TextBoxStyleKey));
     private static readonly ResourceKey s_toggleButtonStyleKey = new ComponentResourceKey(typeof(ToolBar), nameof(ToggleButtonStyleKey));
-    private readonly ToolBarOverflowPanel _overflowPanel;
+    private ToolBarOverflowPanel? _overflowPanel;
+    private ToolBarLayoutPanel? _layoutPanel;
+    private Popup? _overflowPopup;
+    private ButtonBase? _overflowButton;
+    private static readonly DependencyPropertyKey IsOverflowPresentedPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(IsOverflowPresented), typeof(bool), typeof(ToolBar), new PropertyMetadata(false));
+    public static readonly DependencyProperty IsOverflowPresentedProperty = IsOverflowPresentedPropertyKey.DependencyProperty;
+    public bool IsOverflowPresented => (bool)GetValue(IsOverflowPresentedProperty)!;
+    private static readonly DependencyPropertyKey OverflowButtonVisibilityPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(OverflowButtonVisibility), typeof(Visibility), typeof(ToolBar), new PropertyMetadata(Visibility.Collapsed));
+    public static readonly DependencyProperty OverflowButtonVisibilityProperty = OverflowButtonVisibilityPropertyKey.DependencyProperty;
+    public Visibility OverflowButtonVisibility => (Visibility)GetValue(OverflowButtonVisibilityProperty)!;
+
+    private static readonly DependencyPropertyKey OverflowPlacementPropertyKey = DependencyProperty.RegisterReadOnly(
+        nameof(OverflowPlacement), typeof(PlacementMode), typeof(ToolBar), new PropertyMetadata(PlacementMode.Bottom));
+    public static readonly DependencyProperty OverflowPlacementProperty = OverflowPlacementPropertyKey.DependencyProperty;
+    public PlacementMode OverflowPlacement => (PlacementMode)GetValue(OverflowPlacementProperty)!;
     private readonly List<UIElement> _containerOrder = new();
 
     /// <inheritdoc />
@@ -201,12 +230,74 @@ public class ToolBar : HeaderedItemsControl
     /// </summary>
     public ToolBar()
     {
-        _overflowPanel = new ToolBarOverflowPanel
+        DefaultStyleKey = typeof(ToolBar);
+    }
+
+    public override void OnApplyTemplate()
+    {
+        base.OnApplyTemplate();
+        _layoutPanel = GetTemplateChild("PART_LayoutPanel") as ToolBarLayoutPanel;
+        _overflowPanel = GetTemplateChild("PART_OverflowPanel") as ToolBarOverflowPanel;
+        _overflowPopup = GetTemplateChild("PART_OverflowPopup") as Popup;
+        _overflowButton = GetTemplateChild("PART_OverflowButton") as ButtonBase;
+        if (_overflowButton is not null) _overflowButton.Click += OnOverflowClick;
+        if (_overflowPopup is not null)
         {
-            ToolBarOwner = this,
-            Visibility = Visibility.Collapsed
-        };
-        AddVisualChild(_overflowPanel);
+            _overflowPopup.Closed += OnOverflowClosed;
+            _overflowPopup.Opened += OnOverflowOpened;
+        }
+        _overflowPanel?.AddHandler(PreviewKeyDownEvent, new KeyEventHandler(OnOverflowKeyDown), handledEventsToo: true);
+        ConfigureMainPanel();
+        UpdateOverflowPanelVisibility();
+    }
+
+    internal override void OnTemplateContentClearing()
+    {
+        RestoreAllItemsToMainPanel();
+        if (_overflowButton is not null) _overflowButton.Click -= OnOverflowClick;
+        if (_overflowPopup is not null)
+        {
+            _overflowPopup.Closed -= OnOverflowClosed;
+            _overflowPopup.Opened -= OnOverflowOpened;
+            _overflowPopup.IsOpen = false;
+        }
+        _overflowPanel?.RemoveHandler(PreviewKeyDownEvent, new KeyEventHandler(OnOverflowKeyDown));
+        if (_overflowPanel is not null) _overflowPanel.ToolBarOwner = null;
+        _overflowPanel = null;
+        _layoutPanel = null;
+        _overflowPopup = null;
+        _overflowButton = null;
+        SetValue(HasOverflowItemsPropertyKey, false);
+        SetValue(OverflowButtonVisibilityPropertyKey, Visibility.Collapsed);
+        SetValue(IsOverflowPresentedPropertyKey, false);
+        base.OnTemplateContentClearing();
+    }
+
+    private void OnOverflowClick(object sender, RoutedEventArgs e)
+    {
+        if (IsEnabled && HasOverflowItems) SetCurrentValue(IsOverflowOpenProperty, !IsOverflowOpen);
+    }
+    private void OnOverflowOpened(object? sender, EventArgs e)
+        => _overflowPanel?.MoveFocus(FocusNavigationDirection.First);
+    private void OnOverflowClosed(object? sender, EventArgs e)
+        => SetCurrentValue(IsOverflowOpenProperty, false);
+    private void OnOverflowKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Escape || !IsOverflowOpen) return;
+        SetCurrentValue(IsOverflowOpenProperty, false);
+        _overflowButton?.Focus();
+        e.Handled = true;
+    }
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        OnOverflowKeyDown(this, e);
+        if (!e.Handled) base.OnKeyDown(e);
+    }
+    protected override void OnIsEnabledChanged(bool oldValue, bool newValue)
+    {
+        base.OnIsEnabledChanged(oldValue, newValue);
+        if (!newValue) SetCurrentValue(IsOverflowOpenProperty, false);
+        UpdateOverflowPanelVisibility();
     }
 
     /// <inheritdoc />
@@ -260,6 +351,7 @@ public class ToolBar : HeaderedItemsControl
         RestoreAllItemsToMainPanel();
         base.RefreshItems();
         ConfigureMainPanel();
+        InvalidateOverflowLayout();
     }
 
     /// <inheritdoc />
@@ -267,9 +359,7 @@ public class ToolBar : HeaderedItemsControl
     {
         if (Template != null)
         {
-            var templatedSize = base.MeasureOverride(availableSize);
-            UpdateOverflowStateFromCurrentHost(availableSize);
-            return templatedSize;
+            return base.MeasureOverride(availableSize);
         }
 
         if (ItemsHost == null)
@@ -287,7 +377,7 @@ public class ToolBar : HeaderedItemsControl
         }
 
         mainPanel.Measure(contentAvailable);
-        _overflowPanel.Measure(new Size(
+        _overflowPanel?.Measure(new Size(
             double.IsFinite(contentAvailable.Width) ? Math.Max(contentAvailable.Width, 0) : 200,
             double.PositiveInfinity));
         return new Size(
@@ -310,7 +400,7 @@ public class ToolBar : HeaderedItemsControl
                 CssLayout?.ContainingWidthCache ?? finalSize.Width));
         ItemsHost?.Arrange(content);
         UpdateOverflowPanelVisibility();
-        if (_overflowPanel.Visibility == Visibility.Visible)
+        if (_overflowPanel?.Visibility == Visibility.Visible)
         {
             var overflowSize = _overflowPanel.DesiredSize;
             var origin = Orientation == Orientation.Horizontal
@@ -320,7 +410,7 @@ public class ToolBar : HeaderedItemsControl
         }
         else
         {
-            _overflowPanel.Arrange(default);
+            _overflowPanel?.Arrange(default);
         }
 
         return finalSize;
@@ -373,7 +463,7 @@ public class ToolBar : HeaderedItemsControl
                 return base.VisualChildrenCount;
             }
 
-            return ItemsHost == null ? 0 : 2;
+            return ItemsHost == null ? 0 : _overflowPanel is null ? 1 : 2;
         }
     }
 
@@ -393,22 +483,29 @@ public class ToolBar : HeaderedItemsControl
         return index switch
         {
             0 => ItemsHost,
-            1 => _overflowPanel,
+            1 when _overflowPanel is not null => _overflowPanel,
             _ => throw new ArgumentOutOfRangeException(nameof(index))
         };
     }
 
-    internal ToolBarOverflowPanel OverflowPanel => _overflowPanel;
+    internal ToolBarOverflowPanel? OverflowPanel => _overflowPanel;
 
     internal void SetOrientationFromTray(Orientation orientation) =>
         SetValue(OrientationPropertyKey, orientation);
 
-    private void UpdateOverflowStateFromCurrentHost(Size availableSize)
+    internal void InvalidateOverflowLayout()
+    {
+        _layoutPanel?.InvalidateMeasure();
+        InvalidateMeasure();
+    }
+
+    internal void UpdateOverflowStateFromCurrentHost(Size availableSize)
     {
         RestoreAllItemsToMainPanel();
-        if (ItemsHost is not ToolBarPanel mainPanel)
+        if (_overflowPanel is null || ItemsHost is not ToolBarPanel mainPanel)
         {
             SetValue(HasOverflowItemsPropertyKey, false);
+            UpdateOverflowPanelVisibility();
             return;
         }
 
@@ -487,7 +584,7 @@ public class ToolBar : HeaderedItemsControl
 
     private void RestoreAllItemsToMainPanel()
     {
-        if (_overflowPanel.Children.Count == 0 || ItemsHost is not ToolBarPanel mainPanel)
+        if (_overflowPanel is null || _overflowPanel.Children.Count == 0 || ItemsHost is not ToolBarPanel mainPanel)
         {
             return;
         }
@@ -516,14 +613,25 @@ public class ToolBar : HeaderedItemsControl
             panel.Orientation = Orientation;
         }
 
-        _overflowPanel.ToolBarOwner = this;
+        if (_overflowPanel is not null) _overflowPanel.ToolBarOwner = this;
     }
 
     private void UpdateOverflowPanelVisibility()
     {
-        _overflowPanel.Visibility = HasOverflowItems && IsOverflowOpen
-            ? Visibility.Visible
-            : Visibility.Collapsed;
+        bool presented = HasOverflowItems && IsOverflowOpen && IsEnabled;
+        SetValue(OverflowPlacementPropertyKey, Orientation == Orientation.Horizontal ? PlacementMode.Bottom : PlacementMode.Right);
+        SetValue(OverflowButtonVisibilityPropertyKey, HasOverflowItems ? Visibility.Visible : Visibility.Collapsed);
+        if (_overflowPanel is not null)
+            _overflowPanel.Visibility = presented ? Visibility.Visible : Visibility.Collapsed;
+        // Opening the template-bound popup synchronously raises Opened. Its
+        // commands must already be visible and positioned before focus moves.
+        SetValue(IsOverflowPresentedPropertyKey, presented);
+        if (TemplateRootInternal is not null)
+        {
+            VisualStateManager.GoToState(this, IsEnabled ? "Normal" : "Disabled", false);
+            VisualStateManager.GoToState(this, Orientation == Orientation.Horizontal ? "Horizontal" : "Vertical", false);
+            VisualStateManager.GoToState(this, !HasOverflowItems ? "OverflowUnavailable" : presented ? "OverflowOpen" : "OverflowClosed", false);
+        }
     }
 
     private static double GetMainExtent(UIElement element, bool horizontal) =>
@@ -541,13 +649,13 @@ public class ToolBar : HeaderedItemsControl
         {
             if (current is ToolBarPanel { ToolBarOwner: { } owner })
             {
-                owner.InvalidateMeasure();
+                owner.InvalidateOverflowLayout();
                 return;
             }
 
             if (current is ToolBarOverflowPanel { ToolBarOwner: { } overflowOwner })
             {
-                overflowOwner.InvalidateMeasure();
+                overflowOwner.InvalidateOverflowLayout();
                 return;
             }
         }
@@ -557,7 +665,8 @@ public class ToolBar : HeaderedItemsControl
     {
         var toolBar = (ToolBar)d;
         toolBar.ConfigureMainPanel();
-        toolBar.InvalidateMeasure();
+        toolBar.UpdateOverflowPanelVisibility();
+        toolBar.InvalidateOverflowLayout();
     }
 
     private static void OnIsOverflowOpenChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)

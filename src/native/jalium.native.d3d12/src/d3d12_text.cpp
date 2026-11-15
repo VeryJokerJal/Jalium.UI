@@ -2,6 +2,7 @@
 #include "jalium_text_stats.h"
 #include "jalium_dwrite_font_units.h"
 #include "jalium_dwrite_font_math.h"
+#include "jalium_dwrite_font_features.h"
 #include <algorithm>
 
 namespace jalium {
@@ -155,6 +156,24 @@ void D3D12TextFormat::SetMaxLines(uint32_t maxLines) {
     InvalidateLayoutCache();
 }
 
+JaliumResult D3D12TextFormat::SetFontFeatures(const JaliumFontFeature* features, uint32_t count)
+{
+    if (!factory_ || count > 16384 || (count && !features)) return JALIUM_ERROR_INVALID_ARGUMENT;
+    ComPtr<IDWriteTypography> typography;
+    std::vector<JaliumFontFeature> values;
+    if (count) {
+        if (FAILED(factory_->CreateTypography(&typography))) return JALIUM_ERROR_UNKNOWN;
+        values.assign(features, features + count);
+        for (const auto& feature : values) {
+            uint32_t t = feature.tag;
+            auto tag = static_cast<DWRITE_FONT_FEATURE_TAG>((t >> 24) | ((t >> 8) & 0xff00) | ((t << 8) & 0xff0000) | (t << 24));
+            if (FAILED(typography->AddFontFeature({tag, feature.value}))) return JALIUM_ERROR_UNKNOWN;
+        }
+    }
+    typography_ = std::move(typography); fontFeatures_ = std::move(values);
+    InvalidateLayoutCache(); return JALIUM_OK;
+}
+
 uint64_t D3D12TextFormat::HashLayoutKey(
     const wchar_t* text, uint32_t textLength) const noexcept
 {
@@ -167,6 +186,7 @@ uint64_t D3D12TextFormat::HashLayoutKey(
     if (text && textLength)
         mix(text, static_cast<size_t>(textLength) * sizeof(wchar_t));
     mix(&maxLines_, sizeof(maxLines_));
+    if (!fontFeatures_.empty()) mix(fontFeatures_.data(), fontFeatures_.size() * sizeof(JaliumFontFeature));
     return h;
 }
 
@@ -282,6 +302,10 @@ HRESULT D3D12TextFormat::CreateLayout(
         text, textLength, format_.Get(), maxWidth, maxHeight, layout);
 
     if (SUCCEEDED(hr) && *layout) {
+        if (typography_) {
+            hr = (*layout)->SetTypography(typography_.Get(), {0, textLength});
+            if (FAILED(hr)) { (*layout)->Release(); *layout = nullptr; return hr; }
+        }
         ApplyMaxLinesClamp(*layout);
     }
 
@@ -511,6 +535,11 @@ JaliumResult D3D12TextFormat::GetFontMetrics(JaliumTextMetrics* metrics)
     metrics->baseline = metrics->ascent;
 
     return JALIUM_OK;
+}
+
+JaliumResult D3D12TextFormat::GetFontFeatureSupport(uint32_t tables, const uint32_t* tags, uint32_t count, uint8_t* supported) const
+{
+    return font_features::Read(format_.Get(), tables, tags, count, supported);
 }
 
 JaliumResult D3D12TextFormat::GetFontUnitMetrics(JaliumFontUnitMetrics* metrics)

@@ -1,6 +1,7 @@
 using System.Collections;
 using System.ComponentModel;
 using System.Reflection;
+using System.Runtime.ExceptionServices;
 using System.Runtime.Serialization;
 using Jalium.UI.Controls;
 using Jalium.UI.Data;
@@ -19,33 +20,35 @@ public sealed class CoreThreadingDataMedia3DParityTests
         BaseCompatibilityPreferences.ResetForTests();
         try
         {
-            var dispatcher = Dispatcher.GetForCurrentThread();
-            var context = new DispatcherSynchronizationContext(
-                dispatcher,
-                DispatcherPriority.Background);
-
-            var callbacks = new List<string>();
-            context.Post(_ => callbacks.Add("background"), null);
-            dispatcher.BeginInvoke(DispatcherPriority.Normal, () => callbacks.Add("normal"));
-            dispatcher.ProcessQueue();
-
-            Assert.Equal(new[] { "normal", "background" }, callbacks);
-            Assert.Equal(
-                DispatcherPriority.Background,
-                GetSynchronizationContextPriority(context));
-
-            var copy = Assert.IsType<DispatcherSynchronizationContext>(context.CreateCopy());
-            Assert.NotSame(context, copy);
-            Assert.Equal(
-                DispatcherPriority.Background,
-                GetSynchronizationContextPriority(copy));
-
-            Assert.Throws<InvalidEnumArgumentException>(
-                () => new DispatcherSynchronizationContext(
+            RunOnFreshDispatcherThread(dispatcher =>
+            {
+                var context = new DispatcherSynchronizationContext(
                     dispatcher,
-                    (DispatcherPriority)int.MaxValue));
-            Assert.Throws<ArgumentNullException>(
-                () => new DispatcherSynchronizationContext(null!, DispatcherPriority.Normal));
+                    DispatcherPriority.Background);
+
+                var callbacks = new List<string>();
+                context.Post(_ => callbacks.Add("background"), null);
+                dispatcher.BeginInvoke(DispatcherPriority.Normal, () => callbacks.Add("normal"));
+                dispatcher.ProcessQueue();
+
+                Assert.Equal(new[] { "normal", "background" }, callbacks);
+                Assert.Equal(
+                    DispatcherPriority.Background,
+                    GetSynchronizationContextPriority(context));
+
+                var copy = Assert.IsType<DispatcherSynchronizationContext>(context.CreateCopy());
+                Assert.NotSame(context, copy);
+                Assert.Equal(
+                    DispatcherPriority.Background,
+                    GetSynchronizationContextPriority(copy));
+
+                Assert.Throws<InvalidEnumArgumentException>(
+                    () => new DispatcherSynchronizationContext(
+                        dispatcher,
+                        (DispatcherPriority)int.MaxValue));
+                Assert.Throws<ArgumentNullException>(
+                    () => new DispatcherSynchronizationContext(null!, DispatcherPriority.Normal));
+            });
         }
         finally
         {
@@ -177,6 +180,42 @@ public sealed class CoreThreadingDataMedia3DParityTests
         (DispatcherPriority)typeof(DispatcherSynchronizationContext)
             .GetField("_priority", BindingFlags.Instance | BindingFlags.NonPublic)!
             .GetValue(context)!;
+
+    private static void RunOnFreshDispatcherThread(Action<Dispatcher> action)
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            Dispatcher? dispatcher = null;
+            try
+            {
+                dispatcher = Dispatcher.CurrentDispatcher;
+                action(dispatcher);
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+            finally
+            {
+                dispatcher?.DisposeCore();
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "CoreThreadingDataMedia3DParityTests.Dispatcher",
+        };
+
+        thread.Start();
+        Assert.True(
+            thread.Join(TimeSpan.FromSeconds(5)),
+            "Fresh dispatcher test thread did not exit within the timeout.");
+
+        if (failure is not null)
+        {
+            ExceptionDispatchInfo.Capture(failure).Throw();
+        }
+    }
 
     private sealed class ProbeVisual3D : Visual3D
     {

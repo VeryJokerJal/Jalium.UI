@@ -26,7 +26,7 @@ internal static class JalxamlCodeGenerator
     /// VALUE-EXPRESSION Razor (<c>@(expr)</c> / <c>@identifier</c>) is lowered in-place by
     /// the per-attribute / per-text-node emitters and does NOT bail here.
     /// </summary>
-    public static string? TryEmitInitializeBody(JalxamlParseResult result, SymbolTypeHelper? symbols, XmlnsTypeResolver? xmlnsResolver = null)
+    public static string? TryEmitInitializeBody(JalxamlParseResult result, SymbolTypeHelper? symbols, XmlnsTypeResolver? xmlnsResolver = null, string? componentUri = null)
     {
         if (result.Root == null || result.HasStructuralRazor)
         {
@@ -58,7 +58,9 @@ internal static class JalxamlCodeGenerator
         var ctx = new EmitContext(symbols, result.RootPrefixMappings, xmlnsResolver);
 
         // Open: cast `this` to the strongly-typed root, begin a build context.
-        sb.AppendLine("        var __ctx = global::Jalium.UI.Markup.XamlBuilder.BeginComponent(this, baseUri: null, sourceAssembly: null);");
+        var baseUri = componentUri is null ? "null"
+            : $"new global::System.Uri({EscapeStringLiteral(componentUri)}, global::System.UriKind.Absolute)";
+        sb.AppendLine($"        var __ctx = global::Jalium.UI.Markup.XamlBuilder.BeginComponent(this, baseUri: {baseUri}, sourceAssembly: typeof(global::{result.ClassName}).Assembly);");
         sb.AppendLine($"        var __root = (global::{result.Root.ResolvedClrTypeName})this;");
 
         // Emit the root: PushParent(root), apply attributes / property elements / children, PopParent.
@@ -818,6 +820,8 @@ internal static class JalxamlCodeGenerator
             sb.AppendLine(
                 $"        static object? {entry.FactoryName}(global::Jalium.UI.ResourceDictionary __owner, global::Jalium.UI.Markup.XamlBuildContext {contextVariable})");
             sb.AppendLine("        {");
+            if (dictionaryContext.RootPrefixes.Count > 0)
+                sb.AppendLine($"            var __namespaceScope = global::Jalium.UI.Markup.XamlBuilder.PushNamespaces({contextVariable}, {EmitStringArray(dictionaryContext.RootPrefixes.Keys.ToArray())}, {EmitStringArray(dictionaryContext.RootPrefixes.Values.ToArray())});");
             sb.AppendLine(
                 $"            var __style = new global::{entry.Node.ResolvedClrTypeName!}();");
 
@@ -839,6 +843,8 @@ internal static class JalxamlCodeGenerator
                 new HashSet<string>(StringComparer.Ordinal),
                 indent: 12,
                 factoryContext);
+            if (dictionaryContext.RootPrefixes.Count > 0)
+                sb.AppendLine($"            global::Jalium.UI.Markup.XamlBuilder.PopNamespaces({contextVariable}, __namespaceScope);");
             sb.AppendLine("            return __style;");
             sb.AppendLine("        }");
             sb.AppendLine();
@@ -1171,6 +1177,9 @@ internal static class JalxamlCodeGenerator
     {
         var pad = new string(' ', indent);
 
+        var namespaceDeclarations = node.Attributes.Where(attribute => attribute.Kind == JalxamlAttributeKind.XmlnsDecl).ToArray();
+        if (namespaceDeclarations.Length > 0)
+            sb.AppendLine($"{pad}var __namespaceScope{varName} = global::Jalium.UI.Markup.XamlBuilder.PushNamespaces({ctx.ContextExpression}, {EmitStringArray(namespaceDeclarations.Select(attribute => attribute.Prefix == "xmlns" ? attribute.LocalName : string.Empty).ToArray())}, {EmitStringArray(namespaceDeclarations.Select(attribute => attribute.Value).ToArray())});");
         sb.AppendLine($"{pad}global::Jalium.UI.Markup.XamlBuilder.SetXmlIdentity({varName}, {EscapeStringLiteral(node.NamespaceUri)}, {EscapeStringLiteral(node.LocalName)}, resetAttributes: true);");
         foreach (var attribute in node.Attributes)
         {
@@ -1233,7 +1242,7 @@ internal static class JalxamlCodeGenerator
         {
             if (attr.Kind != JalxamlAttributeKind.Attached)
                 continue;
-            EmitAttached(sb, varName, attr, pad, ctx);
+            EmitAttached(sb, varName, attr, pad, ctx, node.NamespaceUri);
         }
 
         // Pre-register every safe Style key before constructing any other resource in this
@@ -1324,7 +1333,10 @@ internal static class JalxamlCodeGenerator
         }
 
         sb.AppendLine($"{pad}global::Jalium.UI.Markup.XamlBuilder.PopParent({ctx.ContextExpression});");
+        if (namespaceDeclarations.Length > 0)
+            sb.AppendLine($"{pad}global::Jalium.UI.Markup.XamlBuilder.PopNamespaces({ctx.ContextExpression}, __namespaceScope{varName});");
     }
+
 
     /// <summary>
     /// Emit the visual-tree root of a template as a <c>SetVisualTree(() =&gt; ...)</c>
@@ -1591,6 +1603,30 @@ internal static class JalxamlCodeGenerator
         string pad,
         string? elementClrTypeName = null)
     {
+        // A Setter's attached-property owner is an XML type token. Preserve its
+        // compile-time identity: anonymous theme builders do not carry a runtime
+        // prefix map, and resolving this string later would silently skip it.
+        if (attr.LocalName == "Property" &&
+            (elementClrTypeName == "Jalium.UI.Setter" ||
+             elementSymbol?.ToDisplayString() == "Jalium.UI.Setter"))
+        {
+            var dot = attr.Value.LastIndexOf('.');
+            if (dot > 0 && ctx.TryResolvePrefixedType(attr.Value.Substring(0, dot), out var ownerName))
+            {
+                var owner = ctx.ResolveType(ownerName.Replace("global::", string.Empty));
+                var fieldName = attr.Value.Substring(dot + 1) + "Property";
+                for (var current = owner; current != null; current = current.BaseType)
+                {
+                    if (current.GetMembers(fieldName).OfType<IFieldSymbol>().Any(field =>
+                        field.IsStatic && field.DeclaredAccessibility == Accessibility.Public &&
+                        field.Type.ToDisplayString() == "Jalium.UI.DependencyProperty"))
+                    {
+                        sb.AppendLine($"{pad}{varName}.Property = {ownerName}.{fieldName};");
+                        return;
+                    }
+                }
+            }
+        }
         // Razor value-expression fast path. Detected forms (in attribute values):
         //   PropName="@Identifier"         — bind to DataContext path "Identifier"
         //   PropName="@(expr)"             — bind to evaluated expression with auto-detected deps
@@ -1872,11 +1908,13 @@ internal static class JalxamlCodeGenerator
         string targetVar,
         JalxamlAstAttribute attr,
         string pad,
-        EmitContext ctx)
+        EmitContext ctx,
+        string elementNamespaceUri)
     {
         var owner = attr.AttachedOwner ?? string.Empty;
         var prop = attr.LocalName;
         var value = attr.Value;
+        var ownerNamespace = string.IsNullOrEmpty(attr.NamespaceUri) ? elementNamespaceUri : attr.NamespaceUri;
 
         // Attached dependency properties participate in the same binding system
         // as normal properties, but their DependencyProperty identity belongs to
@@ -1893,7 +1931,7 @@ internal static class JalxamlCodeGenerator
                 ? "null"
                 : EscapeStringLiteral(bindPath);
             sb.AppendLine(
-                $"{pad}global::Jalium.UI.Markup.XamlBuilder.SetCompiledAttachedBinding({targetVar}, \"{owner}\", \"{prop}\", {pathExpr}, {EmitStringArray(bindNames)}, {EmitStringArray(bindValues)}, {ctx.ContextExpression}, {EscapeStringLiteral(attr.NamespaceUri ?? string.Empty)});");
+                $"{pad}global::Jalium.UI.Markup.XamlBuilder.SetCompiledAttachedBinding({targetVar}, \"{owner}\", \"{prop}\", {pathExpr}, {EmitStringArray(bindNames)}, {EmitStringArray(bindValues)}, {ctx.ContextExpression}, {EscapeStringLiteral(ownerNamespace)});");
             return;
         }
 
@@ -1906,9 +1944,29 @@ internal static class JalxamlCodeGenerator
             return;
         }
 
+        // Lower other public attached setters when their literal conversion is
+        // known. This also works in prebuilt theme dictionaries, which cannot
+        // register element names with the XAML assembly's runtime type registry.
+        var ownerName = ctx.XmlnsResolver?.ResolveToGlobalQualifiedName(owner, ownerNamespace);
+        var ownerSymbol = ownerName == null ? null : ctx.ResolveType(ownerName.Replace("global::", string.Empty));
+        if (ownerSymbol != null)
+        {
+            foreach (var method in ownerSymbol.GetMembers("Set" + prop).OfType<IMethodSymbol>())
+            {
+                if (!method.IsStatic || method.DeclaredAccessibility != Accessibility.Public || method.Parameters.Length != 2)
+                    continue;
+                var converted = LiteralValueConverter.TryConvert(value, method.Parameters[1].Type);
+                if (converted != null)
+                {
+                    sb.AppendLine($"{pad}{ownerName}.Set{prop}({targetVar}, {converted});");
+                    return;
+                }
+            }
+        }
+
         // Generic path: forward to the runtime which resolves the owner type and converter.
         sb.AppendLine(
-            $"{pad}global::Jalium.UI.Markup.XamlBuilder.SetAttachedProperty({targetVar}, \"{owner}\", \"{prop}\", {EscapeStringLiteral(value)}, {ctx.ContextExpression}, {EscapeStringLiteral(attr.NamespaceUri ?? string.Empty)});");
+            $"{pad}global::Jalium.UI.Markup.XamlBuilder.SetAttachedProperty({targetVar}, \"{owner}\", \"{prop}\", {EscapeStringLiteral(value)}, {ctx.ContextExpression}, {EscapeStringLiteral(ownerNamespace)});");
     }
 
     private static string? TryEmitAttachedFastPath(string owner, string prop, string value, string targetVar, string pad)
@@ -1995,6 +2053,49 @@ internal static class JalxamlCodeGenerator
         EmitContext ctx)
     {
         var pad = new string(' ', indent);
+
+        // An attached property element belongs to its declared owner, not the
+        // visual's CLR type. Preserve that owner and build the whole collection
+        // before calling its setter (VisualStateGroups must attach all groups).
+        var ownerName = ctx.XmlnsResolver?.ResolveToGlobalQualifiedName(pe.OwnerName, pe.NamespaceUri);
+        var ownerSymbol = ownerName == null ? null : ctx.ResolveType(ownerName.Replace("global::", string.Empty));
+        var parentSymbol = parentNode.ResolvedClrTypeName == null ? null : ctx.ResolveType(parentNode.ResolvedClrTypeName);
+        var ownerMatches = false;
+        for (var type = parentSymbol; type != null; type = type.BaseType)
+            if (SymbolEqualityComparer.Default.Equals(type, ownerSymbol)) { ownerMatches = true; break; }
+        var setter = !ownerMatches ? ownerSymbol?.GetMembers("Set" + pe.PropertyName).OfType<IMethodSymbol>()
+            .FirstOrDefault(method => method.IsStatic && method.DeclaredAccessibility == Accessibility.Public && method.Parameters.Length == 2)
+            : null;
+        if (setter != null)
+        {
+            var valueType = setter.Parameters[1].Type.WithNullableAnnotation(NullableAnnotation.NotAnnotated);
+            string? collectionType = null;
+            if (valueType.ToDisplayString() == "System.Collections.IList")
+                collectionType = "global::System.Collections.ArrayList";
+            else if (valueType is INamedTypeSymbol { IsGenericType: true } generic && generic.TypeArguments.Length == 1 &&
+                generic.OriginalDefinition.ToDisplayString() is "System.Collections.Generic.IList<T>" or
+                    "System.Collections.Generic.ICollection<T>" or "System.Collections.Generic.IEnumerable<T>" or
+                    "System.Collections.Generic.IReadOnlyList<T>" or "System.Collections.Generic.IReadOnlyCollection<T>")
+                collectionType = "global::System.Collections.Generic.List<" + generic.TypeArguments[0].ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) + ">";
+
+            var call = ownerName + ".Set" + pe.PropertyName + "(" + parentVar + ", ";
+            if (collectionType != null)
+            {
+                var values = "__attached" + counter.Next();
+                sb.AppendLine($"{pad}var {values} = new {collectionType}();");
+                foreach (var child in pe.Children)
+                    EmitChildElement(sb, parentVar, child, counter, namedAlready, indent, ctx,
+                        asPropertyElementChild: new PropertyElementTarget(pe.PropertyName, null, values + ".Add("));
+                sb.AppendLine($"{pad}{call}{values});");
+                return;
+            }
+            if (pe.Children.Count == 1)
+            {
+                EmitChildElement(sb, parentVar, pe.Children[0], counter, namedAlready, indent, ctx,
+                    asPropertyElementChild: new PropertyElementTarget(pe.PropertyName, null, call));
+                return;
+            }
+        }
 
         // Each property-element child gets emitted as its own scoped block: construct the
         // child, populate it, then route to ApplyPropertyElementChild on the parent. The
@@ -2087,12 +2188,19 @@ internal static class JalxamlCodeGenerator
 
         if (asPropertyElementChild != null)
         {
-            var propName = asPropertyElementChild.Value.PropertyName;
-            var keyExpr = asPropertyElementChild.Value.ResourceKey != null
-                ? EscapeStringLiteral(asPropertyElementChild.Value.ResourceKey!)
-                : "null";
-            sb.AppendLine(
-                $"{innerPad}global::Jalium.UI.Markup.XamlBuilder.ApplyPropertyElementChild({parentVar}, \"{propName}\", {childVar}, {ctx.ContextExpression}, {keyExpr});");
+            if (asPropertyElementChild.Value.CallPrefix is { } callPrefix)
+            {
+                sb.AppendLine($"{innerPad}{callPrefix}{childVar});");
+            }
+            else
+            {
+                var propName = asPropertyElementChild.Value.PropertyName;
+                var keyExpr = asPropertyElementChild.Value.ResourceKey != null
+                    ? EscapeStringLiteral(asPropertyElementChild.Value.ResourceKey!)
+                    : "null";
+                sb.AppendLine(
+                    $"{innerPad}global::Jalium.UI.Markup.XamlBuilder.ApplyPropertyElementChild({parentVar}, \"{propName}\", {childVar}, {ctx.ContextExpression}, {keyExpr});");
+            }
         }
         else
         {
@@ -2180,6 +2288,16 @@ internal static class JalxamlCodeGenerator
                     }
                 }
 
+                // A collection can own implicit XAML children without declaring
+                // a ContentProperty. Emit the interface call directly for AOT,
+                // preserving a custom IAddChild implementation's precedence.
+                if (parentSym.AllInterfaces.Any(i => i.ToDisplayString() == "System.Collections.IList") &&
+                    !parentSym.AllInterfaces.Any(i => i.ToDisplayString() == "Jalium.UI.Markup.IAddChild"))
+                {
+                    sb.AppendLine($"{innerPad}((global::System.Collections.IList){parentVar}).Add({childVar});");
+                    return;
+                }
+
                 // Fallback: 没标 [ContentProperty] 的容器，沿继承链匹配框架已知类型。
                 for (var t = parentSym; t != null; t = t.BaseType)
                 {
@@ -2248,6 +2366,9 @@ internal static class JalxamlCodeGenerator
     /// </summary>
     private static bool IsCollectionPropertyType(ITypeSymbol propertyType)
     {
+        var declared = propertyType.OriginalDefinition.ToDisplayString();
+        if (declared is "System.Collections.IList" or "System.Collections.Generic.IList<T>" or
+            "System.Collections.Generic.ICollection<T>") return true;
         // 直接接口和所有继承到的接口都看一遍；XAML 里 IList 是最常见的 fast path。
         foreach (var iface in propertyType.AllInterfaces)
         {
@@ -2331,12 +2452,14 @@ internal static class JalxamlCodeGenerator
 
     private readonly struct PropertyElementTarget
     {
-        public PropertyElementTarget(string propertyName, string? resourceKey)
+        public PropertyElementTarget(string propertyName, string? resourceKey, string? callPrefix = null)
         {
             PropertyName = propertyName;
             ResourceKey = resourceKey;
+            CallPrefix = callPrefix;
         }
         public string PropertyName { get; }
         public string? ResourceKey { get; }
+        public string? CallPrefix { get; }
     }
 }

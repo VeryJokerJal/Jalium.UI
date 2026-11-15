@@ -1,4 +1,5 @@
 using System.Text;
+using System.Globalization;
 using Jalium.UI.Automation;
 using Jalium.UI.Controls.Automation;
 using Jalium.UI.Controls.Primitives;
@@ -46,6 +47,7 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
     private int _cachedVisualFontWeight;
     private int _cachedVisualFontStyle;
     private long _cachedVisualFontEpoch = -1;
+    private CssInputTextSpacing _cachedVisualSpacing;
 
     // Text width measurement cache for accurate selection/caret positioning
     private Dictionary<string, double> _textWidthCache = new();
@@ -55,6 +57,7 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
     private int _cachedFontStyle;
     private int _cachedFontStretch;
     private const int MaxCacheSize = 256;
+    private RenderLineCache? _renderLineCache;
 
     // IME support
     private bool _isImeComposing;
@@ -101,7 +104,7 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty TextProperty =
         DependencyProperty.Register(nameof(Text), typeof(string), typeof(TextBox),
-            new PropertyMetadata(string.Empty, OnTextChanged));
+            new FrameworkPropertyMetadata(string.Empty, FrameworkPropertyMetadataOptions.BindsTwoWayByDefault, OnTextChanged));
 
     /// <summary>
     /// Identifies the MaxLength dependency property.
@@ -136,7 +139,7 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
     /// Identifies the PlaceholderText dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    internal static readonly DependencyProperty PlaceholderTextProperty =
+    public static readonly DependencyProperty PlaceholderTextProperty =
         DependencyProperty.Register(nameof(PlaceholderText), typeof(string), typeof(TextBox),
             new PropertyMetadata(string.Empty, OnVisualPropertyChanged));
 
@@ -288,7 +291,7 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
     /// Gets or sets the placeholder text shown when the text box is empty.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    internal string PlaceholderText
+    public string PlaceholderText
     {
         get => (string)(GetValue(PlaceholderTextProperty) ?? string.Empty);
         set => SetValue(PlaceholderTextProperty, value);
@@ -506,7 +509,7 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
         var fontSize = FontSize;
         var fontMetrics = TextMeasurement.GetFontMetrics(fontFamily, fontSize,
             FontWeight.ToOpenTypeWeight(), FontStyle.ToOpenTypeStyle());
-        return fontMetrics.LineHeight;
+        return fontMetrics.LineHeight + InputEmphasis.Above + InputEmphasis.Below;
     }
 
     /// <inheritdoc />
@@ -514,6 +517,12 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
     {
         if (string.IsNullOrEmpty(text))
             return 0;
+
+        if (CssInputTextSpacing.For(this).Active)
+        {
+            using var layout = new TextBlock.EditorLayout(this, text, 1000000, TextWrapping.NoWrap, TextAlignment.Left, ResolveTextForegroundBrush());
+            return layout.ExtentWidth;
+        }
 
         var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize;
@@ -722,6 +731,18 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
 
     protected override int GetMacOSWordBoundary(bool right, bool shift, out bool backwardAffinity)
     {
+        if (CssInputTextSpacing.For(this).Active)
+        {
+            EnsureLinesValid();
+            var paragraphs = new List<(NativeTextParagraph Paragraph, int Offset)>();
+            foreach (var line in _lines)
+                GetMacOSAlignedLayout(Text.Substring(line.StartIndex, line.Length), GetCurrentTextContentWidth())?.AddWordParagraphs(paragraphs, line.StartIndex);
+            if (NativeTextParagraph.TryNavigateWord(Text, paragraphs, _caretIndex, _selectionStart,
+                shift ? 0 : _selectionLength, right, _caretHasBackwardAffinity, out var spaced))
+            {
+                backwardAffinity = spaced.BackwardAffinity != 0; return (int)spaced.TextPosition;
+            }
+        }
         if (_macWordLayout.TryNavigate(Text,
             FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName,
             FontSize, FontWeight.ToOpenTypeWeight(), FontStyle.ToOpenTypeStyle(),
@@ -864,13 +885,13 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
         var caretEdge = GetActiveCaretEdge(lineText, clampedColumn);
 
         double logicalTop = GetVisualRowsBeforeLogicalLine(lineIndex) * lineHeight;
-        double caretTop = logicalTop;
+        double caretTop = logicalTop + InputEmphasis.Above;
         double caretHeight = lineHeight;
         double caretX = GetCharacterXInLine(lineText, clampedColumn);
 
         if (GetMacOSAlignedLayout(lineText, contentWidth) is { } aligned && aligned.Caret(caretEdge.position, caretEdge.trailing, out var alignedHit))
         {
-            caretX = alignedHit.CaretX; caretTop = logicalTop + alignedHit.CaretY;
+            caretX = alignedHit.CaretX; caretTop = logicalTop + InputBodyY(alignedHit.CaretY, alignedHit.CaretHeight);
             if (alignedHit.CaretHeight > 0) caretHeight = alignedHit.CaretHeight;
         }
         else if (lineText.Length > 0)
@@ -885,7 +906,7 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
                     wraps ? (float)contentWidth : float.PositiveInfinity, caretEdge.position, caretEdge.trailing, out var hit))
             {
                 caretX = hit.CaretX;
-                caretTop = logicalTop + hit.CaretY;
+                caretTop = logicalTop + InputBodyY(hit.CaretY, hit.CaretHeight);
                 if (hit.CaretHeight > 0) caretHeight = hit.CaretHeight;
             }
         }
@@ -932,6 +953,7 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
         var border = BorderThickness;
         var padding = Padding;
         var lineHeight = Math.Round(GetLineHeight());
+        if (FontSize <= 0 || lineHeight <= 0) return 0;
 
         // Mouse event positions come from e.GetPosition(this) which is
         // relative to the TextBox itself. Use the actual template renderer's
@@ -1015,10 +1037,10 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
         float nudge = 0f;
         if (TextWrapping != TextWrapping.NoWrap)
         {
-            double lineGapApprox = Math.Max(0, lineHeight - fontSize);
+            double lineGapApprox = Math.Max(0, InputEmphasis.NaturalHeight - fontSize);
             nudge = (float)Math.Min(lineGapApprox * 0.5, 3.0);
         }
-        float hitPointY = Math.Max(0f, localY - nudge);
+        float hitPointY = (float)Math.Max(0, InputNativeY(lineText, contentWidth, localY) - nudge);
 
         var aligned = GetMacOSAlignedLayout(lineText, contentWidth);
         TextHitTestResult hit;
@@ -1217,13 +1239,15 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
                 out hit))
         {
             x += hit.CaretX;
-            y += hit.CaretY;
+            y += InputBodyY(hit.CaretY, hit.CaretHeight);
             if (hit.CaretHeight > 0)
                 height = hit.CaretHeight;
         }
         else
         {
             x += GetCharacterXInLine(lineText, trailingEdge ? GraphemeClusters.NextBoundary(lineText, columnIndex) : columnIndex);
+            y += InputEmphasis.Above;
+            if (InputEmphasis.Active) height = InputEmphasis.NaturalHeight;
         }
 
         return new Rect(Math.Round(x), Math.Round(y), 0, Math.Max(1, Math.Round(height)));
@@ -1295,10 +1319,10 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
         var border = BorderThickness;
         var padding = Padding;
         var width = HasContentHost
-            ? _textContentSize.Width
+            ? Math.Max(0, _textContentSize.Width)
             : Math.Max(0, Math.Round(RenderSize.Width - border.Left - border.Right - padding.Left - padding.Right));
         var height = HasContentHost
-            ? _textContentSize.Height
+            ? Math.Max(0, _textContentSize.Height)
             : Math.Max(0, Math.Round(RenderSize.Height - border.Top - border.Bottom - padding.Top - padding.Bottom));
         Point origin = GetTextContentOrigin();
         if (!HasContentHost) origin = new Point(Math.Round(origin.X), Math.Round(origin.Y));
@@ -1394,7 +1418,8 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
             && _cachedVisualFontSize == fontSize
             && _cachedVisualFontWeight == fontWeight
             && _cachedVisualFontStyle == fontStyle
-            && _cachedVisualFontEpoch == TextMeasurement.FontCacheEpoch)
+            && _cachedVisualFontEpoch == TextMeasurement.FontCacheEpoch
+            && _cachedVisualSpacing == CssInputTextSpacing.For(this))
         {
             return;
         }
@@ -1408,6 +1433,7 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
         _cachedVisualFontWeight = fontWeight;
         _cachedVisualFontStyle = fontStyle;
         _cachedVisualFontEpoch = TextMeasurement.FontCacheEpoch;
+        _cachedVisualSpacing = CssInputTextSpacing.For(this);
 
         var text = Text;
         bool canWrap = wrapMode != TextWrapping.NoWrap && wrapWidth > 0 && !double.IsInfinity(wrapWidth);
@@ -1432,7 +1458,11 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
                     FontWeight = fontWeight,
                     FontStyle = fontStyle,
                 };
-                if (TextMeasurement.MeasureText(ft) && ft.LineCount > 0)
+                if (GetMacOSAlignedLayout(lineText, wrapWidth)?.SpacedRows is { } spacedRows)
+                {
+                    count = spacedRows;
+                }
+                else if (TextMeasurement.MeasureText(ft) && ft.LineCount > 0)
                 {
                     count = ft.LineCount;
                 }
@@ -1511,6 +1541,7 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
+        UpdateDefaultStyle();
         // If using template, delegate to base class which handles template root
         // The TextBoxContentHost will call MeasureTextContent for the text area
         if (Template != null)
@@ -1550,8 +1581,12 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
         var minHeight = lineHeight + padding.Top + padding.Bottom + border.Top + border.Bottom;
         desiredHeight = Math.Max(desiredHeight, minHeight);
 
+        var desiredWidth = double.IsPositiveInfinity(availableSize.Width)
+            ? Math.Max(120.0, padding.Left + padding.Right + border.Left + border.Right)
+            : availableSize.Width;
+
         return ApplyLineLimits(
-            new Size(availableSize.Width, Math.Min(desiredHeight, availableSize.Height)),
+            new Size(desiredWidth, double.IsPositiveInfinity(availableSize.Height) ? desiredHeight : Math.Min(desiredHeight, availableSize.Height)),
             availableSize);
     }
 
@@ -1632,12 +1667,15 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
         // see on long readme / wrapped text. ScrollViewer is responsible for
         // clipping; our job is to report the full content size.
         //
-        // Width: use the ACTUAL wrap width we measured against (not the
-        // potentially-Infinity availableSize.Width) so the ScrollViewer
-        // extent isn't Infinity on the horizontal axis either.
-        double desiredWidth = (double.IsInfinity(availableSize.Width) || double.IsNaN(availableSize.Width) || availableSize.Width <= 0)
-            ? (wrapWidth > 0 ? wrapWidth : 0)
-            : availableSize.Width;
+        // An unbounded NoWrap measure asks for the text's intrinsic width.
+        // Returning the last arranged viewport pins SizeToContent to an old
+        // maximized/expanded width and also hides the true horizontal extent.
+        // Wrapped height still uses the arranged wrap width above.
+        double desiredWidth = double.IsPositiveInfinity(availableSize.Width) && TextWrapping == TextWrapping.NoWrap
+            ? base.GetHorizontalScrollExtentWidth()
+            : (double.IsInfinity(availableSize.Width) || double.IsNaN(availableSize.Width) || availableSize.Width <= 0)
+                ? (wrapWidth > 0 ? wrapWidth : 0)
+                : availableSize.Width;
         return new Size(desiredWidth, textHeight);
     }
 
@@ -1744,10 +1782,26 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
 
         var text = Text;
 
-        // Draw selection background
+        var styledSelection = false;
         if (_selectionLength > 0 && (IsKeyboardFocused || IsInactiveSelectionHighlightEnabled))
         {
-            DrawSelection(dc, contentRect, lineHeight);
+            var style = Styling.CssSelection.For(this);
+            if (style is { HasPaint: true } || SelectionTextBrush is not null)
+            {
+                var capture = new CssSelectionPainter.GeometryCapture(dc);
+                DrawSelection(capture, contentRect, lineHeight, Brushes.Black);
+                var regions = capture.Rectangles.Select(rect => new CssSelectionPainter.Region(rect, style, ResolveTextForegroundBrush(),
+                    InputEmphasis.Active ? rect.Top + InputEmphasis.Above + InputEmphasis.Ascent : null,
+                    TextTop: InputEmphasis.Active ? rect.Top + InputEmphasis.Above : null)).ToArray();
+                if (regions.Length > 0)
+                {
+                    CssSelectionPainter.Paint(dc, new RectangleGeometry(contentRect), regions, ResolveSelectionBrush(), SelectionTextBrush,
+                        paint => DrawText(paint, contentRect, lineHeight),
+                        (paint, region) => CssSelectionPainter.Decorations(paint, region, this));
+                    styledSelection = true;
+                }
+            }
+            if (!styledSelection) DrawSelection(dc, contentRect, lineHeight);
         }
 
         // Draw text or placeholder
@@ -1756,21 +1810,25 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
             if (!string.IsNullOrEmpty(PlaceholderText))
             {
                 var placeholderBrush = ResolvePlaceholderBrush();
-                var roundedHorizontalOffset = Math.Round(_horizontalOffset);
-                var roundedVerticalOffset = Math.Round(_verticalOffset);
-                var formattedPlaceholder = new FormattedText(PlaceholderText, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
+                if (!CssPlaceholderPainter.Draw(this, dc, PlaceholderText, placeholderBrush, contentRect, scrollX: _horizontalOffset, scrollY: _verticalOffset))
                 {
-                    Foreground = placeholderBrush,
-                    MaxTextWidth = contentRect.Width,
-                    MaxTextHeight = contentRect.Height,
-                    Trimming = TextTrimming
-                };
-                dc.DrawText(formattedPlaceholder, new Point(contentRect.X - roundedHorizontalOffset, contentRect.Y - roundedVerticalOffset));
+                    var roundedHorizontalOffset = Math.Round(_horizontalOffset);
+                    var roundedVerticalOffset = Math.Round(_verticalOffset);
+                    var formattedPlaceholder = new FormattedText(PlaceholderText, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
+                    {
+                        Foreground = placeholderBrush,
+                        MaxTextWidth = contentRect.Width,
+                        MaxTextHeight = contentRect.Height,
+                        Trimming = TextTrimming
+                    };
+                    dc.DrawText(formattedPlaceholder, new Point(contentRect.X - roundedHorizontalOffset, contentRect.Y - roundedVerticalOffset));
+
+                }
             }
         }
         else
         {
-            DrawText(dc, contentRect, lineHeight);
+            if (!styledSelection) DrawText(dc, contentRect, lineHeight);
 
             // Draw spelling error underlines
             if (IsSpellCheckEnabled && _spellingErrors.Count > 0)
@@ -1832,6 +1890,22 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
         var wrapWidth = Math.Max(0, contentRect.Width);
         EnsureVisualLineCounts(wrapWidth, lineHeight);
 
+        var fontFamily = FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName;
+        var fontSize = FontSize;
+        var fontWeight = FontWeight.ToOpenTypeWeight();
+        var fontStyle = FontStyle.ToOpenTypeStyle();
+        var trimming = TextTrimming;
+        var maxTextWidth = wrapMode == TextWrapping.NoWrap ? double.MaxValue : wrapWidth;
+        var culture = CultureInfo.CurrentCulture;
+        var renderCache = _renderLineCache;
+        if (renderCache is null || !renderCache.Matches(text, fontFamily, fontSize, fontWeight,
+                fontStyle, trimming, maxTextWidth, textBrush, culture))
+        {
+            _renderLineCache = renderCache = new RenderLineCache(text, fontFamily, fontSize,
+                fontWeight, fontStyle, trimming, maxTextWidth, textBrush, culture);
+        }
+        bool beganVisibleRange = false;
+
         var firstDecoratedLine = -1;
         var lastDecoratedLine = -1;
         var decorationInset = CssTextDecorationProperties.Inset(this);
@@ -1870,29 +1944,34 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
             if (line.Length == 0)
                 continue;
 
-            var lineText = text.Substring(line.StartIndex, line.Length);
             // When wrap is disabled, let the line extend horizontally past the
             // viewport and rely on the dirty-region clip to hide the overflow.
             // If we instead hand DirectWrite a finite MaxTextWidth, it wraps
             // the glyphs into additional visual rows that paint over the next
             // logical line's y position and produce the "overlapping text"
             // artifact users see in PropertyGrid inline editors.
-            var aligned = GetMacOSAlignedLayout(lineText, wrapWidth);
-            double maxTextWidth = aligned is not null ? aligned.Width : wrapMode == TextWrapping.NoWrap
-                ? double.MaxValue
-                : wrapWidth;
-
-            var formattedText = new FormattedText(lineText, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
+            if (!beganVisibleRange)
             {
-                Foreground = textBrush,
-                MaxTextWidth = maxTextWidth,
-                MaxTextHeight = lineBlockHeight,
-                Trimming = TextTrimming,
-                NativeTextAlignment = aligned?.Alignment,
-                NativeNoWrap = aligned?.NoWrap ?? false,
-                FontWeight = FontWeight.ToOpenTypeWeight(),
-                FontStyle = FontStyle.ToOpenTypeStyle(),
-            };
+                renderCache.BeginVisibleRange(i);
+                beganVisibleRange = true;
+            }
+            var formattedText = renderCache.GetLine(i, line, lineBlockHeight);
+            var lineText = formattedText.Text;
+            var aligned = GetMacOSAlignedLayout(lineText, wrapWidth);
+            if (aligned is not null)
+            {
+                formattedText = new FormattedText(lineText, fontFamily, fontSize)
+                {
+                    Foreground = textBrush,
+                    MaxTextWidth = aligned.Width,
+                    MaxTextHeight = lineBlockHeight,
+                    Trimming = trimming,
+                    NativeTextAlignment = aligned.Alignment,
+                    NativeNoWrap = aligned.NoWrap,
+                    FontWeight = fontWeight,
+                    FontStyle = fontStyle,
+                };
+            }
 
             var x = contentRect.X - roundedHorizontalOffset;
 
@@ -1915,8 +1994,16 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
                     Math.Max(1, aligned is null ? lineWidth : Math.Max(lineWidth, wrapWidth)) + 2 * FontSize, lineBlockHeight + 2 * FontSize));
             try
             {
+                using var textInk = MacOSWritingToolsPresentation.BeginCssTextInk(CssSelectionPainter.Unwrap(dc));
                 MacOSWritingToolsPresentation.ApplyGlyphRanges(this, formattedText, line.StartIndex);
-                dc.DrawText(formattedText, new Point(x, y));
+                var emphasis = InputEmphasis;
+                Action<DrawingContext, FormattedText, Point>? draw = aligned is { HasSpacing: true } ? aligned.Draw : null;
+                if (!emphasis.Draw(dc, formattedText, new Point(x, y),
+                    aligned is null ? null : aligned.Row, aligned is null ? null : aligned.Range, drawText: draw))
+                {
+                    if (draw is not null) draw(dc, formattedText, new Point(x, y));
+                    else dc.DrawText(formattedText, new Point(x, y));
+                }
                 using (MacOSWritingToolsPresentation.PushDecorationRanges(this, dc, HasContentHost ? GetTextContentOrigin() : Point.Zero))
                     DrawTextDecorations(dc, x, y, lineWidth, wrapWidth, visualRows, lineHeight,
                         textBrush, wrapMode, decorationSizePrefix?[^1] ?? -1,
@@ -1998,7 +2085,7 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
                         : Math.Min(completedLineWidth, unwrappedLineWidth)))
                 : -1;
 
-            var rowTop = lineY + (hasNativeRow ? nativeRow.Y : row * lineHeight);
+            var rowTop = lineY + (hasNativeRow ? InputBodyY(nativeRow.Y, nativeRow.Height) : row * lineHeight + InputEmphasis.Above);
             var rowOriginX = lineOriginX + (hasNativeRow ? nativeRow.X : 0);
             var baseline = rowTop + baselineOffset;
             if (decorations is null)
@@ -2085,7 +2172,7 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
                                 DrawWavyLine(dc, errorPen,
                                     Math.Round(contentRect.X + fragment.X - roundedHorizontalOffset),
                                     Math.Round(contentRect.X + fragment.X + fragment.Width - roundedHorizontalOffset),
-                                    Math.Round(y + fragment.Y + fragment.Height - 2));
+                                    Math.Round(y + InputBodyY(fragment.Y, fragment.Height) + fragment.Height - 2));
                             continue;
                         }
                         var startX = Math.Round(contentRect.X + GetCharacterXInLine(lineText, startInLine) - roundedHorizontalOffset);
@@ -2145,10 +2232,10 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
         dc.DrawGeometry(null, pen, geom);
     }
 
-    private void DrawSelection(DrawingContext dc, Rect contentRect, double lineHeight)
+    private void DrawSelection(DrawingContext dc, Rect contentRect, double lineHeight, Brush? forcedBrush = null)
     {
         using var presentation = MacOSWritingToolsPresentation.PushHidden(this, dc, HasContentHost ? GetTextContentOrigin() : Point.Zero);
-        var selectionBrush = ResolveSelectionBrush();
+        var selectionBrush = forcedBrush ?? ResolveSelectionBrush();
         if (selectionBrush == null)
             return;
 
@@ -2194,8 +2281,8 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
                         {
                             double left = Math.Round(contentRect.X + fragment.X - roundedHorizontalOffset);
                             double right = Math.Round(contentRect.X + fragment.X + fragment.Width - roundedHorizontalOffset);
-                            dc.DrawRectangle(selectionBrush, null, new Rect(left, Math.Round(y + fragment.Y),
-                                Math.Max(1, right - left), Math.Max(1, fragment.Height)));
+                            dc.DrawRectangle(selectionBrush, null, new Rect(left, Math.Round(y + InputRowY(fragment.Y, fragment.Height)),
+                                Math.Max(1, right - left), Math.Max(1, InputEmphasis.Active ? lineHeight : fragment.Height)));
                         }
                     }
                     else if (visualRows > 1)
@@ -2222,9 +2309,9 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
 
                         if (gotStart && gotEnd)
                         {
-                            double rowHeight = endHit.CaretHeight > 0 ? endHit.CaretHeight : lineHeight;
-                            double startRowTop = y + startHit.CaretY;
-                            double endRowTop = y + endHit.CaretY;
+                            double rowHeight = InputEmphasis.Active ? lineHeight : endHit.CaretHeight > 0 ? endHit.CaretHeight : lineHeight;
+                            double startRowTop = y + InputRowY(startHit.CaretY, startHit.CaretHeight);
+                            double endRowTop = y + InputRowY(endHit.CaretY, endHit.CaretHeight);
                             double leftEdge = contentRect.X;
                             double rightEdge = contentRect.X + contentRect.Width;
 
@@ -2302,7 +2389,7 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
                     var lineText = text.Substring(line.StartIndex, line.Length);
                     double caretX = GetCharacterXInLine(lineText, lineText.Length), caretY = 0;
                     if (GetMacOSAlignedLayout(lineText, wrapWidth) is { } aligned && aligned.Caret((uint)lineText.Length, false, out var endHit))
-                    { caretX = endHit.CaretX; caretY = endHit.CaretY; }
+                    { caretX = endHit.CaretX; caretY = InputRowY(endHit.CaretY, endHit.CaretHeight); }
                     var startX = Math.Round(contentRect.X + caretX - roundedHorizontalOffset);
                     var selRect = new Rect(startX, Math.Round(y + caretY), Math.Round(FontSize * 0.3), lineHeight);
                     dc.DrawRectangle(selectionBrush, null, selRect);
@@ -2343,7 +2430,15 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
             FontStyle = FontStyle.ToOpenTypeStyle(),
             MaxTextWidth = width
         };
-        dc.DrawText(compositionText, new Point(x, y));
+        using var tracking = CssInputTextSpacing.For(this).Active
+            ? CssInputTextSpacing.Composition(this, _imeCompositionString, width, s_compositionTextBrush) : null;
+        if (!InputEmphasis.Draw(dc, compositionText, new Point(x, y - InputEmphasis.Above),
+            tracking is null ? null : tracking.Row, tracking is null ? null : tracking.Range,
+            drawText: tracking is null ? null : tracking.Draw))
+        {
+            if (tracking is not null) tracking.Draw(dc, compositionText, new Point(x, y));
+            else dc.DrawText(compositionText, new Point(x, y));
+        }
 
         // Draw underline for composition string
         foreach (Rect row in fragments)
@@ -2408,7 +2503,7 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
         if (aligned is not null && aligned.Caret(activeEdge.position, activeEdge.trailing, out var alignedHit))
         {
             caretX = Math.Round(contentRect.X + alignedHit.CaretX - roundedHorizontalOffset);
-            caretY = Math.Round(paragraphTop + alignedHit.CaretY);
+            caretY = Math.Round(paragraphTop + InputBodyY(alignedHit.CaretY, alignedHit.CaretHeight));
             if (alignedHit.CaretHeight > 0) caretHeight = alignedHit.CaretHeight;
         }
         else if (lineText.Length > 0)
@@ -2427,20 +2522,20 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
                     edge.position, edge.trailing, out var caretHit))
             {
                 caretX = Math.Round(contentRect.X + caretHit.CaretX - roundedHorizontalOffset);
-                caretY = Math.Round(paragraphTop + caretHit.CaretY);
+                caretY = Math.Round(paragraphTop + InputBodyY(caretHit.CaretY, caretHit.CaretHeight));
                 if (caretHit.CaretHeight > 0) caretHeight = caretHit.CaretHeight;
             }
             else
             {
                 caretX = Math.Round(contentRect.X + GetCharacterXInLine(lineText, clampedColumn) - roundedHorizontalOffset);
-                caretY = Math.Round(paragraphTop);
+                caretY = Math.Round(paragraphTop + InputEmphasis.Above);
             }
         }
         else
         {
             // Single-row line: base-class geometry is correct.
             caretX = Math.Round(contentRect.X + GetCharacterXInLine(lineText, clampedColumn) - roundedHorizontalOffset);
-            caretY = Math.Round(paragraphTop);
+            caretY = Math.Round(paragraphTop + InputEmphasis.Above);
         }
 
         var x = caretX;
@@ -2548,6 +2643,7 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
             textBox.ClearMacOSAlignedLayouts();
             textBox._caretHasBackwardAffinity = false;
             textBox._linesDirty = true;
+            textBox._renderLineCache = null;
             textBox.InvalidateMeasure();
             textBox.InvalidateTextContentMeasure();
 
@@ -2674,6 +2770,64 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
 
     #region Helper Types
 
+    private sealed class RenderLineCache(
+        string text, string fontFamily, double fontSize, int fontWeight, int fontStyle,
+        TextTrimming trimming, double maxTextWidth, Brush textBrush, CultureInfo culture)
+    {
+        // Keep only a bounded prefix of the current visible range, never a
+        // FormattedText/string for every line the user has scrolled through.
+        private const int MaxLines = 256;
+        private readonly List<FormattedText?> _lines = new();
+        private int _firstLine = -1;
+
+        public bool Matches(string currentText, string currentFamily, double currentSize,
+            int currentWeight, int currentStyle, TextTrimming currentTrimming,
+            double currentWidth, Brush currentBrush, CultureInfo currentCulture)
+            => ReferenceEquals(text, currentText)
+            && string.Equals(fontFamily, currentFamily, StringComparison.Ordinal)
+            && fontSize.Equals(currentSize) && fontWeight == currentWeight && fontStyle == currentStyle
+            && trimming == currentTrimming && maxTextWidth.Equals(currentWidth)
+            && ReferenceEquals(textBrush, currentBrush) && ReferenceEquals(culture, currentCulture);
+
+        public void BeginVisibleRange(int firstLine)
+        {
+            if (_firstLine == firstLine) return;
+            _lines.Clear();
+            _firstLine = firstLine;
+        }
+
+        public FormattedText GetLine(int index, TextLine line, double height)
+        {
+            int slot = index - _firstLine;
+            if ((uint)slot < (uint)_lines.Count && _lines[slot] is { } cached &&
+                cached.MaxTextHeight.Equals(height) && cached.HasSimpleRenderFormatting &&
+                cached.MaxTextWidth.Equals(maxTextWidth) && cached.FontSize.Equals(fontSize) &&
+                string.Equals(cached.FontFamily, fontFamily, StringComparison.Ordinal) &&
+                cached.FontWeight == fontWeight && cached.FontStyle == fontStyle &&
+                cached.FontStretch == 5 && cached.Trimming == trimming &&
+                ReferenceEquals(cached.Foreground, textBrush))
+                return cached;
+
+            // Retained instances are never rewritten when style/layout changes:
+            // a recording or custom context may still hold the previous value.
+            var formatted = new FormattedText(text.Substring(line.StartIndex, line.Length), fontFamily, fontSize)
+            {
+                Foreground = textBrush,
+                MaxTextWidth = maxTextWidth,
+                MaxTextHeight = height,
+                Trimming = trimming,
+                FontWeight = fontWeight,
+                FontStyle = fontStyle,
+            };
+            if ((uint)slot < MaxLines)
+            {
+                while (_lines.Count <= slot) _lines.Add(null);
+                _lines[slot] = formatted;
+            }
+            return formatted;
+        }
+    }
+
     private struct TextLine
     {
         public int StartIndex;
@@ -2734,9 +2888,10 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
     private Rect GetImeCompositionCaret(int index, bool trailing)
     {
         Rect anchor = GetRectFromCharacterIndex(Math.Clamp(_imeCompositionStart, 0, Text.Length));
-        return ImeTextGeometry.GetFormattedCaret(_imeCompositionString, index, trailing, new Point(anchor.X, anchor.Y),
+        var rectangle = ImeTextGeometry.GetFormattedCaret(_imeCompositionString, index, trailing, new Point(anchor.X, anchor.Y),
             anchor.Height, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName,
-            FontSize, FontWeight.ToOpenTypeWeight(), FontStyle.ToOpenTypeStyle(), GetImeCompositionWidth(anchor), MeasureTextWidth);
+            FontSize, FontWeight.ToOpenTypeWeight(), FontStyle.ToOpenTypeStyle(), GetImeCompositionWidth(anchor), MeasureTextWidth, owner: this);
+        return InputCompositionRect(rectangle, anchor);
     }
 
     bool IImeSupport.TryGetImeTextRangeGeometry(int start, int length, bool composition, out ImeTextRangeGeometry geometry)
@@ -2753,7 +2908,11 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
             Rect anchor = GetRectFromCharacterIndex(Math.Clamp(_imeCompositionStart, 0, Text.Length));
             if (ImeTextGeometry.TryGetFormattedRange(_imeCompositionString, start, length, new Point(anchor.X, anchor.Y),
                 FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize,
-                FontWeight.ToOpenTypeWeight(), FontStyle.ToOpenTypeStyle(), GetImeCompositionWidth(anchor), out geometry)) return true;
+                FontWeight.ToOpenTypeWeight(), FontStyle.ToOpenTypeStyle(), GetImeCompositionWidth(anchor), out geometry, owner: this))
+            {
+                geometry = new(InputCompositionRect(geometry.Rectangle, anchor), geometry.Start, geometry.Length);
+                return true;
+            }
         }
         else if (TryGetImeDocumentGeometry(start, length, out geometry)) return true;
         return ImeTextGeometry.TryGetFirstLineRange(composition ? _imeCompositionString : Text, start, length,
@@ -2788,6 +2947,7 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
             actualLength += Math.Min(length - actualLength,
                 _lines[lineIndex + 1].StartIndex - (_lines[lineIndex].StartIndex + text.Length));
         Rect rect = fragment.Rectangle;
+        rect = new Rect(rect.X, origin.Y + InputBodyY(rect.Y - origin.Y, rect.Height), rect.Width, rect.Height);
         double x = Math.Round(rect.X), y = Math.Round(rect.Y);
         geometry = new(new Rect(x, y, Math.Max(0, Math.Round(rect.Right) - x),
             Math.Max(1, Math.Round(rect.Height))), start, actualLength);
@@ -2805,10 +2965,12 @@ public partial class TextBox : TextBoxBase, IImeSupport, IAddChild
         }
         if (!_isImeComposing) return false;
         Rect anchor = GetRectFromCharacterIndex(Math.Clamp(_imeCompositionStart, 0, Text.Length));
+        if (InputEmphasis.Active)
+            point = new Point(point.X, anchor.Y + InputEmphasis.NativeY(point.Y - anchor.Y + InputEmphasis.Above, anchor.Height));
         return ImeTextGeometry.TryHitTest(_imeCompositionString, point, new Point(anchor.X, anchor.Y), anchor.Height,
             FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName,
             FontSize, FontWeight.ToOpenTypeWeight(), FontStyle.ToOpenTypeStyle(), GetImeCompositionWidth(anchor),
-            MeasureTextWidth, requireTextBounds: true, out index);
+            MeasureTextWidth, requireTextBounds: true, out index, owner: this);
     }
 
     /// <inheritdoc />

@@ -6,6 +6,7 @@ namespace Jalium.UI.Styling;
 
 internal sealed class CssFontDependency(CssNode node)
 {
+    static CssFontDependency() => SystemFonts.FontsChanged += FontsChanged;
     private readonly WeakReference<CssNode> _node = new(node);
     internal CssNode? Node => _node.TryGetTarget(out var node) ? node : null;
     private volatile bool _observed;
@@ -57,7 +58,7 @@ internal sealed class CssFontDependency(CssNode node)
 }
 
 internal readonly record struct CssFontInfo(string Family, int Weight = 400, int Style = 0, bool IsCss = false,
-    CssComputedFontFamily? ComputedFamily = null, double Width = 100)
+    CssComputedFontFamily? ComputedFamily = null, double Width = 100, CssFontVariationSettings? Variations = null, byte OpticalSizing = 0, CssFontSizeAdjust? SizeAdjust = null)
 {
     internal static CssFontInfo Initial => new(SystemFonts.MessageFontFamily.Source);
     internal FontUnitMetrics Metrics(double size, CssFontDependency? dependency = null)
@@ -67,7 +68,7 @@ internal readonly record struct CssFontInfo(string Family, int Weight = 400, int
             resolved = ComputedFamily is { } computed
                 ? CssFontFaces.Resolve(node, computed.RenderingNames, Weight, Style, "0水", Width)
                 : CssFontFaces.Resolve(node, Family, Weight, Style, "0水", Width);
-        return TextMeasurement.GetFontUnitMetrics(FontWidthRenderingSource.Wrap(resolved, Width), size, Weight, Style);
+        return TextMeasurement.GetFontUnitMetrics(RenderingSource(resolved), size, Weight, Style);
     }
 
     internal FontMathConstants MathConstants(CssFontDependency? dependency = null)
@@ -77,8 +78,21 @@ internal readonly record struct CssFontInfo(string Family, int Weight = 400, int
             resolved = ComputedFamily is { } computed
                 ? CssFontFaces.Resolve(node, computed.RenderingNames, Weight, Style, width: Width)
                 : CssFontFaces.Resolve(node, Family, Weight, Style, width: Width);
-        return TextMeasurement.GetFontMathConstants(FontWidthRenderingSource.Wrap(resolved, Width), Weight, Style);
+        return TextMeasurement.GetFontMathConstants(RenderingSource(resolved), Weight, Style);
     }
+
+    internal double Aspect(byte metric, double size, CssFontDependency? dependency = null)
+    {
+        string resolved = Family;
+        if (IsCss && dependency?.Node is { } node)
+            resolved = ComputedFamily is { } computed
+                ? CssFontFaces.Resolve(node, computed.RenderingNames, Weight, Style, " ", Width)
+                : CssFontFaces.Resolve(node, Family, Weight, Style, " ", Width);
+        return TextMeasurement.GetFontAspectMetric((this with { SizeAdjust = null }).RenderingSource(resolved), size, Weight, Style, metric);
+    }
+
+    private string RenderingSource(string resolved) => FontFeatureRenderingSource.Wrap(
+        FontWidthRenderingSource.Wrap(resolved, Width), [], CssCapsVariant.Normal, new(Variations: Variations?.Axes, OpticalSizing: OpticalSizing, SizeAdjust: SizeAdjust));
 
     internal static CssFontInfo Read(CssNode node)
     {
@@ -87,7 +101,8 @@ internal readonly record struct CssFontInfo(string Family, int Weight = 400, int
         var weight = Value("FontWeight") is FontWeight w ? w.ToOpenTypeWeight() : 400;
         var style = Value("FontStyle") is FontStyle s ? s : FontStyles.Normal;
         return new(family?.Source ?? Initial.Family, weight, style == FontStyles.Italic ? 1 : style == FontStyles.Oblique ? 2 : 0,
-            family?.IsCssFamily == true, family?.CssComputedFamily, CssFontStretchValue.Computed(node));
+            family?.IsCssFamily == true, family?.CssComputedFamily, CssFontStretchValue.Computed(node),
+            (CssFontVariationSettings)node.GetValue(CssFontVariationSettings.SettingsProperty)!, CssFontOpticalSizing.ForOwner(node.Target), (CssFontSizeAdjust)node.GetValue(CssFontSizeAdjust.ValueProperty)!);
     }
 
     internal CssFontInfo With(string property, object? value) => property switch
@@ -99,6 +114,9 @@ internal readonly record struct CssFontInfo(string Family, int Weight = 400, int
         "FontWeight" when value is FontWeight weight => this with { Weight = weight.ToOpenTypeWeight() },
         "FontStyle" when value is FontStyle style => this with { Style = style == FontStyles.Italic ? 1 : style == FontStyles.Oblique ? 2 : 0 },
         "FontStretch" when value is FontStretch stretch => this with { Width = CssFontStretchValue.Percentage(stretch) },
+        "CssFontVariationSettings" when value is CssFontVariationSettings variations => this with { Variations = variations },
+        "CssFontSizeAdjust" when value is CssFontSizeAdjust adjustment => this with { SizeAdjust = adjustment },
+        "CssFontOpticalSizing" when value is bool automatic => this with { OpticalSizing = automatic ? (byte)1 : (byte)2 },
         _ => this,
     };
 }

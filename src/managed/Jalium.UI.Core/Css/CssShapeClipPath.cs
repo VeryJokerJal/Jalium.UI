@@ -259,12 +259,12 @@ internal sealed record CssShapePathValue(FillRule FillRule, CssShapePointValue S
 }
 
 internal sealed class CssShapeClipPathCompiledValue(CssClipBox box,
-    CssShapePathSyntax syntax) : CssCompiledValue
+    CssShapePathSyntax syntax, DependencyProperty? property = null) : CssCompiledValue
 {
     public override bool TryApply(in CssApplyContext context, ICssSetterSink sink)
     {
         if (!syntax.TryCompute(context.Lengths, out var path)) return false;
-        sink.Set(CssClipPathProperties.ValueProperty,
+        sink.Set(property ?? CssClipPathProperties.ValueProperty,
             new CssClipPathValue(CssClipShape.Shape, box, [], ShapeData: path));
         return true;
     }

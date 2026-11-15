@@ -41,6 +41,7 @@ public sealed partial class CssStyleSheet
     private static byte[] PercentDecodeData(ReadOnlySpan<char> value)
     {
         using var output = new MemoryStream(Math.Min(value.Length, MaximumDataUriBytes));
+        Span<byte> bytes = stackalloc byte[4];
         for (var index = 0; index < value.Length; index++)
         {
             var character = value[index];
@@ -55,9 +56,11 @@ public sealed partial class CssStyleSheet
                 output.WriteByte((byte)character);
             else
             {
-                Span<byte> bytes = stackalloc byte[4];
-                var count = Encoding.UTF8.GetBytes(value.Slice(index, 1), bytes);
+                var characters = char.IsHighSurrogate(character) && index + 1 < value.Length &&
+                    char.IsLowSurrogate(value[index + 1]) ? 2 : 1;
+                var count = Encoding.UTF8.GetBytes(value.Slice(index, characters), bytes);
                 output.Write(bytes[..count]);
+                index += characters - 1;
             }
             if (output.Length > MaximumDataUriBytes)
                 throw new InvalidDataException("Data URL is too large");

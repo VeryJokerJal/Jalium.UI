@@ -259,6 +259,15 @@ public static class AutomationProperties
 
     #endregion
 
+    private static void OnItemStatusChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        // Only queried controls need an immediate native value notification.
+        // Initial styling must not create an automation tree for every control.
+        if (d is UIElement element)
+            element.GetExistingAutomationPeer()?.RaisePropertyChangedEvent(
+                AutomationProperty.ItemStatusProperty, e.OldValue, e.NewValue);
+    }
+
     #region ItemStatus Property
 
     /// <summary>
@@ -270,7 +279,7 @@ public static class AutomationProperties
             "ItemStatus",
             typeof(string),
             typeof(AutomationProperties),
-            new PropertyMetadata(string.Empty));
+            new PropertyMetadata(string.Empty, OnItemStatusChanged));
 
     /// <summary>
     /// Gets the ItemStatus attached property value.

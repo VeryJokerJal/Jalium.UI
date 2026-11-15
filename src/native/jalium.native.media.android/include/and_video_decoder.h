@@ -23,4 +23,10 @@ jalium_media_status_t VideoDecoderSeek(
 
 void VideoDecoderClose(jalium_video_decoder_t* decoder);
 
+jalium_media_status_t VideoDecoderReadGpuFrame(jalium_video_decoder_t*,
+    jalium_video_decoder_gpu_descriptor_t*, int64_t*, int32_t*);
+jalium_media_status_t VideoDecoderAcquireGpuDescriptor(jalium_video_decoder_t*,
+    jalium_video_decoder_gpu_descriptor_t*);
+jalium_media_status_t VideoDecoderDisableGpuOutput(jalium_video_decoder_t*);
+
 } // namespace jalium::media::android

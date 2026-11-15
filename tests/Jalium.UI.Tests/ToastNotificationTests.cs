@@ -8,6 +8,16 @@ namespace Jalium.UI.Tests;
 [Collection("Application")]
 public class ToastNotificationTests
 {
+    private static readonly Lazy<ResourceDictionary> Defaults = new(() =>
+    {
+        Jalium.UI.Markup.ThemeLoader.Initialize();
+        using var stream = new MemoryStream();
+        var resources = ThemeManager.XamlLoader!(stream, "Themes/Generic.jalxaml", typeof(Control).Assembly)!;
+        return new ResourceDictionary { [typeof(ToastNotificationItem)] = resources[typeof(ToastNotificationItem)] };
+    });
+
+    public ToastNotificationTests() => ThemeManager.RegisterControlThemes(Defaults.Value);
+
     private static void ResetApplicationState()
     {
         var currentField = typeof(Application).GetField("_current",
@@ -163,20 +173,9 @@ public class ToastNotificationTests
             Assert.True(app.Resources.TryGetValue("ToastWarningBackground", out var bgObj));
             Assert.True(app.Resources.TryGetValue("ToastWarningIcon", out var iconObj));
 
-            var getSeverityBrushes = typeof(ToastNotificationItem).GetMethod("GetSeverityBrushes",
-                BindingFlags.Instance | BindingFlags.NonPublic);
-            Assert.NotNull(getSeverityBrushes);
-
-            var tuple = getSeverityBrushes!.Invoke(toast, null);
-            Assert.NotNull(tuple);
-
-            var backgroundField = tuple!.GetType().GetField("Item1");
-            var iconField = tuple.GetType().GetField("Item2");
-            Assert.NotNull(backgroundField);
-            Assert.NotNull(iconField);
-
-            Assert.Same(bgObj, backgroundField!.GetValue(tuple));
-            Assert.Same(iconObj, iconField!.GetValue(tuple));
+            toast.ApplyTemplate();
+            Assert.Same(bgObj, Assert.IsType<Border>(toast.FindName("RootBorder")).Background);
+            Assert.Same(iconObj, Assert.IsType<SymbolIcon>(toast.FindName("PART_Icon")).Foreground);
         }
         finally
         {

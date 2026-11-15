@@ -42,6 +42,10 @@ jobs:
             docker-platform: linux/arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
+    # Healthy runs finish in ~35-55 minutes. The previous ceiling was the
+    # runner's 6-hour default, which let a degraded run sit as an
+    # unintelligible zombie instead of failing fast and legibly.
+    timeout-minutes: 150
 
     steps:
       - uses: actions/checkout@v7
@@ -57,8 +61,8 @@ jobs:
                  install -y --no-install-recommends \
                    build-essential clang cmake ninja-build pkg-config file python3 binutils zlib1g-dev \
                    libx11-dev libxext-dev libxrandr-dev libxi-dev libxcursor-dev \
-                   libsm6 libice6 xvfb xclip xdotool x11-utils \
-                   libwayland-dev wayland-protocols libxkbcommon-dev wl-clipboard weston \
+                   libsm6 libice6 xvfb xclip xdotool x11-utils openbox \
+                   libwayland-dev wayland-protocols libxkbcommon-dev wl-clipboard weston libweston-13-dev \
                    libvulkan-dev mesa-vulkan-drivers vulkan-tools \
                    libfontconfig1-dev fonts-dejavu-core fonts-noto-cjk \
                    dbus-x11 at-spi2-core libglib2.0-bin \
@@ -135,6 +139,9 @@ jobs:
             if ldd "$library" | grep -F 'not found'; then exit 1; fi
           done
 
+      - name: Window behavior on X11 and Wayland
+        run: bash eng/linux/test-window-behavior.sh ${{ matrix.rid }} Release
+
       - name: Vulkan-on-Wayland presentation smoke
         run: |
           runtime="${{ runner.temp }}/weston-vk"
@@ -183,9 +190,17 @@ jobs:
           # Managed outputs already contain the validated native payload. A
           # second copy via LD_LIBRARY_PATH gives musl separate core/plugin
           # instances, so backend registration lands in the wrong instance.
+          # The suite is bounded at the dotnet invocation itself: healthy
+          # runners finish in ~15-35 minutes, while the page-swap benchmark
+          # class can degrade by an order of magnitude or more on noisy
+          # hosted runners. Without the cap, one degraded run parked the
+          # whole job until the runner's 6-hour limit every time it landed
+          # on a slow machine. The timeout sits inside xvfb-run so the
+          # signal is delivered to the test host directly.
           xvfb-run -a env \
             JALIUM_WINDOW_SYSTEM=x11 \
             JALIUM_RENDER_BACKEND=software \
+            timeout --signal=TERM --kill-after=30s 60m \
             dotnet test tests/Jalium.UI.Linux.Tests/Jalium.UI.Linux.Tests.csproj \
               -c Release --no-restore --disable-build-servers -m:1 \
               -p:JaliumBuildRoot="${{ runner.temp }}/jalium-managed" \
@@ -276,6 +291,20 @@ jobs:
             -p:BuildJaliumNativeStaticProjects=false \
             -p:GeneratePackageOnBuild=false \
             -p:PackageOutputPath="$GITHUB_WORKSPACE/packages"
+
+      - name: Build and exercise the Linux Window host
+        run: |
+          dotnet build tests/Jalium.UI.Linux.HostSmoke/Jalium.UI.Linux.HostSmoke.csproj \
+            -c Release -m:1 \
+            -p:JaliumBuildRoot="${{ runner.temp }}/jalium-managed" \
+            -p:JaliumNativeConfiguration=Release \
+            -p:GeneratePackageOnBuild=false
+          JALIUM_WINDOW_TEST_HOST="${{ runner.temp }}/jalium-managed/bin/Jalium.UI.Linux.HostSmoke/Release/net10.0/Jalium.UI.Linux.HostSmoke.dll" \
+            bash eng/linux/test-window-behavior.sh ${{ matrix.rid }} Release
+          JALIUM_NATIVE_RID="${{ matrix.rid }}" \
+          JALIUM_WINDOW_TEST_OUTPUT="${{ runner.temp }}/window-keyboard-${{ matrix.rid }}" \
+          JALIUM_WINDOW_TEST_HOST="${{ runner.temp }}/jalium-managed/bin/Jalium.UI.Linux.HostSmoke/Release/net10.0/Jalium.UI.Linux.HostSmoke.dll" \
+            bash eng/linux/test-window-keyboard.sh
 
       - name: Build Linux sample (keeps the app-facing path from rotting)
         run: >
@@ -492,6 +521,10 @@ jobs:
             # Alpine 3.23 arm64 passes the same smoke with validation enabled.
             sdk-image: mcr.microsoft.com/dotnet/sdk:10.0-alpine3.23
     runs-on: ${{ matrix.runner }}
+    # Healthy runs finish in ~35-55 minutes. The previous ceiling was the
+    # runner's 6-hour default, which let a degraded run sit as an
+    # unintelligible zombie instead of failing fast and legibly.
+    timeout-minutes: 150
 
     steps:
       - uses: actions/checkout@v7
@@ -519,7 +552,7 @@ jobs:
                 vulkan-loader-dev mesa-dri-gallium mesa-vulkan-swrast fontconfig-dev font-dejavu font-noto-cjk \
                 gstreamer-dev gst-plugins-base-dev gst-plugins-good \
                 gst-plugins-bad gst-libav ffmpeg \
-                xvfb-run weston weston-backend-headless weston-shell-desktop
+                xvfb-run openbox xprop weston weston-backend-headless weston-shell-desktop
               set -o pipefail
               bash eng/linux/build-native.sh "${{ matrix.rid }}" Release
               payload="src/native/bin/native/${{ matrix.rid }}/Release"
@@ -544,6 +577,9 @@ jobs:
               xvfb-run -a ctest \
                 --test-dir "src/native/out/build/${{ matrix.rid }}" \
                 --output-on-failure
+
+              JALIUM_NATIVE_OUTPUT_ROOT="$PWD/src/native/bin/native" \
+                bash eng/linux/test-window-behavior.sh "${{ matrix.rid }}" Release
 
               bash eng/linux/test-native-aot-static.sh "${{ matrix.rid }}" Release
 
@@ -583,10 +619,16 @@ jobs:
               # Managed outputs already contain the validated native payload.
               # Do not load a second core/plugin copy through LD_LIBRARY_PATH:
               # musl treats those as distinct backend registries.
+              # The suite is bounded at the dotnet invocation itself (see the
+              # glibc job's Run managed tests step for the rationale); the
+              # timeout sits inside xvfb-run so the signal reaches the test
+              # host directly, and managed_status keeps recording a timeout
+              # as a failure without skipping the isolated gates below.
               managed_status=0
               xvfb-run -a env \
                 JALIUM_WINDOW_SYSTEM=x11 \
                 JALIUM_RENDER_BACKEND=software \
+                timeout --signal=TERM --kill-after=30s 60m \
                 dotnet test tests/Jalium.UI.Linux.Tests/Jalium.UI.Linux.Tests.csproj \
                   -c Release --disable-build-servers -m:1 \
                   -p:JaliumBuildRoot="$managed_root" \

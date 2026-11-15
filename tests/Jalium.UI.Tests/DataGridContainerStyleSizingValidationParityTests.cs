@@ -253,6 +253,76 @@ public class DataGridContainerStyleSizingValidationParityTests
         }
     }
 
+    [Fact]
+    public void ProgrammaticColumnWidthAndConstraints_UpdateAlreadyRealizedCells()
+    {
+        ResetApplicationState();
+        _ = new Application();
+        try
+        {
+            var column = new DataGridTextColumn
+            {
+                Header = "Name", Binding = new Binding(nameof(RowModel.Name)), Width = new DataGridLength(100)
+            };
+            var grid = new DataGrid
+            {
+                AutoGenerateColumns = false, CanUserAddRows = false, EnableRowVirtualization = false,
+                Width = 360, Height = 180,
+                ItemsSource = new[] { new RowModel { Name = "first" }, new RowModel { Name = "second" } }
+            };
+            grid.Columns.Add(column);
+            var rows = new List<DataGridRow>();
+            grid.LoadingRow += (_, e) => rows.Add(e.Row);
+            _ = Arrange(grid, 400, 220);
+            Assert.Equal(2, rows.Count);
+            var cells = rows.Select(row => Assert.Single(row.Cells)).ToArray();
+
+            column.Width = new DataGridLength(220);
+            Assert.All(cells, cell => Assert.Equal(220, cell.Width));
+            column.MaxWidth = 180;
+            Assert.All(cells, cell => Assert.Equal(180, cell.Width));
+            column.MinWidth = 120;
+            column.Width = new DataGridLength(90);
+            Assert.All(cells, cell => Assert.Equal(120, cell.Width));
+
+            var headers = Assert.IsType<StackPanel>(grid.FindName("PART_ColumnHeadersHost"));
+            Assert.Equal(120, Assert.Single(headers.Children.OfType<DataGridColumnHeader>()).Width);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void ColumnHeaderClick_UsesButtonSemanticsForSorting()
+    {
+        ResetApplicationState();
+        _ = new Application();
+        try
+        {
+            var column = new DataGridTextColumn { Header = "Name", Binding = new Binding(nameof(RowModel.Name)) };
+            var grid = new DataGrid
+            {
+                AutoGenerateColumns = false, CanUserAddRows = false, Width = 360, Height = 180,
+                ItemsSource = new[] { new RowModel { Name = "second" }, new RowModel { Name = "first" } }
+            };
+            grid.Columns.Add(column);
+            _ = Arrange(grid, 400, 220);
+            var headers = Assert.IsType<StackPanel>(grid.FindName("PART_ColumnHeadersHost"));
+            Assert.Single(headers.Children.OfType<DataGridColumnHeader>()).RaiseEvent(
+                new RoutedEventArgs(Jalium.UI.Controls.Primitives.ButtonBase.ClickEvent));
+            Assert.Equal(System.ComponentModel.ListSortDirection.Ascending, column.SortDirection);
+            Assert.Single(headers.Children.OfType<DataGridColumnHeader>()).RaiseEvent(
+                new RoutedEventArgs(Jalium.UI.Controls.Primitives.ButtonBase.ClickEvent));
+            Assert.Equal(System.ComponentModel.ListSortDirection.Descending, column.SortDirection);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
     private static StackPanel Arrange(DataGrid grid, double width, double height)
     {
         var host = new StackPanel { Width = width, Height = height };

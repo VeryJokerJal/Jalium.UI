@@ -207,7 +207,7 @@ public class Expander : HeaderedContentControl
 
     private void OnKeyDownHandler(object sender, KeyEventArgs e)
     {
-        if (!IsEnabled) return;
+        if (!IsEnabled || e.Handled || !ReferenceEquals(e.OriginalSource, this)) return;
 
         if (e.Key == Key.Space || e.Key == Key.Enter)
         {

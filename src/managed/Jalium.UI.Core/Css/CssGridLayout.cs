@@ -4,7 +4,7 @@ using Jalium.UI.Media;
 namespace Jalium.UI.Styling;
 
 /// <summary>Grid formatting over native children. All placements and tracks are private layout data.</summary>
-internal sealed partial class CssGridLayout(Panel owner)
+internal sealed partial class CssGridLayout(FrameworkElement owner)
 {
     private Snapshot? _snapshot;
     private readonly List<IntrinsicColumns> _intrinsicColumns = [];
@@ -12,7 +12,13 @@ internal sealed partial class CssGridLayout(Panel owner)
     public Size Measure(Size available)
     {
         var insets = CssBoxMetrics.ContentInsets(owner, owner.CssLayout?.ContainingWidthCache ?? available.Width);
-        _snapshot = Compute(CssBoxMetrics.InnerSize(available, insets));
+        var inner = CssBoxMetrics.InnerSize(available, insets);
+        // A measure constraint is a limit, not the definite height of an auto
+        // grid. Stretch auto rows only when a height is actually established.
+        var preferredHeight = owner.CssPreferredHeight(owner.CssParentBox?.ContainingBlock.Height ?? available.Height);
+        if ((!double.IsFinite(preferredHeight) || owner.CssHasIntrinsicPreferredSize(false)) && Borrowed(true)?.Sizes is null)
+            inner = new(inner.Width, double.PositiveInfinity);
+        _snapshot = Compute(inner);
         owner.MeasureCssLayoutAbsoluteChildren(available);
         return new(_snapshot.Desired.Width + insets.Left + insets.Right, _snapshot.Desired.Height + insets.Top + insets.Bottom);
     }
@@ -37,7 +43,9 @@ internal sealed partial class CssGridLayout(Panel owner)
             var align = ItemBlockAlignment(item, alignItems);
             if (owner.FlowDirection == FlowDirection.RightToLeft)
                 justify = justify switch { CssBoxAlignment.Start => CssBoxAlignment.End, CssBoxAlignment.End => CssBoxAlignment.Start,
-                    CssBoxAlignment.Normal => CssBoxAlignment.End, _ => justify };
+                    CssBoxAlignment.Normal when item.Box.Element is FrameworkElement sized &&
+                        double.IsFinite(sized.CssPreferredWidth(width)) => CssBoxAlignment.End,
+                    _ => justify };
             if (item.Box.Element is FrameworkElement element)
             {
                 if (CssDisplayLayout.IsSubgridded(element, false)) justify = CssBoxAlignment.Stretch;
@@ -83,8 +91,8 @@ internal sealed partial class CssGridLayout(Panel owner)
         var reuseRows = sameItems && sameRows && previous!.RowGap.Equals(rowGap) && previous.Available.Width.Equals(available.Width);
         var columnsKnown = columns.Shared?.Sizes is not null;
         var rowsKnown = rows.Shared?.Sizes is not null;
-        Contribution[] columnContributions = [];
-        Contribution[] rowContributions = [];
+        Contribution[] columnContributions = columnsKnown && sameItems ? previous!.ColumnContributions : [];
+        Contribution[] rowContributions = rowsKnown && sameItems ? previous!.RowContributions : [];
         SizedAxis? columnSizes = null, rowSizes = null;
         if (columnsKnown) columnSizes = SizeAxis(columns, firstColumn, columnCount, available.Width, columnGap, [], CssBoxAlignment.Normal);
         if (rowsKnown) rowSizes = SizeAxis(rows, firstRow, rowCount, available.Height, rowGap, [], CssBoxAlignment.Normal);
@@ -150,8 +158,8 @@ internal sealed partial class CssGridLayout(Panel owner)
     private static long InputVersion(Visual visual)
     {
         var result = visual is UIElement element ? element.MeasureInputVersion : 0;
-        for (var i = 0; i < visual.VisualChildrenCount; i++)
-            if (visual.GetVisualChild(i) is { } child) result = Math.Max(result, InputVersion(child));
+        for (var i = 0; i < visual.InternalVisualChildrenCount; i++)
+            if (visual.InternalGetVisualChild(i) is { } child) result = Math.Max(result, InputVersion(child));
         return result;
     }
 
@@ -271,7 +279,7 @@ internal sealed partial class CssGridLayout(Panel owner)
         }
         var positionProperty = row ? Grid.RowProperty : Grid.ColumnProperty;
         var spanProperty = row ? Grid.RowSpanProperty : Grid.ColumnSpanProperty;
-        if (!a.Span && !b.Span && (start is null || end is null) && element is Panel { CssDisplayMode: CssDisplayMode.Grid } panel &&
+        if (!a.Span && !b.Span && (start is null || end is null) && element is FrameworkElement { CssDisplayMode: CssDisplayMode.Grid } panel &&
             ((CssComputedGridTracks)panel.GetValue(row ? CssGridProperties.RowsProperty : CssGridProperties.ColumnsProperty)!).Tracks is { IsSubgrid: true } subgrid)
         {
             span = subgrid.MinimumSubgridSpan;
@@ -437,6 +445,9 @@ internal sealed partial class CssGridLayout(Panel owner)
             var candidates = indices.Where(i => !collapsed[i] && minKinds[i] != CssGridBreadthKind.Length &&
                 (!crossingFlex || minKinds[i] != CssGridBreadthKind.Auto)).ToArray();
             var required = indices.Any(i => minKinds[i] == CssGridBreadthKind.MaxContent) ? item.Max : item.Min;
+            var baseCaps = Enumerable.Range(0, count).Select(i => Math.Max(sizes[i],
+                maxKinds[i] == CssGridBreadthKind.Length ? limits[i] : caps[i])).ToArray();
+            Increase(sizes, candidates, baseCaps, required - SpanGaps(item) - indices.Sum(i => sizes[i]));
             Increase(sizes, candidates, null, required - SpanGaps(item) - indices.Sum(i => sizes[i]));
         }
         for (var i = 0; i < count; i++) { limits[i] = Math.Max(limits[i], sizes[i]); caps[i] = Math.Max(caps[i], sizes[i]); }

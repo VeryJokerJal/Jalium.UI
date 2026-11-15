@@ -66,6 +66,7 @@ public:
     // (fallback faces of many text formats, TTC members) references a single
     // copy of the bytes. The provider's process-wide cache feeds this overload.
     static std::unique_ptr<FontFace> Parse(std::shared_ptr<const std::vector<uint8_t>> bytes, int faceIndex);
+    std::unique_ptr<FontFace> Clone() const { return Parse(bytes_, faceIndex_); }
 
     ~FontFace();
     FontFace(const FontFace&) = delete;

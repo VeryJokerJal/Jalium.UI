@@ -4,6 +4,7 @@ set(HEADERS
     include/and_media_init.h
     include/and_image_decoder.h
     include/and_video_decoder.h
+    src/and_gpu_video.h
     include/and_camera_source.h
     include/and_yuv_simd.h
 )
@@ -65,3 +66,8 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
     OUTPUT_NAME "jalium.native.media"
     DEBUG_POSTFIX ""
 )
+
+if(JALIUM_MEDIA_ANDROID_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()

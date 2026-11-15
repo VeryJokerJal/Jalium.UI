@@ -525,8 +525,14 @@ public sealed class Path : Shape
                 EllipseGeometry ellipse => ellipse.GetPathGeometry(),
                 _ => geometry.GetFlattenedPathGeometry()
             };
-            if (geometry is LineGeometry && path._definingGeometry is { } linePath)
-                linePath.Transform = geometry.Transform;
+            if (geometry is not PathGeometry && path._definingGeometry is { } converted)
+            {
+                // Primitive/group flattening stays in local space. Preserve the
+                // data geometry's top-level transform for the drawing consumer.
+                // StreamGeometry can return a frozen backing path.
+                if (converted.IsFrozen) path._definingGeometry = converted = converted.CloneCurrentValue();
+                converted.Transform = geometry.Transform;
+            }
         }
 
         path._renderedGeometry = null;

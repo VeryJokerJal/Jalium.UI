@@ -8,8 +8,10 @@ using Jalium.UI.Media;
 
 namespace Jalium.UI.Tests;
 
-public sealed class FlowDocumentViewersParityTests
+public sealed class FlowDocumentViewersParityTests : IDisposable
 {
+    public FlowDocumentViewersParityTests() => ScrollBarTemplateTestHelper.Register();
+    public void Dispose() => ScrollBarTemplateTestHelper.Reset();
     [Fact]
     public void TierOneSurface_UsesExactViewerInheritanceSelectionTypesAndCommandHooks()
     {
@@ -104,7 +106,7 @@ public sealed class FlowDocumentViewersParityTests
     public void PageViewer_PaginatesNavigatesZoomsAndPublishesRealPageViews()
     {
         var document = CreateMultiPageDocument();
-        var viewer = new FlowDocumentPageViewer { Document = document };
+        var viewer = new FlowDocumentPageViewer { Document = document, Style = (Style)MenuFlyoutTemplateTestHelper.Themes.Value[typeof(FlowDocumentPageViewer)] };
 
         Assert.True(viewer.PageCount > 2);
         Assert.Equal(1, viewer.PageNumber);
@@ -193,6 +195,7 @@ public sealed class FlowDocumentViewersParityTests
         var document = CreateMultiPageDocument();
         var viewer = new FlowDocumentScrollViewer
         {
+            Style = (Style)MenuFlyoutTemplateTestHelper.Themes.Value[typeof(FlowDocumentScrollViewer)],
             Document = document,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,

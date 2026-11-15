@@ -1,0 +1,197 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:dev="clr-namespace:Jalium.UI.Controls.DevTools"
+                    xmlns:ui="clr-namespace:Jalium.UI"
+                    xmlns:automation="clr-namespace:Jalium.UI.Automation">
+    <BooleanToVisibilityConverter x:Key="DevTools.BreadcrumbVisibility" />
+    <dev:DevToolsPropertyGroupAlternationConverter x:Key="DevTools.PropertyGroupAlternation" />
+    <Style TargetType="dev:DevToolsDetailsList">
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="ItemContainerStyle"><Style TargetType="ContentPresenter"><Setter Property="HorizontalAlignment" Value="Stretch" /></Style></Setter>
+        <Setter Property="ItemsPanel"><ItemsPanelTemplate><StackPanel /></ItemsPanelTemplate></Setter>
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsDetailsList"><Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}"><ItemsPresenter Name="PART_ItemsPresenter" /></Border></ControlTemplate></Setter>
+    </Style>
+    <Style x:Key="DevTools.PropertyGroupHeader" TargetType="dev:DevToolsActionButton">
+        <Setter Property="IsToggle" Value="True" /><Setter Property="MinHeight" Value="0" /><Setter Property="Padding" Value="0,4" /><Setter Property="FontSize" Value="10" /><Setter Property="Margin" Value="8,8,4,1" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsActionButton">
+            <Grid>
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup Name="AppearanceStates"><VisualState Name="Normal" /><VisualState Name="Hover"><VisualState.Setters><Setter TargetName="PART_Background" Property="Background" Value="{DynamicResource DevTools.ControlHover}" /></VisualState.Setters></VisualState><VisualState Name="Pressed"><VisualState.Setters><Setter TargetName="PART_Background" Property="Background" Value="{DynamicResource DevTools.ControlPressed}" /></VisualState.Setters></VisualState><VisualState Name="Active"><VisualState.Setters><Setter TargetName="PART_Arrow" Property="Text" Value="▾" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="CommonStates"><VisualState Name="Enabled" /><VisualState Name="Disabled"><VisualState.Setters><Setter TargetName="PART_Content" Property="Opacity" Value="0.55" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="FocusStates"><VisualState Name="Unfocused" /><VisualState Name="Focused"><VisualState.Setters><Setter TargetName="PART_Focus" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="IconStates"><VisualState Name="IconHidden" /><VisualState Name="IconVisible" /></VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <Border Name="PART_Background" Background="Transparent" CornerRadius="3" />
+                <Grid Name="PART_Content" Margin="{TemplateBinding Padding}"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                    <TextBlock Name="PART_Arrow" Text="▸" Foreground="{DynamicResource DevTools.TextSecondary}" FontSize="11" Margin="0,0,6,0" VerticalAlignment="Center" />
+                    <Border Grid.Column="1" Width="6" Height="6" CornerRadius="3" Background="{TemplateBinding Foreground}" Margin="0,0,6,0" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="2" Text="{TemplateBinding Label}" Foreground="{DynamicResource DevTools.TextSecondary}" FontSize="{TemplateBinding FontSize}" TextWrapping="Wrap" VerticalAlignment="Center" />
+                </Grid>
+                <Border Name="PART_Focus" BorderBrush="{DynamicResource DevTools.Accent}" BorderThickness="1" CornerRadius="3" Visibility="Collapsed" IsHitTestVisible="False" />
+            </Grid>
+        </ControlTemplate></Setter>
+    </Style>
+    <Style TargetType="dev:DevToolsPropertyGroup">
+        <Setter Property="Foreground" Value="{DynamicResource DevTools.TextSecondary}" /><Setter Property="AlternationCount" Value="2" />
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="ItemContainerStyle"><Style TargetType="ContentPresenter"><Setter Property="HorizontalAlignment" Value="Stretch" /></Style></Setter>
+        <Setter Property="ItemsPanel"><ItemsPanelTemplate><StackPanel /></ItemsPanelTemplate></Setter>
+        <Setter Property="ItemTemplate"><DataTemplate>
+            <dev:DevToolsPropertyRow Model="{Binding}" NameColumnWidth="{Binding NameColumnWidth, RelativeSource={RelativeSource AncestorType=dev:DevToolsPropertyGroup}}" NameForeground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=dev:DevToolsPropertyGroup}}"
+                FontDialogCommand="{Binding FontDialogCommand, RelativeSource={RelativeSource AncestorType=dev:DevToolsPropertyGroup}}"
+                IsAlternate="{Binding (ItemsControl.AlternationIndex), RelativeSource={RelativeSource AncestorType=ContentPresenter}, Converter={StaticResource DevTools.PropertyGroupAlternation}}" />
+        </DataTemplate></Setter>
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsPropertyGroup">
+            <Grid><Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                <VisualStateManager.VisualStateGroups><VisualStateGroup Name="ExpansionStates"><VisualState Name="Expanded" /><VisualState Name="Collapsed"><VisualState.Setters><Setter TargetName="PART_ItemsPresenter" Property="Visibility" Value="Collapsed" /></VisualState.Setters></VisualState></VisualStateGroup></VisualStateManager.VisualStateGroups>
+                <dev:DevToolsActionButton Name="PART_Header" Label="{TemplateBinding Heading}" Foreground="{TemplateBinding Foreground}" IsEnabled="{TemplateBinding HasItems}" IsActive="{Binding IsExpanded, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}" Style="{StaticResource DevTools.PropertyGroupHeader}" />
+                <ItemsPresenter Name="PART_ItemsPresenter" Grid.Row="1" />
+            </Grid>
+        </ControlTemplate></Setter>
+        <Style.Triggers>
+            <Trigger Property="Category" Value="{x:Static ui:DevToolsPropertyCategory.Framework}"><Setter Property="Foreground" Value="{DynamicResource DevTools.Info}" /></Trigger>
+            <Trigger Property="Category" Value="{x:Static ui:DevToolsPropertyCategory.Layout}"><Setter Property="Foreground" Value="{DynamicResource DevTools.Success}" /></Trigger>
+            <Trigger Property="Category" Value="{x:Static ui:DevToolsPropertyCategory.Appearance}"><Setter Property="Foreground" Value="{DynamicResource DevTools.Warning}" /></Trigger>
+            <Trigger Property="Category" Value="{x:Static ui:DevToolsPropertyCategory.Typography}"><Setter Property="Foreground" Value="{DynamicResource DevTools.TokenKeyword}" /></Trigger>
+            <Trigger Property="Category" Value="{x:Static ui:DevToolsPropertyCategory.Content}"><Setter Property="Foreground" Value="{DynamicResource DevTools.CategoryContent}" /></Trigger>
+            <Trigger Property="Category" Value="{x:Static ui:DevToolsPropertyCategory.Items}"><Setter Property="Foreground" Value="{DynamicResource DevTools.TokenType}" /></Trigger>
+            <Trigger Property="Category" Value="{x:Static ui:DevToolsPropertyCategory.Data}"><Setter Property="Foreground" Value="{DynamicResource DevTools.TokenEnum}" /></Trigger>
+            <Trigger Property="Category" Value="{x:Static ui:DevToolsPropertyCategory.Input}"><Setter Property="Foreground" Value="{DynamicResource DevTools.CategoryInput}" /></Trigger>
+            <Trigger Property="Category" Value="{x:Static ui:DevToolsPropertyCategory.Behavior}"><Setter Property="Foreground" Value="{DynamicResource DevTools.CategoryBehavior}" /></Trigger>
+            <Trigger Property="Category" Value="{x:Static ui:DevToolsPropertyCategory.State}"><Setter Property="Foreground" Value="{DynamicResource DevTools.CategoryState}" /></Trigger>
+        </Style.Triggers>
+    </Style>
+    <Style x:Key="DevTools.BreadcrumbAction" TargetType="dev:DevToolsActionButton">
+        <Setter Property="Foreground" Value="{DynamicResource DevTools.TextSecondary}" /><Setter Property="Padding" Value="2,3" /><Setter Property="MinHeight" Value="0" /><Setter Property="FontSize" Value="11" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsActionButton">
+            <Grid>
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup Name="AppearanceStates">
+                        <VisualState Name="Normal" /><VisualState Name="Hover"><VisualState.Setters><Setter TargetName="PART_Underline" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState>
+                        <VisualState Name="Pressed"><VisualState.Setters><Setter TargetName="PART_Surface" Property="Background" Value="{DynamicResource DevTools.AccentSoft}" /></VisualState.Setters></VisualState>
+                        <VisualState Name="Active"><VisualState.Setters><Setter TargetName="PART_Label" Property="Foreground" Value="{DynamicResource DevTools.Accent}" /></VisualState.Setters></VisualState>
+                    </VisualStateGroup>
+                    <VisualStateGroup Name="CommonStates"><VisualState Name="Enabled" /><VisualState Name="Disabled" /></VisualStateGroup>
+                    <VisualStateGroup Name="FocusStates"><VisualState Name="Unfocused" /><VisualState Name="Focused"><VisualState.Setters><Setter TargetName="PART_Focus" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="IconStates"><VisualState Name="IconHidden" /><VisualState Name="IconVisible" /></VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <Border Name="PART_Surface" Padding="{TemplateBinding Padding}" Background="Transparent" CornerRadius="2"><TextBlock Name="PART_Label" Text="{TemplateBinding Label}" Foreground="{TemplateBinding Foreground}" FontSize="{TemplateBinding FontSize}" TextWrapping="Wrap" /></Border>
+                <Border Name="PART_Underline" BorderBrush="{DynamicResource DevTools.Accent}" BorderThickness="0,0,0,1" Visibility="Collapsed" IsHitTestVisible="False" />
+                <Border Name="PART_Focus" BorderBrush="{DynamicResource DevTools.Accent}" BorderThickness="1" CornerRadius="2" Visibility="Collapsed" IsHitTestVisible="False" />
+            </Grid>
+        </ControlTemplate></Setter>
+    </Style>
+    <Style TargetType="dev:DevToolsBreadcrumb">
+        <Setter Property="automation:AutomationProperties.Name" Value="Element ancestry" />
+        <Setter Property="KeyboardNavigation.TabNavigation" Value="Once" />
+        <Setter Property="ItemsPanel"><ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate></Setter>
+        <Setter Property="ItemContainerStyle"><Style TargetType="ContentPresenter"><Setter Property="MaxWidth" Value="{Binding ItemMaxWidth, RelativeSource={RelativeSource AncestorType=dev:DevToolsBreadcrumb}}" /></Style></Setter>
+        <Setter Property="ItemTemplate"><DataTemplate>
+            <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                <TextBlock Text="/" Visibility="{Binding HasPrevious, Converter={StaticResource DevTools.BreadcrumbVisibility}}" Foreground="{DynamicResource DevTools.TextSecondary}" FontSize="11" Margin="4,3" VerticalAlignment="Top" IsHitTestVisible="False" />
+                <dev:DevToolsActionButton Grid.Column="1" Label="{Binding Text}" ToolTip="{Binding Hint}" IsActive="{Binding IsCurrent}" Style="{StaticResource DevTools.BreadcrumbAction}" Command="{Binding NavigateCommand, RelativeSource={RelativeSource AncestorType=dev:DevToolsBreadcrumb}}" CommandParameter="{Binding}" />
+            </Grid>
+        </DataTemplate></Setter>
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsBreadcrumb"><ItemsPresenter /></ControlTemplate></Setter>
+    </Style>
+    <SolidColorBrush x:Key="DevTools.BoxMargin" Color="#1AEDA63C" />
+    <SolidColorBrush x:Key="DevTools.BoxBorder" Color="#1AFFB22E" />
+    <SolidColorBrush x:Key="DevTools.BoxPadding" Color="#1A56D98D" />
+    <SolidColorBrush x:Key="DevTools.BoxSize" Color="#1A5FB7CB" />
+    <Style TargetType="dev:DevToolsElementSummary">
+        <Setter Property="Foreground" Value="{DynamicResource DevTools.TextPrimary}" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsElementSummary">
+            <StackPanel>
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup Name="TypeStates"><VisualState Name="TypeVisible" /><VisualState Name="TypeHidden"><VisualState.Setters><Setter TargetName="PART_TypeDeclaration" Property="Visibility" Value="Collapsed" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="NameStates"><VisualState Name="NameVisible" /><VisualState Name="NameHidden"><VisualState.Setters><Setter TargetName="PART_ElementName" Property="Visibility" Value="Collapsed" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="BaseTypeStates"><VisualState Name="BaseTypeVisible" /><VisualState Name="BaseTypeHidden"><VisualState.Setters><Setter TargetName="PART_BaseTypeContainer" Property="Visibility" Value="Collapsed" /><Setter TargetName="PART_BaseType" Property="Visibility" Value="Collapsed" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="StatisticsStates"><VisualState Name="StatisticsVisible" /><VisualState Name="StatisticsHidden"><VisualState.Setters><Setter TargetName="PART_Statistics" Property="Visibility" Value="Collapsed" /></VisualState.Setters></VisualState></VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <WrapPanel Name="PART_TypeDeclaration" Margin="0,0,0,4" HorizontalSpacing="6" VerticalSpacing="2">
+                    <Grid MaxWidth="{TemplateBinding AvailableTextWidth}"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                        <TextBlock Text="class" Foreground="{DynamicResource DevTools.TokenKeyword}" FontSize="12" VerticalAlignment="Top" Margin="0,0,6,0" />
+                        <TextBlock Name="PART_TypeName" Grid.Column="1" Text="{TemplateBinding TypeName}" Foreground="{DynamicResource DevTools.TokenType}" FontSize="12" FontWeight="SemiBold" TextWrapping="Wrap" />
+                    </Grid>
+                    <Grid Name="PART_BaseTypeContainer" MaxWidth="{TemplateBinding AvailableTextWidth}"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                        <TextBlock Text=":" Foreground="{DynamicResource DevTools.TextSecondary}" FontSize="12" VerticalAlignment="Top" Margin="0,0,4,0" />
+                        <TextBlock Name="PART_BaseType" Grid.Column="1" Text="{TemplateBinding BaseTypeName}" Foreground="{DynamicResource DevTools.TextSecondary}" FontSize="12" TextWrapping="Wrap" />
+                    </Grid>
+                </WrapPanel>
+                <TextBlock Name="PART_ElementName" Text="{TemplateBinding NameText}" Foreground="{DynamicResource DevTools.Accent}" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,6" />
+                <WrapPanel Name="PART_Statistics">
+                    <dev:DevToolsReadout Label="Depth" ValueText="{TemplateBinding DepthText}" ValueBrush="{DynamicResource DevTools.TextPrimary}" FontSize="10" Margin="0,0,12,4" />
+                    <dev:DevToolsReadout Label="Children" ValueText="{TemplateBinding ChildrenText}" ValueBrush="{DynamicResource DevTools.TextPrimary}" FontSize="10" Margin="0,0,12,4" />
+                    <dev:DevToolsReadout Label="Descendants" ValueText="{TemplateBinding DescendantsText}" ValueBrush="{DynamicResource DevTools.TextPrimary}" FontSize="10" Margin="0,0,0,4" />
+                </WrapPanel>
+            </StackPanel>
+        </ControlTemplate></Setter>
+    </Style>
+    <Style x:Key="DevTools.BoxEdge" TargetType="TextBlock" BasedOn="{StaticResource DevTools.Text}">
+        <Setter Property="FontFamily" Value="{ThemeResource MonoFontFamily}" />
+        <Setter Property="FontSize" Value="11" /><Setter Property="HorizontalAlignment" Value="Center" /><Setter Property="VerticalAlignment" Value="Center" />
+        <Setter Property="TextTrimming" Value="None" /><Setter Property="TextWrapping" Value="Wrap" /><Setter Property="Margin" Value="1" />
+    </Style>
+    <Style x:Key="DevTools.BoxLabel" TargetType="TextBlock" BasedOn="{StaticResource DevTools.MutedText}">
+        <Setter Property="Foreground" Value="{DynamicResource DevTools.TextPrimary}" />
+        <Setter Property="FontSize" Value="9" /><Setter Property="HorizontalAlignment" Value="Left" /><Setter Property="VerticalAlignment" Value="Center" /><Setter Property="Margin" Value="5,0,0,0" />
+    </Style>
+    <Style TargetType="dev:DevToolsBoxModel">
+        <Setter Property="MaxWidth" Value="400" /><Setter Property="Background" Value="{DynamicResource DevTools.SurfaceAlt}" /><Setter Property="BorderBrush" Value="{DynamicResource DevTools.BorderStrong}" />
+        <Setter Property="Foreground" Value="{DynamicResource DevTools.TextPrimary}" /><Setter Property="BorderThickness" Value="1" />
+        <Setter Property="MarginAreaBrush" Value="{DynamicResource DevTools.BoxMargin}" /><Setter Property="BorderAreaBrush" Value="{DynamicResource DevTools.BoxBorder}" />
+        <Setter Property="PaddingAreaBrush" Value="{DynamicResource DevTools.BoxPadding}" /><Setter Property="SizeAreaBrush" Value="{DynamicResource DevTools.BoxSize}" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsBoxModel">
+            <StackPanel>
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup Name="LayoutStates"><VisualState Name="Wide" /><VisualState Name="Compact"><VisualState.Setters><Setter TargetName="PART_MarginLeftColumn" Property="MaxWidth" Value="29" /><Setter TargetName="PART_MarginRightColumn" Property="MaxWidth" Value="29" /><Setter TargetName="PART_BorderLeftColumn" Property="MaxWidth" Value="29" /><Setter TargetName="PART_BorderRightColumn" Property="MaxWidth" Value="29" /><Setter TargetName="PART_PaddingLeftColumn" Property="MaxWidth" Value="29" /><Setter TargetName="PART_PaddingRightColumn" Property="MaxWidth" Value="29" />
+                        <Setter TargetName="PART_BorderLabel" Property="Visibility" Value="Collapsed" /><Setter TargetName="PART_PaddingLabel" Property="Visibility" Value="Collapsed" />
+                        <Setter TargetName="PART_SizeLabel" Property="Visibility" Value="Collapsed" />
+                    </VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="SizeStates"><VisualState Name="SizeUnknown" /><VisualState Name="SizeKnown"><VisualState.Setters><Setter TargetName="PART_Size" Property="FontWeight" Value="SemiBold" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup Name="LegendStates"><VisualState Name="LegendVisible" /><VisualState Name="LegendHidden"><VisualState.Setters><Setter TargetName="PART_Legend" Property="Visibility" Value="Collapsed" /></VisualState.Setters></VisualState></VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}" CornerRadius="4">
+                    <Grid Name="PART_MarginArea" Background="{TemplateBinding MarginAreaBrush}" ToolTip="{Binding Metrics.MarginSummary, RelativeSource={RelativeSource TemplatedParent}}">
+                        <Grid.RowDefinitions><RowDefinition Height="Auto" MinHeight="24" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" MinHeight="24" /></Grid.RowDefinitions>
+                        <Grid.ColumnDefinitions><ColumnDefinition Name="PART_MarginLeftColumn" Width="Auto" MinWidth="24" MaxWidth="48" /><ColumnDefinition Width="*" /><ColumnDefinition Name="PART_MarginRightColumn" Width="Auto" MinWidth="24" MaxWidth="48" /></Grid.ColumnDefinitions>
+                        <TextBlock Grid.ColumnSpan="3" Text="margin" Style="{StaticResource DevTools.BoxLabel}" />
+                        <TextBlock Name="PART_MarginTop" Grid.ColumnSpan="3" Text="{Binding Metrics.MarginTopText, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.BoxEdge}" />
+                        <TextBlock Name="PART_MarginLeft" Grid.Row="1" Text="{Binding Metrics.MarginLeftText, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.BoxEdge}" />
+                        <TextBlock Name="PART_MarginRight" Grid.Row="1" Grid.Column="2" Text="{Binding Metrics.MarginRightText, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.BoxEdge}" />
+                        <TextBlock Name="PART_MarginBottom" Grid.Row="2" Grid.ColumnSpan="3" Text="{Binding Metrics.MarginBottomText, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.BoxEdge}" />
+                        <Grid Name="PART_BorderArea" Grid.Row="1" Grid.Column="1" Background="{TemplateBinding BorderAreaBrush}" ToolTip="{Binding Metrics.BorderSummary, RelativeSource={RelativeSource TemplatedParent}}">
+                            <Grid.RowDefinitions><RowDefinition Height="Auto" MinHeight="24" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" MinHeight="24" /></Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions><ColumnDefinition Name="PART_BorderLeftColumn" Width="Auto" MinWidth="24" MaxWidth="48" /><ColumnDefinition Width="*" /><ColumnDefinition Name="PART_BorderRightColumn" Width="Auto" MinWidth="24" MaxWidth="48" /></Grid.ColumnDefinitions>
+                            <TextBlock Name="PART_BorderLabel" Grid.ColumnSpan="3" Text="border" Style="{StaticResource DevTools.BoxLabel}" />
+                            <TextBlock Name="PART_BorderTop" Grid.ColumnSpan="3" Text="{Binding Metrics.BorderTopText, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.BoxEdge}" />
+                            <TextBlock Name="PART_BorderLeft" Grid.Row="1" Text="{Binding Metrics.BorderLeftText, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.BoxEdge}" />
+                            <TextBlock Name="PART_BorderRight" Grid.Row="1" Grid.Column="2" Text="{Binding Metrics.BorderRightText, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.BoxEdge}" />
+                            <TextBlock Name="PART_BorderBottom" Grid.Row="2" Grid.ColumnSpan="3" Text="{Binding Metrics.BorderBottomText, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.BoxEdge}" />
+                            <Grid Name="PART_PaddingArea" Grid.Row="1" Grid.Column="1" Background="{TemplateBinding PaddingAreaBrush}" ToolTip="{Binding Metrics.PaddingSummary, RelativeSource={RelativeSource TemplatedParent}}">
+                                <Grid.RowDefinitions><RowDefinition Height="Auto" MinHeight="24" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" MinHeight="24" /></Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions><ColumnDefinition Name="PART_PaddingLeftColumn" Width="Auto" MinWidth="24" MaxWidth="48" /><ColumnDefinition Width="*" /><ColumnDefinition Name="PART_PaddingRightColumn" Width="Auto" MinWidth="24" MaxWidth="48" /></Grid.ColumnDefinitions>
+                                <TextBlock Name="PART_PaddingLabel" Grid.ColumnSpan="3" Text="padding" Style="{StaticResource DevTools.BoxLabel}" />
+                                <TextBlock Name="PART_PaddingTop" Grid.ColumnSpan="3" Text="{Binding Metrics.PaddingTopText, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.BoxEdge}" />
+                                <TextBlock Name="PART_PaddingLeft" Grid.Row="1" Text="{Binding Metrics.PaddingLeftText, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.BoxEdge}" />
+                                <TextBlock Name="PART_PaddingRight" Grid.Row="1" Grid.Column="2" Text="{Binding Metrics.PaddingRightText, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.BoxEdge}" />
+                                <TextBlock Name="PART_PaddingBottom" Grid.Row="2" Grid.ColumnSpan="3" Text="{Binding Metrics.PaddingBottomText, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.BoxEdge}" />
+                                <Border Grid.Row="1" Grid.Column="1" Background="{TemplateBinding SizeAreaBrush}" MinHeight="44" Padding="4">
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock Name="PART_Size" Text="{Binding Metrics.SizeText, RelativeSource={RelativeSource TemplatedParent}}" Foreground="{DynamicResource DevTools.TextPrimary}" FontSize="12" TextWrapping="Wrap" TextAlignment="Center" />
+                                        <TextBlock Name="PART_SizeLabel" Text="element" Style="{StaticResource DevTools.MutedText}" Foreground="{DynamicResource DevTools.TextPrimary}" FontSize="9" HorizontalAlignment="Center" />
+                                    </StackPanel>
+                                </Border>
+                            </Grid>
+                        </Grid>
+                    </Grid>
+                </Border>
+                <WrapPanel Name="PART_Legend" Margin="0,8,0,0">
+                    <dev:DevToolsReadout Label="Margin" ValueText="{Binding Metrics.MarginText, RelativeSource={RelativeSource TemplatedParent}}" ValueBrush="{DynamicResource DevTools.Warning}" FontSize="11" Margin="0,0,12,4" />
+                    <dev:DevToolsReadout Label="Border" ValueText="{Binding Metrics.BorderText, RelativeSource={RelativeSource TemplatedParent}}" ValueBrush="{DynamicResource DevTools.Accent}" FontSize="11" Margin="0,0,12,4" />
+                    <dev:DevToolsReadout Label="Padding" ValueText="{Binding Metrics.PaddingText, RelativeSource={RelativeSource TemplatedParent}}" ValueBrush="{DynamicResource DevTools.Success}" FontSize="11" Margin="0,0,0,4" />
+                </WrapPanel>
+            </StackPanel>
+        </ControlTemplate></Setter>
+    </Style>
+</ResourceDictionary>

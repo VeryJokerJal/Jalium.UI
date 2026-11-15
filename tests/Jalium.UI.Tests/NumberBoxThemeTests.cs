@@ -43,8 +43,8 @@ public class NumberBoxThemeTests
             Assert.False(numberBox.HasLocalValue(FrameworkElement.HeightProperty));
             Assert.NotNull(numberBox.SelectionBrush);
             Assert.NotNull(numberBox.CaretBrush);
-            Assert.Equal(36, numberBox.MinHeight);
-            Assert.True(numberBox.RenderSize.Height >= 36);
+            Assert.Equal(38, numberBox.MinHeight);
+            Assert.True(numberBox.RenderSize.Height >= 38);
         }
         finally
         {
@@ -118,8 +118,11 @@ public class NumberBoxThemeTests
             var upSpinButton = Assert.IsType<RepeatButton>(numberBox.FindName("PART_UpSpinButton"));
             var downSpinButton = Assert.IsType<RepeatButton>(numberBox.FindName("PART_DownSpinButton"));
 
-            Assert.Same(controlBackground, upSpinButton.Background);
-            Assert.Same(controlBackground, downSpinButton.Background);
+            var capsule = Assert.IsType<Grid>(numberBox.FindName("PART_SpinButtonsHost"));
+            var surface = Assert.IsType<Jalium.UI.Shapes.Rectangle>(capsule.Children[0]);
+            Assert.Same(controlBackground, surface.Fill);
+            Assert.Equal(0, Assert.IsType<SolidColorBrush>(upSpinButton.Background).Color.A);
+            Assert.Equal(0, Assert.IsType<SolidColorBrush>(downSpinButton.Background).Color.A);
 
             var upPath = Assert.IsType<ShapePath>(upSpinButton.Content);
             var downPath = Assert.IsType<ShapePath>(downSpinButton.Content);
@@ -230,12 +233,14 @@ public class NumberBoxThemeTests
             Assert.Equal(up.Right, down.Right, 3);
             Assert.Equal(up.Bottom, down.Bottom, 3);
 
-            // The divider lives on the left edge only; the right edge stays flush so
-            // both halves reach the rounded outer corner identically.
-            Assert.True(up.Left > 0, "spin column should carry a left divider border");
-            Assert.Equal(0, up.Right, 3);
-            Assert.Equal(0, up.Top, 3);
-            Assert.Equal(0, up.Bottom, 3);
+            // A shared template surface draws the divider; buttons do not add
+            // a second inset or overwrite a consumer's template geometry.
+            Assert.Equal(new Thickness(0), up);
+            Assert.Equal(new Thickness(0), down);
+            var capsule = Assert.IsType<Grid>(numberBox.FindName("PART_SpinButtonsHost"));
+            var surface = Assert.IsType<Jalium.UI.Shapes.Rectangle>(capsule.Children[0]);
+            Assert.Equal(1, surface.StrokeThickness);
+            Assert.NotNull(surface.Stroke);
         }
         finally
         {

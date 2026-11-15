@@ -3,7 +3,8 @@ using Jalium.UI.Media;
 
 namespace Jalium.UI.Styling;
 
-internal readonly record struct CssDisplaySpecification(CssDisplayMode Mode, bool Inline = false, bool None = false);
+internal readonly record struct CssDisplaySpecification(CssDisplayMode Mode, bool Inline = false, bool None = false, bool ListItem = false,
+    bool LegacyBox = false);
 internal enum CssVisibilityMode : byte { Visible, Hidden, Collapse, Inherit }
 
 internal static class CssDisplayProperties
@@ -17,13 +18,49 @@ internal static class CssDisplayProperties
 
     internal static readonly DependencyProperty SpecificationProperty = DependencyProperty.RegisterAttached(
         "CssDisplay", typeof(CssDisplaySpecification), typeof(CssDisplayProperties),
-        new PropertyMetadata(default(CssDisplaySpecification), static (target, _) =>
+        new PropertyMetadata(default(CssDisplaySpecification), static (target, change) =>
         {
-            if (target is UIElement element) SyncAnimatedPresentation(element);
+            CssRubyWritingMode.Invalidate();
+            CssFirstLine.StructureChanged(target);
+            if (target is UIElement element)
+            {
+                SyncAnimatedPresentation(element);
+                element.InvalidateMeasure();
+                for (var parent = element.VisualParent as FrameworkElement; parent is not null; parent = parent.VisualParent as FrameworkElement)
+                {
+                    parent.InvalidateMeasure();
+                    if (!CssDisplayLayout.IsFlow(parent) && !parent.CanFragmentCssInlineContent) break;
+                }
+            }
+            if (target is FrameworkElement framework) CssLineClampProperties.RefreshMode(framework);
+            if (target is Jalium.UI.Documents.TextElement text) text.NotifyTextContentChanged();
+            else if (target is Jalium.UI.Documents.FlowDocument document) document.NotifyPaginationStyleChanged();
+            // A child's computed display depends on the nearest generating
+            // parent (flex/grid blockification and contents ancestor skipping).
+            if(change.OldValue is CssDisplaySpecification oldDisplay && change.NewValue is CssDisplaySpecification newDisplay && oldDisplay.Mode!=newDisplay.Mode)
+                foreach(var child in CssNode.Get(target).EnumerateChildren())CssEvaluationScheduler.InvalidateSubtree(child);
+            if (change.OldValue is CssDisplaySpecification previous && change.NewValue is CssDisplaySpecification current && previous.ListItem != current.ListItem)
+            {
+                var node = CssNode.Get(target);
+                CssCounters.Invalidate(node);
+                CssEvaluationScheduler.InvalidateElement(node);
+            }
         }));
+
+    internal static bool SuppressesBoxTree(DependencyObject source)
+    {
+        for (var node = CssNode.Get(source); node is not null; node = node.FrameworkParent)
+            if (node.GetValue(SpecificationProperty) is CssDisplaySpecification { None: true } ||
+                CssContentsLayout.Suppressed(node.Target)) return true;
+        return false;
+    }
     internal static readonly DependencyProperty VisibilityProperty = DependencyProperty.RegisterAttached(
         "CssVisibility", typeof(CssVisibilityMode), typeof(CssDisplayProperties),
-        new PropertyMetadata(CssVisibilityMode.Visible));
+        new PropertyMetadata(CssVisibilityMode.Visible, static (target, _) =>
+        {
+            if (target is Jalium.UI.Documents.TextElement text) text.NotifyTextContentChanged();
+            else if (target is Jalium.UI.Documents.FlowDocument document) document.NotifyPaginationStyleChanged();
+        }));
 
     internal static CssDisplaySpecification Computed(CssNode node)
         => Compute(node, SpecifiedOrInitial(node));
@@ -32,22 +69,48 @@ internal static class CssDisplayProperties
     {
         if (specified.None) return specified;
         var parent = CssMatcher.CssAncestor(node);
+        if (specified.Mode == CssDisplayMode.Contents)
+        {
+            if (node.Target is FrameworkElement element && CssContentsLayout.IsUnusual(element))
+                return new(CssDisplayMode.Native, None: true);
+            return parent is null ? new(CssDisplayMode.Block) : specified;
+        }
+        while (parent is not null && SpecifiedOrInitial(parent).Mode == CssDisplayMode.Contents &&
+            !SpecifiedOrInitial(parent).None && CssMatcher.CssAncestor(parent) is not null &&
+            (parent.Target is not FrameworkElement host || !CssContentsLayout.IsUnusual(host)))
+            parent = CssMatcher.CssAncestor(parent);
         var positioned = node.CssLayout?.ComputedPosition is CssPositionKeyword.Absolute or CssPositionKeyword.Fixed;
         var floated = node.GetValue(CssFloatProperties.FloatProperty) is CssFloatSide side &&
             side != CssFloatSide.None;
         var flexOrGridItem = parent is not null &&
             parent.Target.GetEffectiveValueLayer(SpecificationProperty) is not null &&
             parent.GetValue(SpecificationProperty) is CssDisplaySpecification
-                { Mode: CssDisplayMode.Flex or CssDisplayMode.Grid, None: false };
-        if (parent is not null && !positioned && !floated && !flexOrGridItem) return specified;
-        return specified.Mode == CssDisplayMode.Native
-            ? new(CssDisplayMode.Block)
+                { Mode: CssDisplayMode.Flex or CssDisplayMode.Grid, None: false } parentDisplay &&
+            !(parentDisplay.LegacyBox && parent.Target is FrameworkElement legacyParent &&
+                CssLineClampProperties.UsedMode(legacyParent, parentDisplay.Mode) == CssDisplayMode.FlowRoot);
+        if (parent is not null && !positioned && !floated && !flexOrGridItem)
+            return CssRubyRoles.IsBox(SpecifiedOrInitial(parent).Mode) ? specified with { Inline = true } : specified;
+        return specified.Mode == CssDisplayMode.Native || CssTableLayout.IsPart(specified.Mode) || CssRubyRoles.IsPart(specified.Mode)
+            ? specified with { Mode = CssDisplayMode.Block, Inline = false }
             : specified with { Inline = false };
     }
 
     private static CssDisplaySpecification SpecifiedOrInitial(CssNode node)
-        => node.Target.GetEffectiveValueLayer(SpecificationProperty) is null
-            ? Initial : (CssDisplaySpecification)node.GetValue(SpecificationProperty)!;
+    {
+        if (node.Target.GetEffectiveValueLayer(SpecificationProperty) is not null)
+            return (CssDisplaySpecification)node.GetValue(SpecificationProperty)!;
+        return node.Target switch
+        {
+            Jalium.UI.Documents.Table => new(CssDisplayMode.Table),
+            Jalium.UI.Documents.TableRowGroup => new(CssDisplayMode.TableRowGroup),
+            Jalium.UI.Documents.TableRow => new(CssDisplayMode.TableRow),
+            Jalium.UI.Documents.TableCell => new(CssDisplayMode.TableCell),
+            Jalium.UI.Documents.TableColumn => new(CssDisplayMode.TableColumn),
+            Jalium.UI.Documents.ListItem => new(CssDisplayMode.Block, ListItem: true),
+            Jalium.UI.Documents.Block or Jalium.UI.Documents.FlowDocument => new(CssDisplayMode.Block),
+            _ => Initial,
+        };
+    }
 
     internal static void RefreshVisibility(UIElement element)
     {
@@ -55,7 +118,8 @@ internal static class CssDisplayProperties
         UIElement.InvalidateHitTestCache();
         element.InvalidateVisual();
         element.UpdateIsVisibleFromTree(forceDescendants: true);
-        var affectsFlexLayout = element.VisualParent is Panel parent && IsFlexContainer(parent);
+        CssTableLayout.VisibilityChanged(element);
+        var affectsFlexLayout = CssContentsLayout.BoxParent(element) is FrameworkElement parent && IsFlexContainer(parent);
         affectsFlexLayout |= InvalidateFlexLayoutsInSubtree(element);
         if (affectsFlexLayout)
             for (Visual? current = element; current is not null; current = current.VisualParent)
@@ -63,18 +127,19 @@ internal static class CssDisplayProperties
     }
 
     internal static bool IsCollapsedFlexItem(UIElement element) =>
-        HasVisibilityDeclarations && element.VisualParent is Panel parent &&
+        HasVisibilityDeclarations && !CssContentsLayout.IsContents(element) &&
+        CssContentsLayout.BoxParent(element) is FrameworkElement parent &&
         IsFlexContainer(parent) &&
-        element is not FrameworkElement { CssLayout.Position: CssPositionMode.Absolute } &&
+        element is not FrameworkElement { CssLayout.IsOutOfFlow: true } &&
         EffectiveVisibility(element) == Visibility.Collapsed;
 
-    private static bool IsFlexContainer(Panel panel) =>
-        panel.CssDisplayMode == CssDisplayMode.Flex ||
-        panel is FlexPanel && panel.CssDisplayMode == CssDisplayMode.Native;
+    private static bool IsFlexContainer(FrameworkElement panel) =>
+        panel.IsCssContentHost && (panel.CssDisplayMode == CssDisplayMode.Flex ||
+        panel is FlexPanel && panel.CssDisplayMode == CssDisplayMode.Native);
 
     private static bool InvalidateFlexLayoutsInSubtree(UIElement element)
     {
-        var found = element is Panel panel && IsFlexContainer(panel);
+        var found = element is FrameworkElement panel && IsFlexContainer(panel);
         if (found) element.InvalidateMeasure();
         for (var i = 0; i < element.InternalVisualChildrenCount; i++)
             if (element.InternalGetVisualChild(i) is UIElement child)
@@ -84,10 +149,17 @@ internal static class CssDisplayProperties
 
     internal static Visibility EffectiveVisibility(DependencyObject target)
     {
+        if (CssRubyVisibility.Suppressed(target)) return Visibility.Collapsed;
+        if (CssTableLayout.ColumnSuppressed(target)) return Visibility.Collapsed;
+        if (CssTableLayout.TrackSuppressed(target)) return Visibility.Collapsed;
+        if (CssReplacedContent.IsSuppressed(target)) return Visibility.Collapsed;
+        if (CssContentsLayout.Suppressed(target)) return Visibility.Collapsed;
         if (!HasVisibilityDeclarations) return Visibility.Visible;
         for (var node = CssNode.Get(target); node is not null; node = CssMatcher.CssAncestor(node))
         {
-            if (node.Target is UIElement native)
+            // Anonymous boxes use native visibility to enable their implementation
+            // content. That switch does not override the source's CSS inheritance.
+            if (node.Target is UIElement native && node.Target is not ICssAnonymousBox)
             {
                 var layer = native.GetEffectiveValueLayer(UIElement.VisibilityProperty);
                 // A display animation mirrors layout participation into native
@@ -105,7 +177,7 @@ internal static class CssDisplayProperties
                     return mode switch
                     {
                         CssVisibilityMode.Hidden => Visibility.Hidden,
-                        CssVisibilityMode.Collapse => Visibility.Collapsed,
+                        CssVisibilityMode.Collapse => CssRubyVisibility.IgnoresCollapse(target, node.Target) ? Visibility.Visible : Visibility.Collapsed,
                         _ => Visibility.Visible,
                     };
             }
@@ -117,7 +189,7 @@ internal static class CssDisplayProperties
     {
         for (var current = node; current is not null; current = CssMatcher.CssAncestor(current))
         {
-            if (current.Target is UIElement native)
+            if (current.Target is UIElement native && current.Target is not ICssAnonymousBox)
             {
                 var layer = native.GetEffectiveValueLayer(UIElement.VisibilityProperty);
                 if (!IsDisplayVisibilityMirror(native) &&
@@ -207,6 +279,7 @@ internal static class CssDisplayProperties
 
     internal static void OnAppliedStyleChanged(UIElement element)
     {
+        if (element is FrameworkElement tablePart && CssTableLayout.IsInternal(tablePart.CssDisplayMode)) RefreshVisibility(element);
         UIElement.InvalidateHitTestCache();
         if (IsExitInert(element))
         {
@@ -253,32 +326,53 @@ internal static class CssDisplayProperties
         TransitionTargetDpName = SpecificationProperty.Name,
         Parse = (ref CssTokenReader reader, CssCompileContext _) =>
         {
-            if (!reader.TryReadIdent(out var first)) return null;
-            var token = first.ToString().ToLowerInvariant();
-            if (reader.AtEnd)
+            var tokens = new List<string>();
+            while (reader.TryReadIdent(out var identToken)) tokens.Add(identToken.ToString().ToLowerInvariant());
+            if (!reader.AtEnd || tokens.Count is < 1 or > 3) return null;
+            if (tokens.Count == 1)
             {
-                CssDisplaySpecification? display = token switch
+                CssDisplaySpecification? legacy = tokens[0] switch
                 {
                     "none" => new(CssDisplayMode.Native, None: true),
-                    "block" => new(CssDisplayMode.Block), "flow-root" => new(CssDisplayMode.FlowRoot),
-                    "inline" => new(CssDisplayMode.Native, true), "inline-block" => new(CssDisplayMode.FlowRoot, true),
-                    "flex" => new(CssDisplayMode.Flex), "inline-flex" => new(CssDisplayMode.Flex, true),
-                    "grid" => new(CssDisplayMode.Grid), "inline-grid" => new(CssDisplayMode.Grid, true),
+                    "contents" => new(CssDisplayMode.Contents),
+                    "inline-block" => new(CssDisplayMode.FlowRoot, true),
+                    "-webkit-box" => new(CssDisplayMode.Flex, LegacyBox: true),
+                    "-webkit-inline-box" => new(CssDisplayMode.Flex, true, LegacyBox: true),
+                    "inline-flex" => new(CssDisplayMode.Flex, true), "inline-grid" => new(CssDisplayMode.Grid, true),
+                    "table" => new(CssDisplayMode.Table), "inline-table" => new(CssDisplayMode.Table, true),
+                    "table-row" => new(CssDisplayMode.TableRow), "table-cell" => new(CssDisplayMode.TableCell),
+                    "table-row-group" => new(CssDisplayMode.TableRowGroup), "table-header-group" => new(CssDisplayMode.TableHeaderGroup),
+                    "table-footer-group" => new(CssDisplayMode.TableFooterGroup), "table-column" => new(CssDisplayMode.TableColumn),
+                    "table-column-group" => new(CssDisplayMode.TableColumnGroup),
+                    "table-caption" => new(CssDisplayMode.TableCaption),
+                    "ruby" => new(CssDisplayMode.Ruby, true),
+                    "ruby-base" => new(CssDisplayMode.RubyBase, true),
+                    "ruby-text" => new(CssDisplayMode.RubyText, true),
+                    "ruby-base-container" => new(CssDisplayMode.RubyBaseContainer, true),
+                    "ruby-text-container" => new(CssDisplayMode.RubyTextContainer, true),
                     _ => null,
                 };
-                return display is { } value ? new CssDisplayValue(value) : null;
+                if (legacy is { } value) return new CssDisplayValue(value);
             }
-            if (!reader.TryReadIdent(out var second) || !reader.AtEnd) return null;
-            var inside = second.ToString().ToLowerInvariant();
-            if (inside is "block" or "inline") (token, inside) = (inside, token);
-            if (token is not ("block" or "inline")) return null;
-            var inline = token == "inline";
-            CssDisplayMode? mode = inside switch
+            bool? inline = null; CssDisplayMode? mode = null; var listItem = false;
+            foreach (var token in tokens)
             {
-                "flow" => inline ? CssDisplayMode.Native : CssDisplayMode.Block,
-                "flow-root" => CssDisplayMode.FlowRoot, "flex" => CssDisplayMode.Flex, "grid" => CssDisplayMode.Grid, _ => null,
-            };
-            return mode is { } parsed ? new CssDisplayValue(new(parsed, inline)) : null;
+                if (token is "block" or "inline")
+                { if (inline is not null) return null; inline = token == "inline"; }
+                else if (token == "list-item") { if (listItem) return null; listItem = true; }
+                else
+                {
+                    if (mode is not null) return null;
+                    mode = token switch { "flow" => CssDisplayMode.Native, "flow-root" => CssDisplayMode.FlowRoot,
+                        "flex" => CssDisplayMode.Flex, "grid" => CssDisplayMode.Grid, "table" => CssDisplayMode.Table, "ruby" => CssDisplayMode.Ruby, _ => null };
+                    if (mode is null) return null;
+                }
+            }
+            if (listItem && mode is CssDisplayMode.Flex or CssDisplayMode.Grid or CssDisplayMode.Table or CssDisplayMode.Ruby) return null;
+            var usedInline = inline ?? false;
+            var usedMode = mode ?? CssDisplayMode.Native;
+            if (usedMode == CssDisplayMode.Native && (!usedInline || listItem)) usedMode = CssDisplayMode.Block;
+            return new CssDisplayValue(new(usedMode, usedInline, ListItem: listItem));
         },
     });
 }
@@ -288,10 +382,14 @@ internal sealed class CssDisplayValue(CssDisplaySpecification display) : CssComp
     public override bool TryApply(in CssApplyContext context, ICssSetterSink sink)
     {
         sink.Set(CssDisplayProperties.SpecificationProperty, display);
-        sink.Set(CssDisplayLayout.ModeProperty, display.Mode);
-        sink.Set(CssDisplayLayout.InlineProperty, display.Inline);
+        // Detached controls can be intrinsic-size probes or reusable inline
+        // components. Parent-dependent blockification begins when attached.
+        var used = context.Element.FrameworkParent is null ? display : CssDisplayProperties.Compute(context.Element, display);
+        sink.Set(CssDisplayLayout.ModeProperty, used.Mode);
+        sink.Set(CssDisplayLayout.InlineProperty, used.Inline);
         var visibility = context.Slots.Visibility ??= new();
-        visibility.DisplayNone = display.None;
+        visibility.DisplayNone = display.None || display.Mode == CssDisplayMode.Contents &&
+            context.Element.Target is FrameworkElement element && CssContentsLayout.IsUnusual(element);
         visibility.FromState |= context.Slots.CurrentContributionIsState;
         return true;
     }

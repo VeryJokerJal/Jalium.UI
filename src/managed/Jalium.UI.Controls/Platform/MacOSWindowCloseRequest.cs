@@ -77,6 +77,11 @@ internal sealed class MacOSWindowCloseRequest : IDisposable
                 window.Close();
                 if (!window.IsCloseRequestedForPlatformTermination)
                 {
+                    if (window.IsCloseDecisionPendingForPlatformTermination)
+                    {
+                        _waitingForCloseDecision = window;
+                        return Result;
+                    }
                     Result = MacOSWindowCloseResult.Cancelled;
                     DisposeWhenAcceptedWindowsFinish();
                     return Result;

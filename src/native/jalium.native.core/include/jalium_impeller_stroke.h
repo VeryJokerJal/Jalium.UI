@@ -48,6 +48,35 @@ namespace jalium {
 enum class ImpellerCap  : int32_t { Butt = 0, Square = 1, Round = 2, Triangle = 3 };
 enum class ImpellerJoin : int32_t { Miter = 0, Bevel = 1, Round = 2 };
 
+// Scratch owned by one renderer. Reset keeps the small per-primitive point
+// buffers alive; clearing a vector<Contour> would free one allocation for
+// every segment/join of every animated stroke. Only [Data(), Data()+Count())
+// belongs to the current stroke. Borrowed contours must not survive Reset.
+class StrokeContourBuffer {
+public:
+    void Reset() {
+        used_ = 0;
+        // A large one-off path must not pin its entire allocation high-water
+        // mark for the lifetime of the render target.
+        if (contours_.size() > kRetainedContours) contours_.resize(kRetainedContours);
+    }
+
+    Contour& Append() {
+        if (used_ == contours_.size()) contours_.emplace_back();
+        Contour& contour = contours_[used_++];
+        contour.closed = false;
+        return contour;
+    }
+
+    const Contour* Data() const noexcept { return contours_.data(); }
+    size_t Count() const noexcept { return used_; }
+
+private:
+    static constexpr size_t kRetainedContours = 512;
+    std::vector<Contour> contours_;
+    size_t used_ = 0;
+};
+
 namespace stroke_detail {
 
 inline uint32_t ArcSegments(float radius, float sweep, float tolerance) {
@@ -233,9 +262,24 @@ inline bool ExpandStrokePath(
     float featherScaleInSrc = 1.0f,
     ImpellerCap startCap = static_cast<ImpellerCap>(-1),
     ImpellerCap endCap = static_cast<ImpellerCap>(-1),
-    const uint8_t* edgeFlags = nullptr)
+    const uint8_t* edgeFlags = nullptr,
+    StrokeContourBuffer* contourBuffer = nullptr)
 {
     if (pointCount < 2 || flatPoints == nullptr) return false;
+
+    // Path figures often repeat their start as the first polyline point.
+    // Borrow the identical second point instead of allocating a compacted
+    // copy. Require a real next segment so all-coincident paths retain their
+    // existing cap/mesh behavior. Near-coincident and signed-zero differences
+    // keep the general compaction path below.
+    if (pointCount > 2 && std::memcmp(flatPoints, flatPoints + 2, 2 * sizeof(float)) == 0) {
+        const float dx = flatPoints[4] - flatPoints[2];
+        const float dy = flatPoints[5] - flatPoints[3];
+        if (dx * dx + dy * dy > 1e-12f) {
+            flatPoints += 2;
+            --pointCount;
+        }
+    }
 
     // Consecutive coincident vertices have no tangent. Leaving them in the
     // segment list creates zero normals and changes every join style at the
@@ -285,7 +329,7 @@ inline bool ExpandStrokePath(
     float b = brushB * brushA;
     float a = brushA;
 
-    const bool collect = (collectContours != nullptr);
+    const bool collect = (collectContours != nullptr || contourBuffer != nullptr);
 
     // Sub-pixel hairline alpha fade — only when going through the direct
     // (binary GPU) rasterization path. The analytic AA path takes the true
@@ -319,8 +363,8 @@ inline bool ExpandStrokePath(
         // Built in place: constructing a temporary Contour and moving it in
         // costs an extra vector move per primitive, and there are hundreds
         // of primitives per frame.
-        collectContours->emplace_back();
-        std::vector<float>& pts = collectContours->back().points;
+        Contour& contour = contourBuffer ? contourBuffer->Append() : collectContours->emplace_back();
+        std::vector<float>& pts = contour.points;
         pts.resize((size_t)n * 2);
         float* dst = pts.data();
         if (sa > 0.0) {
@@ -382,7 +426,8 @@ inline bool ExpandStrokePath(
     // One contour per segment plus one per join/cap; reserving up front keeps
     // the outer vector from reallocating (and move-constructing every Contour
     // it already holds) a dozen times per stroke.
-    if (collect) collectContours->reserve(collectContours->size() + (size_t)segCount * 2 + 4);
+    if (collectContours && !contourBuffer)
+        collectContours->reserve(collectContours->size() + (size_t)segCount * 2 + 4);
 
     struct Segment { float nx, ny; };
     std::vector<Segment> segNormals;
@@ -506,7 +551,9 @@ inline bool ExpandStrokePath(
         // Miter (with bevel fallback when the miter exceeds miterLimit).
         float dot = n0x * n1x + n0y * n1y;
         float alignment = (dot + 1.0f) * 0.5f;
-        if (alignment > 0.999f) return; // nearly straight, no join needed
+        // Analytic coverage must include even shallow wedges. Omitting them
+        // leaves visible radial gaps when a smooth curve is finely flattened.
+        if (alignment > 0.999f && !collect) return;
 
         float cr = n0x * n1y - n0y * n1x;
         float dir = cr > 0 ? -1.0f : 1.0f;
@@ -643,6 +690,27 @@ inline bool ExpandStrokePath(
     }
 
     return true;
+}
+
+
+// Retained-contour callers and per-end-cap callers share the same widening path.
+template <typename TVertex>
+inline bool ExpandStrokePath(
+    std::vector<TVertex>& outVerts,
+    std::vector<uint32_t>& outIndices,
+    const float* flatPoints, uint32_t pointCount,
+    float strokeWidth,
+    ImpellerJoin join, float miterLimit,
+    ImpellerCap cap, bool closed,
+    float brushR, float brushG, float brushB, float brushA,
+    std::vector<Contour>* collectContours,
+    float featherScaleInSrc,
+    StrokeContourBuffer* contourBuffer)
+{
+    return ExpandStrokePath(outVerts, outIndices, flatPoints, pointCount, strokeWidth,
+        join, miterLimit, cap, closed, brushR, brushG, brushB, brushA, collectContours,
+        featherScaleInSrc, static_cast<ImpellerCap>(-1), static_cast<ImpellerCap>(-1),
+        nullptr, contourBuffer);
 }
 
 // ---------------------------------------------------------------------------

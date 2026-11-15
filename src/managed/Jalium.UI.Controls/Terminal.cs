@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using Jalium.UI.Automation;
 using Jalium.UI.Controls.TerminalEmulator;
 using Jalium.UI.Controls.Themes;
@@ -15,14 +15,21 @@ namespace Jalium.UI.Controls;
 /// A terminal emulator control with VT100/ANSI escape sequence support,
 /// shell process integration, and full keyboard/IME input handling.
 /// </summary>
-public class Terminal : Control, IImeSupport
+[TemplatePart(Name = "PART_ScrollViewer", Type = typeof(ScrollViewer))]
+[TemplatePart(Name = "PART_View", Type = typeof(TerminalView))]
+[TemplateVisualState(Name = "Normal", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "PointerOver", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Disabled", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Focused", GroupName = "FocusStates")]
+[TemplateVisualState(Name = "Unfocused", GroupName = "FocusStates")]
+public partial class Terminal : Control, IImeSupport
 {
     #region Automation
 
     /// <inheritdoc />
     protected override AutomationPeer? OnCreateAutomationPeer()
     {
-        return null; // Can add TerminalAutomationPeer later
+        return new Jalium.UI.Automation.Peers.TerminalAutomationPeer(this);
     }
 
     #endregion
@@ -72,8 +79,8 @@ public class Terminal : Control, IImeSupport
     private static readonly Pen s_compositionUnderlinePen = new(s_compositionUnderlineBrush, 1);
 
     // Theme-aware brush accessors
-    private Brush TerminalForeground => TryFindResource("TerminalForeground") as Brush ?? Foreground ?? s_defaultForegroundBrush;
-    private Brush TerminalBackground => TryFindResource("TerminalBackground") as Brush ?? Background ?? s_defaultBackgroundBrush;
+    private Brush TerminalForeground => Foreground ?? TryFindResource("TerminalForeground") as Brush ?? s_defaultForegroundBrush;
+    private Brush TerminalBackground => Background ?? TryFindResource("TerminalBackground") as Brush ?? s_defaultBackgroundBrush;
 
     #endregion
 
@@ -109,6 +116,8 @@ public class Terminal : Control, IImeSupport
     /// Owns rendering and IScrollInfo.
     /// </summary>
     private TerminalView? _view;
+    private double _savedViewOffset;
+    private bool _savedViewAtBottom = true;
 
     /// <summary>
     /// The ScrollViewer found in the template.
@@ -505,6 +514,7 @@ public class Terminal : Control, IImeSupport
     /// </summary>
     public Terminal()
     {
+        DefaultStyleKey = typeof(Terminal);
         _buffer = new TerminalBuffer(TerminalColumns, TerminalRows, MaxScrollbackLines);
         _parser = new AnsiParser(_buffer);
 
@@ -525,6 +535,7 @@ public class Terminal : Control, IImeSupport
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
+        DetachInputHandlers();
         // Register input handlers
         AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
         AddHandler(TextInputEvent, new TextCompositionEventHandler(OnTextInputHandler));
@@ -548,6 +559,7 @@ public class Terminal : Control, IImeSupport
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
+        DetachInputHandlers();
         StopCaretAnimation();
         _process?.Dispose();
         _process = null;
@@ -583,6 +595,11 @@ public class Terminal : Control, IImeSupport
     /// </summary>
     public void StartShell()
     {
+        if (AutoSize && _view != null && _view.RenderSize.Width > 0 && _view.RenderSize.Height > 0)
+        {
+            UpdateAutoSize(_view.RenderSize);
+        }
+
         _process?.Dispose();
         _process = new TerminalProcess();
         _process.OutputReceived += OnProcessOutput;
@@ -611,6 +628,7 @@ public class Terminal : Control, IImeSupport
     public void Write(string text)
     {
         _parser.Feed(text);
+        AutomationBufferChanged();
         _view?.ScrollToBottom();
         InvalidateView();
     }
@@ -637,10 +655,12 @@ public class Terminal : Control, IImeSupport
     public void Clear()
     {
         _buffer.ResetAttributes();
+        _buffer.ClearScrollback();
         _buffer.ClearScreen();
         _buffer.SetCursorPosition(0, 0);
         _view?.ScrollToBottom();
         ClearSelection();
+        AutomationBufferChanged();
         InvalidateView();
     }
 
@@ -667,14 +687,22 @@ public class Terminal : Control, IImeSupport
                 // Scrollback line
                 var line = _buffer.GetScrollbackLine(row);
                 for (int c = colStart; c < colEnd && c < line.Length; c++)
-                    sb.Append(line[c].Character);
+                {
+                    char ch = line[c].Character;
+                    if (ch != '\0')
+                        sb.Append(ch);
+                }
             }
             else
             {
                 // Screen line
                 int screenRow = row - scrollbackCount;
                 for (int c = colStart; c < colEnd; c++)
-                    sb.Append(_buffer.GetCell(screenRow, c).Character);
+                {
+                    char ch = _buffer.GetCell(screenRow, c).Character;
+                    if (ch != '\0')
+                        sb.Append(ch);
+                }
             }
 
             if (row < endRow)
@@ -730,6 +758,7 @@ public class Terminal : Control, IImeSupport
         if (d is Terminal t && !t.AutoSize)
         {
             t._buffer.Resize(t.TerminalColumns, t.TerminalRows);
+            t.AutomationBufferChanged();
             t._process?.NotifyResize(t.TerminalColumns, t.TerminalRows);
             t._view?.InvalidateMeasure();
             t.InvalidateView();
@@ -765,7 +794,12 @@ public class Terminal : Control, IImeSupport
     /// Invalidates the render-surface view (used instead of Terminal.InvalidateVisual
     /// since rendering is delegated to the inner TerminalView).
     /// </summary>
-    private void InvalidateView() => _view?.InvalidateVisual();
+    private void InvalidateView()
+    {
+        _view?.InvalidateVisual();
+        if (GetExistingAutomationPeer() is Jalium.UI.Automation.Peers.TerminalAutomationPeer peer)
+            peer.NotifySelectionChanged();
+    }
 
     /// <summary>
     /// First visible total-buffer row (0 = top of scrollback,
@@ -814,6 +848,7 @@ public class Terminal : Control, IImeSupport
         _lastAutoSizeHeight = availableHeight;
 
         _buffer.Resize(newCols, newRows);
+        AutomationBufferChanged();
         _process?.NotifyResize(newCols, newRows);
         TerminalColumns = newCols;
         TerminalRows = newRows;
@@ -930,26 +965,88 @@ public class Terminal : Control, IImeSupport
                 if (bgColor != null)
                     dc.DrawRectangle(GetCachedBrush(bgColor.Value), null, new Rect(rx, y, rw, _cellHeight));
 
-                // Text — draw the whole run at its grid origin
+                // Text — draw narrow ASCII runs as a single FormattedText and
+                // anchor wide/non-ASCII graphemes to their exact cell column so
+                // CJK / emoji fallback glyphs never cause horizontal drift.
+                var fgBrush = fgColor != null ? GetCachedBrush(fgColor.Value) : defaultFg;
+                int subStart = runStart;
                 var sb = new StringBuilder(runEnd - runStart);
-                for (int c = runStart; c < runEnd; c++)
-                    sb.Append(GetCellAt(scrollbackLine, bufferRow, c).Character);
 
-                string runText = sb.ToString();
-                if (!string.IsNullOrWhiteSpace(runText))
+                void FlushAsciiSubRun(int startCol)
                 {
-                    var fgBrush = fgColor != null ? GetCachedBrush(fgColor.Value) : defaultFg;
-                    var ft = new FormattedText(runText, fontFamily, fontSize)
+                    if (sb.Length == 0) return;
+                    string runText = sb.ToString();
+                    sb.Clear();
+                    if (!string.IsNullOrWhiteSpace(runText))
+                    {
+                        var ft = new FormattedText(runText, fontFamily, fontSize)
+                        {
+                            Foreground = fgBrush,
+                        };
+                        if (startCell.Attributes.HasFlag(CharAttributes.Bold))
+                            ft.FontWeight = 700;
+                        if (startCell.Attributes.HasFlag(CharAttributes.Italic))
+                            ft.FontStyle = 1;
+                        dc.DrawText(ft, new Point(x0 + startCol * _cellWidth, y));
+                    }
+                }
+
+                for (int c = runStart; c < runEnd; c++)
+                {
+                    char ch = GetCellAt(scrollbackLine, bufferRow, c).Character;
+                    if (ch == '\0')
+                    {
+                        FlushAsciiSubRun(subStart);
+                        subStart = c + 1;
+                        continue;
+                    }
+
+                    if (ch < 128)
+                    {
+                        if (sb.Length == 0)
+                            subStart = c;
+                        sb.Append(ch);
+                        continue;
+                    }
+
+                    FlushAsciiSubRun(subStart);
+
+                    string glyphText;
+                    if (char.IsHighSurrogate(ch) && c + 1 < cols)
+                    {
+                        char low = GetCellAt(scrollbackLine, bufferRow, c + 1).Character;
+                        if (char.IsLowSurrogate(low))
+                        {
+                            glyphText = new string([ch, low]);
+                            var ftPair = new FormattedText(glyphText, fontFamily, fontSize)
+                            {
+                                Foreground = fgBrush,
+                            };
+                            if (startCell.Attributes.HasFlag(CharAttributes.Bold))
+                                ftPair.FontWeight = 700;
+                            if (startCell.Attributes.HasFlag(CharAttributes.Italic))
+                                ftPair.FontStyle = 1;
+                            dc.DrawText(ftPair, new Point(x0 + c * _cellWidth, y));
+                            c++;
+                            subStart = c + 1;
+                            continue;
+                        }
+                    }
+
+                    glyphText = ch.ToString();
+                    var ftGlyph = new FormattedText(glyphText, fontFamily, fontSize)
                     {
                         Foreground = fgBrush,
                     };
                     if (startCell.Attributes.HasFlag(CharAttributes.Bold))
-                        ft.FontWeight = 700;
+                        ftGlyph.FontWeight = 700;
                     if (startCell.Attributes.HasFlag(CharAttributes.Italic))
-                        ft.FontStyle = 1;
-
-                    dc.DrawText(ft, new Point(rx, y));
+                        ftGlyph.FontStyle = 1;
+                    dc.DrawText(ftGlyph, new Point(x0 + c * _cellWidth, y));
+                    subStart = c + 1;
                 }
+
+                FlushAsciiSubRun(subStart);
 
                 // Underline / strikethrough span the whole run
                 if (startCell.Attributes.HasFlag(CharAttributes.Underline) || startCell.Attributes.HasFlag(CharAttributes.Strikethrough))
@@ -1690,6 +1787,7 @@ public class Terminal : Control, IImeSupport
         Dispatcher.InvokeAsync(() =>
         {
             _parser.Feed(data);
+            AutomationBufferChanged();
 
             // Scrollback may have grown — refresh extent and optionally stick to bottom.
             _view?.InvalidateMeasure();
@@ -1810,12 +1908,14 @@ public class Terminal : Control, IImeSupport
 
     private void OnGotFocusHandler(object sender, RoutedEventArgs e)
     {
+        UpdateTemplateStates();
         ResetCaretBlink();
         InvalidateView();
     }
 
     private void OnLostFocusHandler(object sender, RoutedEventArgs e)
     {
+        UpdateTemplateStates();
         StopCaretAnimation();
         _caretVisible = false;
         _caretOpacity = 0.0;
@@ -1942,20 +2042,62 @@ public class Terminal : Control, IImeSupport
 
     #endregion
 
+    private void DetachInputHandlers()
+    {
+        RemoveHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
+        RemoveHandler(TextInputEvent, new TextCompositionEventHandler(OnTextInputHandler));
+        RemoveHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
+        RemoveHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler));
+        RemoveHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler));
+        RemoveHandler(MouseWheelEvent, new MouseWheelEventHandler(OnMouseWheelHandler));
+        GotFocus -= OnGotFocusHandler; LostFocus -= OnLostFocusHandler;
+    }
+
     #region Template
 
     /// <inheritdoc />
     public override void OnApplyTemplate()
     {
         base.OnApplyTemplate();
-
         _scrollViewer = GetTemplateChild("PART_ScrollViewer") as ScrollViewer;
-        if (_scrollViewer != null)
+        _view = GetTemplateChild("PART_View") as TerminalView;
+        if (_view is not null)
         {
-            if (_view == null)
-                _view = new TerminalView(this);
-            _scrollViewer.Content = _view;
+            _view.SetCurrentValue(TerminalView.OwnerProperty, this);
+            _view.RestoreOffset(_savedViewOffset, _savedViewAtBottom);
         }
+        UpdateTemplateStates();
+    }
+
+    /// <inheritdoc />
+    protected override void OnTemplateChanging()
+    {
+        if (_view is not null)
+        {
+            _savedViewOffset = _view.VerticalOffset; _savedViewAtBottom = _view.IsAtBottom;
+            _view.ClearBinding(TerminalView.OwnerProperty); _view.ClearValue(TerminalView.OwnerProperty);
+            _view.ScrollOwner = null;
+        }
+        _view = null; _scrollViewer = null;
+        base.OnTemplateChanging();
+    }
+
+    /// <inheritdoc />
+    protected override void OnIsEnabledChanged(bool oldValue, bool newValue)
+    {
+        base.OnIsEnabledChanged(oldValue, newValue); UpdateTemplateStates();
+    }
+
+    /// <inheritdoc />
+    protected override void OnIsMouseOverChanged(bool oldValue, bool newValue)
+    {
+        base.OnIsMouseOverChanged(oldValue, newValue); UpdateTemplateStates();
+    }
+
+    private void UpdateTemplateStates()
+    {
+        VisualStateManager.GoToState(this, !IsEnabled ? "Disabled" : IsMouseOver ? "PointerOver" : "Normal", false);
+        VisualStateManager.GoToState(this, IsFocused ? "Focused" : "Unfocused", false);
     }
 
     #endregion
@@ -1968,13 +2110,26 @@ public class Terminal : Control, IImeSupport
 /// </summary>
 public sealed class TerminalView : FrameworkElement, IScrollInfo
 {
-    private readonly Terminal _owner;
+    /// <summary>Identifies the terminal whose character grid this surface presents.</summary>
+    public static readonly DependencyProperty OwnerProperty = DependencyProperty.Register(nameof(Owner), typeof(Terminal), typeof(TerminalView), new PropertyMetadata(null, OnOwnerChanged));
+    /// <summary>Gets or sets the terminal data owner. An unowned surface is empty.</summary>
+    public Terminal? Owner { get => (Terminal?)GetValue(OwnerProperty); set => SetValue(OwnerProperty, value); }
+    private Terminal? _owner;
+    private double? _restoreOffset;
+    private bool _restoreAtBottom;
+    /// <summary>Initializes an empty, template-instantiable character surface.</summary>
+    public TerminalView() { }
+    private static void OnOwnerChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        var view = (TerminalView)d; view._owner = (Terminal?)e.NewValue; view.InvalidateMeasure(); view.InvalidateVisual();
+    }
+    internal void RestoreOffset(double offset, bool atBottom) { _restoreOffset = offset; _restoreAtBottom = atBottom; InvalidateArrange(); }
     private double _verticalOffset;
     private Size _viewport;
 
     internal TerminalView(Terminal owner)
     {
-        _owner = owner;
+        Owner = owner;
     }
 
     /// <summary>
@@ -1985,6 +2140,7 @@ public sealed class TerminalView : FrameworkElement, IScrollInfo
     {
         get
         {
+            if (_owner is null) return 0;
             double cellHeight = _owner.CellHeight;
             if (cellHeight <= 0) return _owner.BufferScrollbackCount;
             int topLine = (int)Math.Floor(_verticalOffset / cellHeight);
@@ -2003,6 +2159,7 @@ public sealed class TerminalView : FrameworkElement, IScrollInfo
     {
         get
         {
+            if (_owner is null) return 0;
             double cellHeight = _owner.CellHeight;
             if (cellHeight <= 0) return 0;
             double frac = _verticalOffset - TopLine * cellHeight;
@@ -2048,6 +2205,7 @@ public sealed class TerminalView : FrameworkElement, IScrollInfo
     {
         get
         {
+            if (_owner is null) return _viewport.Height;
             double cellHeight = _owner.CellHeight;
             if (cellHeight <= 0) return _viewport.Height;
             int totalLines = _owner.BufferScrollbackCount + _owner.BufferRows;
@@ -2068,6 +2226,7 @@ public sealed class TerminalView : FrameworkElement, IScrollInfo
     {
         get
         {
+            if (_owner is null) return _viewport.Height;
             double cellHeight = _owner.CellHeight;
             if (cellHeight <= 0) return _viewport.Height;
             return _owner.BufferRows * cellHeight;
@@ -2084,10 +2243,10 @@ public sealed class TerminalView : FrameworkElement, IScrollInfo
     public ScrollViewer? ScrollOwner { get; set; }
 
     /// <inheritdoc />
-    public void LineUp() => SetVerticalOffset(_verticalOffset - _owner.CellHeight);
+    public void LineUp() => SetVerticalOffset(_verticalOffset - (_owner?.CellHeight ?? 0));
 
     /// <inheritdoc />
-    public void LineDown() => SetVerticalOffset(_verticalOffset + _owner.CellHeight);
+    public void LineDown() => SetVerticalOffset(_verticalOffset + (_owner?.CellHeight ?? 0));
 
     /// <inheritdoc />
     public void LineLeft() { }
@@ -2108,10 +2267,10 @@ public sealed class TerminalView : FrameworkElement, IScrollInfo
     public void PageRight() { }
 
     /// <inheritdoc />
-    public void MouseWheelUp() => SetVerticalOffset(_verticalOffset - 3 * _owner.CellHeight);
+    public void MouseWheelUp() => SetVerticalOffset(_verticalOffset - 3 * (_owner?.CellHeight ?? 0));
 
     /// <inheritdoc />
-    public void MouseWheelDown() => SetVerticalOffset(_verticalOffset + 3 * _owner.CellHeight);
+    public void MouseWheelDown() => SetVerticalOffset(_verticalOffset + 3 * (_owner?.CellHeight ?? 0));
 
     /// <inheritdoc />
     public void MouseWheelLeft() { }
@@ -2141,10 +2300,19 @@ public sealed class TerminalView : FrameworkElement, IScrollInfo
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
+        if (_owner is null) return Size.Empty;
         _owner.EnsureCellMetricsPublic();
 
-        double width = double.IsInfinity(availableSize.Width) ? 0 : availableSize.Width;
-        double height = double.IsInfinity(availableSize.Height) ? 0 : availableSize.Height;
+        double width = double.IsInfinity(availableSize.Width)
+            ? (_owner.ActualWidth > 0
+                ? Math.Max(0, _owner.ActualWidth - _owner.Padding.Left - _owner.Padding.Right - _owner.BorderThickness.Left - _owner.BorderThickness.Right)
+                : _owner.BufferColumns * _owner.CellWidth)
+            : availableSize.Width;
+        double height = double.IsInfinity(availableSize.Height)
+            ? (_owner.ActualHeight > 0
+                ? Math.Max(0, _owner.ActualHeight - _owner.Padding.Top - _owner.Padding.Bottom - _owner.BorderThickness.Top - _owner.BorderThickness.Bottom)
+                : _owner.BufferRows * _owner.CellHeight)
+            : availableSize.Height;
 
         if (_owner.AutoSize)
         {
@@ -2168,6 +2336,16 @@ public sealed class TerminalView : FrameworkElement, IScrollInfo
         var oldViewport = _viewport;
         _viewport = finalSize;
 
+        if (_owner is { AutoSize: true } && finalSize.Width > 0 && finalSize.Height > 0)
+        {
+            _owner.UpdateAutoSize(finalSize);
+        }
+
+        if (_restoreOffset is { } restore && _owner is not null && finalSize.Height > 0)
+        {
+            _verticalOffset = _restoreAtBottom ? Math.Max(0, ExtentHeight - ViewportHeight) : restore;
+            _restoreOffset = null;
+        }
         // Clamp vertical offset to new extent.
         double maxOffset = Math.Max(0, ExtentHeight - ViewportHeight);
         if (_verticalOffset > maxOffset) _verticalOffset = maxOffset;
@@ -2183,7 +2361,7 @@ public sealed class TerminalView : FrameworkElement, IScrollInfo
     {
         base.OnRender(drawingContext);
         var dc = drawingContext;
-        _owner.RenderView(dc, _viewport);
+        _owner?.RenderView(dc, _viewport);
     }
 }
 

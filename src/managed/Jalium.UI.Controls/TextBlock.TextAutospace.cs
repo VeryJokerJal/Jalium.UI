@@ -25,6 +25,9 @@ public partial class TextBlock
 
     private double EdgeAutospaceReplacementWidth(int start, int end)
     {
+        if (_usesAutospaceShaping && _cssBidiSpacing is not null) return 0;
+        // Retained lines already discard replacement advances at their edges.
+        if (_usesAutospaceShaping && TryShapedSpacing(start, end, Math.Max(1, FontSize), out _)) return 0;
         var width = 0.0;
         foreach (var (index, replacement) in _autospaceReplacementWidths)
             if (index >= start && index < end &&
@@ -127,6 +130,12 @@ public partial class TextBlock
             current = currentPaint;
 
         var owner = AutospaceOwner(previousRun, currentRun);
+        return AutospaceBetween(previous, current, owner, requireReplace);
+    }
+
+    private AutospaceSpacing AutospaceBetween(Rune previous, Rune current,
+        DependencyObject owner, bool requireReplace = false)
+    {
         var mode = (CssTextAutospace)owner.GetValue(CssFlowProperties.TextAutospaceProperty)!;
         if (requireReplace && (mode & CssTextAutospace.Replace) == 0) return default;
 
@@ -227,14 +236,13 @@ public partial class TextBlock
 
     private static bool IsAutospaceIdeograph(Rune rune)
     {
+        if (Rune.GetUnicodeCategory(rune) is UnicodeCategory.ConnectorPunctuation
+            or UnicodeCategory.DashPunctuation or UnicodeCategory.OpenPunctuation
+            or UnicodeCategory.ClosePunctuation or UnicodeCategory.InitialQuotePunctuation
+            or UnicodeCategory.FinalQuotePunctuation or UnicodeCategory.OtherPunctuation)
+            return false;
         var value = rune.Value;
-        if (value is >= 0x3041 and <= 0x30FF &&
-            Rune.GetUnicodeCategory(rune) is not (UnicodeCategory.ConnectorPunctuation
-                or UnicodeCategory.DashPunctuation or UnicodeCategory.OpenPunctuation
-                or UnicodeCategory.ClosePunctuation or UnicodeCategory.InitialQuotePunctuation
-                or UnicodeCategory.FinalQuotePunctuation or UnicodeCategory.OtherPunctuation))
-            return true;
-        return value is >= 0x31C0 and <= 0x31FF ||
+        return value is >= 0x3041 and <= 0x30FF or >= 0x31C0 and <= 0x31FF ||
             CssUnicodeLineBreakData.IsHanExtendedScript(rune);
     }
 

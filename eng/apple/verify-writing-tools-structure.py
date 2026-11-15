@@ -23,23 +23,39 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def main():
+STRUCTURE_CASE_COUNT = 60
+
+
+def parse_case_indexes(value):
+    try:
+        cases = [int(part) for part in value.split(',')]
+    except ValueError as error:
+        raise ValueError('--cases must contain integer indices') from error
+    if not cases or len(cases) != len(set(cases)) or any(index not in range(STRUCTURE_CASE_COUNT) for index in cases):
+        raise ValueError('invalid cases: expected distinct indices from 0 to ' + str(STRUCTURE_CASE_COUNT - 1))
+    return cases
+
+
+def create_argument_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--app', type=Path, required=True)
     parser.add_argument('--work-parent', type=Path, default=Path.home() / 'Library/Caches')
     parser.add_argument('--results-file', type=Path)
     parser.add_argument('--image-directory', type=Path)
-    parser.add_argument('--cases', default=','.join(map(str, range(44))))
+    parser.add_argument('--cases', default=','.join(map(str, range(STRUCTURE_CASE_COUNT))))
+    return parser
+
+
+def main():
+    parser = create_argument_parser()
     args = parser.parse_args()
     source = args.app.resolve()
     if not source.is_dir() or source.suffix != '.app':
         parser.error('--app must name a built .app')
     try:
-        cases = [int(value) for value in args.cases.split(',')]
-    except ValueError:
-        parser.error('--cases must contain integer indices')
-    if not cases or len(cases) != len(set(cases)) or any(value not in range(44) for value in cases):
-        parser.error('invalid cases')
+        cases = parse_case_indexes(args.cases)
+    except ValueError as error:
+        parser.error(str(error))
     if args.image_directory:
         args.image_directory.mkdir(exist_ok=False, parents=True)
     receipts = []

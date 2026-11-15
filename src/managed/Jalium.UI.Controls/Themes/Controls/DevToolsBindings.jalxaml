@@ -1,0 +1,184 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:dev="clr-namespace:Jalium.UI.Controls.DevTools"
+                    xmlns:automation="clr-namespace:Jalium.UI.Automation">
+    <Style x:Key="DevTools.BindingItem" TargetType="ListBoxItem" BasedOn="{StaticResource DevTools.DiagnosticsItem}">
+        <Setter Property="automation:AutomationProperties.Name" Value="{Binding AutomationName}" />
+    </Style>
+    <Style x:Key="DevTools.BindingsList" TargetType="ListBox" BasedOn="{StaticResource DevTools.DiagnosticsList}">
+        <Setter Property="ItemContainerStyle" Value="{StaticResource DevTools.BindingItem}" />
+    </Style>
+    <Style x:Key="DevTools.BindingEndpoint" TargetType="Button">
+        <Setter Property="Background" Value="{DynamicResource DevTools.Chrome}" /><Setter Property="BorderBrush" Value="{DynamicResource DevTools.Border}" />
+        <Setter Property="BorderThickness" Value="1" /><Setter Property="CornerRadius" Value="4" /><Setter Property="Padding" Value="10,8" />
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" /><Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="MinWidth" Value="0" /><Setter Property="MinHeight" Value="0" /><Setter Property="TransitionProperty" Value="None" />
+        <Setter Property="Template"><ControlTemplate TargetType="Button">
+            <Border Name="PART_EndpointBorder" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="{TemplateBinding CornerRadius}" Padding="{TemplateBinding Padding}">
+                <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
+            </Border>
+            <ControlTemplate.Triggers>
+                <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="PART_EndpointBorder" Property="Background" Value="{DynamicResource DevTools.ControlHover}" /></Trigger>
+                <Trigger Property="IsPressed" Value="True"><Setter TargetName="PART_EndpointBorder" Property="Background" Value="{DynamicResource DevTools.ControlPressed}" /></Trigger>
+                <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="PART_EndpointBorder" Property="BorderBrush" Value="{DynamicResource DevTools.Accent}" /></Trigger>
+                <Trigger Property="IsEnabled" Value="False"><Setter TargetName="PART_EndpointBorder" Property="Opacity" Value="0.7" /></Trigger>
+            </ControlTemplate.Triggers>
+        </ControlTemplate></Setter>
+    </Style>
+    <Style TargetType="dev:DevToolsBindingFlow">
+        <Setter Property="Background" Value="{DynamicResource DevTools.SurfaceAlt}" /><Setter Property="Foreground" Value="{DynamicResource DevTools.TextPrimary}" />
+        <Setter Property="Padding" Value="12,8" /><Setter Property="Margin" Value="4,0,4,6" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsBindingFlow">
+            <Grid>
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup x:Name="BindingStates">
+                        <VisualState x:Name="Active"><VisualState.Setters>
+                            <Setter TargetName="PART_Accent" Property="Background" Value="{DynamicResource DevTools.Success}" /><Setter TargetName="PART_Status" Property="Foreground" Value="{DynamicResource DevTools.Success}" /><Setter TargetName="PART_FlowArrow" Property="Stroke" Value="{DynamicResource DevTools.Success}" />
+                        </VisualState.Setters></VisualState>
+                        <VisualState x:Name="Pending"><VisualState.Setters>
+                            <Setter TargetName="PART_Accent" Property="Background" Value="{DynamicResource DevTools.Warning}" /><Setter TargetName="PART_Status" Property="Foreground" Value="{DynamicResource DevTools.Warning}" /><Setter TargetName="PART_FlowArrow" Property="Stroke" Value="{DynamicResource DevTools.Warning}" />
+                        </VisualState.Setters></VisualState>
+                        <VisualState x:Name="Inactive" />
+                        <VisualState x:Name="Failed"><VisualState.Setters>
+                            <Setter TargetName="PART_Accent" Property="Background" Value="{DynamicResource DevTools.Error}" /><Setter TargetName="PART_Status" Property="Foreground" Value="{DynamicResource DevTools.Error}" /><Setter TargetName="PART_FlowArrow" Property="Stroke" Value="{DynamicResource DevTools.Error}" />
+                        </VisualState.Setters></VisualState>
+                    </VisualStateGroup>
+                    <VisualStateGroup x:Name="ModeStates">
+                        <VisualState x:Name="DefaultMode" /><VisualState x:Name="OneWayMode" />
+                        <VisualState x:Name="TwoWayMode"><VisualState.Setters><Setter TargetName="PART_FlowArrow" Property="Data" Value="M 2,4 L 28,4 M 22,0 L 28,4 L 22,8 M 28,12 L 2,12 M 8,8 L 2,12 L 8,16" /></VisualState.Setters></VisualState>
+                        <VisualState x:Name="OneTimeMode"><VisualState.Setters><Setter TargetName="PART_FlowArrow" Property="Data" Value="M 2,8 L 27,8 M 21,2 L 27,8 L 21,14 M 32,1 L 32,15" /></VisualState.Setters></VisualState>
+                        <VisualState x:Name="OneWayToSourceMode"><VisualState.Setters><Setter TargetName="PART_FlowArrow" Property="Data" Value="M 28,8 L 2,8 M 8,2 L 2,8 L 8,14" /></VisualState.Setters></VisualState>
+                    </VisualStateGroup>
+                    <VisualStateGroup x:Name="AdaptiveStates">
+                        <VisualState x:Name="Wide" />
+                        <VisualState x:Name="Compact"><VisualState.Setters>
+                            <Setter TargetName="PART_CenterColumn" Property="Width" Value="0" /><Setter TargetName="PART_TargetColumn" Property="Width" Value="0" />
+                            <Setter TargetName="PART_SourceButton" Property="Grid.ColumnSpan" Value="3" />
+                            <Setter TargetName="PART_Direction" Property="Grid.Row" Value="1" /><Setter TargetName="PART_Direction" Property="Grid.Column" Value="0" /><Setter TargetName="PART_Direction" Property="Grid.ColumnSpan" Value="3" />
+                            <Setter TargetName="PART_TargetButton" Property="Grid.Row" Value="2" /><Setter TargetName="PART_TargetButton" Property="Grid.Column" Value="0" /><Setter TargetName="PART_TargetButton" Property="Grid.ColumnSpan" Value="3" />
+                            <Setter TargetName="PART_ArrowRotation" Property="Angle" Value="90" />
+                        </VisualState.Setters></VisualState>
+                    </VisualStateGroup>
+                    <VisualStateGroup x:Name="ErrorStates"><VisualState x:Name="NoError" /><VisualState x:Name="Error"><VisualState.Setters><Setter TargetName="PART_LastError" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Normal" /><VisualState x:Name="Disabled"><VisualState.Setters><Setter Property="Opacity" Value="0.6" /></VisualState.Setters></VisualState></VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <Border Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
+                    <StackPanel>
+                        <Grid Name="PART_FlowGrid">
+                            <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Name="PART_CenterColumn" Width="104" /><ColumnDefinition Name="PART_TargetColumn" Width="*" /></Grid.ColumnDefinitions>
+                            <Button Name="PART_SourceButton" Style="{StaticResource DevTools.BindingEndpoint}" Command="{TemplateBinding RevealSourceCommand}" CommandParameter="{TemplateBinding Item}"
+                                    IsEnabled="{Binding Item.CanRevealSource, RelativeSource={RelativeSource TemplatedParent}, FallbackValue=False}" automation:AutomationProperties.Name="{Binding Item.SourceActionName, RelativeSource={RelativeSource TemplatedParent}}" ToolTip="Reveal source in Inspector">
+                                <StackPanel>
+                                    <TextBlock Text="{Binding Item.SourceName, RelativeSource={RelativeSource TemplatedParent}}" ToolTip="{Binding Item.SourceName, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.Text}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Text="{Binding Item.SourcePath, RelativeSource={RelativeSource TemplatedParent}}" ToolTip="{Binding Item.SourcePath, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.MonoText}" Foreground="{DynamicResource DevTools.TokenString}" Margin="0,4,0,2" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Text="{Binding Item.SourceFooter, RelativeSource={RelativeSource TemplatedParent}}" ToolTip="{Binding Item.SourceFooter, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.Eyebrow}" TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
+                            </Button>
+                            <StackPanel Name="PART_Direction" Grid.Column="1" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="4">
+                                <TextBlock Text="{Binding Item.Mode, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.Eyebrow}" HorizontalAlignment="Center" />
+                                <Grid Height="32"><Path Name="PART_FlowArrow" Width="32" Height="16" Stretch="Fill" Stroke="{DynamicResource DevTools.TextSecondary}" StrokeThickness="1.5" Data="M 2,8 L 28,8 M 22,2 L 28,8 L 22,14">
+                                    <Path.RenderTransform><RotateTransform Name="PART_ArrowRotation" CenterX="16" CenterY="8" /></Path.RenderTransform>
+                                </Path></Grid>
+                                <WrapPanel HorizontalAlignment="Center">
+                                    <TextBlock Text="{Binding Item.TargetCountText, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.MonoText}" Foreground="{DynamicResource DevTools.TokenNumber}" FontSize="10" Margin="0,0,6,0" />
+                                    <TextBlock Text="{Binding Item.SourceCountText, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.MonoText}" Foreground="{DynamicResource DevTools.Info}" FontSize="10" Margin="0,0,6,0" />
+                                    <TextBlock Text="{Binding Item.ErrorCountText, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.MonoText}" FontSize="10" />
+                                </WrapPanel>
+                            </StackPanel>
+                            <Button Name="PART_TargetButton" Grid.Column="2" Style="{StaticResource DevTools.BindingEndpoint}" Command="{TemplateBinding RevealTargetCommand}" CommandParameter="{TemplateBinding Item}"
+                                    IsEnabled="{Binding Item.CanRevealTarget, RelativeSource={RelativeSource TemplatedParent}, FallbackValue=False}" automation:AutomationProperties.Name="{Binding Item.TargetActionName, RelativeSource={RelativeSource TemplatedParent}}" ToolTip="Reveal target in Inspector">
+                                <StackPanel>
+                                    <TextBlock Text="{Binding Item.TargetName, RelativeSource={RelativeSource TemplatedParent}}" ToolTip="{Binding Item.TargetName, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.Text}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Text="{Binding Item.TargetProperty, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.MonoText}" Foreground="{DynamicResource DevTools.TokenProperty}" Margin="0,4,0,2" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Text="TARGET" Style="{StaticResource DevTools.Eyebrow}" />
+                                </StackPanel>
+                            </Button>
+                        </Grid>
+                        <Grid Margin="0,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                            <dev:DevToolsTag Name="PART_Status" Text="{Binding Item.StatusText, RelativeSource={RelativeSource TemplatedParent}}" />
+                            <TextBlock Name="PART_LastError" Grid.Column="1" Text="{Binding Item.LastError, RelativeSource={RelativeSource TemplatedParent}}" ToolTip="{Binding Item.LastError, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource DevTools.MonoText}" FontSize="10" Foreground="{DynamicResource DevTools.Error}" Margin="8,0,0,0" TextTrimming="CharacterEllipsis" Visibility="Collapsed" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+                <Border Name="PART_Accent" Width="2" HorizontalAlignment="Left" Background="{DynamicResource DevTools.TextSecondary}" Opacity="0.6" IsHitTestVisible="False" />
+            </Grid>
+        </ControlTemplate></Setter>
+    </Style>
+    <DataTemplate x:Key="DevTools.BindingFlowTemplate">
+        <dev:DevToolsBindingFlow Item="{Binding}"
+            RevealTargetCommand="{Binding RevealTargetCommand, RelativeSource={RelativeSource AncestorType={x:Type dev:DevToolsBindingsView}}}"
+            RevealSourceCommand="{Binding RevealSourceCommand, RelativeSource={RelativeSource AncestorType={x:Type dev:DevToolsBindingsView}}}" />
+    </DataTemplate>
+    <DataTemplate x:Key="DevTools.BindingEventTemplate">
+        <Grid Margin="4,0,4,2">
+            <Border Background="{DynamicResource DevTools.Chrome}" Padding="12,4">
+                <Grid>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="90" /><ColumnDefinition Width="110" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                    <TextBlock Text="{Binding TimeText}" Style="{StaticResource DevTools.MonoText}" FontSize="10" Foreground="{DynamicResource DevTools.TextSecondary}" />
+                    <dev:DevToolsTag Name="PART_Kind" Grid.Column="1" Text="{Binding Kind}" HorizontalAlignment="Left" Margin="0,0,8,0" />
+                    <TextBlock Grid.Column="2" Text="{Binding TargetText}" ToolTip="{Binding TargetText}" Style="{StaticResource DevTools.MonoText}" Foreground="{DynamicResource DevTools.TokenProperty}" FontSize="11" TextTrimming="CharacterEllipsis" />
+                    <TextBlock Grid.Row="1" Grid.ColumnSpan="3" Text="{Binding SourceText}" ToolTip="{Binding SourceText}" Style="{StaticResource DevTools.MonoText}" Foreground="{DynamicResource DevTools.TokenString}" FontSize="10" TextTrimming="CharacterEllipsis" />
+                    <TextBlock Name="PART_Message" Grid.Row="2" Grid.ColumnSpan="3" Text="{Binding Message}" ToolTip="{Binding Message}" Style="{StaticResource DevTools.MonoText}" FontSize="10" Foreground="{DynamicResource DevTools.TextSecondary}" TextTrimming="CharacterEllipsis" />
+                </Grid>
+            </Border>
+            <Border Name="PART_KindAccent" Width="2" HorizontalAlignment="Left" Background="{DynamicResource DevTools.TextSecondary}" Opacity="0.5" IsHitTestVisible="False" />
+        </Grid>
+        <DataTemplate.Triggers>
+            <DataTrigger Binding="{Binding Message}" Value=""><Setter TargetName="PART_Message" Property="Visibility" Value="Collapsed" /></DataTrigger>
+            <DataTrigger Binding="{Binding Kind}" Value="Activated"><Setter TargetName="PART_Kind" Property="Foreground" Value="{DynamicResource DevTools.Success}" /><Setter TargetName="PART_KindAccent" Property="Background" Value="{DynamicResource DevTools.Success}" /></DataTrigger>
+            <DataTrigger Binding="{Binding Kind}" Value="UpdateTarget"><Setter TargetName="PART_Kind" Property="Foreground" Value="{DynamicResource DevTools.Info}" /><Setter TargetName="PART_KindAccent" Property="Background" Value="{DynamicResource DevTools.Info}" /></DataTrigger>
+            <DataTrigger Binding="{Binding Kind}" Value="UpdateSource"><Setter TargetName="PART_Kind" Property="Foreground" Value="{DynamicResource DevTools.Warning}" /><Setter TargetName="PART_KindAccent" Property="Background" Value="{DynamicResource DevTools.Warning}" /></DataTrigger>
+            <DataTrigger Binding="{Binding Kind}" Value="Error"><Setter TargetName="PART_Kind" Property="Foreground" Value="{DynamicResource DevTools.Error}" /><Setter TargetName="PART_KindAccent" Property="Background" Value="{DynamicResource DevTools.Error}" /><Setter TargetName="PART_Message" Property="Foreground" Value="{DynamicResource DevTools.Error}" /></DataTrigger>
+        </DataTemplate.Triggers>
+    </DataTemplate>
+    <Style TargetType="dev:DevToolsBindingsView">
+        <Setter Property="Background" Value="{DynamicResource DevTools.Surface}" /><Setter Property="ClipToBounds" Value="True" />
+        <Setter Property="BindingItemTemplate" Value="{StaticResource DevTools.BindingFlowTemplate}" /><Setter Property="EventItemTemplate" Value="{StaticResource DevTools.BindingEventTemplate}" />
+        <Setter Property="Template"><ControlTemplate TargetType="dev:DevToolsBindingsView">
+            <Grid Background="{TemplateBinding Background}">
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup x:Name="RecordingStates"><VisualState x:Name="Idle" /><VisualState x:Name="Recording"><VisualState.Setters>
+                        <Setter TargetName="PART_RecordButton" Property="Label" Value="Stop recording" /><Setter TargetName="PART_RecordButton" Property="Icon" Value="■" />
+                        <Setter TargetName="PART_RecordingTag" Property="Text" Value="REC" /><Setter TargetName="PART_RecordingTag" Property="Foreground" Value="{DynamicResource DevTools.Error}" />
+                    </VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup x:Name="BindingsStates"><VisualState x:Name="BindingsAvailable" /><VisualState x:Name="BindingsEmpty"><VisualState.Setters><Setter TargetName="PART_BindingsList" Property="Visibility" Value="Collapsed" /><Setter TargetName="PART_BindingsEmpty" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup x:Name="EventStates"><VisualState x:Name="EventsAvailable" /><VisualState x:Name="EventsEmpty"><VisualState.Setters><Setter TargetName="PART_EventsList" Property="Visibility" Value="Collapsed" /><Setter TargetName="PART_EventsEmpty" Property="Visibility" Value="Visible" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup x:Name="SelectionStates"><VisualState x:Name="Selected" /><VisualState x:Name="NoSelection"><VisualState.Setters><Setter TargetName="PART_BindingsEmpty" Property="Text" Value="Select an element in Inspector." /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Normal" /><VisualState x:Name="Disabled"><VisualState.Setters><Setter Property="Opacity" Value="0.6" /></VisualState.Setters></VisualState></VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                <dev:DevToolsSurface Kind="Toolbar"><WrapPanel>
+                    <dev:DevToolsActionButton Name="PART_RecordButton" Label="Start recording" Icon="●" Variant="Primary" Command="{TemplateBinding ToggleRecordingCommand}" />
+                    <dev:DevToolsActionButton Name="PART_ResetButton" Label="Reset" Icon="↺" Command="{TemplateBinding ResetCommand}" />
+                    <dev:DevToolsTag Name="PART_RecordingTag" Text="IDLE" Margin="4,0" />
+                </WrapPanel></dev:DevToolsSurface>
+                <dev:DevToolsSurface Grid.Row="1" Kind="Panel" Heading="Active bindings" IndicatorBrush="{DynamicResource DevTools.Accent}" Margin="8,8,8,4" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch">
+                    <Grid>
+                        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                        <TextBlock Text="{TemplateBinding SelectedElementName}" ToolTip="{TemplateBinding SelectedElementName}" Style="{StaticResource DevTools.MonoText}" FontSize="11" TextTrimming="CharacterEllipsis" Margin="4,0,4,8" />
+                        <ListBox Name="PART_BindingsList" Grid.Row="1" Style="{StaticResource DevTools.BindingsList}" ItemsSource="{TemplateBinding BindingsSource}" ItemTemplate="{TemplateBinding BindingItemTemplate}" automation:AutomationProperties.Name="Active bindings" />
+                        <TextBlock Name="PART_BindingsEmpty" Grid.Row="1" Text="No active bindings." Style="{StaticResource DevTools.MutedText}" TextWrapping="Wrap" TextAlignment="Center" HorizontalAlignment="Center" Margin="12" Visibility="Collapsed" />
+                    </Grid>
+                </dev:DevToolsSurface>
+                <dev:DevToolsSurface Grid.Row="2" Margin="8,4,8,8" Padding="12,8,12,12" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch">
+                    <Grid>
+                        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                        <Grid Margin="0,0,0,8"><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                            <TextBlock Text="EVENT LOG" Style="{StaticResource DevTools.Eyebrow}" /><dev:DevToolsTag Name="PART_EventCount" Grid.Column="1" Text="{Binding EventCount, RelativeSource={RelativeSource TemplatedParent}}" Foreground="{DynamicResource DevTools.Info}" />
+                        </Grid>
+                        <Border Grid.Row="1" BorderBrush="{DynamicResource DevTools.BorderSubtle}" BorderThickness="0,1,0,0" Padding="16,8,16,4">
+                            <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="90" /><ColumnDefinition Width="110" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                <TextBlock Text="TIME" Style="{StaticResource DevTools.Eyebrow}" /><TextBlock Grid.Column="1" Text="KIND" Style="{StaticResource DevTools.Eyebrow}" /><TextBlock Grid.Column="2" Text="TARGET / SOURCE" Style="{StaticResource DevTools.Eyebrow}" TextTrimming="CharacterEllipsis" />
+                            </Grid>
+                        </Border>
+                        <ListBox Name="PART_EventsList" Grid.Row="2" Style="{StaticResource DevTools.BindingsList}" ItemsSource="{TemplateBinding EventsSource}" ItemTemplate="{TemplateBinding EventItemTemplate}" automation:AutomationProperties.Name="Binding events" />
+                        <TextBlock Name="PART_EventsEmpty" Grid.Row="2" Text="No binding events recorded." Style="{StaticResource DevTools.MutedText}" TextWrapping="Wrap" TextAlignment="Center" HorizontalAlignment="Center" Margin="12" Visibility="Collapsed" />
+                    </Grid>
+                </dev:DevToolsSurface>
+            </Grid>
+        </ControlTemplate></Setter>
+    </Style>
+</ResourceDictionary>
+

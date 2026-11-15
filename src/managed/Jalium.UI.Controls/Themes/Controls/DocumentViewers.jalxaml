@@ -1,0 +1,104 @@
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="clr-namespace:Jalium.UI.Controls;assembly=Jalium.UI.Controls"
+    xmlns:primitives="clr-namespace:Jalium.UI.Controls.Primitives;assembly=Jalium.UI.Controls"
+    xmlns:input="clr-namespace:Jalium.UI.Input;assembly=Jalium.UI.Core"
+    xmlns:automation="clr-namespace:Jalium.UI.Automation;assembly=Jalium.UI.Core">
+    <Style TargetType="controls:DocumentViewer">
+        <Setter Property="Focusable" Value="True" />
+        <Setter Property="ClipToBounds" Value="True" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="controls:DocumentViewer">
+                <Border x:Name="PART_Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}" CornerRadius="{TemplateBinding CornerRadius}">
+                    <VisualStateManager.VisualStateGroups>
+                        <VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Normal" /><VisualState x:Name="Disabled" /></VisualStateGroup>
+                        <VisualStateGroup x:Name="DocumentStates"><VisualState x:Name="Empty" /><VisualState x:Name="Ready" /></VisualStateGroup>
+                        <VisualStateGroup x:Name="PageDisplayStates"><VisualState x:Name="OnePage" /><VisualState x:Name="TwoPages" /><VisualState x:Name="TwoUpFacing" /><VisualState x:Name="Continuous" /><VisualState x:Name="ContinuousFacing" /></VisualStateGroup>
+                    </VisualStateManager.VisualStateGroups>
+                    <ScrollViewer x:Name="PART_ScrollHost" CanContentScroll="True" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto" Padding="0" Background="Transparent" BorderThickness="0">
+                        <primitives:DocumentPagePanel x:Name="PART_PagePanel" ClipToBounds="True" PagesSource="{TemplateBinding VisiblePageViews}" PageSize="{TemplateBinding DisplayPageSize}" Columns="{TemplateBinding PageColumns}" FirstPageOnRight="{TemplateBinding IsFirstPageOnRight}" HorizontalPageSpacing="{TemplateBinding HorizontalPageSpacing}" VerticalPageSpacing="{TemplateBinding VerticalPageSpacing}" HorizontalOffset="{Binding HorizontalOffset, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}" VerticalOffset="{Binding VerticalOffset, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}" />
+                    </ScrollViewer>
+                </Border>
+                <ControlTemplate.Triggers>
+                    <Trigger Property="IsEnabled" Value="False"><Setter TargetName="PART_Root" Property="Opacity" Value="0.5" /></Trigger>
+                </ControlTemplate.Triggers>
+            </ControlTemplate>
+        </Setter>
+    </Style>
+    <Style TargetType="controls:FlowDocumentPageViewer">
+        <Setter Property="Focusable" Value="True" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="controls:FlowDocumentPageViewer">
+                <Border x:Name="PART_Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}" CornerRadius="{TemplateBinding CornerRadius}">
+                    <VisualStateManager.VisualStateGroups>
+                        <VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Normal" /><VisualState x:Name="Disabled" /></VisualStateGroup>
+                        <VisualStateGroup x:Name="DocumentStates"><VisualState x:Name="Empty" /><VisualState x:Name="Ready" /></VisualStateGroup>
+                        <VisualStateGroup x:Name="FindStates"><VisualState x:Name="FindOpen" /><VisualState x:Name="FindClosed" /></VisualStateGroup>
+                    </VisualStateManager.VisualStateGroups>
+                    <Grid RowDefinitions="Auto,*">
+                        <Grid x:Name="PART_FindBar" ColumnDefinitions="*,Auto,Auto" Margin="4" Visibility="Collapsed">
+                            <TextBox x:Name="PART_FindTextBox" Text="{Binding SearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged, RelativeSource={RelativeSource TemplatedParent}}" automation:AutomationProperties.Name="Find in document" />
+                            <Button Grid.Column="1" Content="Next" Margin="6,0,0,0" Command="{x:Static controls:FlowDocumentPageViewer.FindNextCommand}" CommandTarget="{Binding RelativeSource={RelativeSource TemplatedParent}}" />
+                            <Button Grid.Column="2" Content="Close" Margin="6,0,0,0" Command="{x:Static controls:FlowDocumentPageViewer.CloseFindCommand}" CommandTarget="{Binding RelativeSource={RelativeSource TemplatedParent}}" />
+                        </Grid>
+                        <ContentPresenter x:Name="PART_PagePresenter" Grid.Row="1" Content="{TemplateBinding PageView}" MaxWidth="{TemplateBinding PageViewWidth}" MaxHeight="{TemplateBinding PageViewHeight}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Grid>
+                </Border>
+                <ControlTemplate.Triggers>
+                    <Trigger Property="IsEnabled" Value="False"><Setter TargetName="PART_Root" Property="Opacity" Value="0.5" /></Trigger>
+                    <Trigger Property="IsFindToolBarVisible" Value="True"><Setter TargetName="PART_FindBar" Property="Visibility" Value="Visible" /></Trigger>
+                </ControlTemplate.Triggers>
+            </ControlTemplate>
+        </Setter>
+    </Style>
+    <Style TargetType="controls:FlowDocumentReader">
+        <Setter Property="Focusable" Value="True" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="controls:FlowDocumentReader">
+                <Border x:Name="PART_Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}" CornerRadius="{TemplateBinding CornerRadius}">
+                    <VisualStateManager.VisualStateGroups>
+                        <VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Normal" /><VisualState x:Name="Disabled" /></VisualStateGroup>
+                        <VisualStateGroup x:Name="DocumentStates"><VisualState x:Name="Empty" /><VisualState x:Name="Ready" /></VisualStateGroup>
+                        <VisualStateGroup x:Name="ViewingModeStates"><VisualState x:Name="Page" /><VisualState x:Name="TwoPage" /><VisualState x:Name="Scroll" /></VisualStateGroup>
+                        <VisualStateGroup x:Name="FindStates"><VisualState x:Name="FindOpen" /><VisualState x:Name="FindClosed" /></VisualStateGroup>
+                    </VisualStateManager.VisualStateGroups>
+                    <Grid RowDefinitions="Auto,Auto,*">
+                        <WrapPanel x:Name="PART_ToolBar" Margin="4" HorizontalSpacing="6" VerticalSpacing="6" automation:AutomationProperties.Name="Document">
+                            <Button Content="‹" Command="{x:Static input:NavigationCommands.PreviousPage}" CommandTarget="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type controls:FlowDocumentReader}}}" automation:AutomationProperties.Name="Previous page" />
+                            <TextBlock MinWidth="48" TextAlignment="Center" VerticalAlignment="Center" Text="{Binding PageNumber, RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type controls:FlowDocumentReader}}, StringFormat='Page {0}'}" />
+                            <Button Content="›" Command="{x:Static input:NavigationCommands.NextPage}" CommandTarget="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type controls:FlowDocumentReader}}}" automation:AutomationProperties.Name="Next page" />
+                            <RadioButton Content="Page" IsChecked="{Binding IsPageMode, Mode=OneWay, RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type controls:FlowDocumentReader}}}" Command="{x:Static controls:FlowDocumentReader.SwitchViewingModeCommand}" CommandParameter="{x:Static controls:FlowDocumentReaderViewingMode.Page}" CommandTarget="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type controls:FlowDocumentReader}}}" />
+                            <RadioButton Content="Two pages" IsChecked="{Binding IsTwoPageMode, Mode=OneWay, RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type controls:FlowDocumentReader}}}" Command="{x:Static controls:FlowDocumentReader.SwitchViewingModeCommand}" CommandParameter="{x:Static controls:FlowDocumentReaderViewingMode.TwoPage}" CommandTarget="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type controls:FlowDocumentReader}}}" />
+                            <RadioButton Content="Scroll" IsChecked="{Binding IsScrollMode, Mode=OneWay, RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type controls:FlowDocumentReader}}}" Command="{x:Static controls:FlowDocumentReader.SwitchViewingModeCommand}" CommandParameter="{x:Static controls:FlowDocumentReaderViewingMode.Scroll}" CommandTarget="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type controls:FlowDocumentReader}}}" />
+                            <Button Content="Find" Command="{x:Static input:ApplicationCommands.Find}" CommandTarget="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type controls:FlowDocumentReader}}}" />
+                            <Button Content="Print" Command="{x:Static input:ApplicationCommands.Print}" CommandTarget="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type controls:FlowDocumentReader}}}" />
+                            <Button Content="−" Command="{x:Static input:NavigationCommands.DecreaseZoom}" CommandTarget="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type controls:FlowDocumentReader}}}" automation:AutomationProperties.Name="Decrease zoom" />
+                            <TextBlock MinWidth="48" TextAlignment="Center" VerticalAlignment="Center" Text="{Binding Zoom, RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type controls:FlowDocumentReader}}, StringFormat='{}{0:0}%'}" />
+                            <Button Content="+" Command="{x:Static input:NavigationCommands.IncreaseZoom}" CommandTarget="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type controls:FlowDocumentReader}}}" automation:AutomationProperties.Name="Increase zoom" />
+                        </WrapPanel>
+                        <Grid x:Name="PART_FindBar" Grid.Row="1" ColumnDefinitions="*,Auto,Auto" Margin="4" Visibility="Collapsed">
+                            <TextBox x:Name="PART_FindTextBox" Text="{Binding SearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged, RelativeSource={RelativeSource TemplatedParent}}" automation:AutomationProperties.Name="Find in document" />
+                            <Button Grid.Column="1" Content="Next" Margin="6,0,0,0" Command="{x:Static controls:FlowDocumentReader.FindNextCommand}" CommandTarget="{Binding RelativeSource={RelativeSource TemplatedParent}}" />
+                            <Button Grid.Column="2" Content="Close" Margin="6,0,0,0" Command="{x:Static controls:FlowDocumentReader.CloseFindCommand}" CommandTarget="{Binding RelativeSource={RelativeSource TemplatedParent}}" />
+                        </Grid>
+                        <ContentPresenter x:Name="PART_ViewerPresenter" Grid.Row="2" Content="{TemplateBinding ActiveViewer}" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" />
+                    </Grid>
+                </Border>
+                <ControlTemplate.Triggers>
+                    <Trigger Property="IsEnabled" Value="False"><Setter TargetName="PART_Root" Property="Opacity" Value="0.5" /></Trigger>
+                    <Trigger Property="IsFindToolBarVisible" Value="True"><Setter TargetName="PART_FindBar" Property="Visibility" Value="Visible" /></Trigger>
+                </ControlTemplate.Triggers>
+            </ControlTemplate>
+        </Setter>
+    </Style>
+</ResourceDictionary>

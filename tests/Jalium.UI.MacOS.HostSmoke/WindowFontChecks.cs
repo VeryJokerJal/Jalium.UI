@@ -41,7 +41,7 @@ internal static class WindowFontChecks
     internal static int RunCase(string argument)
     {
         if (!int.TryParse(argument.AsSpan("--window-font-case=".Length), out int index) || (uint)index >= CheckCount) return 2;
-        JaliumMacApplication.Initialize(); NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Prohibited;
+        JaliumMacApplication.Initialize(); NSApplication.SharedApplication.ActivationPolicy = NSApplicationActivationPolicy.Accessory;
         var context = RenderContext.GetOrCreateCurrent(RenderBackend.Metal);
         try
         {

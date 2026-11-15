@@ -37,6 +37,14 @@ public sealed class ResourceReclamationOptions
     public int IdleTimeoutMs { get; set; } = 2000;
 
     /// <summary>
+    /// Whole-window idle time before clearing native backend caches. Unlike
+    /// per-visual eviction, this discards text/path/shadow caches for the entire
+    /// surface, so short pauses between scrolling should keep them warm.
+    /// The effective timeout is at least <see cref="IdleTimeoutMs"/>.
+    /// </summary>
+    public int BackendIdleTimeoutMs { get; set; } = 10_000;
+
+    /// <summary>
     /// How often the reclaimer walks its tracked-visuals table looking for idle
     /// entries, expressed as a number of <see cref="CompositionTarget.Rendering"/>
     /// frames. Default: <c>60</c> — once per second at 60 Hz, low enough that
@@ -48,9 +56,10 @@ public sealed class ResourceReclamationOptions
 
     /// <summary>
     /// When <see langword="true"/> (default), the reclaimer evicts the
-    /// retained-mode drawing-cache slot on every idle visual — a zero-risk
-    /// release because the cache is rebuilt from <see cref="Visual.OnRender"/>
-    /// the next time the element draws. Set to <see langword="false"/> if you
+    /// retained-mode drawing-cache slot on idle visuals proven off screen.
+    /// Visible, unchanged controls keep their recorded commands and GPU layers
+    /// so input after a pause does not rebuild the whole visible scene.
+    /// Set to <see langword="false"/> if you
     /// want only <see cref="IReclaimableResource.ReclaimIdleResources"/> to fire
     /// (i.e. preserve the baked command list across visibility flips).
     /// </summary>
@@ -71,14 +80,13 @@ public sealed class ResourceReclamationOptions
     /// active <see cref="Window"/>'s native render target to drop its
     /// backend-side caches — Vulkan path-geometry tessellation, rasterized
     /// text bitmaps, glyph atlas pages, gradient stops, etc. The call is
-    /// throttled by <see cref="IdleTimeoutMs"/> (i.e. fires at most once per
-    /// idle window) so it never piles up native work.
+    /// eligible after <see cref="BackendIdleTimeoutMs"/> without a successful
+    /// presentation, once per presentation epoch. Scans remain throttled by
+    /// <see cref="IdleTimeoutMs"/> so they never pile up native work.
     /// </summary>
     /// <remarks>
-    /// Set to <see langword="false"/> for applications that prioritize the
-    /// next-frame latency cost of rebuilding those caches over the memory
-    /// they hold (e.g. a real-time animation that scrolls through hundreds
-    /// of unique paths every second). The per-element <see cref="IReclaimableResource"/>
+    /// Set to <see langword="false"/> to retain backend caches even across
+    /// long idle periods. The per-element <see cref="IReclaimableResource"/>
     /// path is unaffected.
     /// </remarks>
     public bool ReclaimBackendCaches { get; set; } = true;

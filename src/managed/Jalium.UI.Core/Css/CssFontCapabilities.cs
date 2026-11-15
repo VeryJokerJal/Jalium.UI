@@ -9,11 +9,11 @@ internal static class CssFontCapabilities
     internal static bool SupportsFormat(string format) => format.ToLowerInvariant() is
         "truetype" or "opentype" or "woff" or "woff2" or "collection";
 
-    // The native shapers use OpenType GSUB/GPOS features. Variation selection,
-    // palette control and the individual color-font technologies are not yet
-    // guaranteed across all rendering backends.
+    // Variation instances use CoreText on macOS. Other platform shapers still
+    // need their own variable-font path before advertising that source technology.
     internal static bool SupportsTechnology(string technology) =>
-        technology.Equals("features-opentype", StringComparison.OrdinalIgnoreCase);
+        technology.Equals("features-opentype", StringComparison.OrdinalIgnoreCase) ||
+        OperatingSystem.IsMacOS() && technology.Equals("variations", StringComparison.OrdinalIgnoreCase);
 
     internal static bool SupportsSource(CssFontSource source) =>
         (source.Format is null || SupportsFormat(source.Format)) &&

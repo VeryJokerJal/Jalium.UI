@@ -1,0 +1,30 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:local="clr-namespace:Jalium.UI.DesktopDemo"
+                    x:Class="Jalium.UI.DesktopDemo.Themes.ImagePerfTheme">
+    <Style x:Key="ImagePerf.Window" TargetType="Window"><Setter Property="Background" Value="#14141C" /></Style>
+    <Style x:Key="ImagePerf.Category" TargetType="Button"><Setter Property="Margin" Value="4" /><Setter Property="Padding" Value="16,6" /><Setter Property="Background" Value="#3C5064" /><Setter Property="BorderBrush" Value="#506478" /><Setter Property="BorderThickness" Value="1" /><Setter Property="CornerRadius" Value="4" /><Setter Property="Foreground" Value="White" /><Setter Property="FontSize" Value="13" /></Style>
+    <Style TargetType="local:ImagePerfSurface">
+        <Setter Property="ItemsPanel"><Setter.Value><ItemsPanelTemplate><WrapPanel ItemWidth="168" ItemHeight="190" Margin="12" /></ItemsPanelTemplate></Setter.Value></Setter>
+        <Setter Property="ItemTemplate"><Setter.Value><DataTemplate><Border Background="#282D37" BorderBrush="#46505F" BorderThickness="1" CornerRadius="6" Margin="4" Width="160" Height="182"><Image Source="{Binding}" Stretch="Uniform" Margin="8" /></Border></DataTemplate></Setter.Value></Setter>
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="local:ImagePerfSurface">
+            <DockPanel>
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Normal" /><VisualState x:Name="Disabled"><VisualState.Setters><Setter Property="Opacity" Value="0.5" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup x:Name="DataStates"><VisualState x:Name="Ready" /><VisualState x:Name="Empty"><VisualState.Setters><Setter TargetName="PART_Empty" Property="Visibility" Value="Visible" /><Setter TargetName="PART_Scroller" Property="Visibility" Value="Collapsed" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    <VisualStateGroup x:Name="CategoryStates">
+                        <VisualState x:Name="CategoryA"><VisualState.Setters><Setter TargetName="PART_CategoryA" Property="Background" Value="#406B9A" /></VisualState.Setters></VisualState>
+                        <VisualState x:Name="CategoryB"><VisualState.Setters><Setter TargetName="PART_CategoryB" Property="Background" Value="#406B9A" /></VisualState.Setters></VisualState>
+                        <VisualState x:Name="CategoryC"><VisualState.Setters><Setter TargetName="PART_CategoryC" Property="Background" Value="#406B9A" /></VisualState.Setters></VisualState>
+                    </VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <TextBlock DockPanel.Dock="Top" Text="{TemplateBinding StatusText}" FontSize="13" Foreground="#C8DCC8" Margin="12,8" TextWrapping="Wrap" Focusable="False" />
+                <WrapPanel DockPanel.Dock="Top" HorizontalAlignment="Center" Margin="8"><Button x:Name="PART_CategoryA" Content="分类 A" Style="{StaticResource ImagePerf.Category}" /><Button x:Name="PART_CategoryB" Content="分类 B" Style="{StaticResource ImagePerf.Category}" /><Button x:Name="PART_CategoryC" Content="分类 C" Style="{StaticResource ImagePerf.Category}" /></WrapPanel>
+                <Grid>
+                    <ScrollViewer x:Name="PART_Scroller" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto"><ItemsPresenter /></ScrollViewer>
+                    <TextBlock x:Name="PART_Empty" Text="暂无图像" Foreground="#C8DCC8" HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed" Focusable="False" />
+                </Grid>
+            </DockPanel>
+        </ControlTemplate></Setter.Value></Setter>
+    </Style>
+</ResourceDictionary>

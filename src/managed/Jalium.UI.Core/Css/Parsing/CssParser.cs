@@ -7,7 +7,7 @@ namespace Jalium.UI.Styling;
 /// </summary>
 internal static partial class CssParser
 {
-    internal static bool SupportsAtRule(string name) => name.ToLowerInvariant() is "import" or "namespace" or "layer" or "media" or "supports" or "container" or "scope" or "property" or "font-face" or "keyframes" or "starting-style";
+    internal static bool SupportsAtRule(string name) => name.ToLowerInvariant() is "import" or "namespace" or "layer" or "media" or "supports" or "container" or "scope" or "property" or "font-face" or "font-feature-values" or "keyframes" or "starting-style" or "counter-style" or "page";
     public static CssStyleSheet Parse(string cssText, string? sourceLabel, int depth = 0, string? parentLayer = null,
         CssNestingContext? nesting = null, CssScopeRule? scope = null, CssSelector[]? declarationSelectors = null, bool styleBlock = false,
         CssNamespaceContext? namespaces = null, bool startingStyle = false)
@@ -21,7 +21,10 @@ internal static partial class CssParser
         var layers = new List<CssLayerDeclaration>();
         var properties = new List<CssPropertyRegistration>();
         var fonts = new List<CssFontFaceRule>();
+        var fontFeatureValues = new List<CssFontFeatureValuesRule>();
         var keyframes = new List<CssKeyframesRule>();
+        var counterStyles = new List<CssCounterStyleRule>();
+        var pageRules = new List<CssPageRule>();
         var importsAllowed = true;
         var hasImports = false;
         var namespacesAllowed=depth==0;
@@ -85,9 +88,12 @@ internal static partial class CssParser
                     layers.AddRange(nested.Layers.Select(entry => entry with { Offset = entry.Offset + brace + 1 }));
                     properties.AddRange(nested.Properties.Select(entry => entry with { Offset = entry.Offset + brace + 1 }));
                     fonts.AddRange(nested.FontFaces.Select(entry => entry with { Offset = entry.Offset + brace + 1 }));
+                    fontFeatureValues.AddRange(nested.FontFeatureValues.Select(entry => entry with { Offset = entry.Offset + brace + 1 }));
                     keyframes.AddRange(nested.Keyframes.Select(entry => entry with { Offset = entry.Offset + brace + 1 }));
+                    counterStyles.AddRange(nested.CounterStyles.Select(entry => entry with { Offset = entry.Offset + brace + 1 }));
+                    pageRules.AddRange(nested.PageRules.Select(entry => entry with { Offset = entry.Offset + brace + 1 }));
                     foreach (var diagnostic in nested.Diagnostics)
-                        diagnostics.Add(new(diagnostic.Severity, diagnostic.Message, bodyLine + diagnostic.Line - 1));
+                        diagnostics.Add(new(diagnostic.Severity, diagnostic.Message, bodyLine + diagnostic.Line - 1, diagnostic.Start < 0 ? -1 : brace + 1 + diagnostic.Start, diagnostic.Length));
                     continue;
                 }
                 if(name.Equals("namespace",StringComparison.OrdinalIgnoreCase))
@@ -116,8 +122,11 @@ internal static partial class CssParser
                     layers.AddRange(nested.Layers.Select(entry => entry with { Offset = entry.Offset + brace + 1 }));
                     properties.AddRange(nested.Properties.Select(entry => entry with { Offset = entry.Offset + brace + 1 }));
                     fonts.AddRange(nested.FontFaces.Select(entry => entry with { Offset = entry.Offset + brace + 1 }));
+                    fontFeatureValues.AddRange(nested.FontFeatureValues.Select(entry => entry with { Offset = entry.Offset + brace + 1 }));
                     keyframes.AddRange(nested.Keyframes.Select(entry => entry with { Offset = entry.Offset + brace + 1 }));
-                    foreach (var diagnostic in nested.Diagnostics) diagnostics.Add(new(diagnostic.Severity, diagnostic.Message, bodyLine + diagnostic.Line - 1));
+                    counterStyles.AddRange(nested.CounterStyles.Select(entry => entry with { Offset = entry.Offset + brace + 1 }));
+                    pageRules.AddRange(nested.PageRules.Select(entry => entry with { Offset = entry.Offset + brace + 1 }));
+                    foreach (var diagnostic in nested.Diagnostics) diagnostics.Add(new(diagnostic.Severity, diagnostic.Message, bodyLine + diagnostic.Line - 1, diagnostic.Start < 0 ? -1 : brace + 1 + diagnostic.Start, diagnostic.Length));
                     continue;
                 }
                 if (name.Equals("property", StringComparison.OrdinalIgnoreCase))
@@ -129,6 +138,41 @@ internal static partial class CssParser
                     var property = brace < end ? CssPropertyRegistration.Parse(StripComments(text[headerStart..brace]), text[(brace + 1)..end], atStart) : null;
                     if (property is null) diagnostics.Add(new(CssDiagnosticSeverity.Warning, "invalid @property registration", atLine));
                     else { properties.Add(property with {LayerName=parentLayer}); importsAllowed = false; namespacesAllowed=false; }
+                    continue;
+                }
+                if (name.Equals("counter-style", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (styleBlock) { diagnostics.Add(new(CssDiagnosticSeverity.Warning, "@counter-style cannot be nested directly in a style rule", atLine)); continue; }
+                    var brace = headerStart; var bodyLine = atLine;
+                    ScanToTopLevelOpenBrace(text, ref brace, ref bodyLine);
+                    var end = pos > brace && text[pos - 1] == '}' ? pos - 1 : pos;
+                    var counter = brace < end ? CssCounterStyleRule.Parse(text[headerStart..brace], text[(brace + 1)..end], atStart) : null;
+                    if (counter is null) diagnostics.Add(new(CssDiagnosticSeverity.Warning, "invalid @counter-style rule", atLine));
+                    else { counterStyles.Add(counter with { LayerName = parentLayer }); importsAllowed = false; namespacesAllowed = false; }
+                    continue;
+                }
+                if (name.Equals("page", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (styleBlock) { diagnostics.Add(new(CssDiagnosticSeverity.Warning, "@page cannot be nested directly in a style rule", atLine)); continue; }
+                    var brace = headerStart; var bodyLine = atLine;
+                    ScanToTopLevelOpenBrace(text, ref brace, ref bodyLine);
+                    var end = pos > brace && text[pos - 1] == '}' ? pos - 1 : pos;
+                    var pageRule = brace < end && text[pos - 1] == '}'
+                        ? CssPageRule.Parse(text[headerStart..brace], text[(brace + 1)..end], atStart, bodyLine, diagnostics)
+                        : null;
+                    if (pageRule is null) diagnostics.Add(new(CssDiagnosticSeverity.Warning, "invalid @page rule", atLine));
+                    else { pageRules.Add(pageRule with { LayerName = parentLayer, RuleOrder = pageRules.Count }); importsAllowed = false; namespacesAllowed = false; }
+                    continue;
+                }
+                if (name.Equals("font-feature-values", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (styleBlock) { diagnostics.Add(new(CssDiagnosticSeverity.Warning, "@font-feature-values cannot be nested directly in a style rule", atLine)); continue; }
+                    var brace = headerStart; var bodyLine = atLine;
+                    ScanToTopLevelOpenBrace(text, ref brace, ref bodyLine);
+                    var end = pos > brace && text[pos - 1] == '}' ? pos - 1 : pos;
+                    var definition = brace < end ? ParseFontFeatureValues(text[headerStart..brace], text[(brace + 1)..end], atStart) : null;
+                    if (definition is null) diagnostics.Add(new(CssDiagnosticSeverity.Warning, "invalid @font-feature-values rule", atLine));
+                    else { fontFeatureValues.Add(definition with { LayerName = parentLayer }); importsAllowed = false; namespacesAllowed = false; }
                     continue;
                 }
                 if (name.Equals("font-face", StringComparison.OrdinalIgnoreCase))
@@ -214,9 +258,12 @@ internal static partial class CssParser
                                 layers.AddRange(nested.Layers.Select(entry => entry with { Offset = entry.Offset + brace + 1 }));
                                 properties.AddRange(nested.Properties.Select(entry => entry with { Offset = entry.Offset + brace + 1 }));
                                 fonts.AddRange(nested.FontFaces.Select(entry => entry with { Offset = entry.Offset + brace + 1 }));
+                                fontFeatureValues.AddRange(nested.FontFeatureValues.Select(entry => entry with { Offset = entry.Offset + brace + 1 }));
                                 keyframes.AddRange(nested.Keyframes.Select(entry => entry with { Offset = entry.Offset + brace + 1 }));
+                                counterStyles.AddRange(nested.CounterStyles.Select(entry => entry with { Offset = entry.Offset + brace + 1 }));
+                                pageRules.AddRange(nested.PageRules.Select(entry => entry with { Offset = entry.Offset + brace + 1 }));
                                 foreach (var diagnostic in nested.Diagnostics)
-                                    diagnostics.Add(new CssParseDiagnostic(diagnostic.Severity, diagnostic.Message, bodyLine + diagnostic.Line - 1));
+                                    diagnostics.Add(new CssParseDiagnostic(diagnostic.Severity, diagnostic.Message, bodyLine + diagnostic.Line - 1, diagnostic.Start < 0 ? -1 : brace + 1 + diagnostic.Start, diagnostic.Length));
                                 continue;
                             }
                         }
@@ -254,11 +301,26 @@ internal static partial class CssParser
                             Offset = entry.Offset + brace + 1,
                             Condition = container is not null ? entry.Condition : CssCondition.And(condition, entry.Condition),
                         }));
+                        fontFeatureValues.AddRange(nested.FontFeatureValues.Select(entry => entry with
+                        {
+                            Offset = entry.Offset + brace + 1,
+                            Condition = container is not null ? entry.Condition : CssCondition.And(condition, entry.Condition),
+                        }));
                         keyframes.AddRange(nested.Keyframes.Select(entry => entry with
                         {
                             Offset = entry.Offset + brace + 1,
                             Condition = container is not null ? entry.Condition :
                                 CssCondition.And(condition, entry.Condition),
+                        }));
+                        counterStyles.AddRange(nested.CounterStyles.Select(entry => entry with
+                        {
+                            Offset = entry.Offset + brace + 1,
+                            Condition = container is not null ? entry.Condition : CssCondition.And(condition, entry.Condition),
+                        }));
+                        pageRules.AddRange(nested.PageRules.Select(entry => entry with
+                        {
+                            Offset = entry.Offset + brace + 1,
+                            Condition = container is not null ? entry.Condition : CssCondition.And(condition, entry.Condition),
                         }));
                         properties.AddRange(nested.Properties.Select(entry => entry with
                         {
@@ -278,7 +340,7 @@ internal static partial class CssParser
                             rules.Add(nestedRule);
                         }
                         foreach (var diagnostic in nested.Diagnostics)
-                            diagnostics.Add(new CssParseDiagnostic(diagnostic.Severity, diagnostic.Message, bodyLine + diagnostic.Line - 1));
+                            diagnostics.Add(new CssParseDiagnostic(diagnostic.Severity, diagnostic.Message, bodyLine + diagnostic.Line - 1, diagnostic.Start < 0 ? -1 : brace + 1 + diagnostic.Start, diagnostic.Length));
                         continue;
                     }
                 }
@@ -347,25 +409,31 @@ internal static partial class CssParser
             foreach (var rule in children.Rules) { rule.RuleIndex = rules.Count; rules.Add(rule); }
             layers.AddRange(children.Layers.Select(entry => entry with { Offset = entry.Offset + bodyStart }));
             properties.AddRange(children.Properties.Select(entry => entry with { Offset = entry.Offset + bodyStart }));
-            foreach (var diagnostic in children.Diagnostics) diagnostics.Add(new(diagnostic.Severity, diagnostic.Message, startLine + diagnostic.Line - 1));
+            counterStyles.AddRange(children.CounterStyles.Select(entry => entry with { Offset = entry.Offset + bodyStart }));
+            pageRules.AddRange(children.PageRules.Select(entry => entry with { Offset = entry.Offset + bodyStart }));
+            fontFeatureValues.AddRange(children.FontFeatureValues.Select(entry => entry with { Offset = entry.Offset + bodyStart }));
+            foreach (var diagnostic in children.Diagnostics) diagnostics.Add(new(diagnostic.Severity, diagnostic.Message, startLine + diagnostic.Line - 1, diagnostic.Start < 0 ? -1 : bodyStart + diagnostic.Start, diagnostic.Length));
             if (pos == text.Length && (pos == 0 || text[pos - 1] != '}')) diagnostics.Add(new(CssDiagnosticSeverity.Warning, "unterminated declaration block", selectorLine));
             importsAllowed = false;
             namespacesAllowed=false;
         }
 
         return new CssStyleSheet(rules.ToArray(), diagnostics.ToArray(), sourceLabel,
-            imports.ToArray(), layers.ToArray(), properties.ToArray(), fonts.ToArray(), keyframes.ToArray());
+            imports.ToArray(), layers.ToArray(), properties.ToArray(), fonts.ToArray(), keyframes.ToArray(), counterStyles.ToArray(), fontFeatureValues.ToArray(), pageRules.ToArray());
     }
 
     /// <summary>Parses a bare declaration list (the inline Css.Style channel).</summary>
     public static List<CssDeclaration> ParseInlineDeclarations(string text, List<CssParseDiagnostic>? diagnostics)
+        => ParseInlineDeclarations(text, diagnostics, preserveNameCase: false);
+
+    internal static List<CssDeclaration> ParseInlineDeclarations(string text, List<CssParseDiagnostic>? diagnostics, bool preserveNameCase)
     {
         text = CssInputPreprocessor.Filter(text);
         var span = text.AsSpan();
         var pos = 0;
         var line = 1;
         var collected = diagnostics ?? new List<CssParseDiagnostic>();
-        return ParseDeclarations(span, ref pos, ref line, collected, stopAtCloseBrace: false);
+        return ParseDeclarations(span, ref pos, ref line, collected, stopAtCloseBrace: false, preserveNameCase);
     }
 
     private static List<CssDeclaration> ParseDeclarationBlock(
@@ -373,7 +441,7 @@ internal static partial class CssParser
         => ParseDeclarations(text, ref pos, ref line, diagnostics, stopAtCloseBrace: true);
 
     private static List<CssDeclaration> ParseDeclarations(
-        ReadOnlySpan<char> text, ref int pos, ref int line, List<CssParseDiagnostic> diagnostics, bool stopAtCloseBrace)
+        ReadOnlySpan<char> text, ref int pos, ref int line, List<CssParseDiagnostic> diagnostics, bool stopAtCloseBrace, bool preserveNameCase = false)
     {
         var declarations = new List<CssDeclaration>();
         while (true)
@@ -384,7 +452,7 @@ internal static partial class CssParser
                 if (stopAtCloseBrace)
                 {
                     diagnostics.Add(new CssParseDiagnostic(
-                        CssDiagnosticSeverity.Warning, "unterminated declaration block", line));
+                        CssDiagnosticSeverity.Warning, "unterminated declaration block", line, pos));
                 }
 
                 break;
@@ -411,7 +479,8 @@ internal static partial class CssParser
             if (name.IsEmpty || pos >= text.Length || text[pos] != ':')
             {
                 diagnostics.Add(new CssParseDiagnostic(
-                    CssDiagnosticSeverity.Warning, "malformed declaration; skipped", declLine));
+                    CssDiagnosticSeverity.Warning, "malformed declaration; skipped", declLine,
+                    nameStart, Math.Max(1, pos - nameStart)));
                 SkipToDeclarationBoundary(text, ref pos, ref line, stopAtCloseBrace);
                 continue;
             }
@@ -433,20 +502,22 @@ internal static partial class CssParser
             if ((isCustomProperty && name.Length == 2) || !CssDeclarationValueSyntax.IsValid(rawValue))
             {
                 diagnostics.Add(new CssParseDiagnostic(
-                    CssDiagnosticSeverity.Warning, $"invalid declaration '{name.ToString()}'; skipped", declLine));
+                    CssDiagnosticSeverity.Warning, $"invalid declaration '{name.ToString()}'; skipped", declLine,
+                    nameStart, Math.Max(1, name.Length)));
                 continue;
             }
 
             if (rawValue.IsEmpty && !isCustomProperty)
             {
                 diagnostics.Add(new CssParseDiagnostic(
-                    CssDiagnosticSeverity.Warning, $"declaration '{name.ToString()}' has an empty value; skipped", declLine));
+                    CssDiagnosticSeverity.Warning, $"declaration '{name.ToString()}' has an empty value; skipped", declLine,
+                    nameStart, Math.Max(1, name.Length)));
                 continue;
             }
 
             declarations.Add(new CssDeclaration
             {
-                PropertyName = isCustomProperty
+                PropertyName = isCustomProperty || preserveNameCase
                     ? name.ToString() : name.ToString().ToLowerInvariant(),
                 RawValue = rawValue.ToString(),
                 Important = important,

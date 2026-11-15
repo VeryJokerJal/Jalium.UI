@@ -79,8 +79,8 @@ public partial class TextBlock
     }
 
     private double GetLineLeftPadding(in TextLayoutLine line)
-        => FlowDirection == FlowDirection.RightToLeft ? line.EndPadding : line.StartPadding;
+        => CssLineDirection(line.StartIndex) == FlowDirection.RightToLeft ? line.EndPadding : line.StartPadding;
 
     private double GetLineRightPadding(in TextLayoutLine line)
-        => FlowDirection == FlowDirection.RightToLeft ? line.StartPadding : line.EndPadding;
+        => CssLineDirection(line.StartIndex) == FlowDirection.RightToLeft ? line.StartPadding : line.EndPadding;
 }

@@ -24,6 +24,21 @@ public abstract class TextElement : FrameworkContentElement
         TextContentChanged?.Invoke(this, EventArgs.Empty);
     }
 
+    internal override void OnEffectiveValueSourceChanged(DependencyProperty property)
+    {
+        base.OnEffectiveValueSourceChanged(property);
+        if (property == Block.TextAlignmentProperty || property == TableCell.TextAlignmentProperty ||
+            property == Block.MarginProperty || property == Block.PaddingProperty || property == TableCell.PaddingProperty ||
+            property == FrameworkElement.WidthProperty || property == FrameworkElement.MinWidthProperty || property == FrameworkElement.MaxWidthProperty ||
+            property == FrameworkElement.HeightProperty || property == FrameworkElement.MinHeightProperty || property == FrameworkElement.MaxHeightProperty)
+        {
+            // Clearing a native default can expose inherited CSS without changing
+            // the native DP's value; consumers must refresh its precedence too.
+            Styling.CssEvaluationScheduler.InvalidateSubtree(Styling.CssNode.Get(this));
+            NotifyTextContentChanged();
+        }
+    }
+
     protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
     {
         base.OnPropertyChanged(e);
@@ -97,6 +112,10 @@ public abstract class TextElement : FrameworkContentElement
     private static void OnTextTypographyChanged(DependencyObject target, DependencyPropertyChangedEventArgs _)
     {
         if (target is TextElement textElement) textElement.NotifyTextContentChanged();
+        // Attached font properties also belong to visual containers. Their
+        // inherited values are read lazily, so invalidate retained descendant
+        // text layouts even when no child CSS value itself changed.
+        else if (target is Visual visual) Styling.CssFlowProperties.InvalidateInheritedTextLayout(visual);
     }
 
     /// <summary>

@@ -11,6 +11,8 @@ namespace Jalium.UI.Controls.Ribbon;
 /// </summary>
 public sealed class RibbonButton : Button
 {
+    static RibbonButton() => DefaultStyleKeyProperty.OverrideMetadata(typeof(RibbonButton), new PropertyMetadata(typeof(RibbonButton)));
+
     /// <summary>
     /// Identifies the Label dependency property.
     /// </summary>
@@ -60,11 +62,15 @@ public sealed class RibbonButton : Button
 /// </summary>
 public class RibbonToggleButton : ToggleButton
 {
+    static RibbonToggleButton() => DefaultStyleKeyProperty.OverrideMetadata(typeof(RibbonToggleButton), new PropertyMetadata(typeof(RibbonToggleButton)));
+
     /// <summary>
     /// Gets or sets the label text.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    public string Label { get; set; } = string.Empty;
+    public static readonly DependencyProperty LabelProperty = DependencyProperty.Register(
+        nameof(Label), typeof(string), typeof(RibbonToggleButton), new PropertyMetadata(string.Empty));
+    public string Label { get => (string?)GetValue(LabelProperty) ?? string.Empty; set => SetValue(LabelProperty, value); }
 
     /// <summary>
     /// Gets or sets the small image source.
@@ -86,7 +92,7 @@ public class RibbonToggleButton : ToggleButton
 /// Represents a split button (button + dropdown) on a Ribbon.
 /// </summary>
 [Jalium.UI.Markup.ContentProperty("Items")]
-public class RibbonSplitButton : RibbonMenuButton, ICommandSource
+public partial class RibbonSplitButton : RibbonMenuButton, ICommandSource
 {
     private bool _commandBaseIsEnabled = true;
 
@@ -361,7 +367,7 @@ public class RibbonSplitButton : RibbonMenuButton, ICommandSource
 /// Represents a menu button on a Ribbon.
 /// </summary>
 [Jalium.UI.Markup.ContentProperty("Items")]
-public class RibbonMenuButton : Menu
+public partial class RibbonMenuButton : Menu
 {
     private static readonly DependencyPropertyKey HasGalleryPropertyKey =
         DependencyProperty.RegisterReadOnly(nameof(HasGallery), typeof(bool), typeof(RibbonMenuButton),
@@ -480,6 +486,7 @@ public class RibbonMenuButton : Menu
 
     public RibbonMenuButton()
     {
+        InitializeDropDownBehavior();
         IsMainMenu = false;
     }
 
@@ -713,11 +720,15 @@ public class RibbonMenuButton : Menu
 /// </summary>
 public sealed class RibbonTextBox : TextBox
 {
+    static RibbonTextBox() => DefaultStyleKeyProperty.OverrideMetadata(typeof(RibbonTextBox), new PropertyMetadata(typeof(RibbonTextBox)));
+
     /// <summary>
     /// Gets or sets the label text.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    public string Label { get; set; } = string.Empty;
+    public static readonly DependencyProperty LabelProperty = DependencyProperty.Register(
+        nameof(Label), typeof(string), typeof(RibbonTextBox), new PropertyMetadata(string.Empty));
+    public string Label { get => (string?)GetValue(LabelProperty) ?? string.Empty; set => SetValue(LabelProperty, value); }
 
     /// <summary>
     /// Gets or sets the small image source.
@@ -921,11 +932,15 @@ public class RibbonComboBox : RibbonMenuButton
 /// </summary>
 public sealed class RibbonCheckBox : CheckBox
 {
+    static RibbonCheckBox() => DefaultStyleKeyProperty.OverrideMetadata(typeof(RibbonCheckBox), new PropertyMetadata(typeof(RibbonCheckBox)));
+
     /// <summary>
     /// Gets or sets the label text.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    public string Label { get; set; } = string.Empty;
+    public static readonly DependencyProperty LabelProperty = DependencyProperty.Register(
+        nameof(Label), typeof(string), typeof(RibbonCheckBox), new PropertyMetadata(string.Empty));
+    public string Label { get => (string?)GetValue(LabelProperty) ?? string.Empty; set => SetValue(LabelProperty, value); }
 
     /// <summary>
     /// Gets or sets the small image source.
@@ -943,6 +958,8 @@ public sealed class RibbonCheckBox : CheckBox
 /// </summary>
 public class RibbonSeparator : Separator
 {
+    static RibbonSeparator() => DefaultStyleKeyProperty.OverrideMetadata(typeof(RibbonSeparator), new PropertyMetadata(typeof(RibbonSeparator)));
+
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
         => new Jalium.UI.Automation.Peers.GenericAutomationPeer(this, Jalium.UI.Automation.Peers.AutomationControlType.Separator);

@@ -1,3 +1,4 @@
+#include "jalium_text_glyph_ranges.h"
 #pragma once
 
 #include "jalium_backend.h"
@@ -26,7 +27,7 @@ class VulkanRenderTarget : public RenderTarget, public EllipticalClipProvider, p
     public EllipticalEffectProvider, public SpreadShadowProvider,
     public CssBoxShadowProvider, public CssShadowLayerProvider,
     public FilterDropShadowProvider, public CssTextShadowProvider, public ColorMatrixChainProvider,
-    public InsetShadowLayerProvider {
+    public InsetShadowLayerProvider, public AlphaMaskEffectProvider, public TextGlyphRangeRenderProvider, public TextParagraphRenderProvider, public TextParagraphSliceRenderProvider, public TextParagraphBrushRenderProvider {
 public:
     VulkanRenderTarget(
         VulkanBackend* backend,
@@ -128,6 +129,17 @@ public:
     void EndTransitionCapture(int slot) override;
     void DrawTransitionShader(float x, float y, float w, float h, float progress, int mode) override;
     void DrawCapturedTransition(int slot, float x, float y, float w, float h, float opacity) override;
+    JaliumResult SetTextGlyphRanges(const uint32_t* pairs, uint32_t count, int32_t mode) override;
+    void RenderParagraphLine(TextParagraph* paragraph, uint32_t line, float x, float y, float opacity) override;
+    JaliumResult RenderParagraphSlice(TextParagraph* paragraph, uint32_t line,
+        float x, float y, uint32_t start, uint32_t length, const float* rgba) override;
+    JaliumResult RenderParagraphBrush(TextParagraph* paragraph, uint32_t line,
+        float x, float y, uint32_t start, uint32_t length, Brush* brush) override;
+    JaliumResult BeginAlphaMaskCapture(float x, float y, float w, float h) override;
+    JaliumResult DrawAlphaMaskEffect(const uint8_t* pixels, uint32_t bytes,
+        uint32_t width, uint32_t height, uint32_t stride,
+        float maskX, float maskY, float maskW, float maskH,
+        float captureX, float captureY, float captureW, float captureH) override;
     void BeginEffectCapture(float x, float y, float w, float h) override;
     void EndEffectCapture() override;
     void DrawBlurEffect(float x, float y, float w, float h, float radius, float uvOffsetX = 0, float uvOffsetY = 0) override;
@@ -291,6 +303,7 @@ public:
     bool EnsureVelloEngine();
 
 private:
+    TextGlyphRanges textGlyphRanges_;
     JaliumResult DrawInnerShadowEllipticalCore(float x, float y, float w, float h,
         float blurRadius, float offsetX, float offsetY, float spreadRadius,
         float r, float g, float b, float a,
@@ -377,6 +390,8 @@ private:
         // Other native modes keep the shared linear/anisotropic frameSampler.
         // Pixelated reads texels directly in the fragment shader.
         bool useNearestSampler = false;
+        // Explicit Linear/LowQuality sampling excludes anisotropic filtering.
+        bool useLinearSampler = false;
         // CSS pixelated: nearest scaling to an integer multiple, then smooth.
         bool usePixelatedSampling = false;
         // Linux self-hosted ClearType staging. Pixels carry B/G/R channel
@@ -640,6 +655,7 @@ private:
         float w = 0.0f;
         float h = 0.0f;
         float opacity = 1.0f;
+        int scalingMode = 0;
     };
 
     // A shaped text run rendered through the dedicated text-glyph pipeline.
@@ -845,6 +861,12 @@ private:
         std::vector<GpuReplayCommand> savedReplayCommands;
         bool savedReplaySupported = false;
         bool savedReplayHasClear = false;
+        bool savedCpuRasterNeeded = true;
+        bool alphaMask = false;
+        int savedPendingShadowInsertIndex = -1;
+        int savedPendingShadowTailSize = -1;
+        std::vector<ClipState> savedClips;
+        std::vector<float> savedOpacities;
         float x = 0.0f;
         float y = 0.0f;
         float w = 0.0f;
@@ -1128,7 +1150,7 @@ private:
     bool TryRecordGpuInkLayerCommand(void* inkLayer, float x, float y, float opacity);
     bool TryRecordGpuExternalVideoCommand(
         VulkanImportedVideoSurface* surface,
-        float x, float y, float w, float h, float opacity);
+        float x, float y, float w, float h, float opacity, int scalingMode);
     // Readback cache for the foreign-but-healthy ink blit fallback: a layer
     // living on another window's VkDevice can't be GPU-sampled here, so its
     // pixels travel through host memory. Keyed by the layer's ContentVersion
@@ -1211,6 +1233,7 @@ private:
     std::vector<float> opacityStack_;
     std::vector<ClipState> clipStack_;
     std::vector<EffectCaptureState> effectCaptureStack_;
+    bool lastCaptureIsAlphaMask_ = false;
     // Retained layers (env-gated JALIUM_VK_RETAINED_LAYERS, DEFAULT ON). C7 gives this
     // the real GPU offscreen-texture model at parity with D3D12: on the GPU replay path
     // RealizeLayerBegin/End emit RetainedLayerCaptureBegin/End markers that redirect the

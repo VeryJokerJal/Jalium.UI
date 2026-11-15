@@ -368,7 +368,7 @@ public class Grid : Panel
         var structureChanged =
             !_hasSolvedLayout ||
             _solvedVersion != _layoutVersion ||
-            _solvedChildrenCount != Children.Count;
+            _solvedChildrenCount != CssLayoutChildren.Count;
         var widthChanged =
             !AreClose(_solvedConstraint.Width, finalSize.Width);
         var heightChanged =
@@ -541,7 +541,7 @@ public class Grid : Panel
 
         _solvedConstraint = finalSize;
         _solvedVersion = _layoutVersion;
-        _solvedChildrenCount = Children.Count;
+        _solvedChildrenCount = CssLayoutChildren.Count;
         _hasSolvedLayout = true;
     }
 
@@ -800,7 +800,7 @@ public class Grid : Panel
 
         _solvedConstraint = constraint;
         _solvedVersion = _layoutVersion;
-        _solvedChildrenCount = Children.Count;
+        _solvedChildrenCount = CssLayoutChildren.Count;
         _hasSolvedLayout = true;
 
         if (!calculateDesiredSize)
@@ -841,19 +841,19 @@ public class Grid : Panel
 
         _solvedConstraint = constraint;
         _solvedVersion = _layoutVersion;
-        _solvedChildrenCount = Children.Count;
+        _solvedChildrenCount = CssLayoutChildren.Count;
         _hasSolvedLayout = true;
         return new Size(width, height);
     }
 
     private void BuildCells(int rowCount, int columnCount)
     {
-        var childCount = Children.Count;
+        var childCount = CssLayoutChildren.Count;
         if (_cells is null || _cells.Length < childCount)
             _cells = new CellLayout[Math.Max(4, childCount)];
 
         _cellCount = 0;
-        foreach (var child in Children.EnumerateStruct())
+        foreach (var child in CssLayoutChildren.EnumerateStruct())
         {
             // position:absolute children are out of flow: no cell, no track contribution.
             if (IsCssAbsolute(child))

@@ -367,6 +367,13 @@ internal static class DynamicResourceBindingOperations
         if (target == null)
             return;
 
+        if (NonVisualHostSubscriptions.TryGetValue(target, out var hosted))
+        {
+            foreach (var entry in hosted.ToArray())
+                if (entry.Target.TryGetTarget(out var dependencyObject)) RefreshNonVisualDynamicResource(dependencyObject, new SubscriptionKey(entry.Subscription.Property, entry.Subscription.LayerSource));
+            hosted.RemoveAll(entry => !entry.Target.TryGetTarget(out _));
+        }
+
         if (!Subscriptions.TryGetValue(target, out var subscriptions) || subscriptions.Count == 0)
             return;
 
@@ -452,10 +459,10 @@ internal static class DynamicResourceBindingOperations
         {
             foreach (var subscription in entry.Value.Values.ToArray())
             {
-                if (unloadedOnly && subscription.Host.IsLoaded)
+                if (unloadedOnly && subscription.Host.TryGetTarget(out var host) && host.IsLoaded)
                     continue;
 
-                RefreshNonVisualDynamicResource(entry.Key, subscription.Property);
+                RefreshNonVisualDynamicResource(entry.Key, new SubscriptionKey(subscription.Property, subscription.LayerSource));
             }
         }
     }
@@ -507,13 +514,13 @@ internal static class DynamicResourceBindingOperations
                     continue;
                 }
 
-                RefreshNonVisualDynamicResource(entry.Key, subscription.Property);
+                RefreshNonVisualDynamicResource(entry.Key, new SubscriptionKey(subscription.Property, subscription.LayerSource));
             }
         }
     }
 
     private static bool HasMatchingNonVisualSubscription(
-        Dictionary<DependencyProperty, NonVisualDynamicResourceSubscription> subscriptions,
+        Dictionary<SubscriptionKey, NonVisualDynamicResourceSubscription> subscriptions,
         IReadOnlySet<object> changedKeys)
     {
         foreach (var subscription in subscriptions.Values)
@@ -607,13 +614,14 @@ internal static class DynamicResourceBindingOperations
         {
             foreach (var subscription in entry.Value.Values.ToArray())
             {
-                subscription.Host.ResourcesChanged -= subscription.Handler;
+                if (subscription.Host.TryGetTarget(out var host)) host.ResourcesChanged -= subscription.Handler;
             }
 
             entry.Value.Clear();
         }
 
         NonVisualSubscriptions.Clear();
+        NonVisualHostSubscriptions.Clear();
     }
 
     private static DynamicResourceTargetRegistration EnsureTargetRegistered(FrameworkElement target)
@@ -913,12 +921,13 @@ internal static class DynamicResourceBindingOperations
         return source switch
         {
             null => 0,
-            DependencyObject.LayerValueSource.ParentTemplateTrigger => 1,
-            DependencyObject.LayerValueSource.ParentTemplate => 2,
-            DependencyObject.LayerValueSource.StyleTrigger => 3,
-            DependencyObject.LayerValueSource.TemplateTrigger => 4,
-            DependencyObject.LayerValueSource.StyleSetter => 5,
-            _ => 6
+            DependencyObject.LayerValueSource.VisualState => 1,
+            DependencyObject.LayerValueSource.ParentTemplateTrigger => 2,
+            DependencyObject.LayerValueSource.ParentTemplate => 3,
+            DependencyObject.LayerValueSource.StyleTrigger => 4,
+            DependencyObject.LayerValueSource.TemplateTrigger => 5,
+            DependencyObject.LayerValueSource.StyleSetter => 6,
+            _ => 7
         };
     }
 
@@ -937,81 +946,110 @@ internal static class DynamicResourceBindingOperations
 
     private sealed class NonVisualDynamicResourceSubscription
     {
-        public required FrameworkElement Host { get; init; }
-        public required DependencyObject Target { get; init; }
+        public required WeakReference<FrameworkElement> Host { get; init; }
         public required DependencyProperty Property { get; init; }
         public required object ResourceKey { get; init; }
         public required EventHandler Handler { get; init; }
+        public DependencyObject.LayerValueSource? LayerSource { get; set; }
     }
 
-    private static readonly ConditionalWeakTable<DependencyObject, Dictionary<DependencyProperty, NonVisualDynamicResourceSubscription>> NonVisualSubscriptions = new();
+    private static readonly ConditionalWeakTable<DependencyObject, Dictionary<SubscriptionKey, NonVisualDynamicResourceSubscription>> NonVisualSubscriptions = new();
+    private static readonly ConditionalWeakTable<FrameworkElement, List<(WeakReference<DependencyObject> Target, NonVisualDynamicResourceSubscription Subscription)>> NonVisualHostSubscriptions = new();
 
-    /// <summary>
-    /// Sets a dynamic resource on a non-FrameworkElement DependencyObject by using
-    /// a host FrameworkElement for resource lookup, similar to WPF's Freezable
-    /// inheritance context.
-    /// </summary>
-    internal static void SetDynamicResourceForNonVisual(
-        FrameworkElement host,
-        DependencyObject target,
-        DependencyProperty property,
-        object resourceKey)
+    internal static void SetDynamicResource(FrameworkElement host, DependencyObject target,
+        DependencyProperty property, object resourceKey, DependencyObject.LayerValueSource source)
+    {
+        if (target is FrameworkElement element) SetDynamicResource(element, property, resourceKey, source);
+        else SetDynamicResourceForNonVisual(host, target, property, resourceKey, source);
+    }
+
+    internal static void ClearDynamicResource(DependencyObject target, DependencyProperty property,
+        DependencyObject.LayerValueSource source)
+    {
+        if (target is FrameworkElement element) ClearDynamicResource(element, property, source);
+        else ClearNonVisualDynamicResource(target, new SubscriptionKey(property, source));
+    }
+
+    internal static void PromoteNonVisualResourcesToLayer(DependencyObject target, DependencyObject.LayerValueSource source)
+    {
+        if (target is FrameworkElement element) { PromoteDynamicResourcesToLayer(element, source); return; }
+        if (!NonVisualSubscriptions.TryGetValue(target, out var subscriptions)) return;
+        foreach (var entry in subscriptions.Where(pair => pair.Key.LayerSource == null).ToArray())
+        {
+            var nextKey = new SubscriptionKey(entry.Key.Property, source);
+            ClearNonVisualDynamicResource(target, nextKey);
+            subscriptions.Remove(entry.Key);
+            entry.Value.LayerSource = source;
+            subscriptions[nextKey] = entry.Value;
+        }
+    }
+
+    // Keep the original signature for already compiled markup callers.
+    internal static void SetDynamicResourceForNonVisual(FrameworkElement host, DependencyObject target,
+        DependencyProperty property, object resourceKey) =>
+        SetDynamicResourceForNonVisual(host, target, property, resourceKey, null);
+
+    private static void SetDynamicResourceForNonVisual(FrameworkElement host, DependencyObject target,
+        DependencyProperty property, object resourceKey, DependencyObject.LayerValueSource? source)
     {
         ArgumentNullException.ThrowIfNull(host);
         ArgumentNullException.ThrowIfNull(target);
         ArgumentNullException.ThrowIfNull(property);
         ArgumentNullException.ThrowIfNull(resourceKey);
-
         target.VerifyResourceReferenceAccess(property);
-        target.ClearBinding(property);
-        ClearDynamicResourceForNonVisual(target, property);
-
+        if (!source.HasValue) target.ClearBinding(property);
+        var key = new SubscriptionKey(property, source);
+        ClearNonVisualDynamicResource(target, key);
         var subscriptions = NonVisualSubscriptions.GetOrCreateValue(target);
-        EventHandler handler = (_, _) => RefreshNonVisualDynamicResource(target, property);
-        subscriptions[property] = new NonVisualDynamicResourceSubscription
+        var weakTarget = new WeakReference<DependencyObject>(target);
+        NonVisualDynamicResourceSubscription? subscription = null;
+        EventHandler? handler = null;
+        handler = (sender, _) =>
         {
-            Host = host,
-            Target = target,
-            Property = property,
-            ResourceKey = resourceKey,
-            Handler = handler,
+            if (weakTarget.TryGetTarget(out var currentTarget) && subscription != null)
+                RefreshNonVisualDynamicResource(currentTarget, new SubscriptionKey(property, subscription.LayerSource));
+            else if (sender is FrameworkElement currentHost) currentHost.ResourcesChanged -= handler;
         };
-
+        subscription = new NonVisualDynamicResourceSubscription
+        {
+            Host = new WeakReference<FrameworkElement>(host), Property = property,
+            ResourceKey = resourceKey, Handler = handler, LayerSource = source,
+        };
+        subscriptions[key] = subscription;
         host.ResourcesChanged += handler;
-        RefreshNonVisualDynamicResource(target, property);
+        NonVisualHostSubscriptions.GetOrCreateValue(host).Add((weakTarget, subscription));
+        RefreshNonVisualDynamicResource(target, key);
     }
 
-    internal static void ClearDynamicResourceForNonVisual(DependencyObject target, DependencyProperty property)
+    internal static void ClearDynamicResourceForNonVisual(DependencyObject target, DependencyProperty property) =>
+        ClearNonVisualDynamicResource(target, new SubscriptionKey(property, null));
+
+    private static void ClearNonVisualDynamicResource(DependencyObject target, SubscriptionKey key)
     {
-        if (!NonVisualSubscriptions.TryGetValue(target, out var subscriptions))
-            return;
-
-        if (!subscriptions.TryGetValue(property, out var subscription))
-            return;
-
-        subscription.Host.ResourcesChanged -= subscription.Handler;
-        subscriptions.Remove(property);
+        if (!NonVisualSubscriptions.TryGetValue(target, out var subscriptions) || !subscriptions.Remove(key, out var subscription)) return;
+        if (subscription.Host.TryGetTarget(out var host))
+        {
+            host.ResourcesChanged -= subscription.Handler;
+            if (NonVisualHostSubscriptions.TryGetValue(host, out var hosted))
+                hosted.RemoveAll(entry => !entry.Target.TryGetTarget(out var currentTarget) ||
+                    (ReferenceEquals(currentTarget, target) && ReferenceEquals(entry.Subscription, subscription)));
+        }
     }
 
-    private static void RefreshNonVisualDynamicResource(DependencyObject target, DependencyProperty property)
+    private static void RefreshNonVisualDynamicResource(DependencyObject target, SubscriptionKey key)
     {
-        if (!NonVisualSubscriptions.TryGetValue(target, out var subscriptions))
-            return;
-
-        if (!subscriptions.TryGetValue(property, out var subscription))
-            return;
-
-        var resolved = ResourceLookup.FindResource(subscription.Host, subscription.ResourceKey);
-        if (!subscriptions.TryGetValue(property, out var currentSubscription) ||
-            !ReferenceEquals(currentSubscription, subscription)) return;
-        if (resolved != null && IsValidResourceValue(property, resolved))
+        if (!NonVisualSubscriptions.TryGetValue(target, out var subscriptions) || !subscriptions.TryGetValue(key, out var subscription)) return;
+        if (!subscription.Host.TryGetTarget(out var host)) { ClearNonVisualDynamicResource(target, key); return; }
+        var resolved = ResourceLookup.FindResource(host, subscription.ResourceKey);
+        if (!subscriptions.TryGetValue(key, out var currentSubscription) || !ReferenceEquals(currentSubscription, subscription)) return;
+        bool valid = resolved != null && IsValidResourceValue(key.Property, resolved);
+        if (subscription.LayerSource is { } source)
         {
-            target.SetValueFromResource(property, resolved);
+            if (valid) target.SetLayerValue(key.Property, resolved, source, allowAutoTransition: false);
+            else target.ClearLayerValue(key.Property, source, allowAutoTransition: false);
         }
-        else if (target.HasLocalValue(property))
-        {
-            target.ClearValueFromResource(property);
-        }
+        else if (valid) target.SetValueFromResource(key.Property, resolved);
+        else if (target.HasLocalValue(key.Property)) target.ClearValueFromResource(key.Property);
     }
 
     private static bool IsValidResourceValue(DependencyProperty property, object value)

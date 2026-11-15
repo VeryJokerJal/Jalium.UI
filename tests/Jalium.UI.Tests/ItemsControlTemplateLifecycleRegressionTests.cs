@@ -21,6 +21,19 @@ namespace Jalium.UI.Tests;
 /// </summary>
 public sealed class ItemsControlTemplateLifecycleRegressionTests
 {
+    public ItemsControlTemplateLifecycleRegressionTests()
+    {
+        // These contracts exercise explicit/direct item hosts. Another xUnit
+        // collection may have registered deferred native themes on its worker.
+        // Keep those thread-owned resources out of this detached fixture.
+        var manager = typeof(Jalium.UI.Controls.Themes.ThemeManager);
+        manager.GetField("_controlThemeDictionaries", System.Reflection.BindingFlags.Static |
+            System.Reflection.BindingFlags.NonPublic)!.SetValue(null, Array.Empty<ResourceDictionary>());
+        typeof(Application).GetField("_current", System.Reflection.BindingFlags.Static |
+            System.Reflection.BindingFlags.NonPublic)!.SetValue(null, null);
+        Jalium.UI.Controls.Themes.ThemeManager.Reset();
+    }
+
     private static readonly Size ViewportSize = new(800, 600);
     private static readonly Rect ViewportRect = new(0, 0, 800, 600);
 
@@ -191,7 +204,11 @@ public sealed class ItemsControlTemplateLifecycleThemedRegressionTests
                 listBox.Items.Add($"item {i}");
             }
 
-            var window = new Window { Content = new DockPanel { Children = { listBox } } };
+            // The themed virtualizing panel needs a displayed logical viewport to realize rows.
+            // An unshown macOS Window is Collapsed and deliberately does not measure its content.
+            var window = new DisplayedTestWindow { Content = new DockPanel { Children = { listBox } } };
+            Assert.True(window.IsVisible);
+            Assert.True(listBox.IsVisible);
             RunLayout(window);
 
             var themedPanel = listBox.ItemsHostInternal;

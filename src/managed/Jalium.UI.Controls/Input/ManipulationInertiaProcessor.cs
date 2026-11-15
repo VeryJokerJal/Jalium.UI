@@ -5,9 +5,9 @@ namespace Jalium.UI.Controls;
 
 /// <summary>
 /// Drives manipulation inertia after all contacts have lifted.
-/// Each tick decays the velocity exponentially, integrates a new delta and
-/// raises a paired ManipulationDelta (IsInertial = true). When all three
-/// velocity components fall below threshold (or the target's handler cancels),
+/// Each tick integrates the selected stopping curve and
+/// raises a paired ManipulationDelta (IsInertial = true). When all stopping
+/// curves finish (or the target's handler cancels),
 /// raises a paired ManipulationCompleted (IsInertial = true) and stops.
 ///
 /// Runs on the UI thread via <see cref="DispatcherTimer"/>; no worker thread,
@@ -21,12 +21,8 @@ internal sealed class ManipulationInertiaProcessor
 
     // Per-axis "considered stopped" thresholds.
     private const double LinearStopDipsPerMs = 0.005;       // ~5 DIP/sec
-    private const double AngularStopDegPerMs = 0.018;       // ~1 deg/sec
+    private const double AngularStopDegPerMs = 0.018;       // ~18 deg/sec
     private const double ExpansionStopDipsPerMs = 0.005;
-
-    // Exponential-decay rate when caller did not specify a DesiredDeceleration.
-    // k = 0.002/ms ≈ velocity halves every ~350 ms.
-    private const double DefaultDecayPerMs = 0.002;
 
     private readonly UIElement _target;
     private readonly Point _origin;
@@ -40,9 +36,13 @@ internal sealed class ManipulationInertiaProcessor
     private double _angularVelocity;       // deg / ms
     private Vector _expansionVelocity;     // DIP / ms (x,y)
 
-    private double _kLinear;
-    private double _kAngular;
-    private double _kExpansion;
+    private InertiaMotion _translation;
+    private InertiaMotion _rotation;
+    private InertiaMotion _expansionX;
+    private InertiaMotion _expansionY;
+    private Vector _translationDirection;
+    private double _radiusX;
+    private double _radiusY;
 
     private ManipulationDelta _cumulative;
     private long _lastTickTicks;
@@ -91,7 +91,7 @@ internal sealed class ManipulationInertiaProcessor
 
     /// <summary>
     /// Begins integrating velocity. Returns false (and raises nothing) if the
-    /// initial velocity is already below the stop threshold.
+    /// initial velocity is zero or below the default curve's stop threshold.
     /// </summary>
     public bool Start(
         Vector linearVelocity,
@@ -100,7 +100,15 @@ internal sealed class ManipulationInertiaProcessor
         InertiaTranslationBehavior? translationBehavior,
         InertiaRotationBehavior? rotationBehavior,
         InertiaExpansionBehavior? expansionBehavior)
+        => Start(linearVelocity, angularVelocity, expansionVelocity, translationBehavior,
+            rotationBehavior, expansionBehavior, ManipulationModes.All, 1);
+
+    internal bool Start(
+        Vector linearVelocity, double angularVelocity, Vector expansionVelocity,
+        InertiaTranslationBehavior? translationBehavior, InertiaRotationBehavior? rotationBehavior,
+        InertiaExpansionBehavior? expansionBehavior, ManipulationModes modes, double initialExpansionRadius = 1)
     {
+        Cancel();
         // Honour caller-provided initial velocity overrides (WPF behavior).
         // Note: `behavior?.InitialVelocity != default` would target-type `default`
         // to Vector? (null), collapsing the test to a mere null check and never
@@ -113,25 +121,44 @@ internal sealed class ManipulationInertiaProcessor
         if (expansionBehavior?.IsInitialVelocitySet == true)
             expansionVelocity = expansionBehavior.InitialVelocity;
 
-        _linearVelocity = linearVelocity;
-        _angularVelocity = angularVelocity;
-        _expansionVelocity = expansionVelocity;
+        if (!Finite(linearVelocity) || !double.IsFinite(linearVelocity.Length))
+            throw new ArgumentOutOfRangeException(nameof(linearVelocity));
+        if (!double.IsFinite(angularVelocity)) throw new ArgumentOutOfRangeException(nameof(angularVelocity));
+        if (!Finite(expansionVelocity) || !double.IsFinite(expansionVelocity.Length))
+            throw new ArgumentOutOfRangeException(nameof(expansionVelocity));
+        if ((modes & ManipulationModes.TranslateX) == 0) linearVelocity = new(0, linearVelocity.Y);
+        if ((modes & ManipulationModes.TranslateY) == 0) linearVelocity = new(linearVelocity.X, 0);
+        if ((modes & ManipulationModes.Rotate) == 0) angularVelocity = 0;
+        if ((modes & ManipulationModes.Scale) == 0) expansionVelocity = Vector.Zero;
+        double radius = expansionBehavior?.IsInitialRadiusSet == true ? expansionBehavior.InitialRadius : initialExpansionRadius;
+        if (!double.IsFinite(radius) || radius < 1) throw new ArgumentOutOfRangeException(nameof(initialExpansionRadius));
+        _radiusX = _radiusY = radius;
+        if (radius == 1)
+            expansionVelocity = new(Math.Max(0, expansionVelocity.X), Math.Max(0, expansionVelocity.Y));
 
-        bool linearStopped = linearVelocity.Length < LinearStopDipsPerMs;
-        bool angularStopped = Math.Abs(angularVelocity) < AngularStopDegPerMs;
-        bool expansionStopped = expansionVelocity.Length < ExpansionStopDipsPerMs;
-        if (linearStopped && angularStopped && expansionStopped)
-            return false;
-
-        _kLinear = ResolveDecay(
+        double speed = linearVelocity.Length;
+        _translationDirection = speed > 0 ? MultiplyVector(linearVelocity, 1 / speed) : Vector.Zero;
+        _translation = InertiaMotion.Create(speed, LinearStopDipsPerMs,
             translationBehavior?.IsDesiredDecelerationSet == true ? translationBehavior.DesiredDeceleration : null,
-            linearVelocity.Length);
-        _kAngular = ResolveDecay(
+            translationBehavior?.IsDesiredDisplacementSet == true ? translationBehavior.DesiredDisplacement : null);
+        _rotation = InertiaMotion.Create(angularVelocity, AngularStopDegPerMs,
             rotationBehavior?.IsDesiredDecelerationSet == true ? rotationBehavior.DesiredDeceleration : null,
-            Math.Abs(angularVelocity));
-        _kExpansion = ResolveDecay(
+            rotationBehavior?.IsDesiredRotationSet == true ? rotationBehavior.DesiredRotation : null);
+        // Keep the default expansion's vector-magnitude threshold and common
+        // stopping time, including small diagonal movement.
+        double expansionSpeed = expansionVelocity.Length;
+        double expansionThresholdX = expansionSpeed > 0
+            ? Math.Abs(expansionVelocity.X) / expansionSpeed * ExpansionStopDipsPerMs : ExpansionStopDipsPerMs;
+        double expansionThresholdY = expansionSpeed > 0
+            ? Math.Abs(expansionVelocity.Y) / expansionSpeed * ExpansionStopDipsPerMs : ExpansionStopDipsPerMs;
+        _expansionX = InertiaMotion.Create(expansionVelocity.X, expansionThresholdX,
             expansionBehavior?.IsDesiredDecelerationSet == true ? expansionBehavior.DesiredDeceleration : null,
-            expansionVelocity.Length);
+            expansionBehavior?.IsDesiredExpansionSet == true ? expansionBehavior.DesiredExpansion.X : null);
+        _expansionY = InertiaMotion.Create(expansionVelocity.Y, expansionThresholdY,
+            expansionBehavior?.IsDesiredDecelerationSet == true ? expansionBehavior.DesiredDeceleration : null,
+            expansionBehavior?.IsDesiredExpansionSet == true ? expansionBehavior.DesiredExpansion.Y : null);
+        UpdateVelocities();
+        if (MotionComplete) return false;
 
         _lastTickTicks = Environment.TickCount64;
         _running = true;
@@ -178,28 +205,33 @@ internal sealed class ManipulationInertiaProcessor
         double dt = Math.Max(1.0, nowTicks - _lastTickTicks);
         _lastTickTicks = nowTicks;
 
-        // Decay each velocity component independently.
-        _linearVelocity = MultiplyVector(_linearVelocity, Math.Exp(-_kLinear * dt));
-        _angularVelocity *= Math.Exp(-_kAngular * dt);
-        _expansionVelocity = MultiplyVector(_expansionVelocity, Math.Exp(-_kExpansion * dt));
+        Vector deltaTranslation = MultiplyVector(_translationDirection, _translation.Advance(dt));
+        double deltaRotation = _rotation.Advance(dt);
+        double oldRadiusX = _radiusX, oldRadiusY = _radiusY;
+        double expansionX = _expansionX.Advance(dt), expansionY = _expansionY.Advance(dt);
+        _radiusX = Math.Max(1, oldRadiusX + expansionX);
+        _radiusY = Math.Max(1, oldRadiusY + expansionY);
+        if (_radiusX == 1 && expansionX < 0) _expansionX.Stop();
+        if (_radiusY == 1 && expansionY < 0) _expansionY.Stop();
+        Vector deltaExpansion = new(_radiusX - oldRadiusX, _radiusY - oldRadiusY);
+        Vector deltaScale = new(_radiusX / oldRadiusX, _radiusY / oldRadiusY);
+        UpdateVelocities();
 
-        // Integrate displacement for this tick.
-        Vector deltaTranslation = MultiplyVector(_linearVelocity, dt);
-        double deltaRotation = _angularVelocity * dt;
-        Vector deltaExpansion = MultiplyVector(_expansionVelocity, dt);
-
-        // Accumulate. Scale stays unitless multiplicative; Expansion carries the DIP delta.
+        // Expansion carries radius displacement in DIPs; scale is the matching
+        // multiplicative change relative to the radius before this frame.
         Vector newCumTranslation = _cumulative.Translation + deltaTranslation;
         double newCumRotation = _cumulative.Rotation + deltaRotation;
         Vector newCumExpansion = _cumulative.Expansion + deltaExpansion;
-        Vector newCumScale = _cumulative.Scale; // expansion doesn't multiplicatively change scale
+        Vector newCumScale = new(_cumulative.Scale.X * deltaScale.X, _cumulative.Scale.Y * deltaScale.Y);
+        if (!Finite(newCumTranslation) || !double.IsFinite(newCumRotation) || !Finite(newCumExpansion) || !Finite(newCumScale))
+            throw new InvalidOperationException("The inertia operation exceeded the finite coordinate range.");
 
         ManipulationDelta deltaThisTick = new()
         {
             Translation = deltaTranslation,
             Rotation = deltaRotation,
             Expansion = deltaExpansion,
-            Scale = new Vector(1, 1)
+            Scale = deltaScale
         };
 
         _cumulative = new ManipulationDelta
@@ -220,11 +252,8 @@ internal sealed class ManipulationInertiaProcessor
         bool handlerHaltsInertia = RaiseDeltaTick(deltaThisTick, velocities);
         if (!_running || !IsCurrent) { Cancel(); _completion?.Invoke(_cumulative, CurrentVelocities); return; }
 
-        // Stop conditions: handler asked to stop, or all three axes below their threshold.
-        bool linearStopped = _linearVelocity.Length < LinearStopDipsPerMs;
-        bool angularStopped = Math.Abs(_angularVelocity) < AngularStopDegPerMs;
-        bool expansionStopped = _expansionVelocity.Length < ExpansionStopDipsPerMs;
-        if (handlerHaltsInertia || (linearStopped && angularStopped && expansionStopped))
+        // Explicit distances finish at their endpoint, including sub-threshold motion.
+        if (handlerHaltsInertia || MotionComplete)
         {
             Cancel();
             if (_completion is { } completion) completion(_cumulative, CurrentVelocities);
@@ -330,17 +359,17 @@ internal sealed class ManipulationInertiaProcessor
         }
     }
 
-    private static double ResolveDecay(double? desiredDeceleration, double initialSpeed)
+    private bool MotionComplete => _translation.IsComplete && _rotation.IsComplete &&
+        _expansionX.IsComplete && _expansionY.IsComplete;
+
+    private void UpdateVelocities()
     {
-        if (desiredDeceleration is double dec && !double.IsNaN(dec) && dec > 0 && initialSpeed > 0)
-        {
-            // Convert "DIP per ms^2" (linear deceleration) into the equivalent
-            // exponential rate evaluated at t=0: dv/dt = -k * v0 ⇒ k = a/|v0|.
-            // Higher initial velocities decelerate proportionally faster.
-            return dec / initialSpeed;
-        }
-        return DefaultDecayPerMs;
+        _linearVelocity = MultiplyVector(_translationDirection, _translation.Velocity);
+        _angularVelocity = _rotation.Velocity;
+        _expansionVelocity = new(_expansionX.Velocity, _expansionY.Velocity);
     }
+
+    private static bool Finite(Vector value) => double.IsFinite(value.X) && double.IsFinite(value.Y);
 
     private static Vector MultiplyVector(Vector v, double s) => new(v.X * s, v.Y * s);
 

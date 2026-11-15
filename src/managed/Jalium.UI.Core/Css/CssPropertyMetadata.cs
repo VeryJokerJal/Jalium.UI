@@ -8,6 +8,7 @@ internal static class CssPropertyMetadata
     private static readonly Dictionary<string, string[]> s_shorthands = new(StringComparer.Ordinal)
     {
         ["margin"] = ["margin-top", "margin-right", "margin-bottom", "margin-left"],
+        ["list-style"] = ["list-style-type", "list-style-position", "list-style-image"],
         ["padding"] = ["padding-top", "padding-right", "padding-bottom", "padding-left"],
         ["margin-inline"] = ["margin-inline-start", "margin-inline-end"],
         ["margin-block"] = ["margin-block-start", "margin-block-end"],
@@ -25,7 +26,9 @@ internal static class CssPropertyMetadata
         ["border-radius"] = ["border-top-left-radius", "border-top-right-radius", "border-bottom-right-radius", "border-bottom-left-radius"],
         ["border"] = ["border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
             "border-top-color", "border-right-color", "border-bottom-color", "border-left-color",
-            "border-top-style", "border-right-style", "border-bottom-style", "border-left-style"],
+            "border-top-style", "border-right-style", "border-bottom-style", "border-left-style",
+            "border-image-source", "border-image-slice", "border-image-width", "border-image-outset", "border-image-repeat"],
+        ["border-image"] = ["border-image-source", "border-image-slice", "border-image-width", "border-image-outset", "border-image-repeat"],
         ["border-top"] = ["border-top-width", "border-top-color", "border-top-style"],
         ["border-right"] = ["border-right-width", "border-right-color", "border-right-style"],
         ["border-bottom"] = ["border-bottom-width", "border-bottom-color", "border-bottom-style"],
@@ -40,13 +43,19 @@ internal static class CssPropertyMetadata
             "border-block-end-width", "border-block-end-color", "border-block-end-style"],
         ["background"] = ["background-color", "background-image", "background-size",
             "background-position", "background-repeat", "background-origin", "background-clip"],
+        ["mask"] = [.. CssCoreProperties.MaskNames, .. CssCoreProperties.MaskBorderNames],
+        ["mask-border"] = CssCoreProperties.MaskBorderNames,
         ["overflow"] = ["overflow-x", "overflow-y"],
-        ["font"] = ["font-style", "font-weight", "font-stretch", "font-size", "line-height", "font-family"],
+        ["font-variant"] = CssFontVariant.Longhands,
+        ["font"] = ["font-style", "font-weight", "font-stretch", "font-size", "line-height", "font-family", "font-variant-caps", "font-variant-position", "font-variant-emoji", "font-variant-numeric", "font-variant-east-asian", "font-variant-alternates", "font-feature-settings", "font-variation-settings", "font-optical-sizing", "font-size-adjust", "font-kerning", "font-variant-ligatures"],
         ["text-align"] = ["text-align-all", "text-align-last"],
         ["white-space"] = ["white-space-collapse", "text-wrap-mode", "white-space-trim"],
         ["text-wrap"] = ["text-wrap-mode", "text-wrap-style"],
+        ["line-clamp"] = ["max-lines", "block-ellipsis", "continue"],
+        ["-webkit-line-clamp"] = ["max-lines", "block-ellipsis", "continue"],
         ["text-decoration"] = ["text-decoration-line", "text-decoration-style",
             "text-decoration-color", "text-decoration-thickness"],
+        ["text-emphasis"] = ["text-emphasis-style", "text-emphasis-color"],
         ["caret"] = ["caret-color", "caret-animation", "caret-shape"],
         ["outline"] = ["outline-width", "outline-style", "outline-color"],
         ["inset"] = ["top", "right", "bottom", "left"],
@@ -66,7 +75,25 @@ internal static class CssPropertyMetadata
         ["place-self"] = ["align-self", "justify-self"],
         ["place-content"] = ["align-content", "justify-content"],
         ["gap"] = ["row-gap", "column-gap"],
+        ["columns"] = ["column-width", "column-count"],
+        ["column-rule"] = ["column-rule-width", "column-rule-style", "column-rule-color"],
         ["container"] = ["container-name", "container-type"],
+        ["page-break-before"] = ["break-before"],
+        ["page-break-after"] = ["break-after"],
+        ["page-break-inside"] = ["break-inside"],
+        ["position-try"] = ["position-try-order", "position-try-fallbacks"],
+        ["scroll-timeline"] = ["scroll-timeline-name", "scroll-timeline-axis"],
+        ["view-timeline"] = ["view-timeline-name", "view-timeline-axis", "view-timeline-inset"],
+        ["animation-range"] = ["animation-range-start", "animation-range-end"],
+        ["offset"] = ["offset-position", "offset-path", "offset-distance", "offset-rotate", "offset-anchor"],
+        ["scroll-margin"] = ["scroll-margin-top", "scroll-margin-right", "scroll-margin-bottom", "scroll-margin-left"],
+        ["scroll-margin-inline"] = ["scroll-margin-inline-start", "scroll-margin-inline-end"],
+        ["scroll-margin-block"] = ["scroll-margin-block-start", "scroll-margin-block-end"],
+        ["scroll-padding"] = ["scroll-padding-top", "scroll-padding-right", "scroll-padding-bottom", "scroll-padding-left"],
+        ["scroll-padding-inline"] = ["scroll-padding-inline-start", "scroll-padding-inline-end"],
+        ["scroll-padding-block"] = ["scroll-padding-block-start", "scroll-padding-block-end"],
+        ["overscroll-behavior"] = ["overscroll-behavior-x", "overscroll-behavior-y"],
+        ["contain-intrinsic-size"] = ["contain-intrinsic-width", "contain-intrinsic-height"],
     };
 
     private static readonly Dictionary<string, string> s_initial = new(StringComparer.Ordinal)
@@ -95,14 +122,32 @@ internal static class CssPropertyMetadata
         ["max-inline-size"] = "none", ["max-block-size"] = "none",
         ["width"] = "auto", ["height"] = "auto", ["min-width"] = "auto", ["min-height"] = "auto",
         ["max-width"] = "none", ["max-height"] = "none", ["opacity"] = "1", ["visibility"] = "visible",
+        ["interpolate-size"] = "numeric-only",
         ["display"] = "inline", ["position"] = "static", ["box-sizing"] = "content-box", ["aspect-ratio"] = "auto",
+        ["column-count"] = "auto", ["column-width"] = "auto", ["column-fill"] = "balance", ["column-span"] = "none",
+        ["column-rule-width"] = "medium", ["column-rule-style"] = "none", ["column-rule-color"] = "currentcolor",
+        ["content"] = "normal",
+        ["break-before"] = "auto", ["break-after"] = "auto", ["break-inside"] = "auto",
+        ["orphans"] = "2", ["widows"] = "2",
+        ["page"] = "auto", ["size"] = "auto", ["page-orientation"] = "upright",
+        ["table-layout"] = "auto", ["border-spacing"] = "0px 0px", ["empty-cells"] = "show", ["caption-side"] = "top", ["border-collapse"] = "separate",
+        ["counter-reset"] = "none", ["counter-increment"] = "none", ["counter-set"] = "none", ["quotes"] = "auto",
+        ["list-style-type"] = "disc", ["list-style-position"] = "outside", ["list-style-image"] = "none",
         ["color"] = "black", ["background-color"] = "transparent", ["background-image"] = "none",
         ["background-size"] = "auto", ["background-position"] = "0% 0%",
         ["background-repeat"] = "repeat", ["background-origin"] = "padding-box",
         ["background-clip"] = "border-box",
+        ["mask-image"] = "none", ["mask-mode"] = "match-source", ["mask-repeat"] = "repeat",
+        ["mask-position"] = "0% 0%", ["mask-origin"] = "border-box", ["mask-clip"] = "border-box",
+        ["mask-size"] = "auto", ["mask-composite"] = "add",
+        ["mask-type"] = "luminance",
+        ["mask-border-source"] = "none", ["mask-border-slice"] = "0", ["mask-border-width"] = "auto",
+        ["mask-border-outset"] = "0", ["mask-border-repeat"] = "stretch", ["mask-border-mode"] = "alpha",
+        ["border-image-source"] = "none", ["border-image-slice"] = "100%", ["border-image-width"] = "1",
+        ["border-image-outset"] = "0", ["border-image-repeat"] = "stretch",
         ["object-fit"] = "fill", ["object-position"] = "50% 50%", ["image-rendering"] = "auto",
         ["font-family"] = "sans-serif", ["font-size"] = "medium", ["font-weight"] = "normal",
-        ["font-style"] = "normal", ["font-stretch"] = "normal", ["line-height"] = "normal",
+        ["font-synthesis-small-caps"] = "auto", ["font-style"] = "normal", ["font-stretch"] = "normal", ["line-height"] = "normal", ["font-variant-caps"] = "normal", ["font-variant-position"] = "normal", ["font-variant-emoji"] = "normal", ["font-synthesis-position"] = "auto", ["font-variant-numeric"] = "normal", ["font-variant-east-asian"] = "normal", ["font-variant-alternates"] = "normal", ["font-feature-settings"] = "normal", ["font-variation-settings"] = "normal", ["font-optical-sizing"] = "auto", ["font-size-adjust"] = "none", ["font-kerning"] = "auto", ["font-variant-ligatures"] = "normal",
         ["math-depth"] = "0", ["math-style"] = "normal",
         ["text-align-all"] = "start", ["text-align-last"] = "auto", ["text-justify"] = "auto",
         ["text-group-align"] = "none",
@@ -120,6 +165,9 @@ internal static class CssPropertyMetadata
         ["caret-shape"] = "auto",
         ["white-space-collapse"] = "collapse", ["text-wrap-mode"] = "wrap",
         ["text-wrap-style"] = "auto",
+        ["line-clamp"] = "none", ["-webkit-line-clamp"] = "none",
+        ["max-lines"] = "auto", ["block-ellipsis"] = "no-ellipsis", ["continue"] = "normal",
+        ["-webkit-box-orient"] = "horizontal",
         ["white-space-trim"] = "none",
         ["text-transform"] = "none", ["text-overflow"] = "clip",
         ["text-decoration"] = "none", ["text-decoration-line"] = "none",
@@ -131,8 +179,12 @@ internal static class CssPropertyMetadata
         ["text-decoration-inset"] = "0",
         ["box-decoration-break"] = "slice",
         ["text-shadow"] = "none",
+        ["text-emphasis"] = "none", ["text-emphasis-style"] = "none",
+        ["text-emphasis-color"] = "currentcolor", ["text-emphasis-position"] = "over right",
         ["box-shadow"] = "none", ["filter"] = "none", ["backdrop-filter"] = "none",
+        ["mix-blend-mode"] = "normal", ["background-blend-mode"] = "normal", ["isolation"] = "auto",
         ["transform"] = "none", ["transform-origin"] = "50% 50%", ["transform-box"] = "view-box",
+        ["perspective"] = "none", ["perspective-origin"] = "50% 50%", ["transform-style"] = "flat", ["backface-visibility"] = "visible",
         ["outline-width"] = "medium", ["outline-style"] = "none", ["outline-color"] = "auto", ["outline-offset"] = "0",
         ["cursor"] = "auto", ["pointer-events"] = "auto", ["user-select"] = "auto", ["overflow"] = "visible",
         ["overflow-inline"] = "visible", ["overflow-block"] = "visible",
@@ -141,9 +193,10 @@ internal static class CssPropertyMetadata
         ["scrollbar-width"] = "auto", ["scrollbar-color"] = "auto",
         ["scrollbar-gutter"] = "auto",
         ["clip-path"] = "none",
+        ["shape-outside"] = "none", ["shape-margin"] = "0", ["shape-image-threshold"] = "0",
         ["flex-grow"] = "0", ["flex-shrink"] = "1", ["flex-basis"] = "auto", ["flex-direction"] = "row", ["flex-wrap"] = "nowrap",
         ["align-items"] = "stretch", ["align-self"] = "auto", ["align-content"] = "stretch", ["justify-content"] = "flex-start",
-        ["order"] = "0", ["gap"] = "normal", ["row-gap"] = "normal", ["column-gap"] = "normal", ["z-index"] = "0",
+        ["order"] = "0", ["gap"] = "normal", ["row-gap"] = "normal", ["column-gap"] = "normal", ["z-index"] = "auto",
         ["transition-property"] = "all", ["transition-duration"] = "0s", ["transition-timing-function"] = "ease",
         ["transition-delay"] = "0s", ["transition-behavior"] = "normal",
         ["animation-name"] = "none", ["animation-duration"] = "0s",
@@ -155,8 +208,34 @@ internal static class CssPropertyMetadata
         ["grid-row-start"] = "auto", ["grid-row-end"] = "auto", ["grid-column-start"] = "auto", ["grid-column-end"] = "auto",
         ["justify-items"] = "normal", ["justify-self"] = "auto",
         ["vertical-align"] = "baseline",
+        ["initial-letter"] = "normal", ["initial-letter-align"] = "alphabetic", ["initial-letter-wrap"] = "none",
         ["float"] = "none", ["clear"] = "none",
         ["container-type"] = "normal", ["container-name"] = "none",
+        ["writing-mode"] = "horizontal-tb", ["text-orientation"] = "mixed", ["text-combine-upright"] = "none",
+        ["ruby-position"] = "alternate", ["ruby-align"] = "space-around", ["ruby-merge"] = "separate",
+        ["anchor-name"] = "none", ["anchor-scope"] = "none", ["position-anchor"] = "auto",
+        ["position-area"] = "none", ["inset-area"] = "none",
+        ["position-try-fallbacks"] = "none", ["position-try-order"] = "normal",
+        ["position-visibility"] = "anchors-valid",
+        ["animation-timeline"] = "auto", ["animation-composition"] = "replace",
+        ["scroll-timeline-name"] = "none", ["scroll-timeline-axis"] = "block",
+        ["view-timeline-name"] = "none", ["view-timeline-axis"] = "block", ["view-timeline-inset"] = "auto",
+        ["timeline-scope"] = "none",
+        ["animation-range-start"] = "normal", ["animation-range-end"] = "normal",
+        ["offset-path"] = "none", ["offset-distance"] = "0px", ["offset-rotate"] = "auto",
+        ["offset-anchor"] = "auto", ["offset-position"] = "normal",
+        ["view-transition-name"] = "none", ["view-transition-class"] = "none",
+        ["scroll-snap-type"] = "none", ["scroll-snap-align"] = "none", ["scroll-snap-stop"] = "normal",
+        ["scroll-behavior"] = "auto", ["overflow-anchor"] = "auto",
+        ["overscroll-behavior-x"] = "auto", ["overscroll-behavior-y"] = "auto",
+        ["overscroll-behavior-inline"] = "auto", ["overscroll-behavior-block"] = "auto",
+        ["contain"] = "none", ["content-visibility"] = "visible",
+        ["contain-intrinsic-width"] = "none", ["contain-intrinsic-height"] = "none",
+        ["contain-intrinsic-inline-size"] = "none", ["contain-intrinsic-block-size"] = "none",
+        ["appearance"] = "none", ["accent-color"] = "auto", ["resize"] = "none", ["touch-action"] = "auto",
+        ["color-scheme"] = "normal", ["forced-color-adjust"] = "auto", ["print-color-adjust"] = "economy",
+        ["text-size-adjust"] = "auto", ["zoom"] = "1",
+        ["vector-effect"] = "none",
     };
 
     public static IEnumerable<string> Longhands(string property)
@@ -164,21 +243,25 @@ internal static class CssPropertyMetadata
             : s_shorthands.TryGetValue(property, out var names) ? names : [property];
 
     public static bool IsInherited(string name) => name is "color" or "font-family" or "font-size" or "font-weight"
-        or "math-depth" or "math-style"
-        or "font-style" or "font-stretch" or "line-height" or "text-align" or "text-align-all"
-        or "text-align-last" or "text-justify" or "text-indent" or "line-padding"
+        or "math-depth" or "math-style" or "orphans" or "widows" or "border-spacing" or "empty-cells" or "caption-side" or "border-collapse"
+        or "font-synthesis-small-caps" or "font-style" or "font-stretch" or "font-variant-caps" or "font-variant-position" or "font-variant-emoji" or "font-synthesis-position" or "font-variant-numeric" or "font-variant-east-asian" or "font-variant-alternates" or "font-feature-settings" or "font-variation-settings" or "font-optical-sizing" or "font-size-adjust" or "font-kerning" or "font-variant-ligatures" or "line-height" or "text-align" or "text-align-all"
+        or "text-align-last" or "text-justify" or "text-indent" or "line-padding" or "initial-letter-align" or "initial-letter-wrap"
         or "overflow-wrap" or "word-break" or "line-break"
         or "word-spacing" or "word-space-transform" or "letter-spacing" or "text-autospace"
         or "hanging-punctuation" or "tab-size"
         or "hyphens" or "hyphenate-character"
         or "hyphenate-limit-chars" or "hyphenate-limit-lines" or "hyphenate-limit-last"
         or "hyphenate-limit-zone"
-        or "white-space-collapse" or "text-wrap-mode" or "text-wrap-style" or "text-transform"
+        or "white-space-collapse" or "text-wrap-mode" or "text-wrap-style" or "text-transform" or "block-ellipsis"
         or "text-underline-offset" or "text-underline-position"
         or "text-decoration-skip-inset" or "text-shadow"
+        or "text-emphasis" or "text-emphasis-style" or "text-emphasis-color" or "text-emphasis-position"
         or "visibility" or "cursor" or "caret-color" or "caret-animation" or "caret-shape"
-        or "scrollbar-color"
-        or "pointer-events" or "direction" or "image-rendering";
+        or "scrollbar-color" or "interpolate-size"
+        or "writing-mode" or "text-orientation" or "text-combine-upright"
+        or "ruby-position" or "ruby-align" or "ruby-merge"
+        or "accent-color" or "color-scheme" or "forced-color-adjust" or "print-color-adjust" or "text-size-adjust"
+        or "pointer-events" or "direction" or "image-rendering" or "quotes" or "list-style" or "list-style-type" or "list-style-position" or "list-style-image";
 
     public static bool IsWideKeyword(string value)
         => WideKeyword(value) is not null;
@@ -196,6 +279,7 @@ internal static class CssPropertyMetadata
         // CSS Cascade excludes direction from `all`, while the individual
         // property's `initial` keyword still resolves to ltr.
         if (name == "direction") return "ltr";
+        if (name == "unicode-bidi") return "normal";
         if (s_initial.TryGetValue(name, out var value)) return value;
         if (name.StartsWith("margin-", StringComparison.Ordinal) || name.StartsWith("padding-", StringComparison.Ordinal) ||
             name.EndsWith("-radius", StringComparison.Ordinal)) return "0";
@@ -226,13 +310,43 @@ internal sealed class CssWideValue(string name, string keyword) : CssCompiledVal
     private CssCompiledDeclaration[]? _initialDeclarations;
     public override bool TryApply(in CssApplyContext context, ICssSetterSink sink)
     {
+        if (CssSelection.ApplyWide(context.Element, name, keyword, context, sink)) return true;
         var inherit = keyword.Equals("inherit", StringComparison.OrdinalIgnoreCase) ||
-            !keyword.Equals("initial", StringComparison.OrdinalIgnoreCase) && CssPropertyMetadata.IsInherited(name);
-        var parent = CssMatcher.CssAncestor(context.Element);
+            !keyword.Equals("initial", StringComparison.OrdinalIgnoreCase) &&
+                (CssPropertyMetadata.IsInherited(name) || CssSelection.IsProjection(context.Element) && CssSelection.Applies(name));
+        var parent = CssFirstLine.InheritanceParent(context.Element, name) ?? CssMatcher.CssAncestor(context.Element);
         if (inherit && parent is not null)
         {
             CssInheritedColorObserver.Observe(context.Element, parent, name);
             CssInheritedBoxObserver.Observe(context.Element, parent, name);
+            if (name == "flex-basis")
+            {
+                var native = parent.Target.HasLocalOrAnimatedValue(Controls.FlexPanel.BasisProperty);
+                sink.Set(Controls.FlexPanel.BasisProperty, parent.GetValue(Controls.FlexPanel.BasisProperty));
+                sink.Set(Controls.FlexPanel.CssBasisProperty, native ? null : parent.GetValue(Controls.FlexPanel.CssBasisProperty));
+                sink.Set(Controls.FlexPanel.CssContentBasisProperty, !native && (bool)parent.GetValue(Controls.FlexPanel.CssContentBasisProperty)!);
+                return true;
+            }
+            if (name == "mask-image")
+            {
+                var inherited = parent.GetValue(CssMaskProperties.ImagesProperty) as CssMaskImages ?? CssMaskImages.None;
+                sink.Set(CssMaskProperties.ImagesProperty, CssMaskImages.Materialize(inherited.Definitions, context));
+                return true;
+            }
+            if (name == "mask-border-source")
+            {
+                var inherited = parent.GetValue(CssMaskBorderProperties.SourceProperty) as CssMaskBorderSource;
+                sink.Set(CssMaskBorderProperties.SourceProperty, CssMaskBorderSource.Materialize(inherited?.Definition, context));
+                return true;
+            }
+            if (name == "border-image-source")
+            {
+                var inherited = parent.GetValue(CssBorderImageProperties.SourceProperty) as CssBorderImageSource;
+                var resources = inherited is null ? new List<CssBackgroundImageResource>() : new(inherited.Resources);
+                sink.Set(CssBorderImageProperties.SourceProperty, inherited?.Definition?.Border(context, inherited.Resolution, resources));
+                sink.Set(CssBorderImageProperties.ResourcesProperty, resources.ToArray());
+                return true;
+            }
             if (CssBackgroundPaintProperties.Get(parent.Target) is { } background)
             {
                 if (name == "background-image")
@@ -275,14 +389,15 @@ internal sealed class CssWideValue(string name, string keyword) : CssCompiledVal
                 return CssOutlineAutoColorProperties.ApplyComputed(context, sink,
                     parent.GetValue(FrameworkElement.OutlineStyleProperty) is OutlineStyle.Auto);
             }
-            if (name == "color" && !HasNativeColorOverride(parent, name) &&
-                parent.CssRuntimeState?.ContextualColors?.TryGetValue(name, out var inheritedColor) == true)
+            if (name == "color")
             {
-                var foreground = CssDependencyPropertyLookup.Find(parent.Target.GetType(), "Foreground");
-                var brush = foreground is null ? null : parent.GetValue(foreground) as Brush;
+                var brush = CssUsedForeground.Get(parent.Target, context.Element);
+                CssColorBrushObserver.Observe(context.Element, brush as SolidColorBrush);
                 if (!new CssNamedValue(name, "Foreground", brush ?? Brushes.Black).TryApply(context, sink))
                     return false;
-                CssContextualColorValue.Remember(context.Element, name, inheritedColor);
+                if (!HasNativeColorOverride(parent, name) &&
+                    parent.CssRuntimeState?.ContextualColors?.TryGetValue(name, out var inheritedColor) == true)
+                    CssContextualColorValue.Remember(context.Element, name, inheritedColor);
                 return true;
             }
             if (name == "font-stretch")
@@ -291,7 +406,7 @@ internal sealed class CssWideValue(string name, string keyword) : CssCompiledVal
                 return new CssFontStyleValue(CssFontStyleValue.Computed(parent)).TryApply(in context, sink);
             if (name == "font-family")
                 return new CssFontFamilyValue(CssFontFamilyValue.Computed(parent)).TryApply(in context, sink);
-            if ((name is "background-color" or "outline-color" ||
+            if ((name is "background-color" or "outline-color" or "column-rule-color" or "text-emphasis-color" ||
                  CssLogicalBoxEdges.IsBorderColor(name)) &&
                 parent.CssRuntimeState?.ContextualColors?.TryGetValue(name, out var contextual) == true &&
                 !HasNativeColorOverride(parent, name))
@@ -416,7 +531,9 @@ internal sealed class CssWideValue(string name, string keyword) : CssCompiledVal
             _ when CssLogicalBoxEdges.IsBorderColor(name) => "BorderBrush",
             _ => "OutlineBrush",
         };
-        return CssDependencyPropertyLookup.Find(parent.Target.GetType(), nativeName) is { } property &&
+        var property = name == "column-rule-color" ? CssMultiColumnProperties.RuleColorProperty
+            : CssDependencyPropertyLookup.Find(parent.Target.GetType(), nativeName);
+        return property is not null &&
             (parent.HasLocalOrAnimatedValue(property) ||
              parent.Target.GetEffectiveValueLayer(property) is { } layer &&
              layer is not (DependencyValueStore.Layer.CssBase or DependencyValueStore.Layer.CssState));
@@ -439,18 +556,10 @@ internal sealed class CssWideValue(string name, string keyword) : CssCompiledVal
             CssDependencyPropertyLookup.Find(parent.GetType(), propertyName) is not { } parentProperty)
             return false;
 
-        if (!parent.HasLocalOrAnimatedValue(parentProperty) &&
-            parent.Target is FrameworkElement { CssLayout: { } layout })
+        if (!parent.HasLocalOrAnimatedValue(parentProperty))
         {
-            var length = field switch
-            {
-                CssLayoutSlotField.Width => layout.Width,
-                CssLayoutSlotField.Height => layout.Height,
-                CssLayoutSlotField.MinWidth => layout.MinWidth,
-                CssLayoutSlotField.MinHeight => layout.MinHeight,
-                CssLayoutSlotField.MaxWidth => layout.MaxWidth,
-                _ => layout.MaxHeight,
-            };
+            var length = CssSizingPresentation.Presented(parent.Target, (int)field,
+                CssSizingPresentation.FromLayout(parent.CssLayout, field));
             if (length.IsSet)
             {
                 context.Slots.SetLayoutLength(field, length);

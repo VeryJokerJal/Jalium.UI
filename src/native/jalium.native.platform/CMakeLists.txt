@@ -22,8 +22,9 @@ elseif(UNIX AND NOT APPLE)
 
     # Wayland is optional: distributions that only ship X11 development files
     # must continue to build a fully functional X11 backend.  When the complete
-    # protocol toolchain is present, generate the stable xdg-shell client glue
-    # at build time instead of carrying a stale generated copy in the repo.
+    # protocol toolchain is present, generate the stable xdg-shell client glue.
+    # The vendored protocol supplies the implemented version-6 capabilities on
+    # old distribution build baselines whose system XML predates them.
     find_package(PkgConfig QUIET)
     if(PkgConfig_FOUND)
         pkg_check_modules(WAYLAND_CLIENT QUIET IMPORTED_TARGET wayland-client)
@@ -33,6 +34,9 @@ elseif(UNIX AND NOT APPLE)
     endif()
     find_program(WAYLAND_SCANNER_EXECUTABLE NAMES wayland-scanner)
     set(XDG_SHELL_PROTOCOL "${WAYLAND_PROTOCOLS_DIR}/stable/xdg-shell/xdg-shell.xml")
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/protocols/xdg-shell.xml")
+        set(XDG_SHELL_PROTOCOL "${CMAKE_CURRENT_SOURCE_DIR}/protocols/xdg-shell.xml")
+    endif()
     if(WAYLAND_CLIENT_FOUND AND WAYLAND_CURSOR_FOUND AND XKBCOMMON_FOUND AND
        WAYLAND_SCANNER_EXECUTABLE AND EXISTS "${XDG_SHELL_PROTOCOL}")
         enable_language(C)
@@ -50,6 +54,33 @@ elseif(UNIX AND NOT APPLE)
             VERBATIM)
         list(APPEND PLATFORM_SOURCES "${XDG_SHELL_CODE}")
         set(JALIUM_PLATFORM_HAS_WAYLAND ON)
+
+        # Render at the compositor's fractional preference when both protocols
+        # are available. Older build distributions use the upstream XML fallback.
+        set(VIEWPORTER_PROTOCOL "${WAYLAND_PROTOCOLS_DIR}/stable/viewporter/viewporter.xml")
+        set(FRACTIONAL_SCALE_V1_PROTOCOL
+            "${WAYLAND_PROTOCOLS_DIR}/staging/fractional-scale/fractional-scale-v1.xml")
+        if(NOT EXISTS "${FRACTIONAL_SCALE_V1_PROTOCOL}")
+            set(FRACTIONAL_SCALE_V1_PROTOCOL "${CMAKE_CURRENT_SOURCE_DIR}/protocols/fractional-scale-v1.xml")
+        endif()
+        if(EXISTS "${VIEWPORTER_PROTOCOL}" AND EXISTS "${FRACTIONAL_SCALE_V1_PROTOCOL}")
+            foreach(protocol IN ITEMS viewporter fractional-scale-v1)
+                if(protocol STREQUAL "viewporter")
+                    set(protocol_xml "${VIEWPORTER_PROTOCOL}")
+                else()
+                    set(protocol_xml "${FRACTIONAL_SCALE_V1_PROTOCOL}")
+                endif()
+                set(protocol_header "${WAYLAND_GENERATED_DIR}/${protocol}-client-protocol.h")
+                set(protocol_code "${WAYLAND_GENERATED_DIR}/${protocol}-protocol.c")
+                add_custom_command(OUTPUT "${protocol_header}" "${protocol_code}"
+                    COMMAND ${CMAKE_COMMAND} -E make_directory "${WAYLAND_GENERATED_DIR}"
+                    COMMAND "${WAYLAND_SCANNER_EXECUTABLE}" client-header "${protocol_xml}" "${protocol_header}"
+                    COMMAND "${WAYLAND_SCANNER_EXECUTABLE}" private-code "${protocol_xml}" "${protocol_code}"
+                    DEPENDS "${protocol_xml}" VERBATIM)
+                list(APPEND PLATFORM_SOURCES "${protocol_code}")
+            endforeach()
+            set(JALIUM_PLATFORM_HAS_FRACTIONAL_SCALE_V1 ON)
+        endif()
 
         # xdg-activation-v1 first appeared in wayland-protocols 1.21, while
         # the supported Ubuntu 20.04 build baseline ships 1.20. Prefer the
@@ -305,6 +336,9 @@ elseif(UNIX AND NOT APPLE)
             PkgConfig::WAYLAND_CURSOR
             PkgConfig::XKBCOMMON)
         target_compile_definitions(${PROJECT_NAME} PRIVATE JALIUM_HAS_WAYLAND=1)
+        if(JALIUM_PLATFORM_HAS_FRACTIONAL_SCALE_V1)
+            target_compile_definitions(${PROJECT_NAME} PRIVATE JALIUM_HAS_FRACTIONAL_SCALE_V1=1)
+        endif()
         if(JALIUM_PLATFORM_HAS_TEXT_INPUT_V3)
             target_compile_definitions(${PROJECT_NAME} PRIVATE JALIUM_HAS_WAYLAND_TEXT_INPUT_V3=1)
         endif()
@@ -356,6 +390,11 @@ option(JALIUM_PLATFORM_BUILD_TESTS "Build jalium.native.platform tests" OFF)
 if(JALIUM_PLATFORM_BUILD_TESTS AND UNIX AND NOT APPLE AND NOT ANDROID)
     enable_testing()
     target_compile_definitions(${PROJECT_NAME} PRIVATE JALIUM_PLATFORM_TEST_HOOKS=1)
+    add_executable(jalium.native.platform.input-lifetime.tests tests/platform_linux_input_lifetime_tests.cpp)
+    target_include_directories(jalium.native.platform.input-lifetime.tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include")
+    target_compile_definitions(jalium.native.platform.input-lifetime.tests PRIVATE JALIUM_PLATFORM_TEST_HOOKS=1)
+    target_link_libraries(jalium.native.platform.input-lifetime.tests PRIVATE ${PROJECT_NAME})
     add_executable(jalium.native.platform.tests
         tests/platform_linux_tests.cpp
     )
@@ -378,6 +417,57 @@ if(JALIUM_PLATFORM_BUILD_TESTS AND UNIX AND NOT APPLE AND NOT ANDROID)
     add_test(NAME jalium.native.platform.linux
              COMMAND jalium.native.platform.tests)
     set_tests_properties(jalium.native.platform.linux PROPERTIES
+        ENVIRONMENT "JALIUM_WINDOW_SYSTEM=x11")
+    add_executable(jalium.native.platform.window.tests tests/platform_linux_window_tests.cpp)
+    target_compile_definitions(jalium.native.platform.window.tests PRIVATE JALIUM_PLATFORM_TEST_HOOKS=1)
+    target_include_directories(jalium.native.platform.window.tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include ${X11_INCLUDE_DIR})
+    target_link_libraries(jalium.native.platform.window.tests PRIVATE
+        jalium.native.platform jalium.native.core ${X11_LIBRARIES} dl pthread)
+    add_test(NAME jalium.native.platform.linux.window
+        COMMAND jalium.native.platform.window.tests)
+    add_test(NAME jalium.native.platform.linux.window-edge-constraints
+        COMMAND jalium.native.platform.window.tests --x11-constraints)
+    set_tests_properties(jalium.native.platform.linux.window-edge-constraints PROPERTIES
+        ENVIRONMENT "JALIUM_WINDOW_SYSTEM=x11")
+    add_test(NAME jalium.native.platform.linux.window-resize-origin
+        COMMAND jalium.native.platform.window.tests --x11-resize-origin)
+    set_tests_properties(jalium.native.platform.linux.window-resize-origin PROPERTIES
+        ENVIRONMENT "JALIUM_WINDOW_SYSTEM=x11")
+    add_test(NAME jalium.native.platform.linux.window-keyboard-operations
+        COMMAND jalium.native.platform.window.tests --x11-keyboard)
+    set_tests_properties(jalium.native.platform.linux.window-keyboard-operations PROPERTIES
+        ENVIRONMENT "JALIUM_WINDOW_SYSTEM=x11")
+
+    if(JALIUM_PLATFORM_HAS_FRACTIONAL_SCALE_V1 AND PkgConfig_FOUND)
+        pkg_search_module(WESTON_TEST QUIET IMPORTED_TARGET
+            libweston-16 libweston-15 libweston-14 libweston-13 libweston-12 libweston-11
+            libweston-10 libweston-9 libweston-8)
+        pkg_check_modules(WAYLAND_SERVER_TEST QUIET IMPORTED_TARGET wayland-server)
+        if(WESTON_TEST_FOUND AND WAYLAND_SERVER_TEST_FOUND)
+            set(FRACTIONAL_SCALE_SERVER_HEADER "${WAYLAND_GENERATED_DIR}/fractional-scale-v1-server-protocol.h")
+            add_custom_command(OUTPUT "${FRACTIONAL_SCALE_SERVER_HEADER}"
+                COMMAND "${WAYLAND_SCANNER_EXECUTABLE}" server-header
+                    "${FRACTIONAL_SCALE_V1_PROTOCOL}" "${FRACTIONAL_SCALE_SERVER_HEADER}"
+                DEPENDS "${FRACTIONAL_SCALE_V1_PROTOCOL}" VERBATIM)
+            add_library(jalium-fractional-scale-test MODULE
+                tests/wayland_fractional_scale_test_compositor.c
+                "${FRACTIONAL_SCALE_SERVER_HEADER}"
+                "${WAYLAND_GENERATED_DIR}/fractional-scale-v1-protocol.c")
+            target_include_directories(jalium-fractional-scale-test PRIVATE "${WAYLAND_GENERATED_DIR}")
+            target_link_libraries(jalium-fractional-scale-test PRIVATE PkgConfig::WESTON_TEST PkgConfig::WAYLAND_SERVER_TEST)
+            set_target_properties(jalium-fractional-scale-test PROPERTIES PREFIX ""
+                LIBRARY_OUTPUT_DIRECTORY "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/test-modules")
+            # This fixture uses exported libweston 8 backend entry points.
+            if(WESTON_TEST_VERSION VERSION_GREATER_EQUAL "8" AND WESTON_TEST_VERSION VERSION_LESS "9")
+                add_library(jalium-seat-test MODULE tests/wayland_seat_test_compositor.c)
+                target_link_libraries(jalium-seat-test PRIVATE PkgConfig::WESTON_TEST PkgConfig::WAYLAND_SERVER_TEST)
+                set_target_properties(jalium-seat-test PROPERTIES PREFIX ""
+                    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/test-modules")
+            endif()
+        endif()
+    endif()
+    set_tests_properties(jalium.native.platform.linux.window PROPERTIES
         ENVIRONMENT "JALIUM_WINDOW_SYSTEM=x11")
 endif()
 

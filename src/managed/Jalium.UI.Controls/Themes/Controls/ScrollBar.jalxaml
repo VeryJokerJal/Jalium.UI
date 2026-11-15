@@ -92,6 +92,15 @@
     <!-- ScrollBar Thumb Style -->
     <!-- ============================================== -->
     <Style x:Key="ScrollBarThumbStyle" TargetType="Thumb">
+        <Style.Resources>
+            <ControlTemplate x:Key="ScrollBarPlainThumbTemplate" TargetType="Thumb">
+                <Border Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}"
+                        CornerRadius="{TemplateBinding CornerRadius}"
+                        Margin="{TemplateBinding Padding}" TransitionProperty="None" />
+            </ControlTemplate>
+        </Style.Resources>
         <Setter Property="Background" Value="{ThemeResource ScrollBarThumb}" />
         <Setter Property="BorderBrush" Value="Transparent" />
         <Setter Property="BorderThickness" Value="0" />
@@ -126,49 +135,87 @@
         </Setter>
     </Style>
 
-    <!-- ============================================== -->
-    <!-- ScrollBar Style (explicit key for visual-child fallback) -->
-    <!-- ============================================== -->
+    <ControlTemplate x:Key="ScrollBarTemplate" TargetType="ScrollBar">
+        <Grid x:Name="ScrollBarRoot">
+            <VisualStateManager.VisualStateGroups>
+                <VisualStateGroup x:Name="CommonStates">
+                    <VisualState x:Name="Normal">
+                        <VisualState.Setters><Setter TargetName="ScrollBarRoot" Property="Opacity" Value="1" /></VisualState.Setters>
+                    </VisualState>
+                    <VisualState x:Name="Disabled">
+                        <VisualState.Setters><Setter TargetName="ScrollBarRoot" Property="Opacity" Value="0.45" /></VisualState.Setters>
+                    </VisualState>
+                </VisualStateGroup>
+                <VisualStateGroup x:Name="OrientationStates">
+                    <VisualState x:Name="Vertical" />
+                    <VisualState x:Name="Horizontal" />
+                </VisualStateGroup>
+                <VisualStateGroup x:Name="PresentationStates">
+                    <VisualState x:Name="Persistent" />
+                    <VisualState x:Name="Overlay" />
+                </VisualStateGroup>
+                <VisualStateGroup x:Name="ThumbStates">
+                    <VisualState x:Name="Expanded" />
+                    <VisualState x:Name="Slim" />
+                </VisualStateGroup>
+            </VisualStateManager.VisualStateGroups>
+            <Border x:Name="PART_Chrome" IsHitTestVisible="False"
+                    Margin="{TemplateBinding ChromeInsets}" Opacity="{TemplateBinding ChromeOpacity}"
+                    Background="{TemplateBinding Background}"
+                    BorderBrush="{TemplateBinding BorderBrush}"
+                    BorderThickness="{TemplateBinding BorderThickness}"
+                    CornerRadius="{TemplateBinding CornerRadius}"
+                    Padding="{TemplateBinding Padding}"
+                    BackdropEffect="{TemplateBinding BackdropEffect}" TransitionProperty="None" />
+            <ScrollBarLayoutPanel Margin="{TemplateBinding PartsInsets}"
+                                  Orientation="{TemplateBinding Orientation}"
+                                  UsesLineButtons="{TemplateBinding HasLineButtons}"
+                                  PreferredThickness="{TemplateBinding NaturalThickness}">
+                <RepeatButton x:Name="PART_LineDecreaseButton" ScrollBarLayoutPanel.Role="DecreaseLine"
+                              Style="{TemplateBinding LineButtonStyle}" Tag="{TemplateBinding DecreaseDirection}"
+                              IsHitTestVisible="{TemplateBinding HasLineButtons}" Visibility="{TemplateBinding LineButtonsVisibility}" Opacity="{TemplateBinding ChromeOpacity}"
+                              Focusable="False" ClickMode="Press" />
+                <Track x:Name="PART_Track" ScrollBarLayoutPanel.Role="Track"
+                       Orientation="{TemplateBinding Orientation}" Minimum="{TemplateBinding Minimum}"
+                       Maximum="{TemplateBinding Maximum}" Value="{TemplateBinding Value}"
+                       ViewportSize="{TemplateBinding ViewportSize}">
+                    <Track.DecreaseRepeatButton>
+                        <RepeatButton Style="{TemplateBinding PageButtonStyle}" Focusable="False" ClickMode="Press" />
+                    </Track.DecreaseRepeatButton>
+                    <Track.Thumb>
+                        <Thumb Style="{TemplateBinding ThumbStyle}" Width="Auto" Height="Auto" Focusable="False" />
+                    </Track.Thumb>
+                    <Track.IncreaseRepeatButton>
+                        <RepeatButton Style="{TemplateBinding PageButtonStyle}" Focusable="False" ClickMode="Press" />
+                    </Track.IncreaseRepeatButton>
+                </Track>
+                <RepeatButton x:Name="PART_LineIncreaseButton" ScrollBarLayoutPanel.Role="IncreaseLine"
+                              Style="{TemplateBinding LineButtonStyle}" Tag="{TemplateBinding IncreaseDirection}"
+                              IsHitTestVisible="{TemplateBinding HasLineButtons}" Visibility="{TemplateBinding LineButtonsVisibility}" Opacity="{TemplateBinding ChromeOpacity}"
+                              Focusable="False" ClickMode="Press" />
+            </ScrollBarLayoutPanel>
+        </Grid>
+    </ControlTemplate>
+
     <Style x:Key="ScrollBarStyle" TargetType="ScrollBar">
-        <Setter Property="Background" Value="{ThemeResource ScrollBarTrack}" />
-        <Setter Property="BorderBrush" Value="Transparent" />
-        <Setter Property="BorderThickness" Value="0" />
-        <Setter Property="ThumbStyle" Value="{ThemeResource ScrollBarThumbStyle}" />
-        <Setter Property="CornerRadius" Value="6" />
-        <Setter Property="Padding" Value="2" />
-        <Setter Property="MinWidth" Value="12" />
-        <Setter Property="MinHeight" Value="12" />
-
-        <Style.Triggers>
-            <Trigger Property="IsEnabled" Value="False">
-                <Setter Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
-                <Setter Property="BorderBrush" Value="Transparent" />
-                <Setter Property="Opacity" Value="0.45" />
-            </Trigger>
-        </Style.Triggers>
-    </Style>
-
-    <!-- ============================================== -->
-    <!-- ScrollBar Style (implicit) -->
-    <!-- ============================================== -->
-    <Style TargetType="ScrollBar">
         <Setter Property="Background" Value="{ThemeResource ScrollBarTrack}" />
         <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
         <Setter Property="BorderBrush" Value="Transparent" />
         <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="LineButtonStyle" Value="{ThemeResource ScrollBarLineButtonStyle}" />
+        <Setter Property="PageButtonStyle" Value="{ThemeResource ScrollBarPageButtonStyle}" />
         <Setter Property="ThumbStyle" Value="{ThemeResource ScrollBarThumbStyle}" />
+        <Setter Property="Template" Value="{StaticResource ScrollBarTemplate}" />
         <Setter Property="CornerRadius" Value="6" />
         <Setter Property="Padding" Value="2" />
         <Setter Property="MinWidth" Value="12" />
         <Setter Property="MinHeight" Value="12" />
-
         <Style.Triggers>
             <Trigger Property="IsEnabled" Value="False">
                 <Setter Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
                 <Setter Property="BorderBrush" Value="Transparent" />
-                <Setter Property="Opacity" Value="0.45" />
             </Trigger>
         </Style.Triggers>
     </Style>
-
+    <Style TargetType="ScrollBar" BasedOn="{StaticResource ScrollBarStyle}" />
 </ResourceDictionary>

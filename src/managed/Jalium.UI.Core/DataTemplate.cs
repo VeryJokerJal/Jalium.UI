@@ -78,28 +78,27 @@ public class DataTemplate : FrameworkTemplate
 
     private void AttachTriggersToRoot(FrameworkElement root)
     {
-        foreach (var trigger in _triggers)
+        bool attached = false;
+        void Attach()
         {
-            // hostIsTemplatedParent: false —— DataTemplate 的 trigger 挂在模板内容的根元素上，
-            // 整棵内容树都是模板生成物，因此无 TargetName 的 setter 也按 ParentTemplateTrigger
-            // （模板对自己生成物的支配）计优先级，而不是 TemplateTrigger。
-            trigger.DeclareTemplateOwner(_triggers, hostIsTemplatedParent: false);
-            trigger.Attach(root);
-        }
-
-        RoutedEventHandler? unloadedHandler = null;
-        unloadedHandler = (_, _) =>
-        {
+            if (attached) return;
+            attached = true;
             foreach (var trigger in _triggers)
             {
+                // Data-template roots own their generated subtree. Reattach
+                // against the current DataContext when a cached view reloads.
+                trigger.DeclareTemplateOwner(_triggers, hostIsTemplatedParent: false);
+                trigger.Attach(root);
+            }
+        }
+        root.Loaded += (_, _) => Attach();
+        root.Unloaded += (_, _) =>
+        {
+            if (!attached) return;
+            attached = false;
+            foreach (var trigger in _triggers)
                 trigger.Detach(root);
-            }
-
-            if (unloadedHandler is not null)
-            {
-                root.Unloaded -= unloadedHandler;
-            }
         };
-        root.Unloaded += unloadedHandler;
+        Attach();
     }
 }

@@ -49,7 +49,41 @@
     <!-- ============================================== -->
     <!-- TreeSelector Style (drop-down with tree popup) -->
     <!-- ============================================== -->
+    <DataTemplate x:Key="TreeSelector.SelectionBoxItem">
+        <TreeSelectorSelectionItem Content="{Binding}" />
+    </DataTemplate>
+
+    <Style TargetType="TreeSelectorSelectionItem">
+        <Setter Property="Background" Value="{ThemeResource ControlBackgroundHover}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="4" />
+        <Setter Property="Padding" Value="6,1,2,1" />
+        <Setter Property="Margin" Value="0,2,4,2" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="TreeSelectorSelectionItem">
+                <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="{TemplateBinding CornerRadius}"
+                        Padding="{TemplateBinding Padding}">
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <ContentPresenter Content="{TemplateBinding Content}" ContentTemplate="{TemplateBinding ContentTemplate}"
+                                          Margin="0,0,4,0" VerticalAlignment="Center" />
+                        <Button x:Name="PART_RemoveButton" Grid.Column="1" Width="20" Height="20" MinWidth="0" MinHeight="0" Padding="0"
+                                Background="Transparent" BorderThickness="0" VerticalAlignment="Center"
+                                AutomationProperties.Name="{TemplateBinding RemoveButtonLabel}">
+                            <Path Data="M 0,0 L 6,6 M 6,0 L 0,6" Width="6" Height="6" Stretch="Uniform"
+                                  Stroke="{ThemeResource TextSecondary}" StrokeThickness="1.4" />
+                        </Button>
+                    </Grid>
+                </Border>
+            </ControlTemplate>
+        </Setter>
+    </Style>
+
     <Style TargetType="TreeSelector">
+        <Setter Property="SelectionBoxItemTemplate" Value="{StaticResource TreeSelector.SelectionBoxItem}" />
         <Setter Property="ScrollViewer.CanContentScroll" Value="True" />
         <Setter Property="Background" Value="{ThemeResource ControlBackground}" />
         <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
@@ -60,7 +94,12 @@
         <Setter Property="CornerRadius" Value="10" />
         <Setter Property="Template">
             <ControlTemplate TargetType="TreeSelector">
-                <Grid>
+                <Grid x:Name="PART_Root">
+                    <VisualStateManager.VisualStateGroups>
+                        <VisualStateGroup x:Name="SelectionStates"><VisualState x:Name="Empty" /><VisualState x:Name="SingleSelection" /><VisualState x:Name="MultipleSelection" /></VisualStateGroup>
+                        <VisualStateGroup x:Name="SearchStates"><VisualState x:Name="SearchEnabled" /><VisualState x:Name="SearchDisabled" /></VisualStateGroup>
+                        <VisualStateGroup x:Name="DropDownStates"><VisualState x:Name="Open" /><VisualState x:Name="Closed" /></VisualStateGroup>
+                    </VisualStateManager.VisualStateGroups>
                     <!-- Trigger row -->
                     <Border Name="PART_TriggerBorder"
                             Background="{TemplateBinding Background}"
@@ -79,13 +118,15 @@
                             <!-- Content area (column 0): chips / display text / search box / placeholder, layered. -->
                             <Grid Grid.Column="0" VerticalAlignment="Center">
                                 <!-- Multi-select chip list -->
-                                <WrapPanel Name="PART_TagsPanel"
-                                           Orientation="Horizontal"
-                                           VerticalAlignment="Center"
-                                           Visibility="Collapsed" />
+                                <ItemsControl Name="PART_TagsPanel" ItemsSource="{TemplateBinding SelectedItems}"
+                                              ItemTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                              VerticalAlignment="Center" Visibility="Collapsed">
+                                    <ItemsControl.ItemsPanel><ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                                </ItemsControl>
 
                                 <!-- Single-select path display -->
                                 <TextBlock Name="PART_DisplayText"
+                                           Text="{TemplateBinding SelectionPath}"
                                            VerticalAlignment="Center"
                                            Visibility="Collapsed"
                                            TextTrimming="CharacterEllipsis"
@@ -105,7 +146,7 @@
                                            Text="{TemplateBinding PlaceholderText}"
                                            VerticalAlignment="Center"
                                            Foreground="{ThemeResource TextSecondary}"
-                                           IsHitTestVisible="False" />
+                                           IsHitTestVisible="False" Visibility="Collapsed" />
                             </Grid>
 
                             <!-- Clear button (column 1) -->
@@ -113,6 +154,8 @@
                                     Grid.Column="1"
                                     Width="20"
                                     Height="20"
+                                    MinWidth="0"
+                                    MinHeight="0"
                                     Margin="4,0,0,0"
                                     Padding="0"
                                     Background="Transparent"
@@ -156,7 +199,7 @@
                                        RadiusY="14" />
                             <ScrollViewer Margin="6"
                                           CanContentScroll="{TemplateBinding ScrollViewer.CanContentScroll}"
-                                          MaxHeight="{Binding MaxDropDownHeight, RelativeSource={RelativeSource AncestorType=TreeSelector}}"
+                                          MaxHeight="{TemplateBinding MaxDropDownHeight}"
                                           HorizontalScrollBarVisibility="Auto"
                                           VerticalScrollBarVisibility="Auto">
                                 <ItemsPresenter />
@@ -165,6 +208,11 @@
                     </Popup>
                 </Grid>
                 <ControlTemplate.Triggers>
+                    <Trigger Property="ShowSelectionTags" Value="True"><Setter TargetName="PART_TagsPanel" Property="Visibility" Value="Visible" /></Trigger>
+                    <Trigger Property="ShowSelectionPath" Value="True"><Setter TargetName="PART_DisplayText" Property="Visibility" Value="Visible" /></Trigger>
+                    <Trigger Property="IsSearchEnabled" Value="True"><Setter TargetName="PART_SearchTextBox" Property="Visibility" Value="Visible" /></Trigger>
+                    <Trigger Property="IsPlaceholderVisible" Value="True"><Setter TargetName="PART_PlaceholderText" Property="Visibility" Value="Visible" /></Trigger>
+                    <Trigger Property="IsClearButtonVisible" Value="True"><Setter TargetName="PART_ClearButton" Property="Visibility" Value="Visible" /></Trigger>
                     <Trigger SourceName="PART_TriggerBorder" Property="IsMouseOver" Value="True">
                         <Setter TargetName="PART_TriggerBorder" Property="Background" Value="{ThemeResource ControlBackgroundHover}" />
                         <Setter TargetName="PART_TriggerBorder" Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />
@@ -193,6 +241,11 @@
     <!-- ============================================== -->
     <Style TargetType="TreeSelectorItem">
         <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderBrush" Value="Transparent" />
+        <Setter Property="SelectionBrush" Value="{ThemeResource SelectionBackground}" />
+        <Setter Property="HoverBrush" Value="{ThemeResource ControlBackgroundHover}" />
+        <Setter Property="SelectionPointerOverBrush" Value="{ThemeResource AccentBrushPressed}" />
+        <Setter Property="SelectionBorderBrush" Value="Transparent" />
         <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
         <Setter Property="Padding" Value="6,3,6,3" />
         <Setter Property="CornerRadius" Value="8" />
@@ -203,6 +256,8 @@
                     <!-- Header Row -->
                     <Border Name="PART_HeaderBorder"
                             Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
                             CornerRadius="{TemplateBinding CornerRadius}"
                             Shape="RoundedRectangle"
                             MinHeight="28">
@@ -217,7 +272,7 @@
                             <!-- Indent Spacer -->
                             <Grid Name="PART_IndentSpacer"
                                   Grid.Column="0"
-                                  Width="0" />
+                                  Width="{TemplateBinding IndentWidth}" />
 
                             <!-- Expander Arrow — 圆角朝下三角形（用户指定 SVG path,
                                  几何在 ~1160×1012 bbox），Stretch=Uniform 缩放进
@@ -262,18 +317,28 @@
                                     Visibility="Collapsed" />
                 </StackPanel>
                 <ControlTemplate.Triggers>
+                    <Trigger Property="IsCheckBoxVisible" Value="True">
+                        <Setter TargetName="PART_CheckBox" Property="Visibility" Value="Visible" />
+                    </Trigger>
+                    <Trigger Property="HasItems" Value="True">
+                        <Setter TargetName="PART_ExpanderBorder" Property="Visibility" Value="Visible" />
+                    </Trigger>
+                    <Trigger Property="IsExpanded" Value="True">
+                        <Setter TargetName="PART_ItemsHost" Property="Visibility" Value="Visible" />
+                    </Trigger>
                     <Trigger SourceName="PART_HeaderBorder" Property="IsMouseOver" Value="True">
-                        <Setter TargetName="PART_HeaderBorder" Property="Background" Value="{ThemeResource ControlBackgroundHover}" />
+                        <Setter TargetName="PART_HeaderBorder" Property="Background" Value="{TemplateBinding HoverBrush}" />
                     </Trigger>
                     <Trigger Property="IsSelected" Value="True">
-                        <Setter TargetName="PART_HeaderBorder" Property="Background" Value="{ThemeResource SelectionBackground}" />
+                        <Setter TargetName="PART_HeaderBorder" Property="Background" Value="{TemplateBinding SelectionBrush}" />
+                        <Setter TargetName="PART_HeaderBorder" Property="BorderBrush" Value="{TemplateBinding SelectionBorderBrush}" />
                     </Trigger>
                     <MultiTrigger>
                         <MultiTrigger.Conditions>
                             <Condition Property="IsSelected" Value="True" />
                             <Condition SourceName="PART_HeaderBorder" Property="IsMouseOver" Value="True" />
                         </MultiTrigger.Conditions>
-                        <Setter TargetName="PART_HeaderBorder" Property="Background" Value="{ThemeResource AccentBrushPressed}" />
+                        <Setter TargetName="PART_HeaderBorder" Property="Background" Value="{TemplateBinding SelectionPointerOverBrush}" />
                     </MultiTrigger>
                 </ControlTemplate.Triggers>
             </ControlTemplate>
@@ -291,6 +356,11 @@
     <!-- ============================================== -->
     <Style TargetType="TreeViewItem">
         <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderBrush" Value="Transparent" />
+        <Setter Property="SelectionBrush" Value="{ThemeResource SelectionBackground}" />
+        <Setter Property="HoverBrush" Value="{ThemeResource ControlBackgroundHover}" />
+        <Setter Property="SelectionPointerOverBrush" Value="{ThemeResource AccentBrushPressed}" />
+        <Setter Property="SelectionBorderBrush" Value="Transparent" />
         <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
         <Setter Property="Padding" Value="6,3,6,3" />
         <Setter Property="CornerRadius" Value="8" />
@@ -301,6 +371,8 @@
                     <!-- Header Row -->
                     <Border Name="PART_HeaderBorder"
                             Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
                             CornerRadius="{TemplateBinding CornerRadius}"
                             Shape="RoundedRectangle"
                             MinHeight="28">
@@ -314,7 +386,7 @@
                             <!-- Indent Spacer -->
                             <Grid Name="PART_IndentSpacer"
                                   Grid.Column="0"
-                                  Width="0" />
+                                  Width="{TemplateBinding IndentWidth}" />
 
                             <!-- Expander Arrow — 圆角朝下三角形（用户指定 SVG path）,
                                  Stretch=Uniform 缩放进 8×8 槽。自然朝下 = 展开态,
@@ -351,17 +423,18 @@
                 </StackPanel>
                 <ControlTemplate.Triggers>
                     <Trigger SourceName="PART_HeaderBorder" Property="IsMouseOver" Value="True">
-                        <Setter TargetName="PART_HeaderBorder" Property="Background" Value="{ThemeResource ControlBackgroundHover}" />
+                        <Setter TargetName="PART_HeaderBorder" Property="Background" Value="{TemplateBinding HoverBrush}" />
                     </Trigger>
                     <Trigger Property="IsSelected" Value="True">
-                        <Setter TargetName="PART_HeaderBorder" Property="Background" Value="{ThemeResource SelectionBackground}" />
+                        <Setter TargetName="PART_HeaderBorder" Property="Background" Value="{TemplateBinding SelectionBrush}" />
+                        <Setter TargetName="PART_HeaderBorder" Property="BorderBrush" Value="{TemplateBinding SelectionBorderBrush}" />
                     </Trigger>
                     <MultiTrigger>
                         <MultiTrigger.Conditions>
                             <Condition Property="IsSelected" Value="True" />
                             <Condition SourceName="PART_HeaderBorder" Property="IsMouseOver" Value="True" />
                         </MultiTrigger.Conditions>
-                        <Setter TargetName="PART_HeaderBorder" Property="Background" Value="{ThemeResource AccentBrushPressed}" />
+                        <Setter TargetName="PART_HeaderBorder" Property="Background" Value="{TemplateBinding SelectionPointerOverBrush}" />
                     </MultiTrigger>
                 </ControlTemplate.Triggers>
             </ControlTemplate>

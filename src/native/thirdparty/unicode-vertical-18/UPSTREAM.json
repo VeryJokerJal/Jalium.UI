@@ -1,0 +1,11 @@
+{
+  "unicode_version": "18.0.0",
+  "license": "../UNICODE-LICENSE.txt",
+  "inputs": [
+    {
+      "file": "VerticalOrientation.txt",
+      "url": "https://www.unicode.org/Public/18.0.0/ucd/VerticalOrientation.txt",
+      "sha256": "0803e09669d7aa7137de678e55b848bd418c6632694fa1b05f0b40941103c748"
+    }
+  ]
+}

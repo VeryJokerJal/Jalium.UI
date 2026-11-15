@@ -1,0 +1,28 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:local="clr-namespace:Jalium.UI.Tests">
+    <Style TargetType="local:GeneratedLibraryControl">
+        <Setter Property="local:GeneratedControlProperties.Enabled" Value="True" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="local:GeneratedLibraryControl">
+                <Border x:Name="PART_Root" Opacity="0.75" TextElement.FontSize="19">
+                    <VisualStateManager.VisualStateGroups>
+                        <VisualStateGroup x:Name="TestStates">
+                            <VisualState x:Name="Ready"><VisualState.Setters><Setter TargetName="PART_Root" Property="Opacity" Value="0.5" /></VisualState.Setters></VisualState>
+                            <VisualState x:Name="Empty" />
+                        </VisualStateGroup>
+                        <VisualStateGroup x:Name="OtherStates"><VisualState x:Name="Active" /></VisualStateGroup>
+                    </VisualStateManager.VisualStateGroups>
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition x:Name="PART_Column" /></Grid.ColumnDefinitions>
+                        <TextBlock x:Name="PART_AncestorText" Text="{Binding Tag, RelativeSource={RelativeSource AncestorType=local:GeneratedLibraryControl}}" />
+                        <TextBlock x:Name="PART_TypedAncestorText" Text="{Binding Tag, RelativeSource={RelativeSource AncestorType={x:Type local:GeneratedLibraryControl}}}" />
+                        <NavigationView>
+                            <NavigationView.PaneHeader><Image x:Name="PART_Logo" /></NavigationView.PaneHeader>
+                        </NavigationView>
+                    </Grid>
+                </Border>
+            </ControlTemplate>
+        </Setter>
+    </Style>
+</ResourceDictionary>

@@ -1,7 +1,4 @@
 using Jalium.UI.Controls.Primitives;
-using Jalium.UI.Input;
-using Jalium.UI.Controls.Themes;
-using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
 
@@ -9,6 +6,29 @@ namespace Jalium.UI.Controls;
 /// Represents a control that displays a message to the user with an optional close button.
 /// Used for showing informational, success, warning, or error messages.
 /// </summary>
+[TemplatePart(Name = "PART_CloseButton", Type = typeof(ButtonBase))]
+[TemplatePart(Name = "PART_Content", Type = typeof(ContentPresenter))]
+[TemplatePart(Name = "PART_Action", Type = typeof(ContentPresenter))]
+[TemplateVisualState(Name = "Normal", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Disabled", GroupName = "CommonStates")]
+[TemplateVisualState(Name = "Open", GroupName = "OpenStates")]
+[TemplateVisualState(Name = "Closed", GroupName = "OpenStates")]
+[TemplateVisualState(Name = "Information", GroupName = "SeverityStates")]
+[TemplateVisualState(Name = "Success", GroupName = "SeverityStates")]
+[TemplateVisualState(Name = "Warning", GroupName = "SeverityStates")]
+[TemplateVisualState(Name = "Error", GroupName = "SeverityStates")]
+[TemplateVisualState(Name = "IconVisible", GroupName = "IconStates")]
+[TemplateVisualState(Name = "IconHidden", GroupName = "IconStates")]
+[TemplateVisualState(Name = "DefaultIcon", GroupName = "IconSourceStates")]
+[TemplateVisualState(Name = "CustomIcon", GroupName = "IconSourceStates")]
+[TemplateVisualState(Name = "Closable", GroupName = "CloseStates")]
+[TemplateVisualState(Name = "NotClosable", GroupName = "CloseStates")]
+[TemplateVisualState(Name = "HasTitle", GroupName = "TitleStates")]
+[TemplateVisualState(Name = "NoTitle", GroupName = "TitleStates")]
+[TemplateVisualState(Name = "HasMessage", GroupName = "MessageStates")]
+[TemplateVisualState(Name = "NoMessage", GroupName = "MessageStates")]
+[TemplateVisualState(Name = "HasAction", GroupName = "ActionStates")]
+[TemplateVisualState(Name = "NoAction", GroupName = "ActionStates")]
 public class InfoBar : ContentControl
 {
     /// <inheritdoc />
@@ -16,17 +36,6 @@ public class InfoBar : ContentControl
     {
         return new Jalium.UI.Automation.Peers.InfoBarAutomationPeer(this);
     }
-
-    // Cached brushes for OnRender (per-severity)
-    private static readonly SolidColorBrush s_whiteBrush = new(Color.White);
-    private static readonly SolidColorBrush s_infoBgBrush = new(Color.FromRgb(45, 45, 55));
-    private static readonly SolidColorBrush s_infoIconBrush = new(ThemeColors.Accent);
-    private static readonly SolidColorBrush s_successBgBrush = new(Color.FromRgb(35, 55, 40));
-    private static readonly SolidColorBrush s_successIconBrush = new(Color.FromRgb(16, 185, 129));
-    private static readonly SolidColorBrush s_warningBgBrush = new(Color.FromRgb(55, 50, 35));
-    private static readonly SolidColorBrush s_warningIconBrush = new(Color.FromRgb(245, 158, 11));
-    private static readonly SolidColorBrush s_errorBgBrush = new(Color.FromRgb(55, 35, 40));
-    private static readonly SolidColorBrush s_errorIconBrush = new(Color.FromRgb(239, 68, 68));
 
     #region Dependency Properties
 
@@ -87,6 +96,11 @@ public class InfoBar : ContentControl
             new PropertyMetadata(null, OnLayoutPropertyChanged));
 
     #endregion
+
+    /// <summary>Identifies the optional custom severity icon source.</summary>
+    public static readonly DependencyProperty IconSourceProperty = DependencyProperty.Register(nameof(IconSource), typeof(IconSource), typeof(InfoBar), new PropertyMetadata(null, OnVisualPropertyChanged));
+    /// <summary>Gets or sets a custom icon while preserving IsIconVisible and the severity presentation.</summary>
+    public IconSource? IconSource { get => (IconSource?)GetValue(IconSourceProperty); set => SetValue(IconSourceProperty, value); }
 
     #region Routed Events
 
@@ -198,365 +212,81 @@ public class InfoBar : ContentControl
 
     #endregion
 
-    #region Private Fields
+    private ButtonBase? _closeButton;
+    private ContentPresenter? _contentHost, _actionHost;
 
-    private const double IconSize = 20;
-    private const double IconMargin = 12;
-    private const double CloseButtonSize = 32;
-    private new const double MinHeight = 48;
-    private Rect _closeButtonRect;
-
-    #endregion
-
-    #region Constructor
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="InfoBar"/> class.
-    /// </summary>
-    public InfoBar()
+    static InfoBar()
     {
-        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
+        DefaultStyleKeyProperty.OverrideMetadata(typeof(InfoBar), new PropertyMetadata(typeof(InfoBar)));
+        VisibilityProperty.OverrideMetadata(typeof(InfoBar), new PropertyMetadata(Visibility.Visible, null,
+            (owner, value) => ((InfoBar)owner).IsOpen ? value : Visibility.Collapsed));
     }
 
-    #endregion
-
-    #region Template Parts
-
-    private Border? _rootBorder;
-    private Button? _closeButton;
+    /// <summary>Initializes a message control whose presentation is supplied entirely by its template.</summary>
+    public InfoBar() { }
 
     /// <inheritdoc />
     public override void OnApplyTemplate()
     {
-        base.OnApplyTemplate();
-
-        _rootBorder = GetTemplateChild("RootBorder") as Border;
-        _closeButton = GetTemplateChild("PART_CloseButton") as Button;
-
-        if (_closeButton != null)
-        {
-            _closeButton.Click += (s, e) =>
-            {
-                RaiseEvent(new RoutedEventArgs(CloseButtonClickEvent, this));
-                IsOpen = false;
-            };
-        }
+        ReleaseParts(); base.OnApplyTemplate();
+        _closeButton = GetTemplateChild("PART_CloseButton") as ButtonBase;
+        if (_closeButton is not null) _closeButton.Click += OnCloseClick;
+        _contentHost = GetTemplateChild("PART_Content") as ContentPresenter;
+        _actionHost = GetTemplateChild("PART_Action") as ContentPresenter;
+        UpdateVisualStates();
     }
-
-    #endregion
-
-    #region Input Handling
-
-    private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
-    {
-        if (e.ChangedButton == MouseButton.Left)
-        {
-            var position = e.GetPosition(this);
-
-            // Check if click is on close button
-            if (IsClosable && _closeButtonRect.Contains(position))
-            {
-                RaiseEvent(new RoutedEventArgs(CloseButtonClickEvent, this));
-                IsOpen = false;
-                e.Handled = true;
-            }
-        }
-    }
-
-    #endregion
-
-    #region Layout
 
     /// <inheritdoc />
-    protected override Size MeasureOverride(Size availableSize)
+    protected override void OnTemplateChanging() { ReleaseParts(); base.OnTemplateChanging(); }
+
+    private void ReleaseParts()
     {
-        if (!IsOpen)
-        {
-            return default(Size);
-        }
-
-        var padding = Padding;
-        var width = availableSize.Width;
-        var height = MinHeight;
-
-        // Calculate text heights
-        if (FontSize > 0 && !string.IsNullOrEmpty(Title))
-        {
-            var titleFormatted = new FormattedText(Title, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize + 2);
-            titleFormatted.FontWeight = 600;
-            Interop.TextMeasurement.MeasureText(titleFormatted);
-            height = Math.Max(height, titleFormatted.Height + padding.TotalHeight);
-        }
-
-        if (FontSize > 0 && !string.IsNullOrEmpty(Message))
-        {
-            var messageFormatted = new FormattedText(Message, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize);
-            Interop.TextMeasurement.MeasureText(messageFormatted);
-
-            if (!string.IsNullOrEmpty(Title))
-            {
-                height += messageFormatted.Height + 4;
-            }
-            else
-            {
-                height = Math.Max(height, messageFormatted.Height + padding.TotalHeight);
-            }
-        }
-
-        return new Size(width, height);
+        if (_closeButton is not null) _closeButton.Click -= OnCloseClick;
+        _closeButton = null; ReleaseContent(_contentHost); ReleaseContent(_actionHost); _contentHost = _actionHost = null;
     }
+    private static void ReleaseContent(ContentPresenter? presenter)
+    {
+        if (presenter is null) return;
+        presenter.ClearBinding(ContentPresenter.ContentProperty); presenter.ClearValue(ContentPresenter.ContentProperty);
+    }
+    private void OnCloseClick(object sender, RoutedEventArgs e) => TryClose();
 
-    #endregion
-
-    #region Rendering
+    /// <summary>Closes an enabled, open and closable message, raises both close events, and preserves its IsOpen binding.</summary>
+    public bool TryClose()
+    {
+        if (!IsEnabled || !IsOpen || !IsClosable) return false;
+        RaiseEvent(new RoutedEventArgs(CloseButtonClickEvent, this)); SetCurrentValue(IsOpenProperty, false); return true;
+    }
 
     /// <inheritdoc />
-    protected override void OnRender(DrawingContext drawingContext)
+    protected override void OnIsEnabledChanged(bool oldValue, bool newValue) { base.OnIsEnabledChanged(oldValue, newValue); UpdateVisualStates(); }
+
+    private void UpdateVisualStates()
     {
-        // If using template, let the template handle rendering
-        if (_rootBorder != null)
-        {
-            return;
-        }
-
-        if (!IsOpen)
-            return;
-        var dc = drawingContext;
-
-        var rect = new Rect(RenderSize);
-        var padding = Padding;
-        var cornerRadius = CornerRadius;
-
-        // Get severity brushes (cached) and colors (for sub-methods that need Color)
-        var (severityBgBrush, severityIconBrush) = GetSeverityBrushes();
-        var (_, fgColor, iconColor) = GetSeverityColors();
-
-        // Draw background
-        var bgBrush = Background ?? severityBgBrush;
-        dc.DrawRoundedRectangle(bgBrush, null, rect, cornerRadius);
-
-        // Draw left accent bar (only left corners have radius)
-        var accentRect = new Rect(0, 0, 4, rect.Height);
-        var accentCornerRadius = new CornerRadius(cornerRadius.TopLeft, 0, 0, cornerRadius.BottomLeft);
-        dc.DrawRoundedRectangle(severityIconBrush, null, accentRect, accentCornerRadius);
-
-        var currentX = padding.Left + 4; // After accent bar
-
-        // Draw icon
-        if (IsIconVisible)
-        {
-            DrawIcon(dc, currentX, (rect.Height - IconSize) / 2, iconColor);
-            currentX += IconSize + IconMargin;
-        }
-
-        // Draw title and message
-        var textBrush = Foreground ?? s_whiteBrush;
-        var currentY = padding.Top;
-
-        if (FontSize > 0 && !string.IsNullOrEmpty(Title))
-        {
-            var titleFormatted = new FormattedText(Title, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize + 2)
-            {
-                Foreground = textBrush,
-                FontWeight = 600
-            };
-            Interop.TextMeasurement.MeasureText(titleFormatted);
-            dc.DrawText(titleFormatted, new Point(currentX, currentY));
-            currentY += titleFormatted.Height + 4;
-        }
-
-        if (FontSize > 0 && !string.IsNullOrEmpty(Message))
-        {
-            var messageFormatted = new FormattedText(Message, FontFamily?.GetRenderingSource(this) ?? FrameworkElement.DefaultFontFamilyName, FontSize)
-            {
-                Foreground = textBrush
-            };
-            Interop.TextMeasurement.MeasureText(messageFormatted);
-
-            if (string.IsNullOrEmpty(Title))
-            {
-                currentY = (rect.Height - messageFormatted.Height) / 2;
-            }
-
-            dc.DrawText(messageFormatted, new Point(currentX, currentY));
-        }
-
-        // Draw close button
-        if (IsClosable)
-        {
-            var closeX = rect.Width - CloseButtonSize - padding.Right;
-            var closeY = (rect.Height - CloseButtonSize) / 2;
-            _closeButtonRect = new Rect(closeX, closeY, CloseButtonSize, CloseButtonSize);
-
-            DrawCloseButton(dc, closeX, closeY, fgColor);
-        }
+        if (TemplateRootInternal is null) return;
+        VisualStateManager.GoToState(this, IsEnabled ? "Normal" : "Disabled", false);
+        VisualStateManager.GoToState(this, IsOpen ? "Open" : "Closed", false);
+        VisualStateManager.GoToState(this, Severity switch { InfoBarSeverity.Success => "Success", InfoBarSeverity.Warning => "Warning", InfoBarSeverity.Error => "Error", _ => "Information" }, false);
+        VisualStateManager.GoToState(this, IsIconVisible ? "IconVisible" : "IconHidden", false);
+        VisualStateManager.GoToState(this, IconSource is null ? "DefaultIcon" : "CustomIcon", false);
+        VisualStateManager.GoToState(this, IsClosable ? "Closable" : "NotClosable", false);
+        VisualStateManager.GoToState(this, string.IsNullOrEmpty(Title) ? "NoTitle" : "HasTitle", false);
+        VisualStateManager.GoToState(this, string.IsNullOrEmpty(Message) ? "NoMessage" : "HasMessage", false);
+        VisualStateManager.GoToState(this, ActionButton is null ? "NoAction" : "HasAction", false);
     }
-
-    private Pen? _iconPen;
-    private Color _iconPenColor;
-    private Pen? _closePen;
-    private Color _closePenColor;
-
-    private void DrawIcon(DrawingContext dc, double x, double y, Color color)
-    {
-        if (_iconPen == null || _iconPenColor != color)
-        {
-            _iconPenColor = color;
-            _iconPen = new Pen(new SolidColorBrush(color), 2);
-        }
-        var iconPen = _iconPen;
-        var centerX = x + IconSize / 2;
-        var centerY = y + IconSize / 2;
-        var radius = IconSize / 2 - 2;
-
-        // Draw circle
-        dc.DrawEllipse(null, iconPen, new Point(centerX, centerY), radius, radius);
-
-        // Draw icon content based on severity
-        switch (Severity)
-        {
-            case InfoBarSeverity.Informational:
-                // Draw "i" for info
-                dc.DrawLine(iconPen, new Point(centerX, centerY - 4), new Point(centerX, centerY - 3));
-                dc.DrawLine(iconPen, new Point(centerX, centerY - 1), new Point(centerX, centerY + 4));
-                break;
-
-            case InfoBarSeverity.Success:
-                // Draw checkmark
-                dc.DrawLine(iconPen, new Point(centerX - 4, centerY), new Point(centerX - 1, centerY + 3));
-                dc.DrawLine(iconPen, new Point(centerX - 1, centerY + 3), new Point(centerX + 4, centerY - 3));
-                break;
-
-            case InfoBarSeverity.Warning:
-                // Draw "!" for warning
-                dc.DrawLine(iconPen, new Point(centerX, centerY - 4), new Point(centerX, centerY + 1));
-                dc.DrawLine(iconPen, new Point(centerX, centerY + 3), new Point(centerX, centerY + 4));
-                break;
-
-            case InfoBarSeverity.Error:
-                // Draw "X" for error
-                dc.DrawLine(iconPen, new Point(centerX - 3, centerY - 3), new Point(centerX + 3, centerY + 3));
-                dc.DrawLine(iconPen, new Point(centerX + 3, centerY - 3), new Point(centerX - 3, centerY + 3));
-                break;
-        }
-    }
-
-    private void DrawCloseButton(DrawingContext dc, double x, double y, Color color)
-    {
-        var closeColor = Color.FromArgb(128, color.R, color.G, color.B);
-        if (_closePen == null || _closePenColor != closeColor)
-        {
-            _closePenColor = closeColor;
-            _closePen = new Pen(new SolidColorBrush(closeColor), 1.5);
-        }
-        var closePen = _closePen;
-
-        var centerX = x + CloseButtonSize / 2;
-        var centerY = y + CloseButtonSize / 2;
-        var size = 5;
-
-        dc.DrawLine(closePen, new Point(centerX - size, centerY - size), new Point(centerX + size, centerY + size));
-        dc.DrawLine(closePen, new Point(centerX + size, centerY - size), new Point(centerX - size, centerY + size));
-    }
-
-    private (SolidColorBrush Background, SolidColorBrush Icon) GetSeverityBrushes()
-    {
-        return Severity switch
-        {
-            InfoBarSeverity.Informational => (
-                ResolveSolidColorBrush("InfoBarInformationalBackground", s_infoBgBrush),
-                ResolveSolidColorBrush("InfoBarInfoBrush", s_infoIconBrush)),
-            InfoBarSeverity.Success => (
-                ResolveSolidColorBrush("InfoBarSuccessBackground", s_successBgBrush),
-                ResolveSolidColorBrush("InfoBarSuccessBrush", s_successIconBrush)),
-            InfoBarSeverity.Warning => (
-                ResolveSolidColorBrush("InfoBarWarningBackground", s_warningBgBrush),
-                ResolveSolidColorBrush("InfoBarWarningBrush", s_warningIconBrush)),
-            InfoBarSeverity.Error => (
-                ResolveSolidColorBrush("InfoBarErrorBackground", s_errorBgBrush),
-                ResolveSolidColorBrush("InfoBarErrorBrush", s_errorIconBrush)),
-            _ => (
-                ResolveSolidColorBrush("InfoBarInformationalBackground", s_infoBgBrush),
-                ResolveSolidColorBrush("InfoBarInfoBrush", s_infoIconBrush))
-        };
-    }
-
-    private (Color Background, Color Foreground, Color Icon) GetSeverityColors()
-    {
-        return Severity switch
-        {
-            InfoBarSeverity.Informational => (
-                ResolveColor("InfoBarInformationalBackground", Color.FromRgb(45, 45, 55)),
-                ResolveColor("InfoBarForeground", Color.White),
-                ResolveColor("InfoBarInfoBrush", ThemeColors.Accent)),
-
-            InfoBarSeverity.Success => (
-                ResolveColor("InfoBarSuccessBackground", Color.FromRgb(35, 55, 40)),
-                ResolveColor("InfoBarForeground", Color.White),
-                ResolveColor("InfoBarSuccessBrush", Color.FromRgb(16, 185, 129))),
-
-            InfoBarSeverity.Warning => (
-                ResolveColor("InfoBarWarningBackground", Color.FromRgb(55, 50, 35)),
-                ResolveColor("InfoBarForeground", Color.White),
-                ResolveColor("InfoBarWarningBrush", Color.FromRgb(245, 158, 11))),
-
-            InfoBarSeverity.Error => (
-                ResolveColor("InfoBarErrorBackground", Color.FromRgb(55, 35, 40)),
-                ResolveColor("InfoBarForeground", Color.White),
-                ResolveColor("InfoBarErrorBrush", Color.FromRgb(239, 68, 68))),
-
-            _ => (
-                ResolveColor("InfoBarInformationalBackground", Color.FromRgb(45, 45, 55)),
-                ResolveColor("InfoBarForeground", Color.White),
-                ResolveColor("InfoBarInfoBrush", ThemeColors.Accent))
-        };
-    }
-
-    private SolidColorBrush ResolveSolidColorBrush(string resourceKey, SolidColorBrush fallback)
-    {
-        return TryFindResource(resourceKey) as SolidColorBrush ?? fallback;
-    }
-
-    private Color ResolveColor(string resourceKey, Color fallback)
-    {
-        return (TryFindResource(resourceKey) as SolidColorBrush)?.Color ?? fallback;
-    }
-
-    #endregion
-
-    #region Property Changed Callbacks
-
     private static void OnIsOpenChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is InfoBar infoBar)
-        {
-            infoBar.InvalidateMeasure();
-            infoBar.InvalidateVisual();
-
-            if ((bool)e.NewValue! == false)
-            {
-                infoBar.RaiseEvent(new RoutedEventArgs(ClosedEvent, infoBar));
-            }
-        }
+        var bar = (InfoBar)d; bar.CoerceValue(VisibilityProperty); bar.InvalidateMeasure(); bar.UpdateVisualStates();
+        if (!(bool)e.NewValue!) bar.RaiseEvent(new RoutedEventArgs(ClosedEvent, bar));
     }
-
     private static void OnLayoutPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is InfoBar infoBar)
-        {
-            infoBar.InvalidateMeasure();
-        }
+        var bar = (InfoBar)d; bar.InvalidateMeasure(); bar.UpdateVisualStates();
     }
-
     private static new void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is InfoBar infoBar)
-        {
-            infoBar.InvalidateVisual();
-        }
+        var bar = (InfoBar)d; bar.InvalidateMeasure(); bar.UpdateVisualStates();
     }
-
-    #endregion
 }
 
 /// <summary>

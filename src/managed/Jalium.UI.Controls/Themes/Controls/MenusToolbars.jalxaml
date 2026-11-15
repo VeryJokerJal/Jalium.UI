@@ -2,10 +2,66 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
+    <Style TargetType="MenuFlyoutPresenter">
+        <Setter Property="Background" Value="{ThemeResource MenuFlyoutPresenterBackground}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource MenuFlyoutPresenterBorderBrush}" />
+        <Setter Property="Foreground" Value="{ThemeResource MenuFlyoutItemForeground}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Padding" Value="4" />
+        <Setter Property="CornerRadius" Value="8" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="MenuFlyoutPresenter">
+                <Border x:Name="PART_PopupBorder" UseLayoutRounding="{TemplateBinding UseLayoutRounding}"
+                        Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="{TemplateBinding CornerRadius}" Padding="{TemplateBinding Padding}">
+                    <VisualStateManager.VisualStateGroups>
+                        <VisualStateGroup x:Name="CommonStates">
+                            <VisualState x:Name="Normal" />
+                            <VisualState x:Name="Disabled"><VisualState.Setters><Setter TargetName="PART_PopupBorder" Property="Opacity" Value="0.55" /></VisualState.Setters></VisualState>
+                        </VisualStateGroup>
+                    </VisualStateManager.VisualStateGroups>
+                    <MenuPopupScrollHost x:Name="PART_ScrollHost" Foreground="{TemplateBinding Foreground}" />
+                </Border>
+            </ControlTemplate>
+        </Setter>
+    </Style>
+
+    <Style TargetType="MenuPopupScrollHost">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{ThemeResource MenuFlyoutItemForeground}" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="MenuPopupScrollHost">
+                <Grid x:Name="PART_Root" Background="{TemplateBinding Background}">
+                    <VisualStateManager.VisualStateGroups>
+                        <VisualStateGroup x:Name="ScrollStates"><VisualState x:Name="NoOverflow" /><VisualState x:Name="AtStart" /><VisualState x:Name="Scrolling" /><VisualState x:Name="AtEnd" /></VisualStateGroup>
+                        <VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Normal" /><VisualState x:Name="Disabled"><VisualState.Setters><Setter TargetName="PART_Root" Property="Opacity" Value="0.55" /></VisualState.Setters></VisualState></VisualStateGroup>
+                    </VisualStateManager.VisualStateGroups>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                    <RepeatButton x:Name="PART_ScrollUpButton" Style="{DynamicResource ScrollBarLineButtonStyle}" Tag="Up"
+                                  Height="{TemplateBinding EffectiveScrollButtonHeight}" MinHeight="0" MinWidth="0" CornerRadius="0" Padding="0" BorderThickness="0"
+                                  Background="{TemplateBinding Background}" Foreground="{TemplateBinding Foreground}" Focusable="False"
+                                  IsEnabled="{TemplateBinding CanScrollUp}" Visibility="Collapsed" AutomationProperties.Name="Scroll menu up" />
+                    <MenuPopupScrollViewer x:Name="PART_ScrollViewer" Grid.Row="1" CanContentScroll="True" VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled"
+                                  IsScrollBarAutoHideEnabled="False" IsScrollInertiaEnabled="False">
+                        <StackPanel x:Name="PART_ItemsPanel" />
+                    </MenuPopupScrollViewer>
+                    <RepeatButton x:Name="PART_ScrollDownButton" Grid.Row="2" Style="{DynamicResource ScrollBarLineButtonStyle}" Tag="Down"
+                                  Height="{TemplateBinding EffectiveScrollButtonHeight}" MinHeight="0" MinWidth="0" CornerRadius="0" Padding="0" BorderThickness="0"
+                                  Background="{TemplateBinding Background}" Foreground="{TemplateBinding Foreground}" Focusable="False"
+                                  IsEnabled="{TemplateBinding CanScrollDown}" Visibility="Collapsed" AutomationProperties.Name="Scroll menu down" />
+                </Grid>
+                <ControlTemplate.Triggers>
+                    <Trigger Property="IsOverflowing" Value="True"><Setter TargetName="PART_ScrollUpButton" Property="Visibility" Value="Visible" /><Setter TargetName="PART_ScrollDownButton" Property="Visibility" Value="Visible" /></Trigger>
+                </ControlTemplate.Triggers>
+            </ControlTemplate>
+        </Setter>
+    </Style>
+
     <!-- ============================================== -->
     <!-- AppBarButton Style -->
     <!-- ============================================== -->
     <Style TargetType="AppBarButton">
+        <Setter Property="CommandBar.LabelPosition" Value="{Binding Path=(CommandBar.LabelPosition), RelativeSource={RelativeSource AncestorType=ItemsControl}, FallbackValue=Bottom}" />
         <Setter Property="Background" Value="{ThemeResource AppBarButtonBackground}" />
         <Setter Property="Foreground" Value="{ThemeResource AppBarButtonForeground}" />
         <Setter Property="Padding" Value="4" />
@@ -20,7 +76,7 @@
                             CornerRadius="{TemplateBinding CornerRadius}"
                             Shape="RoundedRectangle"
                             Padding="{TemplateBinding Padding}">
-                        <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
+                        <StackPanel x:Name="PART_ContentPanel" Orientation="Vertical" HorizontalAlignment="Center">
                             <ContentPresenter Name="IconPresenter"
                                               Content="{TemplateBinding Icon}"
                                               HorizontalAlignment="Center"
@@ -42,6 +98,20 @@
                     <Trigger Property="IsPressed" Value="True">
                         <Setter TargetName="Root" Property="Background" Value="{ThemeResource AppBarButtonBackgroundPressed}" />
                     </Trigger>
+                    <Trigger Property="CommandBar.LabelPosition" Value="Right">
+                        <Setter TargetName="PART_ContentPanel" Property="Orientation" Value="Horizontal" />
+                        <Setter TargetName="PART_ContentPanel" Property="HorizontalAlignment" Value="Left" />
+                        <Setter TargetName="IconPresenter" Property="Margin" Value="2,0,0,0" />
+                        <Setter TargetName="LabelText" Property="Margin" Value="8,0,2,0" />
+                        <Setter TargetName="LabelText" Property="VerticalAlignment" Value="Center" />
+                        <Setter TargetName="IconPresenter" Property="VerticalAlignment" Value="Center" />
+                    </Trigger>
+                    <Trigger Property="CommandBar.LabelPosition" Value="Collapsed">
+                        <Setter TargetName="LabelText" Property="Visibility" Value="Collapsed" />
+                    </Trigger>
+                    <Trigger Property="LabelPosition" Value="Collapsed">
+                        <Setter TargetName="LabelText" Property="Visibility" Value="Collapsed" />
+                    </Trigger>
                     <Trigger Property="IsCompact" Value="True">
                         <Setter TargetName="LabelText" Property="Visibility" Value="Collapsed" />
                     </Trigger>
@@ -52,6 +122,9 @@
             <Trigger Property="IsEnabled" Value="False">
                 <Setter Property="Foreground" Value="{ThemeResource AppBarButtonForegroundDisabled}" />
                 <Setter Property="Opacity" Value="0.56" />
+            </Trigger>
+            <Trigger Property="CommandBar.LabelPosition" Value="Collapsed">
+                <Setter Property="IsCompact" Value="True" />
             </Trigger>
             <Trigger Property="IsCompact" Value="True">
                 <Setter Property="MinHeight" Value="36" />
@@ -66,12 +139,35 @@
     <Style TargetType="AppBarSeparator">
         <Setter Property="Foreground" Value="{ThemeResource AppBarSeparatorForeground}" />
         <Setter Property="Margin" Value="6,8,6,8" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="AppBarSeparator">
+                <Border x:Name="AppBarSeparatorRoot" Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
+                        CornerRadius="{TemplateBinding CornerRadius}" Padding="{TemplateBinding Padding}">
+                    <VisualStateManager.VisualStateGroups>
+                        <VisualStateGroup x:Name="CommonStates">
+                            <VisualState x:Name="Normal" />
+                            <VisualState x:Name="Disabled" />
+                        </VisualStateGroup>
+                        <VisualStateGroup x:Name="CompactStates">
+                            <VisualState x:Name="Full" />
+                            <VisualState x:Name="Compact" />
+                        </VisualStateGroup>
+                    </VisualStateManager.VisualStateGroups>
+                    <Grid MinWidth="1" MinHeight="{TemplateBinding SeparatorHeight}">
+                        <Border x:Name="PART_Line" Width="1" Margin="0,4"
+                                Background="{TemplateBinding ResolvedSeparatorBrush}" />
+                    </Grid>
+                </Border>
+            </ControlTemplate>
+        </Setter>
     </Style>
 
     <!-- ============================================== -->
     <!-- AppBarToggleButton Style -->
     <!-- ============================================== -->
     <Style TargetType="AppBarToggleButton">
+        <Setter Property="CommandBar.LabelPosition" Value="{Binding Path=(CommandBar.LabelPosition), RelativeSource={RelativeSource AncestorType=ItemsControl}, FallbackValue=Bottom}" />
         <Setter Property="Background" Value="{ThemeResource AppBarButtonBackground}" />
         <Setter Property="Foreground" Value="{ThemeResource AppBarButtonForeground}" />
         <Setter Property="Padding" Value="4" />
@@ -87,7 +183,7 @@
                             Shape="RoundedRectangle"
                             Padding="{TemplateBinding Padding}">
                         <Grid>
-                            <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
+                            <StackPanel x:Name="PART_ContentPanel" Orientation="Vertical" HorizontalAlignment="Center">
                                 <ContentPresenter Name="IconPresenter"
                                                   Content="{TemplateBinding Icon}"
                                                   HorizontalAlignment="Center"
@@ -122,6 +218,20 @@
                     <Trigger Property="IsChecked" Value="True">
                         <Setter TargetName="CheckedIndicator" Property="Visibility" Value="Visible" />
                     </Trigger>
+                    <Trigger Property="CommandBar.LabelPosition" Value="Right">
+                        <Setter TargetName="PART_ContentPanel" Property="Orientation" Value="Horizontal" />
+                        <Setter TargetName="PART_ContentPanel" Property="HorizontalAlignment" Value="Left" />
+                        <Setter TargetName="IconPresenter" Property="Margin" Value="2,0,0,0" />
+                        <Setter TargetName="LabelText" Property="Margin" Value="8,0,2,0" />
+                        <Setter TargetName="LabelText" Property="VerticalAlignment" Value="Center" />
+                        <Setter TargetName="IconPresenter" Property="VerticalAlignment" Value="Center" />
+                    </Trigger>
+                    <Trigger Property="CommandBar.LabelPosition" Value="Collapsed">
+                        <Setter TargetName="LabelText" Property="Visibility" Value="Collapsed" />
+                    </Trigger>
+                    <Trigger Property="LabelPosition" Value="Collapsed">
+                        <Setter TargetName="LabelText" Property="Visibility" Value="Collapsed" />
+                    </Trigger>
                     <Trigger Property="IsCompact" Value="True">
                         <Setter TargetName="LabelText" Property="Visibility" Value="Collapsed" />
                     </Trigger>
@@ -133,24 +243,11 @@
                 <Setter Property="Foreground" Value="{ThemeResource AppBarButtonForegroundDisabled}" />
                 <Setter Property="Opacity" Value="0.56" />
             </Trigger>
+            <Trigger Property="CommandBar.LabelPosition" Value="Collapsed">
+                <Setter Property="IsCompact" Value="True" />
+            </Trigger>
             <Trigger Property="IsCompact" Value="True">
                 <Setter Property="MinHeight" Value="36" />
-            </Trigger>
-        </Style.Triggers>
-    </Style>
-
-    <!-- ============================================== -->
-    <!-- CommandBar Style -->
-    <!-- ============================================== -->
-    <Style TargetType="CommandBar">
-        <Setter Property="Background" Value="{ThemeResource CommandBarBackground}" />
-        <Setter Property="BorderBrush" Value="{ThemeResource CommandBarBorderBrush}" />
-        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
-        <Setter Property="MinHeight" Value="48" />
-
-        <Style.Triggers>
-            <Trigger Property="IsKeyboardFocused" Value="True">
-                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
             </Trigger>
         </Style.Triggers>
     </Style>
@@ -165,6 +262,25 @@
         <Setter Property="BorderThickness" Value="0,1,0,0" />
         <Setter Property="Padding" Value="10,0,10,0" />
         <Setter Property="Height" Value="26" />
+        <Setter Property="ItemsPanel">
+            <ItemsPanelTemplate><StatusBarPanel /></ItemsPanelTemplate>
+        </Setter>
+        <Setter Property="Template">
+            <ControlTemplate TargetType="StatusBar">
+                <Border x:Name="StatusBarRoot" Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
+                        CornerRadius="{TemplateBinding CornerRadius}" Padding="{TemplateBinding Padding}">
+                    <Border.Resources>
+                        <Style TargetType="Separator" BasedOn="{StaticResource {x:Static StatusBar.SeparatorStyleKey}}" />
+                    </Border.Resources>
+                    <VisualStateManager.VisualStateGroups>
+                        <VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Normal" /><VisualState x:Name="Disabled" /></VisualStateGroup>
+                        <VisualStateGroup x:Name="ItemsStates"><VisualState x:Name="Empty" /><VisualState x:Name="HasItems" /></VisualStateGroup>
+                    </VisualStateManager.VisualStateGroups>
+                    <ItemsPresenter x:Name="PART_ItemsPresenter" />
+                </Border>
+            </ControlTemplate>
+        </Setter>
     </Style>
 
     <!-- ============================================== -->
@@ -174,6 +290,14 @@
         <Setter Property="Background" Value="{ThemeResource MenuBarBackground}" />
         <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
         <Setter Property="MinHeight" Value="36" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="MenuBar">
+                <Border x:Name="PART_Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}" CornerRadius="{TemplateBinding CornerRadius}">
+                    <VisualStateManager.VisualStateGroups><VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Normal" /><VisualState x:Name="Focused" /><VisualState x:Name="Disabled" /></VisualStateGroup></VisualStateManager.VisualStateGroups>
+                    <StackPanel x:Name="PART_ItemsPanel" Orientation="Horizontal" />
+                </Border>
+            </ControlTemplate>
+        </Setter>
     </Style>
 
     <!-- ============================================== -->
@@ -184,6 +308,15 @@
         <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
         <Setter Property="BorderBrush" Value="{ThemeResource CommandBarBorderBrush}" />
         <Setter Property="Height" Value="32" />
+        <Setter Property="BorderThickness" Value="0,0,0,1" />
+        <Setter Property="ItemsPanel"><ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate></Setter>
+        <Setter Property="Template">
+            <ControlTemplate TargetType="Menu">
+                <Border x:Name="PART_Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}" CornerRadius="{TemplateBinding CornerRadius}">
+                    <ItemsPresenter x:Name="PART_ItemsPresenter" />
+                </Border>
+            </ControlTemplate>
+        </Setter>
     </Style>
 
     <!-- ============================================== -->
@@ -194,6 +327,23 @@
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="Padding" Value="12,6,12,6" />
         <Setter Property="CornerRadius" Value="8" />
+        <Setter Property="HoverBackground" Value="{ThemeResource MenuBarItemBackgroundHover}" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="MenuBarItem">
+                <Grid MinHeight="32">
+                    <VisualStateManager.VisualStateGroups>
+                        <VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Normal" /><VisualState x:Name="PointerOver" /><VisualState x:Name="Focused" /><VisualState x:Name="MenuOpen" /><VisualState x:Name="Disabled"><VisualState.Setters><Setter TargetName="PART_Root" Property="Opacity" Value="0.56" /></VisualState.Setters></VisualState></VisualStateGroup>
+                        <VisualStateGroup x:Name="MenuStates"><VisualState x:Name="Closed" /><VisualState x:Name="Open" /></VisualStateGroup>
+                    </VisualStateManager.VisualStateGroups>
+                    <Border x:Name="PART_Highlight" Background="{TemplateBinding HoverBackground}" CornerRadius="{TemplateBinding CornerRadius}" Visibility="Collapsed" IsHitTestVisible="False" />
+                    <Border x:Name="PART_Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}" CornerRadius="{TemplateBinding CornerRadius}">
+
+                        <TextBlock x:Name="PART_Title" Text="{TemplateBinding Title}" Foreground="{TemplateBinding ItemForeground}" FontSize="{TemplateBinding ItemFontSize}" FontFamily="{TemplateBinding ItemFontFamily}" FontWeight="{TemplateBinding ItemFontWeight}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Border>
+                </Grid>
+                <ControlTemplate.Triggers><Trigger Property="ShowHighlight" Value="True"><Setter TargetName="PART_Highlight" Property="Visibility" Value="Visible" /></Trigger></ControlTemplate.Triggers>
+            </ControlTemplate>
+        </Setter>
     </Style>
 
     <!-- ============================================== -->
@@ -204,6 +354,46 @@
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="Height" Value="32" />
         <Setter Property="Padding" Value="10,0,10,0" />
+        <Setter Property="CornerRadius" Value="4" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="MenuItem">
+                <Border x:Name="PART_Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding ItemContentPadding}" CornerRadius="{TemplateBinding CornerRadius}">
+                    <VisualStateManager.VisualStateGroups>
+                        <VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Normal" /><VisualState x:Name="PointerOver" /><VisualState x:Name="Pressed" /><VisualState x:Name="Focused" /><VisualState x:Name="SubmenuOpen" /><VisualState x:Name="Disabled" /></VisualStateGroup>
+                        <VisualStateGroup x:Name="SubmenuStates"><VisualState x:Name="Closed" /><VisualState x:Name="Open" /></VisualStateGroup>
+                        <VisualStateGroup x:Name="CheckStates"><VisualState x:Name="Unchecked" /><VisualState x:Name="Checked" /></VisualStateGroup>
+                    </VisualStateManager.VisualStateGroups>
+                    <Grid MinWidth="50" MinHeight="28">
+                        <DockPanel>
+                            <Grid DockPanel.Dock="Right" Width="{TemplateBinding ArrowColumnSize}" ClipToBounds="True">
+                                <Path x:Name="PART_Arrow" Data="M0,0 L8,4 L0,8 Z" Fill="{TemplateBinding ItemForeground}" Width="8" Height="8" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed" IsHitTestVisible="False" />
+                            </Grid>
+                            <Border x:Name="PART_GestureColumn" DockPanel.Dock="Right" MinWidth="{TemplateBinding GestureColumnSize}" Padding="0,0,8,0" ClipToBounds="True">
+                                <TextBlock x:Name="PART_Gesture" Text="{TemplateBinding InputGestureText}" Foreground="{TemplateBinding GestureForeground}" FontSize="{TemplateBinding ItemFontSize}" FontFamily="{TemplateBinding ItemFontFamily}" FontWeight="{TemplateBinding ItemFontWeight}" TextAlignment="Right" VerticalAlignment="Center" />
+                            </Border>
+                            <Grid x:Name="PART_IconColumn" DockPanel.Dock="Left" Width="{TemplateBinding IconColumnSize}" ClipToBounds="True">
+                                <MenuIconPresenter x:Name="PART_Icon" Icon="{TemplateBinding Icon}" Foreground="{TemplateBinding ItemForeground}" FontSize="{TemplateBinding IconFontSize}" Height="16" VerticalAlignment="Center" IsHitTestVisible="False" ClipToBounds="True" />
+                                <Path x:Name="PART_Check" Data="M0,3 L3,6 L8,0" Stroke="{TemplateBinding ItemForeground}" StrokeThickness="2" Width="8" Height="6" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed" IsHitTestVisible="False" />
+                            </Grid>
+                            <ContentPresenter x:Name="PART_Header" Content="{TemplateBinding Header}" ContentTemplate="{TemplateBinding HeaderTemplate}" ContentTemplateSelector="{TemplateBinding HeaderTemplateSelector}" ContentStringFormat="{TemplateBinding HeaderStringFormat}" VerticalAlignment="Center" ClipToBounds="True" TextElement.Foreground="{Binding ItemForeground, RelativeSource={RelativeSource TemplatedParent}}" TextElement.FontSize="{Binding ItemFontSize, RelativeSource={RelativeSource TemplatedParent}}" TextElement.FontFamily="{Binding ItemFontFamily, RelativeSource={RelativeSource TemplatedParent}}" TextElement.FontWeight="{Binding ItemFontWeight, RelativeSource={RelativeSource TemplatedParent}}" />
+                        </DockPanel>
+                        <ItemsPresenter x:Name="PART_ItemsPresenter" Width="0" Height="0" Visibility="Hidden" IsHitTestVisible="False" />
+                        <Popup x:Name="PART_Popup" PlacementTarget="{Binding RelativeSource={RelativeSource TemplatedParent}}" Placement="{TemplateBinding SubmenuPlacement}" StaysOpen="False" IsLightDismissEnabled="True" ShouldConstrainToRootBounds="False">
+                            <Border x:Name="PART_PopupBorder" Background="{TemplateBinding SubmenuBackground}" BorderBrush="{TemplateBinding SubmenuBorderBrush}" BorderThickness="{TemplateBinding SubmenuBorderThickness}" Padding="{TemplateBinding SubmenuPadding}" CornerRadius="{TemplateBinding SubmenuCornerRadius}">
+                                <MenuPopupScrollHost x:Name="PART_ScrollHost" Foreground="{TemplateBinding ItemForeground}" FontSize="{TemplateBinding ItemFontSize}" FontFamily="{TemplateBinding ItemFontFamily}" FontWeight="{TemplateBinding ItemFontWeight}" />
+                            </Border>
+                        </Popup>
+                    </Grid>
+                </Border>
+                <ControlTemplate.Triggers>
+                    <Trigger Property="GestureColumnSize" Value="0"><Setter TargetName="PART_GestureColumn" Property="Visibility" Value="Collapsed" /></Trigger>
+                    <Trigger Property="ShowCheck" Value="True"><Setter TargetName="PART_Check" Property="Visibility" Value="Visible" /><Setter TargetName="PART_Icon" Property="Visibility" Value="Collapsed" /></Trigger>
+                    <Trigger Property="Role" Value="SubmenuHeader"><Setter TargetName="PART_Arrow" Property="Visibility" Value="Visible" /></Trigger>
+                    <Trigger Property="Role" Value="TopLevelItem"><Setter TargetName="PART_Icon" Property="Visibility" Value="Collapsed" /><Setter TargetName="PART_Gesture" Property="Visibility" Value="Collapsed" /></Trigger>
+                    <Trigger Property="Role" Value="TopLevelHeader"><Setter TargetName="PART_Icon" Property="Visibility" Value="Collapsed" /><Setter TargetName="PART_Gesture" Property="Visibility" Value="Collapsed" /></Trigger>
+                </ControlTemplate.Triggers>
+            </ControlTemplate>
+        </Setter>
         <Style.Triggers>
             <MultiTrigger>
                 <MultiTrigger.Conditions>
@@ -250,47 +440,178 @@
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="5" />
         <Setter Property="CornerRadius" Value="14" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="ContextMenu">
+                <Grid>
+                    <VisualStateManager.VisualStateGroups><VisualStateGroup x:Name="PopupStates"><VisualState x:Name="Closed" /><VisualState x:Name="Open" /></VisualStateGroup></VisualStateManager.VisualStateGroups>
+                    <Popup x:Name="PART_Popup" Placement="MousePoint" StaysOpen="False" IsLightDismissEnabled="True" ShouldConstrainToRootBounds="False">
+                        <Border x:Name="PART_PopupBorder" Background="{TemplateBinding PopupBackground}" BorderBrush="{TemplateBinding PopupBorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}" CornerRadius="{TemplateBinding CornerRadius}">
+                            <MenuPopupScrollHost x:Name="PART_ScrollHost" Foreground="{TemplateBinding Foreground}" FontSize="{TemplateBinding FontSize}" FontFamily="{TemplateBinding FontFamily}" FontWeight="{TemplateBinding FontWeight}" />
+                        </Border>
+                    </Popup>
+                </Grid>
+            </ControlTemplate>
+        </Setter>
     </Style>
 
     <!-- ============================================== -->
     <!-- MenuFlyoutItem Style -->
     <!-- ============================================== -->
-    <Style TargetType="MenuFlyoutItem">
-        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
-        <Setter Property="MinHeight" Value="34" />
+    <Style TargetType="MenuIconPresenter">
+        <Setter Property="Template"><ControlTemplate TargetType="MenuIconPresenter"><ContentPresenter Content="{TemplateBinding VisualIcon}" TextElement.Foreground="{Binding Foreground, RelativeSource={RelativeSource TemplatedParent}}" /></ControlTemplate></Setter>
     </Style>
+    <Style TargetType="MenuFlyoutItem">
+        <Setter Property="MenuForeground" Value="{ThemeResource TextPrimary}" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="CornerRadius" Value="4" />
+        <Setter Property="MinHeight" Value="34" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="MenuFlyoutItem">
+                <Border x:Name="PART_Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}" CornerRadius="{TemplateBinding CornerRadius}">
+                    <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Normal" /><VisualState x:Name="PointerOver" /><VisualState x:Name="Focused" /><VisualState x:Name="SubmenuOpen" /><VisualState x:Name="Disabled"><VisualState.Setters><Setter TargetName="PART_Root" Property="Opacity" Value="0.55" /></VisualState.Setters></VisualState></VisualStateGroup>
+                            <VisualStateGroup x:Name="CheckStates"><VisualState x:Name="Unchecked" /><VisualState x:Name="Checked" /></VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                    <Grid MinHeight="{TemplateBinding MinHeight}">
 
-    <!-- ============================================== -->
-    <!-- MenuFlyoutSeparator Style -->
-    <!-- ============================================== -->
+                        <Border x:Name="PART_Highlight" Background="{ThemeResource MenuFlyoutItemBackgroundHover}" CornerRadius="{TemplateBinding CornerRadius}" Margin="2" Visibility="Collapsed" IsHitTestVisible="False" />
+                        <Grid Margin="12,0,12,0">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="28" /><ColumnDefinition Width="*" /><ColumnDefinition Width="16" /></Grid.ColumnDefinitions>
+                            <MenuIconPresenter x:Name="PART_Icon" Icon="{TemplateBinding Icon}" Foreground="{TemplateBinding ItemForeground}" FontSize="{TemplateBinding ItemFontSize}" Width="28" Height="16" VerticalAlignment="Center" IsHitTestVisible="False" />
+                            <Path x:Name="PART_Check" Data="M2,8 L6,12 L14,4" Stroke="{TemplateBinding ItemForeground}" StrokeThickness="1.5" Width="16" Height="16" Stretch="Uniform" HorizontalAlignment="Left" VerticalAlignment="Center" Visibility="Collapsed" IsHitTestVisible="False" />
+                            <TextBlock x:Name="PART_Text" Grid.Column="1" Text="{TemplateBinding Text}" Foreground="{TemplateBinding ItemForeground}" FontSize="{TemplateBinding ItemFontSize}" FontFamily="{TemplateBinding ItemFontFamily}" FontWeight="{TemplateBinding ItemFontWeight}" VerticalAlignment="Center" />
+                            <TextBlock x:Name="PART_Accelerator" Grid.Column="0" Grid.ColumnSpan="3" Text="{TemplateBinding KeyboardAcceleratorTextOverride}" Foreground="{TemplateBinding ItemForeground}" FontSize="{TemplateBinding AcceleratorFontSize}" FontFamily="{TemplateBinding ItemFontFamily}" Opacity="0.72" TextAlignment="Right" VerticalAlignment="Center" Visibility="Collapsed" />
+                            <Path x:Name="PART_Arrow" Grid.Column="2" Data="M0,0 L6,4 L0,8 Z" Fill="{TemplateBinding ItemForeground}" Width="6" Height="8" Stretch="Uniform" HorizontalAlignment="Right" VerticalAlignment="Center" Visibility="Collapsed" IsHitTestVisible="False" />
+                        </Grid>
+                    </Grid>
+                </Border>
+                <ControlTemplate.Triggers>
+                    <Trigger Property="ShowHighlight" Value="True"><Setter TargetName="PART_Highlight" Property="Visibility" Value="Visible" /></Trigger>
+                    <Trigger Property="IsItemChecked" Value="True"><Setter TargetName="PART_Check" Property="Visibility" Value="Visible" /><Setter TargetName="PART_Icon" Property="Visibility" Value="Collapsed" /></Trigger>
+                    <Trigger Property="HasSubmenu" Value="True"><Setter TargetName="PART_Arrow" Property="Visibility" Value="Visible" /></Trigger>
+                    <Trigger Property="HasAccelerator" Value="True"><Setter TargetName="PART_Accelerator" Property="Visibility" Value="Visible" /><Setter TargetName="PART_Text" Property="Margin" Value="0,0,96,0" /></Trigger>
+                </ControlTemplate.Triggers>
+            </ControlTemplate>
+        </Setter>
+    </Style>
+    <Style TargetType="MenuFlyoutSubItem" BasedOn="{StaticResource {x:Type MenuFlyoutItem}}">
+        <Setter Property="Template">
+            <ControlTemplate TargetType="MenuFlyoutSubItem">
+                <Border x:Name="PART_Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}" CornerRadius="{TemplateBinding CornerRadius}">
+                    <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates"><VisualState x:Name="Normal" /><VisualState x:Name="PointerOver" /><VisualState x:Name="Focused" /><VisualState x:Name="SubmenuOpen" /><VisualState x:Name="Disabled"><VisualState.Setters><Setter TargetName="PART_Root" Property="Opacity" Value="0.55" /></VisualState.Setters></VisualState></VisualStateGroup>
+                            <VisualStateGroup x:Name="SubmenuStates"><VisualState x:Name="Closed" /><VisualState x:Name="Open" /></VisualStateGroup>
+                            <VisualStateGroup x:Name="CheckStates"><VisualState x:Name="Unchecked" /><VisualState x:Name="Checked" /></VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                    <Grid MinHeight="{TemplateBinding MinHeight}">
+
+                        <Border x:Name="PART_Highlight" Background="{ThemeResource MenuFlyoutItemBackgroundHover}" CornerRadius="{TemplateBinding CornerRadius}" Margin="2" Visibility="Collapsed" IsHitTestVisible="False" />
+                        <Grid Margin="12,0,12,0">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="28" /><ColumnDefinition Width="*" /><ColumnDefinition Width="16" /></Grid.ColumnDefinitions>
+                            <MenuIconPresenter x:Name="PART_Icon" Icon="{TemplateBinding Icon}" Foreground="{TemplateBinding ItemForeground}" FontSize="{TemplateBinding ItemFontSize}" Width="28" Height="16" VerticalAlignment="Center" IsHitTestVisible="False" />
+                            <Path x:Name="PART_Check" Data="M2,8 L6,12 L14,4" Stroke="{TemplateBinding ItemForeground}" StrokeThickness="1.5" Width="16" Height="16" Stretch="Uniform" HorizontalAlignment="Left" VerticalAlignment="Center" Visibility="Collapsed" IsHitTestVisible="False" />
+                            <TextBlock x:Name="PART_Text" Grid.Column="1" Text="{TemplateBinding Text}" Foreground="{TemplateBinding ItemForeground}" FontSize="{TemplateBinding ItemFontSize}" FontFamily="{TemplateBinding ItemFontFamily}" FontWeight="{TemplateBinding ItemFontWeight}" VerticalAlignment="Center" />
+                            <TextBlock x:Name="PART_Accelerator" Grid.Column="0" Grid.ColumnSpan="3" Text="{TemplateBinding KeyboardAcceleratorTextOverride}" Foreground="{TemplateBinding ItemForeground}" FontSize="{TemplateBinding AcceleratorFontSize}" FontFamily="{TemplateBinding ItemFontFamily}" Opacity="0.72" TextAlignment="Right" VerticalAlignment="Center" Visibility="Collapsed" />
+                            <Path x:Name="PART_Arrow" Grid.Column="2" Data="M0,0 L6,4 L0,8 Z" Fill="{TemplateBinding ItemForeground}" Width="6" Height="8" Stretch="Uniform" HorizontalAlignment="Right" VerticalAlignment="Center" Visibility="Collapsed" IsHitTestVisible="False" />
+                        </Grid>
+                        <Popup x:Name="PART_Popup" Placement="Right" StaysOpen="False" IsLightDismissEnabled="True" ShouldConstrainToRootBounds="False">
+                            <Border x:Name="PART_PopupBorder" Background="{TemplateBinding SubmenuBackground}" BorderBrush="{TemplateBinding SubmenuBorderBrush}" BorderThickness="{TemplateBinding SubmenuBorderThickness}" Padding="{TemplateBinding SubmenuPadding}" CornerRadius="{TemplateBinding SubmenuCornerRadius}" MinWidth="160">
+                                <MenuPopupScrollHost x:Name="PART_ScrollHost" Foreground="{TemplateBinding ItemForeground}" FontSize="{TemplateBinding ItemFontSize}" FontFamily="{TemplateBinding ItemFontFamily}" FontWeight="{TemplateBinding ItemFontWeight}" />
+                            </Border>
+                        </Popup>
+                    </Grid>
+                </Border>
+                <ControlTemplate.Triggers>
+                    <Trigger Property="ShowHighlight" Value="True"><Setter TargetName="PART_Highlight" Property="Visibility" Value="Visible" /></Trigger>
+                    <Trigger Property="IsItemChecked" Value="True"><Setter TargetName="PART_Check" Property="Visibility" Value="Visible" /><Setter TargetName="PART_Icon" Property="Visibility" Value="Collapsed" /></Trigger>
+                    <Trigger Property="HasSubmenu" Value="True"><Setter TargetName="PART_Arrow" Property="Visibility" Value="Visible" /></Trigger>
+                    <Trigger Property="HasAccelerator" Value="True"><Setter TargetName="PART_Accelerator" Property="Visibility" Value="Visible" /><Setter TargetName="PART_Text" Property="Margin" Value="0,0,96,0" /></Trigger>
+                </ControlTemplate.Triggers>
+            </ControlTemplate>
+        </Setter>
+    </Style>
+    <Style TargetType="ToggleMenuFlyoutItem" BasedOn="{StaticResource {x:Type MenuFlyoutItem}}" />
     <Style TargetType="MenuFlyoutSeparator">
         <Setter Property="Foreground" Value="{ThemeResource MenuFlyoutPresenterBorderBrush}" />
         <Setter Property="Margin" Value="0,4,0,4" />
-    </Style>
-
-    <!-- ============================================== -->
-    <!-- ToggleMenuFlyoutItem Style -->
-    <!-- ============================================== -->
-    <Style TargetType="ToggleMenuFlyoutItem">
-        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
-        <Setter Property="MinHeight" Value="34" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="MenuFlyoutSeparator">
+                <Border x:Name="PART_Root" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}" CornerRadius="{TemplateBinding CornerRadius}">
+                    <SeparatorLinePanel MinHeight="9"><Border x:Name="PART_Line" Height="1" Margin="12,0,12,0" Background="{TemplateBinding Foreground}" VerticalAlignment="Center" /></SeparatorLinePanel>
+                </Border>
+            </ControlTemplate>
+        </Setter>
     </Style>
 
     <!-- ============================================== -->
     <!-- SwipeControl Style -->
     <!-- ============================================== -->
-    <Style TargetType="SwipeControl">
-        <Setter Property="Background" Value="{ThemeResource LayerFillColorAltBrush}" />
-        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
-    </Style>
+
 
     <!-- ============================================== -->
     <!-- ToolBar Style -->
     <!-- ============================================== -->
+    <Style x:Key="ToolBarOverflowButtonStyle" TargetType="Button">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="MinWidth" Value="0" />
+        <Setter Property="MinHeight" Value="0" />
+        <Setter Property="CornerRadius" Value="5" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="Button">
+                <Border x:Name="ButtonRoot" Background="{TemplateBinding Background}"
+                        CornerRadius="{TemplateBinding CornerRadius}">
+                    <Path Width="14" Height="14" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center"
+                          Fill="{TemplateBinding Foreground}" Data="M 2,5 L 7,10 L 12,5 L 10.6,3.6 L 7,7.2 L 3.4,3.6 Z" />
+                </Border>
+                <ControlTemplate.Triggers>
+                    <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="ButtonRoot" Property="Background" Value="{ThemeResource ControlBackgroundHover}" /></Trigger>
+                    <Trigger Property="IsPressed" Value="True"><Setter TargetName="ButtonRoot" Property="Background" Value="{ThemeResource ControlBackgroundPressed}" /></Trigger>
+                </ControlTemplate.Triggers>
+            </ControlTemplate>
+        </Setter>
+    </Style>
     <Style TargetType="ToolBar">
         <Setter Property="Background" Value="{ThemeResource CommandBarBackground}" />
         <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
         <Setter Property="Padding" Value="6" />
+        <Setter Property="ItemsPanel">
+            <ItemsPanelTemplate><ToolBarPanel /></ItemsPanelTemplate>
+        </Setter>
+        <Setter Property="Template">
+            <ControlTemplate TargetType="ToolBar">
+                <Border x:Name="ToolBarRoot" Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
+                        CornerRadius="{TemplateBinding CornerRadius}" Padding="{TemplateBinding Padding}">
+                    <VisualStateManager.VisualStateGroups>
+                        <VisualStateGroup x:Name="CommonStates">
+                            <VisualState x:Name="Normal"><VisualState.Setters><Setter TargetName="ToolBarRoot" Property="Opacity" Value="1" /></VisualState.Setters></VisualState>
+                            <VisualState x:Name="Disabled"><VisualState.Setters><Setter TargetName="ToolBarRoot" Property="Opacity" Value="0.5" /></VisualState.Setters></VisualState>
+                        </VisualStateGroup>
+                        <VisualStateGroup x:Name="OrientationStates"><VisualState x:Name="Horizontal" /><VisualState x:Name="Vertical" /></VisualStateGroup>
+                        <VisualStateGroup x:Name="OverflowStates"><VisualState x:Name="OverflowUnavailable" /><VisualState x:Name="OverflowClosed" /><VisualState x:Name="OverflowOpen" /></VisualStateGroup>
+                    </VisualStateManager.VisualStateGroups>
+                    <ToolBarLayoutPanel x:Name="PART_LayoutPanel" Orientation="{TemplateBinding Orientation}">
+                        <ItemsPresenter x:Name="PART_ItemsPresenter" ToolBarLayoutPanel.Role="Items" />
+                        <Button x:Name="PART_OverflowButton" ToolBarLayoutPanel.Role="OverflowButton"
+                                Style="{StaticResource ToolBarOverflowButtonStyle}"
+                                Visibility="{TemplateBinding OverflowButtonVisibility}" AutomationProperties.Name="More commands" />
+                        <Popup x:Name="PART_OverflowPopup" PlacementTarget="{Binding RelativeSource={RelativeSource TemplatedParent}}"
+                               Placement="{TemplateBinding OverflowPlacement}" IsOpen="{TemplateBinding IsOverflowPresented}"
+                               StaysOpen="False" IsLightDismissEnabled="True" ShouldConstrainToRootBounds="False">
+                            <Border Background="{ThemeResource MenuFlyoutPresenterBackground}" BorderBrush="{ThemeResource ControlBorder}"
+                                    BorderThickness="1" CornerRadius="8" Padding="6"
+                                    TextElement.Foreground="{Binding Foreground, RelativeSource={RelativeSource TemplatedParent}}" TextElement.FontSize="{Binding FontSize, RelativeSource={RelativeSource TemplatedParent}}"
+                                    TextElement.FontFamily="{Binding FontFamily, RelativeSource={RelativeSource TemplatedParent}}">
+                                <ToolBarOverflowPanel x:Name="PART_OverflowPanel" WrapWidth="320" />
+                            </Border>
+                        </Popup>
+                    </ToolBarLayoutPanel>
+                </Border>
+            </ControlTemplate>
+        </Setter>
     </Style>
 
     <!-- ============================================== -->

@@ -44,7 +44,14 @@ public sealed class StreamGeometry : Geometry
     /// </summary>
     public StreamGeometry()
     {
-        _pathGeometry = new PathGeometry();
+        ReplacePathGeometry(new PathGeometry());
+    }
+
+    private void ReplacePathGeometry(PathGeometry? path)
+    {
+        var previous = _pathGeometry;
+        _pathGeometry = path;
+        OnFreezablePropertyChanged(previous, path);
     }
 
     /// <summary>
@@ -98,8 +105,6 @@ public sealed class StreamGeometry : Geometry
         set
         {
             SetValue(FillRuleProperty, value);
-            if (_pathGeometry != null)
-                _pathGeometry.FillRule = value;
             WritePostscript();
         }
     }
@@ -109,6 +114,7 @@ public sealed class StreamGeometry : Geometry
     {
         get
         {
+            ReadPreamble();
             // 合成态下 bounds 已经在 Compose 时一次性计算并 cache 进 _composedBounds，
             // 直接返回避免每次 PathGeometry.Bounds 的 O(figures × segments) 遍历。
             if (_isComposed) return _composedBounds;
@@ -129,12 +135,13 @@ public sealed class StreamGeometry : Geometry
         }
 
         _isOpen = true;
-        _pathGeometry = new PathGeometry { FillRule = FillRule };
+        ReplacePathGeometry(new PathGeometry { FillRule = FillRule });
         // 重新打开会替换 _pathGeometry，原 composed buffer 失效。
         _isComposed = false;
         _composedCommands = null;
         _composedLength = 0;
         _multiFigureNoCompose = false;
+        WritePostscript();
         return new StreamGeometryContextImplementation(this);
     }
 
@@ -149,11 +156,12 @@ public sealed class StreamGeometry : Geometry
             throw new InvalidOperationException("Cannot clear while StreamGeometry is open.");
         }
 
-        _pathGeometry?.Figures.Clear();
+        ReplacePathGeometry(new PathGeometry { FillRule = FillRule });
         _isComposed = false;
         _composedCommands = null;
         _composedLength = 0;
         _multiFigureNoCompose = false;
+        WritePostscript();
     }
 
     /// <summary>
@@ -195,8 +203,20 @@ public sealed class StreamGeometry : Geometry
     public PathGeometry? GetPathGeometry() => _pathGeometry;
 
     /// <inheritdoc />
+    protected override string ConvertToString(IFormatProvider? provider) =>
+        PathGeometry.FormatPathData(_pathGeometry?.Figures, FillRule, provider);
+
+    /// <inheritdoc />
     public override PathGeometry GetFlattenedPathGeometry(double tolerance, ToleranceType toleranceType)
         => _pathGeometry?.GetFlattenedPathGeometry(tolerance, toleranceType) ?? new PathGeometry();
+
+    protected override PathGeometry GetPathGeometryCore()
+    {
+        var result = _pathGeometry?.ClonePathGeometry() ?? new PathGeometry();
+        result.FillRule = FillRule;
+        result.Transform = Transform?.CloneCurrentValue();
+        return result;
+    }
 
     public new StreamGeometry Clone() => (StreamGeometry)base.Clone();
     public new StreamGeometry CloneCurrentValue() => (StreamGeometry)base.CloneCurrentValue();
@@ -241,8 +261,11 @@ public sealed class StreamGeometry : Geometry
 
     protected override void OnChanged()
     {
-        if (_pathGeometry is not null)
+        if (_pathGeometry is not null && _pathGeometry.FillRule != FillRule)
+        {
+            if (_pathGeometry.IsFrozen) ReplacePathGeometry(_pathGeometry.ClonePathGeometry());
             _pathGeometry.FillRule = FillRule;
+        }
         _isComposed = false;
         _composedCommands = null;
         _composedLength = 0;
@@ -253,19 +276,19 @@ public sealed class StreamGeometry : Geometry
     {
         if (source._pathGeometry is null)
         {
-            _pathGeometry = null;
+            ReplacePathGeometry(null);
         }
         else if (frozen)
         {
-            _pathGeometry = (PathGeometry)(currentValue
+            ReplacePathGeometry((PathGeometry)(currentValue
                 ? source._pathGeometry.GetCurrentValueAsFrozen()
-                : source._pathGeometry.GetAsFrozen());
+                : source._pathGeometry.GetAsFrozen()));
         }
         else
         {
-            _pathGeometry = currentValue
+            ReplacePathGeometry(currentValue
                 ? source._pathGeometry.CloneCurrentValue()
-                : source._pathGeometry.Clone();
+                : source._pathGeometry.Clone());
         }
         _isOpen = false;
         Compose();
@@ -488,7 +511,8 @@ public sealed class StreamGeometry : Geometry
         _composedLength = idx;
         _composedStartX = (float)firstFigure.StartPoint.X;
         _composedStartY = (float)firstFigure.StartPoint.Y;
-        _composedBounds = new Rect(minX, minY, Math.Max(0, maxX - minX), Math.Max(0, maxY - minY));
+        // Endpoints alone miss the extrema of Beziers and elliptical arcs.
+        _composedBounds = pg.Bounds;
         _hasCurves = hasCurves;
         _composedIsClosed = firstFigureIsClosed;
         _composedIsFilled = firstFigureIsFilled;

@@ -110,6 +110,9 @@ internal static class FlowDocumentViewerSupport
     public static bool Print(ViewerDocumentPaginator paginator, int currentPage)
     {
         ArgumentNullException.ThrowIfNull(paginator);
+        using var printMedia = paginator.Source is DependencyObject source
+            ? Styling.Css.EnterPrintMedia(source)
+            : default;
         if (paginator.PageCount <= 0)
         {
             return false;

@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using Jalium.UI.Markup;
 
@@ -6,6 +7,7 @@ namespace Jalium.UI.Styling;
 
 internal readonly record struct CssExpandedName(string NamespaceUri,string LocalName);
 internal sealed record CssXmlAttribute(string Value,Type? OwnerType);
+internal sealed record CssDesignerContext(bool EnableCss, Uri? BaseUri);
 
 /// <summary>Weak markup metadata keeps native objects, bindings and namescopes intact.</summary>
 internal static class CssXmlIdentity
@@ -13,13 +15,36 @@ internal static class CssXmlIdentity
     private sealed class Metadata(CssExpandedName name)
     {
         internal CssExpandedName Name=name;
+        internal Assembly? SourceAssembly;
         internal Dictionary<CssExpandedName,CssXmlAttribute>? Attributes;
     }
     private static readonly ConditionalWeakTable<DependencyObject,Metadata> s_nodes=new();
     private static readonly ConditionalWeakTable<Type,Metadata> s_defaults=new();
+    private static readonly ConditionalWeakTable<object,CssDesignerContext> s_designerContexts=new();
+
+    internal static CssDesignerContext? DesignerContext(object instance)
+        => s_designerContexts.TryGetValue(instance, out var context) ? context : null;
+
+    internal static void RecordDesignerContext(object instance, bool enableCss, Uri? baseUri)
+    {
+        if (instance is not (DependencyObject or ResourceDictionary)) return;
+        s_designerContexts.GetValue(instance, _ => new(enableCss, baseUri));
+    }
 
     internal static CssExpandedName Name(DependencyObject target)
         => s_nodes.TryGetValue(target,out var metadata) ? metadata.Name : Default(target.GetType());
+
+    internal static Assembly? SourceAssembly(DependencyObject target)
+        => s_nodes.TryGetValue(target, out var metadata) ? metadata.SourceAssembly : null;
+
+    internal static void RecordSourceAssembly(object instance, Assembly? sourceAssembly)
+    {
+        if (sourceAssembly is null || instance is not DependencyObject target ||
+            target is not (FrameworkElement or FrameworkContentElement)) return;
+        // Ambient parent stacks also contain already-created elements. Keep their
+        // original declaration assembly when a library's resource context visits them.
+        s_nodes.GetValue(target, key => new(Default(key.GetType()))).SourceAssembly ??= sourceAssembly;
+    }
 
     private static CssExpandedName Default(Type type) => s_defaults.GetValue(type,static type=>new(new(
         type.Assembly==typeof(FrameworkElement).Assembly ? JalxamlNamespaces.Presentation
@@ -56,6 +81,8 @@ internal static class CssXmlIdentity
 
     internal static IEnumerable<(CssExpandedName Name,string? Value,string? Property)> Attributes(DependencyObject target,string? namespaceUri,string localName)
     {
+        if (target is CssXmlElement xml)
+        { foreach (var attribute in xml.Attributes(namespaceUri, localName)) yield return (attribute.Name, attribute.Value, null); yield break; }
         if(!s_nodes.TryGetValue(target,out var metadata) || metadata.Attributes is not { } attributes) yield break;
         foreach(var pair in attributes)
         {
@@ -70,7 +97,13 @@ internal static class CssXmlIdentity
             var property=CssDependencyPropertyLookup.Find(owner,name);
             if(property is not null)
             {
-                var value=target.HasLocalValue(property) ? Convert.ToString(target.GetValue(property),CultureInfo.InvariantCulture) : null;
+                // A template declaration keeps its binding and value in the
+                // parent-template layer. It is still an authored XML attribute;
+                // CSS-origin values alone must not make an attribute appear.
+                bool authored=target.HasLocalValue(property) ||
+                    target.TryGetLayerValue(property,DependencyObject.LayerValueSource.ParentTemplate,out _) ||
+                    target.TryGetLayerValue(property,DependencyObject.LayerValueSource.ParentTemplateTrigger,out _);
+                var value=authored ? Convert.ToString(target.GetValue(property),CultureInfo.InvariantCulture) : null;
                 yield return(pair.Key,value,property.Name);
             }
             else yield return(pair.Key,pair.Value.Value,null);

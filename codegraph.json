@@ -1,0 +1,9 @@
+{
+  "exclude": [
+    "artifacts/",
+    ".tools/",
+    "**/bin/",
+    "**/obj/",
+    "**/.qa*/"
+  ]
+}

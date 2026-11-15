@@ -504,8 +504,9 @@ public sealed class Paragraph : Block
     public Paragraph()
     {
         Inlines = new InlineCollection(this);
-        Margin = new Thickness(0, 0, 0, 10);
     }
+
+    static Paragraph() => MarginProperty.OverrideMetadata(typeof(Paragraph), new PropertyMetadata(new Thickness(0, 0, 0, 10)));
 
     /// <summary>
     /// Initializes a new instance of the <see cref="Paragraph"/> class with the specified inline.
@@ -642,8 +643,9 @@ public class List : Block
     public List()
     {
         ListItems = new ListItemCollection(this);
-        Margin = new Thickness(0, 0, 0, 10);
     }
+
+    static List() => MarginProperty.OverrideMetadata(typeof(List), new PropertyMetadata(new Thickness(0, 0, 0, 10)));
 
     /// <summary>
     /// Initializes a new instance of the <see cref="List"/> class with the specified first item.
@@ -695,45 +697,57 @@ public class ListItemCollection : TextElementCollection<ListItem>
     /// <summary>
     /// Adds a list item to the collection.
     /// </summary>
-    public new void Add(ListItem item)
+    public new void Add(ListItem item) => base.Add(item);
+
+    public new void Insert(int index, ListItem item) => base.Insert(index, item);
+
+    protected override void InsertItem(int index, ListItem item)
     {
+        if ((uint)index > (uint)Count) throw new ArgumentOutOfRangeException(nameof(index));
         PrepareForInsert(item);
         item.Parent = _parent;
-        base.Add(item);
+        base.InsertItem(index, item);
         Attach(item);
         RebuildSiblingLinks();
+        _parent.NotifyTextContentChanged();
     }
 
-    public new void Insert(int index, ListItem item)
+    protected override void SetItem(int index, ListItem item)
     {
+        var old = this[index];
+        if (ReferenceEquals(old, item)) return;
         PrepareForInsert(item);
+        Detach(old);
         item.Parent = _parent;
-        base.Insert(index, item);
+        base.SetItem(index, item);
         Attach(item);
         RebuildSiblingLinks();
+        _parent.NotifyTextContentChanged();
     }
 
-    public new bool Remove(ListItem item)
-    {
-        if (!base.Remove(item))
-        {
-            return false;
-        }
+    public new bool Remove(ListItem item) => base.Remove(item);
 
+    protected override void RemoveItem(int index)
+    {
+        var item = this[index];
         Detach(item);
+        base.RemoveItem(index);
         RebuildSiblingLinks();
-        return true;
+        _parent.NotifyTextContentChanged();
     }
 
     public new void RemoveAt(int index) => Remove(this[index]);
 
-    public new void Clear()
+    public new void Clear() => base.Clear();
+
+    protected override void ClearItems()
     {
         foreach (var item in this.ToArray())
         {
             Detach(item);
         }
-        base.Clear();
+        base.ClearItems();
+        _parent.NotifyTextContentChanged();
     }
 
     private static void PrepareForInsert(ListItem item)
@@ -748,17 +762,21 @@ public class ListItemCollection : TextElementCollection<ListItem>
     private void Attach(ListItem item)
     {
         item.OwnerCollection = this;
+        item.TextContentChanged += OnItemContentChanged;
         _parent.AddLogicalChild(item);
     }
 
     private void Detach(ListItem item)
     {
+        item.TextContentChanged -= OnItemContentChanged;
         _parent.RemoveLogicalChild(item);
         item.OwnerCollection = null;
         item.Parent = null;
         item.NextListItem = null;
         item.PreviousListItem = null;
     }
+
+    private void OnItemContentChanged(object? sender, EventArgs e) => _parent.NotifyTextContentChanged();
 
     private void RebuildSiblingLinks()
     {
@@ -870,7 +888,16 @@ public sealed class BlockUIContainer : Block
                 return;
             }
 
+            var previous = _child;
+            Styling.CssNode.SetDocumentContainerParent(previous, null);
             _child = value;
+            Styling.CssNode.SetDocumentContainerParent(_child, this);
+            if (previous is FrameworkElement prevElement) Styling.CssEngine.InvalidateSelectorDependents(prevElement);
+            if (_child is FrameworkElement nextElement)
+            {
+                if (Styling.CssEngine.IsActive) Styling.CssEvaluationScheduler.InvalidateSubtree(nextElement);
+                Styling.CssEngine.InvalidateSelectorDependents(nextElement);
+            }
             NotifyTextContentChanged();
         }
     }

@@ -377,7 +377,6 @@ internal static partial class DockManager
         _cachedExcludeWindow = null;
         _highlightParentWindow = null;
         _edgeLayoutParentWindow = null;
-        DockIndicator.InvalidateResourceCache();
 
         return (panel, layout, position);
     }
@@ -394,7 +393,6 @@ internal static partial class DockManager
         _cachedExcludeWindow = null;
         _highlightParentWindow = null;
         _edgeLayoutParentWindow = null;
-        DockIndicator.InvalidateResourceCache();
     }
 
     private static void DisposeIndicatorWindows()
