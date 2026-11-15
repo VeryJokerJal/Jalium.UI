@@ -526,9 +526,12 @@ public class DevToolsWindowTests
             if (ReferenceEquals(d.Target, target))
                 return true;
 
+            if (d.Target?.GetType().DeclaringType != typeof(DispatcherTimer))
+                return false;
+
             // Frame-rate timers bind the handler to their active generation so
             // a callback already snapshotted by Rendering cannot tick a restart.
-            var owner = d.Target?.GetType().GetProperty("Owner",
+            var owner = d.Target.GetType().GetProperty("Owner",
                 BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
             return ReferenceEquals(owner?.GetValue(d.Target), target);
         });

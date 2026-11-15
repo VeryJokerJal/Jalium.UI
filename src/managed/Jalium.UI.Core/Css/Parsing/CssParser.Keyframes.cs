@@ -62,7 +62,9 @@ internal static partial class CssParser
                 .ToArray();
             foreach (var diagnostic in declarationDiagnostics)
                 diagnostics.Add(new(diagnostic.Severity, diagnostic.Message,
-                    declarationLine + diagnostic.Line - 1));
+                    declarationLine + diagnostic.Line - 1,
+                    diagnostic.Start < 0 ? -1 : offset + declarationStart + diagnostic.Start,
+                    diagnostic.Length));
             blocks.Add(new(offsets, declarations));
         }
 

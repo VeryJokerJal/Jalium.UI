@@ -229,7 +229,7 @@ public static partial class SystemParameters
     // Visual and accessibility effects.
     public static bool ClientAreaAnimation => OperatingSystem.IsLinux()
         ? LinuxDesktopSettings.AnimationsEnabled
-        : GetSpiBool(SPI_GETCLIENTAREAANIMATION, true);
+        : s_clientAreaAnimation.Value;
     public static bool DropShadow => GetSpiBool(SPI_GETDROPSHADOW, true);
     public static bool FlatMenu => GetSpiBool(SPI_GETFLATMENU, true);
     public static int ForegroundFlashCount => (int)GetSpiUInt(SPI_GETFOREGROUNDFLASHCOUNT, 3);
@@ -242,7 +242,7 @@ public static partial class SystemParameters
     public static bool ToolTipAnimation => GetSpiBool(SPI_GETTOOLTIPANIMATION, true);
     public static bool UIEffects => OperatingSystem.IsLinux()
         ? LinuxDesktopSettings.AnimationsEnabled
-        : GetSpiBool(SPI_GETUIEFFECTS, true);
+        : s_uiEffects.Value;
 
     public static double CaretWidth => PixelDip(GetSpiUInt(SPI_GETCARETWIDTH, 1));
     public static bool IsGlassEnabled => GetIsGlassEnabled();
@@ -709,6 +709,10 @@ public static partial class SystemParameters
     /// </summary>
     internal static void NotifyStaticPropertyChanged(string? propertyName)
     {
+        if (string.IsNullOrEmpty(propertyName) || propertyName == nameof(ClientAreaAnimation))
+            s_clientAreaAnimation.Invalidate();
+        if (string.IsNullOrEmpty(propertyName) || propertyName == nameof(UIEffects))
+            s_uiEffects.Invalidate();
         if (string.IsNullOrEmpty(propertyName) || propertyName == nameof(PrefersDarkColorScheme))
             RefreshPreferredColorSchemeFromPlatform();
         StaticPropertyChanged?.Invoke(null, new PropertyChangedEventArgs(propertyName));

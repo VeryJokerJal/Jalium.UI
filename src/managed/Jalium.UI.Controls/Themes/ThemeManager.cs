@@ -56,6 +56,7 @@ public static class ThemeManager
     /// </summary>
     private static readonly object _themeStyleCacheWriteGate = new();
     private static Dictionary<Type, Style?> _themeStyleCache = new();
+    private static ResourceDictionary[] _controlThemeDictionaries = [];
 
     /// <summary>
     /// Default brand primary accent (forest emerald, midpoint of the
@@ -84,22 +85,30 @@ public static class ThemeManager
     }
 
     /// <summary>
-    /// Resolves the theme default style for an exact element type from the generic
-    /// theme dictionary (the base-type walk happens in FrameworkElement).
+    /// Registers default control styles below application and instance resources.
+    /// Registrations remain available when the application theme is initialized.
     /// </summary>
+    public static void RegisterControlThemes(ResourceDictionary resources)
+    {
+        ArgumentNullException.ThrowIfNull(resources);
+        lock (_themeStyleCacheWriteGate)
+        {
+            if (Array.IndexOf(_controlThemeDictionaries, resources) >= 0)
+                return;
+
+            _controlThemeDictionaries = [.. _controlThemeDictionaries, resources];
+            Volatile.Write(ref _themeStyleCache, new Dictionary<Type, Style?>());
+        }
+    }
+
+    /// <summary>Resolves exact-type defaults from control themes, then the generic theme.</summary>
     private static Style? ResolveThemeStyle(Type type)
     {
-        var dictionary = _genericThemeDictionary;
-        if (dictionary == null)
-            return null;
-
         var snapshot = Volatile.Read(ref _themeStyleCache);
         if (snapshot.TryGetValue(type, out var cached))
         {
             return cached;
         }
-
-        var style = dictionary.TryGetValue(type, out var value) ? value as Style : null;
 
         lock (_themeStyleCacheWriteGate)
         {
@@ -109,14 +118,25 @@ public static class ThemeManager
                 return cached;
             }
 
+            Style? style = null;
+            for (var i = _controlThemeDictionaries.Length - 1; i >= 0; i--)
+            {
+                if (_controlThemeDictionaries[i].TryGetValue(type, out var registered) && registered is Style registeredStyle)
+                {
+                    style = registeredStyle;
+                    break;
+                }
+            }
+            if (style == null && _genericThemeDictionary?.TryGetValue(type, out var value) == true)
+                style = value as Style;
+
             var next = new Dictionary<Type, Style?>(snapshot)
             {
                 [type] = style
             };
             Volatile.Write(ref _themeStyleCache, next);
+            return style;
         }
-
-        return style;
     }
 
     /// <summary>

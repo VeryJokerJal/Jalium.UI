@@ -93,6 +93,21 @@ public partial class XamlReader
     /// instance being patched — so a grafted new element's Click/KeyDown/etc. handlers work without a
     /// full restart. Used by <c>HotReloadRuntime.ApplyPatch</c>.
     /// </summary>
+    public static object ParseForDesigner(string xaml)
+        => ParseForDesigner(xaml, new XamlDesignerOptions());
+
+    public static object ParseForDesigner(string xaml, XamlDesignerOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(xaml);
+        ArgumentNullException.ThrowIfNull(options);
+        using var reader = JalxamlParser.CreateReader(xaml);
+        var parsed = LoadInternal(reader, null, options.CssResourceBaseUri, null, designerOptions: options);
+        if (parsed is Window window && window.Visibility == Visibility.Hidden &&
+            !xaml.Contains("Hidden", StringComparison.OrdinalIgnoreCase))
+            window.Visibility = Visibility.Visible;
+        return parsed;
+    }
+
     internal static object ParseForHotReload(string xaml, object? codeBehindForEvents)
     {
         ArgumentNullException.ThrowIfNull(xaml);
@@ -687,15 +702,17 @@ public partial class XamlReader
 
     private static object LoadInternal(XmlReader reader, object? existingInstance, Uri? baseUri, Assembly? sourceAssembly,
         ResourceDictionary? parentResourceDictionary = null, Dictionary<string, object>? namedElementsOut = null,
-        object? codeBehindForEvents = null, bool restrictive = false)
+        object? codeBehindForEvents = null, bool restrictive = false, XamlDesignerOptions? designerOptions = null)
     {
-
+        using var cssResourceScope = Jalium.UI.Styling.Css.PushDesignerResourceBaseUri(
+            designerOptions is { EnableCss: true } ? designerOptions.CssResourceBaseUri : null);
         var context = new XamlParserContext
         {
             BaseUri = baseUri,
             SourceAssembly = sourceAssembly,
             ParentResourceDictionary = parentResourceDictionary,
             IsRestrictive = restrictive,
+            DesignerOptions = designerOptions,
             // Hot reload parses a STANDALONE source tree (existingInstance == null) yet still needs its
             // inline event handlers (Click=…) to bind to the LIVE instance's code-behind so grafted new
             // elements stay interactive. codeBehindForEvents carries that target and affects ONLY event
@@ -834,6 +851,8 @@ public partial class XamlReader
         }
 
         XamlBuilder.SetXmlIdentity(instance,namespaceUri,elementName,resetAttributes:true);
+        if (context.DesignerOptions != null && instance is DependencyObject designObject)
+            DesignerProperties.SetIsInDesignMode(designObject, true);
 
         // Parse attributes before pushing the current element so ResourceDictionary Source
         // can replace the placeholder instance with an x:Class-derived dictionary.
@@ -1006,6 +1025,9 @@ public partial class XamlReader
         {
             throw new XamlParseException($"Cannot resolve attached property owner type: {ownerTypeName}");
         }
+
+        if (ownerType == typeof(Jalium.UI.Styling.Css) && context.DesignerOptions is { EnableCss: false })
+            return;
 
         var attachedProperty = instance is DependencyObject
             ? DependencyProperty.FromName(ownerType, propertyName)
@@ -1571,6 +1593,11 @@ public partial class XamlReader
                 ownerTypeName);
             if (attachedOwnerType != null && attachedOwnerType != type)
             {
+                if (attachedOwnerType == typeof(Jalium.UI.Styling.Css) && context.DesignerOptions is { EnableCss: false })
+                {
+                    SkipElement(reader);
+                    return;
+                }
                 ParseAttachedPropertyElement(reader, instance, attachedOwnerType, propertyName, depth, isEmpty, context);
                 return;
             }
@@ -2099,6 +2126,9 @@ public partial class XamlReader
             template.VisualTreeXaml = visualTreeXaml.ToString();
             template.SourceAssembly = context.SourceAssembly;
 
+            if (context.DesignerOptions is { } designerOptions)
+                template.XamlParserOverride = (xaml, assembly) => ParseTemplateXaml(xaml, assembly, designerOptions);
+
             // Register the XAML parser callback if not already set
             ControlTemplate.XamlParser ??= ParseTemplateXaml;
         }
@@ -2183,6 +2213,8 @@ public partial class XamlReader
         {
             template.VisualTreeXaml = visualTreeXaml.ToString();
             template.SourceAssembly = context.SourceAssembly;
+            if (context.DesignerOptions is { } designerOptions)
+                template.XamlParserOverride = (xaml, assembly) => ParseTemplateXaml(xaml, assembly, designerOptions);
             // 记下解析时刻栈中的 ResourceDictionary 链，让 LoadContent 时可解析祖先 {StaticResource}。
             template.AmbientResourceDictionaries = context.SnapshotAmbientResourceDictionaries();
 
@@ -2241,6 +2273,8 @@ public partial class XamlReader
         {
             template.VisualTreeXaml = visualTreeXaml.ToString();
             template.SourceAssembly = context.SourceAssembly;
+            if (context.DesignerOptions is { } designerOptions)
+                template.XamlParserOverride = (xaml, assembly) => ParseTemplateXaml(xaml, assembly, designerOptions);
             template.AmbientResourceDictionaries = context.SnapshotAmbientResourceDictionaries();
 
             // Register the XAML parser callback if not already set
@@ -2269,6 +2303,9 @@ public partial class XamlReader
     /// Parses template XAML content and returns the root element.
     /// </summary>
     private static FrameworkElement? ParseTemplateXaml(string xaml, Assembly? sourceAssembly)
+        => ParseTemplateXaml(xaml, sourceAssembly, null);
+
+    private static FrameworkElement? ParseTemplateXaml(string xaml, Assembly? sourceAssembly, XamlDesignerOptions? designerOptions)
     {
         if (string.IsNullOrEmpty(xaml))
             return null;
@@ -2276,7 +2313,8 @@ public partial class XamlReader
         using var xmlReader = JalxamlParser.CreateReader(xaml);
         var context = new XamlParserContext
         {
-            SourceAssembly = sourceAssembly
+            SourceAssembly = sourceAssembly,
+            DesignerOptions = designerOptions,
         };
 
         // 把模板被声明时的祖先 ResourceDictionary 链注入新解析上下文的 ambient 栈底，
@@ -4198,6 +4236,7 @@ internal sealed class XamlParserContext : IAmbientResourceProvider
     /// Gets or sets the assembly used for loading embedded resources.
     /// </summary>
     public Assembly? SourceAssembly { get; set; }
+    internal XamlDesignerOptions? DesignerOptions { get; set; }
 
     /// <summary>
     /// Gets or sets the parent ResourceDictionary for ambient resource lookup.
@@ -4654,6 +4693,11 @@ internal sealed class XamlParserContext : IAmbientResourceProvider
 
     public Type? ResolveType(string namespaceUri, string typeName)
     {
+        // Preview assemblies can be reloaded or share type names across projects. Keep
+        // these resolutions outside the process-wide runtime type and miss caches.
+        if (DesignerOptions?.TypeResolver?.Invoke(namespaceUri, typeName) is { } projectType)
+            return projectType;
+
         var cacheKey = new TypeCacheKey(namespaceUri, typeName, SourceAssembly);
         if (TypeResolutionCacheHolder.Types.TryGetValue(cacheKey, out var cachedType))
         {
@@ -4984,6 +5028,7 @@ public static class XamlTypeRegistry
     [return: DynamicallyAccessedMembers(BuiltinTypeMembers)]
     private static Type? ResolveCoreBuiltinType(string typeName) => typeName switch
     {
+        "AppBarEdge" => typeof(global::Jalium.UI.Shell.AppBarEdge),
         "Application" => typeof(global::Jalium.UI.Application),
         "ColorConvertedBitmapExtension" => typeof(global::Jalium.UI.ColorConvertedBitmapExtension),
         "Condition" => typeof(global::Jalium.UI.Condition),
@@ -5008,6 +5053,7 @@ public static class XamlTypeRegistry
         "Trigger" => typeof(global::Jalium.UI.Trigger),
         "UIElement" => typeof(global::Jalium.UI.UIElement),
         "Window" => typeof(global::Jalium.UI.Window),
+        "WindowAppBar" => typeof(global::Jalium.UI.Shell.WindowAppBar),
         _ => null,
     };
 

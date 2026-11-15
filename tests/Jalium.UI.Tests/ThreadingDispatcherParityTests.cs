@@ -41,6 +41,37 @@ public sealed class ThreadingDispatcherParityTests
     }
 
     [Fact]
+    public void ProcessQueuePreservesPriorityAcrossBoundedReentrantBatches()
+    {
+        RunOnFreshDispatcherThread(dispatcher =>
+        {
+            var order = new List<string>();
+            dispatcher.BeginInvoke(WpfPriority.Normal, () =>
+            {
+                order.Add("legacy");
+                dispatcher.BeginInvoke(
+                    WpfPriority.Normal,
+                    () => order.Add("reentrant"));
+            });
+
+            var context = new Jalium.UI.Threading.DispatcherSynchronizationContext(
+                dispatcher,
+                WpfPriority.Background);
+            context.Post(_ => order.Add("background"), null);
+            dispatcher.BeginInvoke(WpfPriority.Normal, () => order.Add("normal"));
+
+            // ProcessQueue intentionally bounds a batch to the number of items that
+            // existed when pumping began. The reentrant Normal work consumes the last
+            // slot ahead of Background, which remains correctly ordered for the next batch.
+            dispatcher.ProcessQueue();
+            Assert.Equal(new[] { "legacy", "normal", "reentrant" }, order);
+
+            dispatcher.ProcessQueue();
+            Assert.Equal(new[] { "legacy", "normal", "reentrant", "background" }, order);
+        });
+    }
+
+    [Fact]
     public void NativeWakeCallbackNeverProcessesAnotherThreadsDispatcherQueue()
     {
         Exception? workerFailure = null;

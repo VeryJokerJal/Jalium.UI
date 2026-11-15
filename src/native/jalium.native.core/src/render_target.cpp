@@ -6,6 +6,10 @@
 #include <cstdlib>
 #ifdef _WIN32
 #include <windows.h>
+#include <commctrl.h>
+#include <mutex>
+#include <unordered_map>
+#pragma comment(lib, "comctl32.lib")
 #endif
 
 // ============================================================================
@@ -13,6 +17,102 @@
 // ============================================================================
 
 namespace {
+
+#ifdef _WIN32
+// A composition-only parent must never acquire a redirected caption bitmap.
+// GDI/WSI backends render through a captionless child and can still replace a
+// GPU target without changing the application's HWND or its window styles.
+constexpr wchar_t kPresentationHostClass[] = L"JaliumPresentationHost";
+std::mutex presentationHostsMutex;
+std::unordered_map<jalium::RenderTarget*, HWND> presentationHosts;
+
+LRESULT CALLBACK PresentationParentProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
+
+void RemoveEmptyPresentationSubclass(HWND parent, HWND closingHost)
+{
+    for (HWND child = GetWindow(parent, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT)) {
+        wchar_t name[64] = {};
+        if (child != closingHost && GetClassNameW(child, name, 64) &&
+            lstrcmpW(name, kPresentationHostClass) == 0) return;
+    }
+    RemoveWindowSubclass(parent, PresentationParentProc,
+        reinterpret_cast<UINT_PTR>(PresentationParentProc));
+}
+
+LRESULT CALLBACK PresentationHostProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    if (message == WM_NCHITTEST) return HTTRANSPARENT;
+    if (message == WM_ERASEBKGND) return 1;
+    if (message == WM_PAINT) {
+        PAINTSTRUCT paint = {};
+        BeginPaint(window, &paint);
+        EndPaint(window, &paint);
+        if (HWND parent = GetParent(window)) InvalidateRect(parent, nullptr, FALSE);
+        return 0;
+    }
+    if (message == WM_NCDESTROY)
+        RemoveEmptyPresentationSubclass(GetParent(window), window);
+    return DefWindowProcW(window, message, wParam, lParam);
+}
+
+LRESULT CALLBACK PresentationParentProc(HWND window, UINT message, WPARAM wParam,
+    LPARAM lParam, UINT_PTR subclass, DWORD_PTR)
+{
+    if (message == WM_SIZE && LOWORD(lParam) > 0 && HIWORD(lParam) > 0) {
+        for (HWND child = GetWindow(window, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT)) {
+            wchar_t name[64] = {};
+            if (GetClassNameW(child, name, 64) && lstrcmpW(name, kPresentationHostClass) == 0) {
+                SetWindowPos(child, nullptr, 0, 0, LOWORD(lParam), HIWORD(lParam),
+                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS);
+            }
+        }
+    }
+    if (message == WM_NCDESTROY)
+        RemoveWindowSubclass(window, PresentationParentProc, subclass);
+    return DefSubclassProc(window, message, wParam, lParam);
+}
+
+HWND CreatePresentationHost(HWND parent)
+{
+    if (GetWindowThreadProcessId(parent, nullptr) != GetCurrentThreadId()) return nullptr;
+    struct Registration {
+        bool valid;
+        Registration() {
+            WNDCLASSEXW type = {};
+            type.cbSize = sizeof(type);
+            type.hInstance = GetModuleHandleW(nullptr);
+            type.lpfnWndProc = PresentationHostProc;
+            type.lpszClassName = kPresentationHostClass;
+            valid = RegisterClassExW(&type) != 0 || GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
+        }
+        ~Registration() { if (valid) UnregisterClassW(kPresentationHostClass, GetModuleHandleW(nullptr)); }
+    };
+    static const Registration registered;
+    if (!registered.valid) return nullptr;
+    RECT client = {};
+    if (!GetClientRect(parent, &client)) return nullptr;
+    HWND child = CreateWindowExW(WS_EX_TRANSPARENT | WS_EX_NOACTIVATE,
+        kPresentationHostClass, nullptr, WS_CHILD | WS_VISIBLE | WS_DISABLED,
+        0, 0, client.right, client.bottom, parent, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!child) return nullptr;
+    if (!SetWindowSubclass(parent, PresentationParentProc,
+        reinterpret_cast<UINT_PTR>(PresentationParentProc), 0)) {
+        DestroyWindow(child);
+        return nullptr;
+    }
+    SetWindowPos(child, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    return child;
+}
+
+void DestroyPresentationHost(HWND host)
+{
+    if (!host || !IsWindow(host)) return;
+    if (GetWindowThreadProcessId(host, nullptr) == GetCurrentThreadId())
+        DestroyWindow(host);
+    else
+        PostMessageW(host, WM_CLOSE, 0, 0);
+}
+#endif
 
 bool IsValidSurfaceDescriptor(const JaliumSurfaceDescriptor* surface)
 {
@@ -47,10 +147,28 @@ JaliumRenderTarget* CreateRenderTargetCore(
         return nullptr;
     }
 
+    JaliumSurfaceDescriptor presentationSurface = *surface;
+#ifdef _WIN32
+    HWND presentationHost = nullptr;
+    if (surface->platform == JALIUM_PLATFORM_WINDOWS &&
+        (surface->kind == JALIUM_SURFACE_KIND_NATIVE_WINDOW || surface->kind == JALIUM_SURFACE_KIND_COMPOSITION_TARGET) &&
+        backend->GetType() != JALIUM_BACKEND_D3D12 &&
+        (GetWindowLongPtrW(reinterpret_cast<HWND>(surface->handle0), GWL_EXSTYLE) & WS_EX_NOREDIRECTIONBITMAP)) {
+        presentationHost = CreatePresentationHost(reinterpret_cast<HWND>(surface->handle0));
+        if (!presentationHost) {
+            context->SetLastError(JALIUM_ERROR_RESOURCE_CREATION_FAILED, L"Failed to create a window presentation host.");
+            return nullptr;
+        }
+        presentationSurface.handle0 = reinterpret_cast<intptr_t>(presentationHost);
+    }
+#endif
     auto rt = useComposition
-        ? backend->CreateRenderTargetForCompositionSurface(surface, width, height)
-        : backend->CreateRenderTargetForSurface(surface, width, height);
+        ? backend->CreateRenderTargetForCompositionSurface(&presentationSurface, width, height)
+        : backend->CreateRenderTargetForSurface(&presentationSurface, width, height);
     if (!rt) {
+#ifdef _WIN32
+        DestroyPresentationHost(presentationHost);
+#endif
         context->SetLastError(
             JALIUM_ERROR_RESOURCE_CREATION_FAILED,
             useComposition
@@ -58,6 +176,12 @@ JaliumRenderTarget* CreateRenderTargetCore(
                 : L"Backend failed to create render target from surface descriptor.");
         return nullptr;
     }
+#ifdef _WIN32
+    if (presentationHost) {
+        std::lock_guard<std::mutex> guard(presentationHostsMutex);
+        presentationHosts.emplace(rt, presentationHost);
+    }
+#endif
 
     // Apply the context's default rendering engine to the newly created render target.
     // This ensures that engine set via jalium_context_set_default_engine() or
@@ -119,7 +243,21 @@ JALIUM_API JaliumRenderTarget* jalium_render_target_create_for_composition_surfa
 
 JALIUM_API void jalium_render_target_destroy(JaliumRenderTarget* rt) {
     if (rt) {
+#ifdef _WIN32
+        HWND presentationHost = nullptr;
+        {
+            std::lock_guard<std::mutex> guard(presentationHostsMutex);
+            auto found = presentationHosts.find(reinterpret_cast<jalium::RenderTarget*>(rt));
+            if (found != presentationHosts.end()) {
+                presentationHost = found->second;
+                presentationHosts.erase(found);
+            }
+        }
+#endif
         delete reinterpret_cast<jalium::RenderTarget*>(rt);
+#ifdef _WIN32
+        DestroyPresentationHost(presentationHost);
+#endif
     }
 }
 

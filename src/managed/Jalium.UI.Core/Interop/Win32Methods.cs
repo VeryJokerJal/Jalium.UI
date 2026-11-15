@@ -157,6 +157,10 @@ internal static partial class Win32Methods
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool RedrawWindow(nint hWnd, nint lprcUpdate, nint hrgnUpdate, uint flags);
 
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool GetUpdateRect(nint hWnd, nint rect, [MarshalAs(UnmanagedType.Bool)] bool erase);
+
     [LibraryImport("user32.dll", EntryPoint = "SendMessageW")]
     internal static partial nint SendMessage(nint hWnd, uint msg, nint wParam, nint lParam);
 

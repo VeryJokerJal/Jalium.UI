@@ -212,6 +212,123 @@ public class SoftwareVectorRasterizerTests
         Assert.True(partial > 3, $"stroke edges must be anti-aliased; got {partial}");
     }
 
+    [Fact]
+    public void Nonuniform_transform_scales_stroke_across_each_lines_normal()
+    {
+        static byte[] Render(Point start, Point end)
+        {
+            var line = new LineGeometry(start, end);
+            var drawing = new GeometryDrawing(null,
+                new Pen(new SolidColorBrush(Color.FromRgb(255, 0, 0)), 4), line);
+            var group = new DrawingGroup { Transform = new ScaleTransform(2, 3) };
+            group.Children.Add(drawing);
+            return SoftwareVectorRasterizer.Rasterize(group, 96, 96,
+                new Rect(0, 0, 96, 96))!;
+        }
+
+        var horizontal = Render(new Point(10, 10), new Point(30, 10));
+        // Source half-width 2 follows the transformed Y basis: device Y 24..36.
+        Assert.True(GetPixel(horizontal, 96, 40, 35).A > 240);
+        Assert.Equal(0, GetPixel(horizontal, 96, 40, 37).A);
+
+        var vertical = Render(new Point(10, 10), new Point(10, 30));
+        // The same source half-width follows the transformed X basis: device X 16..24.
+        Assert.True(GetPixel(vertical, 96, 23, 50).A > 240);
+        Assert.Equal(0, GetPixel(vertical, 96, 25, 50).A);
+    }
+
+    [Fact]
+    public void Nonuniform_transform_preserves_source_path_dash_lengths()
+    {
+        var line = new LineGeometry(new Point(10, 10), new Point(45, 10));
+        var pen = new Pen(new SolidColorBrush(Color.FromRgb(255, 0, 0)), 4)
+        {
+            DashStyle = new DashStyle([2.0, 2.0], 0),
+        };
+        var group = new DrawingGroup { Transform = new ScaleTransform(2, 3) };
+        group.Children.Add(new GeometryDrawing(null, pen, line));
+
+        var pixels = SoftwareVectorRasterizer.Rasterize(group, 96, 96,
+            new Rect(0, 0, 96, 96))!;
+
+        // An 8-unit source dash maps to 16 horizontal device pixels.
+        Assert.True(GetPixel(pixels, 96, 32, 30).A > 240);
+        Assert.Equal(0, GetPixel(pixels, 96, 40, 30).A);
+        Assert.True(GetPixel(pixels, 96, 60, 30).A > 240);
+    }
+
+    [Fact]
+    public void Nonuniform_transform_makes_round_caps_elliptical()
+    {
+        var line = new LineGeometry(new Point(10, 10), new Point(30, 10));
+        var pen = new Pen(new SolidColorBrush(Color.FromRgb(255, 0, 0)), 4)
+        {
+            StartLineCap = PenLineCap.Round,
+            EndLineCap = PenLineCap.Round,
+        };
+        var group = new DrawingGroup { Transform = new ScaleTransform(2, 3) };
+        group.Children.Add(new GeometryDrawing(null, pen, line));
+
+        var pixels = SoftwareVectorRasterizer.Rasterize(group, 96, 96,
+            new Rect(0, 0, 96, 96))!;
+
+        Assert.True(GetPixel(pixels, 96, 17, 30).A > 240);
+        Assert.Equal(0, GetPixel(pixels, 96, 15, 30).A);
+        Assert.True(GetPixel(pixels, 96, 20, 35).A > 240);
+    }
+
+    [Theory]
+    [InlineData(PenLineJoin.Round)]
+    [InlineData(PenLineJoin.Miter)]
+    public void Repeated_corner_vertex_keeps_the_same_stroke(PenLineJoin join)
+    {
+        static PathGeometry Corner(bool repeat)
+        {
+            var figure = new PathFigure { StartPoint = new Point(8, 8) };
+            figure.Segments.Add(new LineSegment(new Point(24, 8)));
+            if (repeat) figure.Segments.Add(new LineSegment(new Point(24, 8)));
+            figure.Segments.Add(new LineSegment(new Point(24, 24)));
+            var geometry = new PathGeometry();
+            geometry.Figures.Add(figure);
+            return geometry;
+        }
+
+        byte[] Render(bool repeat)
+        {
+            var pen = new Pen(new SolidColorBrush(Color.FromRgb(255, 0, 0)), 4)
+            {
+                LineJoin = join,
+                MiterLimit = 2,
+            };
+            return SoftwareVectorRasterizer.Rasterize(
+                new GeometryDrawing(null, pen, Corner(repeat)), 40, 40,
+                new Rect(0, 0, 40, 40))!;
+        }
+
+        Assert.Equal(Render(false), Render(true));
+    }
+
+    [Fact]
+    public void Subpixel_source_dashes_keep_their_device_pixel_phase()
+    {
+        var pen = new Pen(new SolidColorBrush(Color.FromRgb(255, 0, 0)), 1)
+        {
+            DashStyle = new DashStyle([0.01, 0.01], 0),
+            DashCap = PenLineCap.Flat,
+        };
+        var drawing = new GeometryDrawing(null, pen,
+            new LineGeometry(new Point(0.2, 0.5), new Point(0.8, 0.5)));
+        var group = new DrawingGroup { Transform = new ScaleTransform(100, 100) };
+        group.Children.Add(drawing);
+        var pixels = SoftwareVectorRasterizer.Rasterize(group, 96, 96,
+            new Rect(0, 0, 96, 96))!;
+
+        Assert.True(GetPixel(pixels, 96, 20, 50).A > 240);
+        Assert.Equal(0, GetPixel(pixels, 96, 21, 50).A);
+        Assert.True(GetPixel(pixels, 96, 22, 50).A > 240);
+        Assert.Equal(0, GetPixel(pixels, 96, 23, 50).A);
+    }
+
     // ── Straight-alpha contract: translucent fill must NOT be pre-darkened ──
     [Fact]
     public void Translucent_fill_preserves_straight_color_not_premultiplied()

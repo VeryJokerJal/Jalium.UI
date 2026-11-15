@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="../../src/managed/Jalium.UI.Build/build/Jalium.UI.Build.props" />
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <EnableJalxamlRazorTransform>false</EnableJalxamlRazorTransform>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/managed/Jalium.UI.Xaml/Jalium.UI.Xaml.csproj" />
+    <ProjectReference Include="../../src/managed/Jalium.UI.Xaml.SourceGenerator/Jalium.UI.Xaml.SourceGenerator.csproj"
+                      OutputItemType="Analyzer" ReferenceOutputAssembly="false"
+                      UndefineProperties="PublishAot;PublishTrimmed;PublishSingleFile;PublishReadyToRun;SelfContained;RuntimeIdentifier;RuntimeIdentifiers;IsTrimmable;IsAotCompatible" />
+  </ItemGroup>
+  <Import Project="../../src/managed/Jalium.UI.Build/build/Jalium.UI.Build.targets" />
+</Project>

@@ -886,6 +886,7 @@ private:
     // reference it). readbackFenceEvent_ is a dedicated auto-reset event so
     // FetchBackBufferReadback never races the frame path's fenceEvent_.
     bool RecordBackBufferReadbackCopy();
+    void RestoreCompositionLogicalFrame();
     bool RecordCompositionResizePlacementCopy();
     bool readbackPending_ = false;
     bool readbackReady_ = false;

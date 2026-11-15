@@ -84,6 +84,13 @@ internal static class CssPropertyRegistry
     public static CssPropertyDescriptor? Lookup(string cssName)
         => LookupForCompile(cssName, out _);
 
+    internal static IReadOnlyList<string> GetAuthoringNames()
+    {
+        EnsureInitialized();
+        return s_table.Keys.Concat(s_userTable.Keys).Concat(s_aliases.Keys)
+            .Concat(s_builtinAliases.Keys).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+    }
+
     /// <summary>
     /// Compile-time lookup with the full precedence chain: user registrations &gt; aliases
     /// (followed transitively) &gt; built-ins &gt; kebab fallback. canonicalName is the

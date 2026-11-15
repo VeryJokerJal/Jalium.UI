@@ -662,6 +662,8 @@ public class Control : FrameworkElement
 
     private void ClearTemplateContent()
     {
+        OnTemplateChanging();
+
         // Let subclasses release references into the template tree that is about to be
         // discarded. This must happen for every teardown path (Template replaced at
         // runtime, theme switch swapping the theme template, Template cleared to null,
@@ -766,6 +768,10 @@ public class Control : FrameworkElement
     /// when no template content exists (first application) — implementations must
     /// tolerate that and stay idempotent.
     /// </summary>
+    protected virtual void OnTemplateChanging()
+    {
+    }
+
     internal virtual void OnTemplateContentClearing()
     {
     }

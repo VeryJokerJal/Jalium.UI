@@ -32,22 +32,34 @@
   <Target Name="JaliumGenerateProductAssemblyInfo"
           BeforeTargets="CoreCompile"
           Condition="'$(MSBuildProjectExtension)' == '.csproj'">
+    <!-- VS design-time builds and solution builds can run this target at the
+         same time. Each invocation must own its scratch file. -->
+    <PropertyGroup>
+      <_JaliumProductAssemblyInfoTempFile>$(IntermediateOutputPath)Jalium.ProductInfo.$([System.Guid]::NewGuid()).tmp</_JaliumProductAssemblyInfoTempFile>
+    </PropertyGroup>
     <WriteCodeFragment Language="C#"
                        AssemblyAttributes="@(_JaliumProductAssemblyAttribute)"
-                       OutputFile="$(IntermediateOutputPath)Jalium.ProductInfo.g.cs.tmp" />
+                       OutputFile="$(_JaliumProductAssemblyInfoTempFile)" />
     <!-- WriteCodeFragment always updates its output. Keep the compiled file's
          timestamp stable when its contents are unchanged so a no-op build does
          not invoke Csc for every managed project. -->
-    <ReadLinesFromFile File="$(IntermediateOutputPath)Jalium.ProductInfo.g.cs.tmp">
+    <ReadLinesFromFile File="$(_JaliumProductAssemblyInfoTempFile)">
       <Output TaskParameter="Lines" ItemName="_JaliumProductAssemblyInfoLine" />
     </ReadLinesFromFile>
     <WriteLinesToFile File="$(IntermediateOutputPath)Jalium.ProductInfo.g.cs"
                       Lines="@(_JaliumProductAssemblyInfoLine)"
                       Overwrite="true"
                       WriteOnlyWhenDifferent="true" />
+    <Delete Files="$(_JaliumProductAssemblyInfoTempFile)" />
     <ItemGroup>
       <Compile Include="$(IntermediateOutputPath)Jalium.ProductInfo.g.cs" Exclude="@(Compile)" />
+      <FileWrites Include="$(IntermediateOutputPath)Jalium.ProductInfo.g.cs" />
     </ItemGroup>
+    <OnError ExecuteTargets="JaliumDeleteProductAssemblyInfoTempFile" />
+  </Target>
+
+  <Target Name="JaliumDeleteProductAssemblyInfoTempFile">
+    <Delete Files="$(_JaliumProductAssemblyInfoTempFile)" TreatErrorsAsWarnings="true" />
   </Target>
 
   <!--

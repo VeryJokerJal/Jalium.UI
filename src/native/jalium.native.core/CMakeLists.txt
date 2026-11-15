@@ -73,6 +73,7 @@ if(WIN32)
             user32
             dwrite
             gdi32
+            comctl32
     )
 elseif(ANDROID)
     target_link_libraries(${PROJECT_NAME}

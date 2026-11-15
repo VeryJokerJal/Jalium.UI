@@ -17,6 +17,7 @@
 #include <atomic>
 
 namespace jalium {
+class D3D12WindowComposition;
 
 /// D3D12 render target implementation.
 /// Uses D3D12DirectRenderer for pure D3D12 instanced rendering (SDF rects,
@@ -632,6 +633,7 @@ private:
 
     // DirectComposition resources (used when isComposition_ == true)
     ComPtr<IDCompositionDevice> dcompDevice_;
+    std::unique_ptr<D3D12WindowComposition> windowComposition_;
     ComPtr<IDCompositionTarget> dcompTarget_;
     ComPtr<IDCompositionVisual> dcompVisual_;
     ComPtr<IDCompositionVisual> dcompSwapChainVisual_;
@@ -641,6 +643,7 @@ private:
     RECT lastWindowRect_ = {};
     bool hasLastWindowRect_ = false;
     bool compositionAnchorRight_ = false;
+    bool compositionResizeSessionActive_ = false;
     bool compositionAnchorBottom_ = false;
     bool compositionAnchorRightActive_ = false;
     bool compositionAnchorBottomActive_ = false;

@@ -54,6 +54,9 @@ public static class XamlBuilder
     /// <summary>Registered by Jalium.UI.Xaml: creates a build context attached to the codebehind component.</summary>
     public static Func<object, Uri?, Assembly?, XamlBuildContext>? BeginComponentImpl { get; set; }
 
+    /// <summary>Registered by Jalium.UI.Xaml: creates an isolated context for one template instance.</summary>
+    public static Func<XamlBuildContext, XamlBuildContext>? BeginTemplateImpl { get; set; }
+
     /// <summary>Registered by Jalium.UI.Xaml: pushes an element onto the build context's parent stack.</summary>
     public static Action<object, XamlBuildContext>? PushParentImpl { get; set; }
 
@@ -201,6 +204,10 @@ public static class XamlBuilder
     /// <summary>Begin a build session — see assembly-level documentation for invariants.</summary>
     public static XamlBuildContext BeginComponent(object component, Uri? baseUri = null, Assembly? sourceAssembly = null)
         => Required(BeginComponentImpl, nameof(BeginComponentImpl))(component, baseUri, sourceAssembly);
+
+    /// <summary>Begin one template instance without sharing its names or parent stack with other instances.</summary>
+    public static XamlBuildContext BeginTemplate(XamlBuildContext parent)
+        => Required(BeginTemplateImpl, nameof(BeginTemplateImpl))(parent);
 
     /// <summary>Push <paramref name="parent"/> onto the build context's parent stack.</summary>
     public static void PushParent(object parent, XamlBuildContext ctx)

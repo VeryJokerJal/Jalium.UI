@@ -14,7 +14,9 @@ internal static partial class CssParser
         if (end < text.Length && text[end] == '{') return false;
         var localDiagnostics = new List<CssParseDiagnostic>();
         declarations = ParseInlineDeclarations(text[start..end].ToString(), localDiagnostics);
-        foreach (var diagnostic in localDiagnostics) diagnostics.Add(new(diagnostic.Severity, diagnostic.Message, startLine + diagnostic.Line - 1));
+        foreach (var diagnostic in localDiagnostics)
+            diagnostics.Add(new(diagnostic.Severity, diagnostic.Message, startLine + diagnostic.Line - 1,
+                diagnostic.Start < 0 ? -1 : start + diagnostic.Start, diagnostic.Length));
         position = end; line = endLine;
         if (position < text.Length && text[position] == ';') position++;
         return true;

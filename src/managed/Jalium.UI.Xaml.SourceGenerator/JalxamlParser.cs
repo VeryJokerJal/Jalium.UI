@@ -506,7 +506,8 @@ public static class JalxamlParser
         // separately. Suppress name capture for everything inside a __RazorSection.
         var childSuppressNames = suppressNames ||
                                  localName == RazorSectionElementName ||
-                                 localName == RazorVirtualizeElementName;
+                                 localName == RazorVirtualizeElementName ||
+                                 JalxamlCodeGenerator.IsTemplateClrType(resolved);
 
         if (reader.IsEmptyElement)
         {
@@ -603,7 +604,7 @@ public static class JalxamlParser
                     // we still walk them to keep metadata collection running, but for now
                     // they don't get reflected back into the AST (the SG falls back if it
                     // cannot represent them). Skip the body without adding to the tree.
-                    SkipPropertyElementBody(reader, result);
+                    SkipPropertyElementBody(reader, result, suppressNames);
                 }
                 else
                 {
@@ -619,7 +620,7 @@ public static class JalxamlParser
         return pe;
     }
 
-    private static void SkipPropertyElementBody(XmlReader reader, JalxamlParseResult result)
+    private static void SkipPropertyElementBody(XmlReader reader, JalxamlParseResult result, bool suppressNames)
     {
         if (reader.IsEmptyElement)
         {
@@ -640,12 +641,12 @@ public static class JalxamlParser
                 AddReferencedElement(result, reader.LocalName, reader.NamespaceURI);
                 if (reader.LocalName.Contains('.'))
                 {
-                    SkipPropertyElementBody(reader, result);
+                    SkipPropertyElementBody(reader, result, suppressNames);
                 }
                 else
                 {
                     // Walk the regular tree (still side-effecting metadata).
-                    _ = ParseElementTree(reader, result);
+                    _ = ParseElementTree(reader, result, suppressNames);
                 }
             }
         }

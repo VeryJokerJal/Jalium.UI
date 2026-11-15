@@ -3,6 +3,7 @@ using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
+using Jalium.UI.Styling;
 
 namespace Jalium.UI.Tests;
 
@@ -72,13 +73,177 @@ public class ProgressBarThemeTests
             host.Measure(new Size(240, 40));
             host.Arrange(new Rect(0, 0, 240, 40));
 
-            var track = Assert.IsType<Shapes.Rectangle>(progressBar.FindName("PART_Track"));
+            var track = Assert.IsType<Border>(progressBar.FindName("PART_Track"));
             var indicator = Assert.IsType<Border>(progressBar.FindName("PART_Indicator"));
 
-            Assert.True(track.RadiusX >= track.RenderSize.Height / 2);
-            Assert.True(track.RadiusY >= track.RenderSize.Height / 2);
+            Assert.True(track.CornerRadius.TopLeft >= track.RenderSize.Height / 2);
+            Assert.Equal(BorderShape.RoundedRectangle, track.Shape);
             Assert.True(indicator.CornerRadius.TopLeft >= indicator.RenderSize.Height / 2);
             Assert.Equal(BorderShape.RoundedRectangle, indicator.Shape);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void ProgressBar_TemplateTrack_UsesCssBackgroundAndBorderBoxes()
+    {
+        ResetApplicationState();
+        var app = new Application();
+
+        try
+        {
+            var progressBar = new ProgressBar
+            {
+                Width = 80,
+                Height = 60,
+                Value = 0,
+            };
+            Css.SetStyle(progressBar,
+                "border:8px solid transparent;padding:4px;background-color:blue;" +
+                "background-image:linear-gradient(to right,red,lime);" +
+                "background-size:20px 10px;background-position:right bottom;" +
+                "background-repeat:no-repeat;background-origin:content-box;" +
+                "background-clip:content-box");
+            var host = new Grid { Width = 80, Height = 60 };
+            host.Children.Add(progressBar);
+            CssBorderRadiusTests.Layout(host, 80, 60);
+
+            Assert.IsType<Border>(progressBar.FindName("PART_Track"));
+            var pixels = CssBorderRadiusTests.Pixels(progressBar, 80, 60);
+            static byte Channel(byte[] data, int x, int y, int channel)
+                => data[(y * 80 + x) * 4 + channel];
+            Assert.Equal((byte)0, Channel(pixels, 10, 30, 3));
+            Assert.Equal((byte)255, Channel(pixels, 30, 30, 0));
+            Assert.True(Channel(pixels, 50, 43, 2) > 100);
+            Assert.True(Channel(pixels, 58, 41, 1) > 100);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void ProgressBar_TemplateIndicator_UsesCssContentWidth()
+    {
+        ResetApplicationState();
+        var app = new Application();
+
+        try
+        {
+            var progressBar = new ProgressBar
+            {
+                Width = 80,
+                Height = 60,
+                Value = 50,
+                ProgressBrush = Brushes.Red,
+            };
+            Css.SetStyle(progressBar,
+                "border:8px solid transparent;padding:4px;background-color:blue;" +
+                "background-clip:content-box");
+            var host = new Grid { Width = 80, Height = 60 };
+            host.Children.Add(progressBar);
+            CssBorderRadiusTests.Layout(host, 80, 60);
+
+            var pixels = CssBorderRadiusTests.Pixels(progressBar, 80, 60);
+            static byte Channel(byte[] data, int x, int y, int channel)
+                => data[(y * 80 + x) * 4 + channel];
+            Assert.Equal((byte)0, Channel(pixels, 8, 30, 3));
+            Assert.Equal((byte)255, Channel(pixels, 20, 30, 2));
+            Assert.True(Channel(pixels, 45, 30, 2) < 200);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void ProgressBar_TemplateTrack_PaintsCssBorderSides()
+    {
+        ResetApplicationState();
+        var app = new Application();
+
+        try
+        {
+            var progressBar = new ProgressBar { Width = 80, Height = 60, Value = 0 };
+            Css.SetStyle(progressBar, "border:8px solid;border-color:red green blue yellow");
+            var host = new Grid { Width = 80, Height = 60 };
+            host.Children.Add(progressBar);
+            CssBorderRadiusTests.Layout(host, 80, 60);
+
+            var pixels = CssBorderRadiusTests.Pixels(progressBar, 80, 60);
+            static byte Channel(byte[] data, int x, int y, int channel)
+                => data[(y * 80 + x) * 4 + channel];
+            Assert.Equal((byte)255, Channel(pixels, 40, 4, 2));
+            Assert.Equal((byte)128, Channel(pixels, 76, 30, 1));
+            Assert.Equal((byte)255, Channel(pixels, 40, 56, 0));
+            Assert.Equal((byte)255, Channel(pixels, 4, 30, 1));
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void ProgressBar_TemplateIndicator_ReflowsAfterCssEdgesChange()
+    {
+        ResetApplicationState();
+        var app = new Application();
+
+        try
+        {
+            var progressBar = new ProgressBar { Width = 80, Height = 60, Value = 50 };
+            var host = new Grid { Width = 80, Height = 60 };
+            host.Children.Add(progressBar);
+            Css.SetStyle(progressBar, "border:8px solid transparent;padding:4px");
+            CssBorderRadiusTests.Layout(host, 80, 60);
+            var indicator = Assert.IsType<Border>(progressBar.FindName("PART_Indicator"));
+            Assert.Equal(28, indicator.Width);
+
+            Css.SetStyle(progressBar, string.Empty);
+            CssBorderRadiusTests.Layout(host, 80, 60);
+            Assert.Equal(40, indicator.Width);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void ProgressBar_TemplateVerticalAndIndeterminateIndicators_UseCssContentBox()
+    {
+        ResetApplicationState();
+        var app = new Application();
+
+        try
+        {
+            var progressBar = new ProgressBar
+            {
+                Width = 80, Height = 60, Orientation = Orientation.Vertical,
+                Value = 50, ProgressBrush = Brushes.Red,
+            };
+            Css.SetStyle(progressBar,
+                "border:8px solid transparent;padding:4px;background-color:blue;background-clip:content-box");
+            var host = new Grid { Width = 80, Height = 60 };
+            host.Children.Add(progressBar);
+            CssBorderRadiusTests.Layout(host, 80, 60);
+
+            var indicator = Assert.IsType<Border>(progressBar.FindName("PART_Indicator"));
+            Assert.Equal(18, indicator.Height);
+            var pixels = CssBorderRadiusTests.Pixels(progressBar, 80, 60);
+            Assert.Equal((byte)255, pixels[(40 * 80 + 40) * 4 + 2]);
+            Assert.True(pixels[(20 * 80 + 40) * 4 + 2] < 200);
+
+            progressBar.IsIndeterminate = true;
+            progressBar.UpdateIndeterminateAnimation(0.5);
+            Assert.InRange(indicator.Height, 10.7, 10.9);
+            Assert.InRange(indicator.RenderOffset.Y, 12.5, 12.7);
         }
         finally
         {
