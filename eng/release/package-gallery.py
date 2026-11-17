@@ -73,10 +73,10 @@ def main():
         licenses = stage / "licenses"
         licenses.mkdir()
         thirdparty = framework / "src/native/thirdparty"
-        for source, name in (("LICENSES.md", "Native-Third-Party.md"),
-                             ("sheenbidi/LICENSE", "SheenBidi-LICENSE.txt"),
-                             ("UNICODE-LICENSE.txt", "Unicode-LICENSE.txt")):
-            shutil.copy2(thirdparty / source, licenses / name)
+        for license_source, license_name in (("LICENSES.md", "Native-Third-Party.md"),
+                                             ("sheenbidi/LICENSE", "SheenBidi-LICENSE.txt"),
+                                             ("UNICODE-LICENSE.txt", "Unicode-LICENSE.txt")):
+            shutil.copy2(thirdparty / license_source, licenses / license_name)
         gallery_license = gallery / "LICENSE"
         if gallery_license.is_file():
             shutil.copy2(gallery_license, stage / "Gallery-LICENSE.txt")
