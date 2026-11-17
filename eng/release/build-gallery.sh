@@ -7,7 +7,7 @@ gallery_root="${JALIUM_GALLERY_ROOT:-$(dirname "$ui_root")/Jalium.UI.Gallery}"
 release_root="${JALIUM_RELEASE_ROOT:-$(dirname "$ui_root")/artifacts/gallery-26.11.1}"
 export JALIUM_RELEASE_BUILD_ROOT="${JALIUM_RELEASE_BUILD_ROOT:-$release_root/build/$platform}"
 mkdir -p "$release_root/assets" "$release_root/test-results"
-bash "$ui_root/eng/release/bootstrap-tools.sh"
+bash "$script_root/bootstrap-tools.sh"
 properties=("-p:RestoreConfigFile=$ui_root/nuget.config" -p:GeneratePackageOnBuild=false \
   -p:BuildJaliumNativeProjects=false -p:BuildJaliumNativeStaticProjects=false)
 case "$platform" in

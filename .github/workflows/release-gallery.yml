@@ -18,7 +18,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: gallery-release-26.11.1
+  group: gallery-release-26.11.1-${{ inputs.platform }}
   cancel-in-progress: false
 
 env:
@@ -201,7 +201,7 @@ jobs:
         shell: bash
         env:
           JALIUM_RELEASE_BUILD_ROOT: ${{ github.workspace }}/artifacts/gallery-26.11.1/build/windows
-        run: bash Jalium.UI/eng/release/bootstrap-tools.sh
+        run: bash automation/eng/release/bootstrap-tools.sh
       - name: Publish and smoke-test Windows Gallery
         shell: pwsh
         run: |
@@ -277,7 +277,7 @@ jobs:
         shell: bash
         env:
           JALIUM_RELEASE_BUILD_ROOT: ${{ github.workspace }}/artifacts/gallery-26.11.1/build/android
-        run: bash Jalium.UI/eng/release/bootstrap-tools.sh
+        run: bash automation/eng/release/bootstrap-tools.sh
       - name: Publish and verify signed APKs
         shell: pwsh
         run: |
