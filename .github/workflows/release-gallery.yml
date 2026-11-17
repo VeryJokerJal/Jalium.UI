@@ -23,7 +23,7 @@ concurrency:
 
 env:
   FRAMEWORK_COMMIT: ${{ inputs.framework_ref || '76855d6ff8f55985411a8e7be5956612ccea9a46' }}
-  GALLERY_COMMIT: dcb60bec2bfd78fa39c02e1fb2e70d898ac603a9
+  GALLERY_COMMIT: aab8949b49d0adfff198b8400e906fc180898c8a
   NATIVE_SOURCE_RUN: 43701960384
   JALIUM_FRAMEWORK_ROOT: ${{ github.workspace }}/Jalium.UI
   DOTNET_NOLOGO: '1'

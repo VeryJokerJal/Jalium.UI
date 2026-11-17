@@ -18,6 +18,19 @@ def git_head(root):
     return subprocess.check_output(["git", "-c", f"safe.directory={root}", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
 
 
+def keep_host_css_runtime(stage, rid):
+    # Runtime CSS tooling selects CssTooling.HostRid. Source builds prepare all
+    # six hosts for NuGet, but an application only needs its own host payload.
+    node = stage / "tools/css-tooling/node"
+    if not node.is_dir():
+        return
+    if not (node / rid).is_dir():
+        raise ValueError(f"CSS tooling is missing the application host: {rid}")
+    for runtime in node.iterdir():
+        if runtime.is_dir() and runtime.name != rid:
+            shutil.rmtree(runtime)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("platform", choices=("linux", "macos", "windows", "android"))
@@ -57,6 +70,13 @@ def main():
             raise FileExistsError(f"Refusing to reuse stale package staging: {stage}")
         stage.mkdir(parents=True)
         shutil.copy2(framework / "LICENSE", stage / "Jalium.UI-LICENSE.txt")
+        licenses = stage / "licenses"
+        licenses.mkdir()
+        thirdparty = framework / "src/native/thirdparty"
+        for source, name in (("LICENSES.md", "Native-Third-Party.md"),
+                             ("sheenbidi/LICENSE", "SheenBidi-LICENSE.txt"),
+                             ("UNICODE-LICENSE.txt", "Unicode-LICENSE.txt")):
+            shutil.copy2(thirdparty / source, licenses / name)
         gallery_license = gallery / "LICENSE"
         if gallery_license.is_file():
             shutil.copy2(gallery_license, stage / "Gallery-LICENSE.txt")
@@ -72,6 +92,7 @@ def main():
             if not (published / executable).is_file():
                 raise FileNotFoundError(published / executable)
             shutil.copytree(published, stage, dirs_exist_ok=True)
+            keep_host_css_runtime(stage, args.rid)
             if args.platform == "linux":
                 required = [stage / f"libjalium.native.{library}.so" for library in
                             ("core", "platform", "media.core", "text", "vulkan", "software", "media")]
