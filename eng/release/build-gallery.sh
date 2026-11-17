@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 platform="${1:?Usage: build-gallery.sh <linux|macos>}"
-ui_root="$(cd "$(dirname "$0")/../.." && pwd)"
+script_root="$(cd "$(dirname "$0")" && pwd)"
+ui_root="${JALIUM_FRAMEWORK_ROOT:-$(cd "$script_root/../.." && pwd)}"
 gallery_root="${JALIUM_GALLERY_ROOT:-$(dirname "$ui_root")/Jalium.UI.Gallery}"
-release_root="${JALIUM_RELEASE_ROOT:-$(dirname "$ui_root")/artifacts/gallery-26.11.0}"
+release_root="${JALIUM_RELEASE_ROOT:-$(dirname "$ui_root")/artifacts/gallery-26.11.1}"
 export JALIUM_RELEASE_BUILD_ROOT="${JALIUM_RELEASE_BUILD_ROOT:-$release_root/build/$platform}"
 mkdir -p "$release_root/assets" "$release_root/test-results"
 bash "$ui_root/eng/release/bootstrap-tools.sh"
@@ -44,6 +45,10 @@ case "$platform" in
       -c Release -m:1 "-p:JaliumBuildRoot=$JALIUM_RELEASE_BUILD_ROOT/app" "${properties[@]}"
     published="$JALIUM_RELEASE_BUILD_ROOT/app/bin/Jalium.UI.Gallery.MacOS/Release/net10.0-macos/$rid/Jalium.UI.Gallery.MacOS.app"
     codesign --verify --deep --strict "$published"
+    while IFS= read -r -d '' library; do
+      codesign --verify --strict "$library"
+    done < <(find "$published" -name '*.dylib' -print0)
+    swift "$script_root/smoke-gallery-macos.swift" "$published"
     ;;
   *) echo "Unsupported release platform: $platform" >&2; exit 2 ;;
 esac
@@ -53,6 +58,6 @@ esac
 "${test_command[@]}" "$gallery_root/Tests/Jalium.UI.Gallery.Modules.Main.Tests/Jalium.UI.Gallery.Modules.Main.Tests.csproj" \
   -c Release -m:1 "-p:JaliumBuildRoot=$JALIUM_RELEASE_BUILD_ROOT/gallery-tests" "${properties[@]}" \
   --results-directory "$release_root/test-results" --logger "trx;LogFileName=$rid-gallery.trx"
-python3 "$ui_root/eng/release/package-gallery.py" "$platform" \
+python3 "$script_root/package-gallery.py" "$platform" \
   --publish "$published" --output "$release_root/assets" --rid "$rid" \
   --framework-root "$ui_root" --gallery-root "$gallery_root"

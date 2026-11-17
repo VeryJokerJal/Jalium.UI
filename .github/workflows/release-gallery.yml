@@ -1,14 +1,12 @@
-name: Release Gallery 26.11.0
+name: Release Gallery 26.11.1
 
 on:
-  push:
-    branches: [codex/release-26.11.0]
   workflow_dispatch:
     inputs:
       platform:
-        description: Build all platforms, or retry only Linux
+        description: Build all platforms, or retry one platform
         type: choice
-        options: [all, linux]
+        options: [all, linux, macos, windows, android]
         default: all
       framework_ref:
         description: Optional exact framework revision to rebuild
@@ -17,22 +15,42 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
-  group: gallery-release-26.11.0
+  group: gallery-release-26.11.1
   cancel-in-progress: false
 
 env:
-  FRAMEWORK_COMMIT: ${{ inputs.framework_ref || github.sha }}
-  GALLERY_COMMIT: 455f4735bca8bd6be59966f70afc926fc08e6818
+  FRAMEWORK_COMMIT: ${{ inputs.framework_ref || '76855d6ff8f55985411a8e7be5956612ccea9a46' }}
+  GALLERY_COMMIT: dcb60bec2bfd78fa39c02e1fb2e70d898ac603a9
+  NATIVE_SOURCE_RUN: 43701960384
+  JALIUM_FRAMEWORK_ROOT: ${{ github.workspace }}/Jalium.UI
   DOTNET_NOLOGO: '1'
   DOTNET_CLI_TELEMETRY_OPTOUT: '1'
 
 jobs:
+  verify-native:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FRAMEWORK_COMMIT }}
+          fetch-depth: 0
+      - name: Verify native source inputs and qualified artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 eng/release/check-native-artifacts.py "$GITHUB_REPOSITORY" "$NATIVE_SOURCE_RUN" "$FRAMEWORK_COMMIT"
+
   linux:
+    needs: verify-native
+    if: ${{ inputs.platform == 'all' || inputs.platform == 'linux' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
+      - uses: actions/checkout@v4
+        with:
+          path: automation
       - uses: actions/checkout@v4
         with:
           path: Jalium.UI
@@ -43,18 +61,25 @@ jobs:
           repository: VeryJokerJal/Jalium-UI-Gallery
           ref: ${{ env.GALLERY_COMMIT }}
           path: Jalium.UI.Gallery
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-linux-x64
+          run-id: ${{ env.NATIVE_SOURCE_RUN }}
+          github-token: ${{ github.token }}
+          path: Jalium.UI/src/native/bin/native/linux-x64/Release
       - name: Build Ubuntu 20.04 release image
         working-directory: Jalium.UI
         run: >-
           docker build --build-arg JALIUM_INSTALL_DOTNET=1
           --build-arg JALIUM_DOTNET_SDK_VERSION=10.0.300
-          -t jalium-gallery-release:26.11.0 -f eng/linux/ubuntu20.04-glibc.Dockerfile .
+          -t jalium-gallery-release:26.11.1 -f eng/linux/ubuntu20.04-glibc.Dockerfile .
       - name: Build and validate Linux x64 Gallery
         run: |
           docker run --rm -v "$GITHUB_WORKSPACE:/work" -w /work/Jalium.UI \
             -e JALIUM_GALLERY_ROOT=/work/Jalium.UI.Gallery \
-            -e JALIUM_RELEASE_ROOT=/work/artifacts/gallery-26.11.0 \
-            jalium-gallery-release:26.11.0 \
+            -e JALIUM_FRAMEWORK_ROOT=/work/Jalium.UI -e JALIUM_RELEASE_NATIVE_READY=1 \
+            -e JALIUM_RELEASE_ROOT=/work/artifacts/gallery-26.11.1 \
+            jalium-gallery-release:26.11.1 \
             bash -c '
               set -euo pipefail
               # Ubuntu 20.04 Git ignores safe.directory supplied with -c.
@@ -63,24 +88,28 @@ jobs:
               git config --global --add safe.directory /work/Jalium.UI.Gallery
               git -C /work/Jalium.UI rev-parse HEAD
               git -C /work/Jalium.UI.Gallery rev-parse HEAD
-              bash eng/release/build-gallery.sh linux
+              bash /work/automation/eng/release/build-gallery.sh linux
             '
       - uses: actions/upload-artifact@v4
         with:
           name: gallery-linux
-          path: artifacts/gallery-26.11.0/assets/*
+          path: artifacts/gallery-26.11.1/assets/*
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: gallery-linux-test-results
-          path: artifacts/gallery-26.11.0/test-results/*
+          path: artifacts/gallery-26.11.1/test-results/*
 
   macos:
-    if: ${{ inputs.platform != 'linux' }}
+    needs: verify-native
+    if: ${{ inputs.platform == 'all' || inputs.platform == 'macos' }}
     runs-on: macos-26
     timeout-minutes: 90
     steps:
+      - uses: actions/checkout@v4
+        with:
+          path: automation
       - uses: actions/checkout@v4
         with:
           path: Jalium.UI
@@ -109,37 +138,37 @@ jobs:
               with preferences.open('wb') as stream:
                   plistlib.dump({'AppleSdkRoot': '/Applications/Xcode_26.5.app'}, stream)
           PY
-      - uses: actions/cache/restore@v4
-        id: apple-toolchain
+      - uses: actions/download-artifact@v4
         with:
-          path: Jalium.UI/src/native/out/apple-deps
-          key: gallery-macos-compiler-${{ hashFiles('Jalium.UI/eng/apple/dependencies.lock.json') }}-Release
+          name: native-osx-arm64
+          run-id: ${{ env.NATIVE_SOURCE_RUN }}
+          github-token: ${{ github.token }}
+          path: Jalium.UI/src/native/bin/native/osx-arm64/Release
       - name: Build and validate macOS arm64 Gallery
-        working-directory: Jalium.UI
         env:
-          JALIUM_RELEASE_ROOT: ${{ github.workspace }}/artifacts/gallery-26.11.0
-        run: bash eng/release/build-gallery.sh macos
-      - uses: actions/cache/save@v4
-        if: always() && steps.apple-toolchain.outputs.cache-hit != 'true'
-        with:
-          path: Jalium.UI/src/native/out/apple-deps
-          key: ${{ steps.apple-toolchain.outputs.cache-primary-key }}
+          JALIUM_RELEASE_ROOT: ${{ github.workspace }}/artifacts/gallery-26.11.1
+          JALIUM_RELEASE_NATIVE_READY: '1'
+        run: bash automation/eng/release/build-gallery.sh macos
       - uses: actions/upload-artifact@v4
         with:
           name: gallery-macos
-          path: artifacts/gallery-26.11.0/assets/*
+          path: artifacts/gallery-26.11.1/assets/*
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: gallery-macos-test-results
-          path: artifacts/gallery-26.11.0/test-results/*
+          path: artifacts/gallery-26.11.1/test-results/*
 
   windows:
-    if: ${{ inputs.platform != 'linux' }}
+    needs: verify-native
+    if: ${{ inputs.platform == 'all' || inputs.platform == 'windows' }}
     runs-on: windows-2025
     timeout-minutes: 60
     steps:
+      - uses: actions/checkout@v4
+        with:
+          path: automation
       - uses: actions/checkout@v4
         with:
           path: Jalium.UI
@@ -162,18 +191,21 @@ jobs:
           $process = Start-Process $installer -ArgumentList '--root C:\VulkanSDK\1.4.341.1 --accept-licenses --default-answer --confirm-command install' -PassThru -Wait
           if ($process.ExitCode -ne 0) { throw "Vulkan SDK install failed: $($process.ExitCode)" }
           'VULKAN_SDK=C:\VulkanSDK\1.4.341.1' | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-      - name: Build Windows NativeAOT libraries
-        shell: pwsh
-        run: ./Jalium.UI/samples/build-native-static.ps1 -Configuration Release
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-windows
+          run-id: ${{ env.NATIVE_SOURCE_RUN }}
+          github-token: ${{ github.token }}
+          path: Jalium.UI/src/native/bin
       - name: Bootstrap source build tools
         shell: bash
         env:
-          JALIUM_RELEASE_BUILD_ROOT: ${{ github.workspace }}/artifacts/gallery-26.11.0/build/windows
+          JALIUM_RELEASE_BUILD_ROOT: ${{ github.workspace }}/artifacts/gallery-26.11.1/build/windows
         run: bash Jalium.UI/eng/release/bootstrap-tools.sh
       - name: Publish and smoke-test Windows Gallery
         shell: pwsh
         run: |
-          $root = Join-Path $env:GITHUB_WORKSPACE 'artifacts/gallery-26.11.0'
+          $root = Join-Path $env:GITHUB_WORKSPACE 'artifacts/gallery-26.11.1'
           $published = Join-Path $root 'publish/win-x64'
           dotnet publish Jalium.UI.Gallery/Jalium.UI.Gallery.Desktop/Jalium.UI.Gallery.Desktop.csproj -c Release -r win-x64 -m:1 -p:JaliumBuildRoot="$root/build/windows/app" -p:RestoreConfigFile="$env:GITHUB_WORKSPACE/Jalium.UI/nuget.config" -p:GeneratePackageOnBuild=false -p:BuildJaliumNativeProjects=false -p:BuildJaliumNativeStaticProjects=false -o $published
           if ($LASTEXITCODE -ne 0) { throw 'Windows publish failed' }
@@ -193,19 +225,23 @@ jobs:
           } finally {
             if (-not $app.HasExited) { Stop-Process -Id $app.Id }
           }
-          python Jalium.UI/eng/release/package-gallery.py windows --rid win-x64 --publish $published --output "$root/assets" --framework-root Jalium.UI --gallery-root Jalium.UI.Gallery
+          python automation/eng/release/package-gallery.py windows --rid win-x64 --publish $published --output "$root/assets" --framework-root Jalium.UI --gallery-root Jalium.UI.Gallery
           if ($LASTEXITCODE -ne 0) { throw 'Windows packaging failed' }
       - uses: actions/upload-artifact@v4
         with:
           name: gallery-windows
-          path: artifacts/gallery-26.11.0/assets/*
+          path: artifacts/gallery-26.11.1/assets/*
           if-no-files-found: error
 
   android:
-    if: ${{ inputs.platform != 'linux' }}
+    needs: verify-native
+    if: ${{ inputs.platform == 'all' || inputs.platform == 'android' }}
     runs-on: windows-2025
     timeout-minutes: 60
     steps:
+      - uses: actions/checkout@v4
+        with:
+          path: automation
       - uses: actions/checkout@v4
         with:
           path: Jalium.UI
@@ -240,12 +276,12 @@ jobs:
       - name: Bootstrap source build tools
         shell: bash
         env:
-          JALIUM_RELEASE_BUILD_ROOT: ${{ github.workspace }}/artifacts/gallery-26.11.0/build/android
+          JALIUM_RELEASE_BUILD_ROOT: ${{ github.workspace }}/artifacts/gallery-26.11.1/build/android
         run: bash Jalium.UI/eng/release/bootstrap-tools.sh
       - name: Publish and verify signed APKs
         shell: pwsh
         run: |
-          $root = Join-Path $env:GITHUB_WORKSPACE 'artifacts/gallery-26.11.0'
+          $root = Join-Path $env:GITHUB_WORKSPACE 'artifacts/gallery-26.11.1'
           $apksigner = Join-Path $env:ANDROID_HOME 'build-tools/36.0.0/apksigner.bat'
           $zipalign = Join-Path $env:ANDROID_HOME 'build-tools/36.0.0/zipalign.exe'
           foreach ($rid in @('android-arm64', 'android-x64')) {
@@ -258,48 +294,11 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "APK signature validation failed: $rid" }
             & $zipalign -c -P 16 -v 4 $apks[0].FullName
             if ($LASTEXITCODE -ne 0) { throw "APK alignment validation failed: $rid" }
-            python Jalium.UI/eng/release/package-gallery.py android --rid $rid --publish $apks[0].FullName --output "$root/assets" --framework-root Jalium.UI --gallery-root Jalium.UI.Gallery
+            python automation/eng/release/package-gallery.py android --rid $rid --publish $apks[0].FullName --output "$root/assets" --framework-root Jalium.UI --gallery-root Jalium.UI.Gallery
             if ($LASTEXITCODE -ne 0) { throw "APK packaging failed: $rid" }
           }
       - uses: actions/upload-artifact@v4
         with:
           name: gallery-android
-          path: artifacts/gallery-26.11.0/assets/*
+          path: artifacts/gallery-26.11.1/assets/*
           if-no-files-found: error
-
-  publish:
-    needs: [linux, macos, windows, android]
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ env.FRAMEWORK_COMMIT }}
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: gallery-*
-          path: release-assets
-          merge-multiple: true
-      - name: Verify asset set and publish Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          cd release-assets
-          for asset in Jalium.Gallery-26.11.0-linux-x64.tar.gz Jalium.Gallery-26.11.0-macos-arm64.zip Jalium.Gallery-26.11.0-win-x64.zip Jalium.Gallery-26.11.0-android-arm64.apk Jalium.Gallery-26.11.0-android-x64.apk; do
-            test -s "$asset"
-            sha256sum --check "$asset.sha256"
-          done
-          cat *.sha256 > SHA256SUMS.txt
-          if gh release view v26.11.0 --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft > release-state.txt 2>/dev/null; then
-            test "$(cat release-state.txt)" = true || { echo '26.11.0 is already published; refusing to replace its assets.' >&2; exit 1; }
-          else
-            gh release create v26.11.0 --repo "$GITHUB_REPOSITORY" --target "$FRAMEWORK_COMMIT" --draft --title 'Jalium.UI 26.11.0' --notes-file ../eng/release/26.11.0.md
-          fi
-          gh release edit v26.11.0 --repo "$GITHUB_REPOSITORY" --target "$FRAMEWORK_COMMIT" --notes-file ../eng/release/26.11.0.md
-          gh release upload v26.11.0 --repo "$GITHUB_REPOSITORY" Jalium.Gallery-* SHA256SUMS.txt --clobber
-          mkdir downloaded
-          gh release download v26.11.0 --repo "$GITHUB_REPOSITORY" --pattern 'Jalium.Gallery-*' --dir downloaded
-          (cd downloaded && sha256sum --check ../SHA256SUMS.txt)
-          gh release edit v26.11.0 --repo "$GITHUB_REPOSITORY" --draft=false --latest --notes-file ../eng/release/26.11.0.md
