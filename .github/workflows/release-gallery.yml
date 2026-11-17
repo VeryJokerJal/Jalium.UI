@@ -209,7 +209,10 @@ jobs:
           $published = Join-Path $root 'publish/win-x64'
           dotnet publish Jalium.UI.Gallery/Jalium.UI.Gallery.Desktop/Jalium.UI.Gallery.Desktop.csproj -c Release -r win-x64 -m:1 -p:JaliumBuildRoot="$root/build/windows/app" -p:RestoreConfigFile="$env:GITHUB_WORKSPACE/Jalium.UI/nuget.config" -p:GeneratePackageOnBuild=false -p:BuildJaliumNativeProjects=false -p:BuildJaliumNativeStaticProjects=false -o $published
           if ($LASTEXITCODE -ne 0) { throw 'Windows publish failed' }
-          $app = Start-Process (Join-Path $published 'Jalium.UI.Gallery.Desktop.exe') -PassThru
+          $started = Get-Date
+          $stdout = Join-Path $root 'windows.stdout.log'
+          $stderr = Join-Path $root 'windows.stderr.log'
+          $app = Start-Process (Join-Path $published 'Jalium.UI.Gallery.Desktop.exe') -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
           try {
             for ($attempt = 0; $attempt -lt 30; $attempt++) {
               Start-Sleep -Seconds 1
@@ -224,6 +227,10 @@ jobs:
             if ($app.ExitCode -ne 0) { throw "Gallery exit code: $($app.ExitCode)" }
           } finally {
             if (-not $app.HasExited) { Stop-Process -Id $app.Id }
+            Get-Content $stdout, $stderr -ErrorAction SilentlyContinue
+            Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=$started} -ErrorAction SilentlyContinue |
+              Where-Object { $_.ProviderName -in @('.NET Runtime', 'Application Error', 'Windows Error Reporting') } |
+              Format-List TimeCreated, ProviderName, Id, Message
           }
           python automation/eng/release/package-gallery.py windows --rid win-x64 --publish $published --output "$root/assets" --framework-root Jalium.UI --gallery-root Jalium.UI.Gallery
           if ($LASTEXITCODE -ne 0) { throw 'Windows packaging failed' }
@@ -232,6 +239,14 @@ jobs:
           name: gallery-windows
           path: artifacts/gallery-26.11.1/assets/*
           if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: gallery-windows-diagnostics
+          path: |
+            artifacts/gallery-26.11.1/*.log
+            artifacts/gallery-26.11.1/publish/win-x64/*
+          if-no-files-found: warn
 
   android:
     needs: verify-native
