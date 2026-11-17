@@ -120,24 +120,24 @@ jobs:
           repository: VeryJokerJal/Jalium-UI-Gallery
           ref: ${{ env.GALLERY_COMMIT }}
           path: Jalium.UI.Gallery
+      - name: Read pinned Apple tools
+        id: tools
+        run: |
+          python3 - <<'PYTOOLS'
+          import json,os
+          tools=json.load(open('Jalium.UI/eng/apple/toolchain.lock.json'))
+          with open(os.environ['GITHUB_OUTPUT'],'a') as out:
+              for name in ['dotnetSdk','workloadSet','xcode']: print(f'{name}={tools[name]}',file=out)
+          PYTOOLS
       - uses: actions/setup-dotnet@v4
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
         with:
-          dotnet-version: 10.0.300
+          dotnet-version: ${{ steps.tools.outputs.dotnetSdk }}
       - name: Select pinned Xcode and workload
         run: |
-          sudo xcode-select -s /Applications/Xcode_26.5.app/Contents/Developer
-          dotnet workload install macos --version 10.0.300.2
-          # The pinned 26.5 SDK requires a valid preferences file on fresh hosts.
-          # https://github.com/dotnet/macios/issues/25476
-          python3 - <<'PY'
-          import plistlib
-          from pathlib import Path
-          preferences = Path.home() / 'Library/Preferences/Xamarin/Settings.plist'
-          if not preferences.exists():
-              preferences.parent.mkdir(parents=True, exist_ok=True)
-              with preferences.open('wb') as stream:
-                  plistlib.dump({'AppleSdkRoot': '/Applications/Xcode_26.5.app'}, stream)
-          PY
+          sudo xcode-select -s /Applications/Xcode_${{ steps.tools.outputs.xcode }}.app/Contents/Developer
+          dotnet workload install macos --version '${{ steps.tools.outputs.workloadSet }}'
       - uses: actions/download-artifact@v4
         with:
           name: native-osx-arm64
