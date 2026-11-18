@@ -127,28 +127,10 @@ public sealed partial class ColorAnimation : ColorAnimationBase
             progress = EasingFunction.Ease(progress);
         }
 
-        var from = From ?? defaultOriginValue;
-        var to = To ?? (By.HasValue ? AddColors(from, By.Value) : defaultDestinationValue);
-
-        // Linear interpolation for each color component
-        var a = (byte)(from.A + (to.A - from.A) * progress);
-        var r = (byte)(from.R + (to.R - from.R) * progress);
-        var g = (byte)(from.G + (to.G - from.G) * progress);
-        var b = (byte)(from.B + (to.B - from.B) * progress);
-
-        return Color.FromArgb(a, r, g, b);
+        return AnimationValueOperations.EvaluateFromToBy(
+            defaultOriginValue, defaultDestinationValue, From, To, By,
+            progress, animationClock.CurrentIteration ?? 1, IsAdditive, IsCumulative);
     }
-
-    // Color's full WPF scRGB composition is intentionally outside this batch;
-    // ARGB channel saturation still gives By deterministic, bounded behavior.
-    private static Color AddColors(Color origin, Color offset) => Color.FromArgb(
-        AddChannel(origin.A, offset.A),
-        AddChannel(origin.R, offset.R),
-        AddChannel(origin.G, offset.G),
-        AddChannel(origin.B, offset.B));
-
-    private static byte AddChannel(byte origin, byte offset) =>
-        (byte)Math.Min(byte.MaxValue, origin + offset);
 
     // --- from SimpleAnimations.WpfParity.cs ---
     public ColorAnimation(Color toValue, Duration duration, FillBehavior fillBehavior)

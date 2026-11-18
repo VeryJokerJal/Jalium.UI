@@ -1576,13 +1576,7 @@ public class DependencyObject : DispatcherObject
     internal object? GetAnimationBaseValue(DependencyProperty dp)
     {
         ArgumentNullException.ThrowIfNull(dp);
-
-        if (_optionalState?.AnimatedValues?.TryGetValue(dp, out var animated) == true)
-        {
-            return animated.BaseValue;
-        }
-
-        return GetValue(dp);
+        return GetEffectiveBaseValue(dp);
     }
 
     internal virtual ValueSource GetValueSourceInternal(DependencyProperty dp)

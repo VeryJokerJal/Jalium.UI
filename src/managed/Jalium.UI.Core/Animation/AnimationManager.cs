@@ -169,6 +169,13 @@ internal static class AnimationManager
     internal static void Unregister(AnimationTickSubscription subscription)
     {
         subscription.IsActive = false;
+        // With no renderable windows there may never be another frame. Release
+        // strong storyboard registrations immediately whenever no iteration is active.
+        if (!_ticking && !_draining)
+        {
+            Compact();
+            TeardownIfEmpty();
+        }
     }
 
     /// <summary>

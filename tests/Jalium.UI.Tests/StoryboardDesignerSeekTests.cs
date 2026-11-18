@@ -22,6 +22,9 @@ public sealed class StoryboardDesignerSeekTests
             """));
         var animation = Assert.IsType<DoubleAnimationUsingKeyFrames>(Assert.Single(storyboard.Children));
         Assert.Equal(3, animation.KeyFrames.Count);
+        Assert.Equal(KeyTime.FromTimeSpan(TimeSpan.Zero), animation.KeyFrames[0].KeyTime);
+        Assert.Equal(KeyTime.FromTimeSpan(TimeSpan.FromSeconds(.6)), animation.KeyFrames[1].KeyTime);
+        Assert.Equal(KeyTime.FromTimeSpan(TimeSpan.FromSeconds(1.2)), animation.KeyFrames[2].KeyTime);
         var target = new Border { Opacity = .15 }; Storyboard.SetTarget(animation, target);
         try
         {

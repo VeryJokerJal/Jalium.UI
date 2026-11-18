@@ -175,10 +175,9 @@ public sealed partial class QuaternionAnimation : QuaternionAnimationBase
             progress = EasingFunction.Ease(progress);
         }
 
-        var fromValue = From ?? defaultOriginValue;
-        var toValue = To ?? (By.HasValue ? fromValue * By.Value : defaultDestinationValue);
-
-        return Quaternion.Slerp(fromValue, toValue, progress, UseShortestPath);
+        return AnimationValueOperations.EvaluateFromToBy(
+            defaultOriginValue, defaultDestinationValue, From, To, By,
+            progress, animationClock.CurrentIteration ?? 1, IsAdditive, IsCumulative, UseShortestPath);
     }
 }
 

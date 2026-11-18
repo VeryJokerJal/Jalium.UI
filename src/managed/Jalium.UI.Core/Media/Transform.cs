@@ -68,6 +68,15 @@ public abstract partial class Transform : GeneralTransform
     }
 
     /// <inheritdoc />
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        // Storyboards and bindings write dependency properties directly, bypassing
+        // CLR setters. Notify the owning visual for every effective value change.
+        RaiseChanged();
+    }
+
+    /// <inheritdoc />
     public override string ToString() => Value.ToString(CultureInfo.CurrentCulture);
     public new string ToString(IFormatProvider? provider) => Value.ToString(provider);
 }
@@ -402,7 +411,6 @@ public sealed class MatrixTransform : Transform
         {
             if (Matrix == value) return;
             SetValue(MatrixProperty, value);
-            RaiseChanged();
         }
     }
 
@@ -475,7 +483,6 @@ public sealed class ScaleTransform : Transform
         {
             if (ScaleX == value) return;
             SetValue(ScaleXProperty, value);
-            RaiseChanged();
         }
     }
 
@@ -489,7 +496,6 @@ public sealed class ScaleTransform : Transform
         {
             if (ScaleY == value) return;
             SetValue(ScaleYProperty, value);
-            RaiseChanged();
         }
     }
 
@@ -503,7 +509,6 @@ public sealed class ScaleTransform : Transform
         {
             if (CenterX == value) return;
             SetValue(CenterXProperty, value);
-            RaiseChanged();
         }
     }
 
@@ -517,7 +522,6 @@ public sealed class ScaleTransform : Transform
         {
             if (CenterY == value) return;
             SetValue(CenterYProperty, value);
-            RaiseChanged();
         }
     }
 
@@ -583,7 +587,6 @@ public sealed class RotateTransform : Transform
         {
             if (Angle == value) return;
             SetValue(AngleProperty, value);
-            RaiseChanged();
         }
     }
 
@@ -597,7 +600,6 @@ public sealed class RotateTransform : Transform
         {
             if (CenterX == value) return;
             SetValue(CenterXProperty, value);
-            RaiseChanged();
         }
     }
 
@@ -611,7 +613,6 @@ public sealed class RotateTransform : Transform
         {
             if (CenterY == value) return;
             SetValue(CenterYProperty, value);
-            RaiseChanged();
         }
     }
 
@@ -672,7 +673,6 @@ public sealed class TranslateTransform : Transform
         {
             if (X == value) return;
             SetValue(XProperty, value);
-            RaiseChanged();
         }
     }
 
@@ -686,7 +686,6 @@ public sealed class TranslateTransform : Transform
         {
             if (Y == value) return;
             SetValue(YProperty, value);
-            RaiseChanged();
         }
     }
 
@@ -739,7 +738,6 @@ public sealed class SkewTransform : Transform
         {
             if (AngleX == value) return;
             SetValue(AngleXProperty, value);
-            RaiseChanged();
         }
     }
 
@@ -753,7 +751,6 @@ public sealed class SkewTransform : Transform
         {
             if (AngleY == value) return;
             SetValue(AngleYProperty, value);
-            RaiseChanged();
         }
     }
 
@@ -767,7 +764,6 @@ public sealed class SkewTransform : Transform
         {
             if (CenterX == value) return;
             SetValue(CenterXProperty, value);
-            RaiseChanged();
         }
     }
 
@@ -781,7 +777,6 @@ public sealed class SkewTransform : Transform
         {
             if (CenterY == value) return;
             SetValue(CenterYProperty, value);
-            RaiseChanged();
         }
     }
 
@@ -835,7 +830,6 @@ public sealed class TransformGroup : Transform
             }
 
             SetValue(ChildrenProperty, value);
-            RaiseChanged();
         }
     }
 
@@ -911,11 +905,11 @@ public sealed class TransformGroup : Transform
 
     protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
     {
-        base.OnPropertyChanged(e);
         if (ReferenceEquals(e.Property, ChildrenProperty))
         {
             OnFreezablePropertyChanged(e.OldValue as DependencyObject, e.NewValue as DependencyObject, ChildrenProperty);
         }
+        base.OnPropertyChanged(e);
     }
 }
 

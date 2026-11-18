@@ -3,6 +3,7 @@ using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Shapes;
 using Jalium.UI.Media;
+using Jalium.UI.Media.Animation;
 using Jalium.UI.Media.Effects;
 using AnimationDuration = Jalium.UI.Duration;
 using MediaPointCollection = Jalium.UI.Media.PointCollection;
@@ -765,6 +766,7 @@ public static class TypeConverterRegistry
             [typeof(VerticalAlignment)] = new VerticalAlignmentConverter(),
             [typeof(Orientation)] = new OrientationConverter(),
             [typeof(AnimationDuration)] = new DurationValueConverter(),
+            [typeof(KeyTime)] = new ComponentModelValueConverter(new KeyTimeConverter()),
             [typeof(TransitionPropertyCollection)] = new TransitionPropertyCollectionConverter(),
             [typeof(Uri)] = new UriValueConverter(),
             [typeof(Type)] = new TypeTypeConverter(),

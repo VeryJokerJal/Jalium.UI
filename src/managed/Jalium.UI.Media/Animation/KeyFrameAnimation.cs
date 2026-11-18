@@ -1108,7 +1108,8 @@ internal static class KeyFrameAnimationTimeline<T> where T : notnull
         if (keyFrames.Count == 0)
             return defaultDestinationValue;
 
-        var duration = animation.Duration.HasTimeSpan ? animation.Duration.TimeSpan : TimeSpan.FromSeconds(1);
+        var naturalDuration = animation.GetNaturalDuration(animationClock);
+        var duration = naturalDuration.HasTimeSpan ? naturalDuration.TimeSpan : TimeSpan.FromSeconds(1);
 
         // Resolve keyframe times
         var resolvedKeyFrames = ResolveKeyFrameTimes(keyFrames, duration);
@@ -1233,46 +1234,81 @@ internal static class KeyFrameAnimationTimeline<T> where T : notnull
         return (T)value;
     }
 
-    private static List<(IKeyFrame Frame, TimeSpan Time)> ResolveKeyFrameTimes(
+    private readonly record struct ResolvedKeyFrame(IKeyFrame Frame, TimeSpan Time, int Index)
+    {
+        public void Deconstruct(out IKeyFrame frame, out TimeSpan time) { frame = Frame; time = Time; }
+    }
+
+    private static List<ResolvedKeyFrame> ResolveKeyFrameTimes(
         IList keyFrames,
         TimeSpan totalDuration)
     {
-        var result = new List<(IKeyFrame Frame, TimeSpan Time)>();
-        var uniformFrames = new List<IKeyFrame>();
-
-        foreach (object? item in keyFrames)
+        int count = keyFrames.Count;
+        var result = new List<ResolvedKeyFrame>(count);
+        if (count == 0) return result;
+        var times = new long[count];
+        Array.Fill(times, -1L);
+        for (int i = 0; i < count; i++)
         {
-            var frame = (IKeyFrame)item!;
+            var frame = (IKeyFrame)keyFrames[i]!;
             switch (frame.KeyTime.Type)
             {
                 case KeyTimeType.TimeSpan:
-                    result.Add((frame, frame.KeyTime.TimeSpan));
+                    times[i] = frame.KeyTime.TimeSpan.Ticks;
                     break;
                 case KeyTimeType.Percent:
-                    result.Add((frame, TimeSpan.FromTicks((long)(totalDuration.Ticks * frame.KeyTime.Percent))));
-                    break;
-                case KeyTimeType.Uniform:
-                    uniformFrames.Add(frame);
-                    break;
-                case KeyTimeType.Paced:
-                    // For simplicity, treat paced as uniform
-                    uniformFrames.Add(frame);
+                    times[i] = frame.KeyTime.Percent == 1d ? totalDuration.Ticks : (long)(totalDuration.Ticks * frame.KeyTime.Percent);
                     break;
             }
         }
 
-        // Distribute uniform keyframes evenly
-        if (uniformFrames.Count > 0)
+        // The final implicit frame is the duration endpoint. A first paced
+        // frame supplies its starting value at time zero in a multi-frame run.
+        if (times[^1] < 0) times[^1] = totalDuration.Ticks;
+        if (count > 1 && ((IKeyFrame)keyFrames[0]!).KeyTime.Type == KeyTimeType.Paced) times[0] = 0;
+
+        for (int i = 0; i < count;)
         {
-            var interval = totalDuration.Ticks / (uniformFrames.Count + 1);
-            for (var i = 0; i < uniformFrames.Count; i++)
-            {
-                result.Add((uniformFrames[i], TimeSpan.FromTicks(interval * (i + 1))));
-            }
+            if (times[i] >= 0) { i++; continue; }
+            int end = i;
+            while (times[end] < 0) end++;
+            long beginTime = i == 0 ? 0 : times[i - 1];
+            long endTime = times[end];
+            int slots = end - i + 1;
+            for (int j = i; j < end; j++)
+                times[j] = beginTime + (long)((endTime - beginTime) * ((double)(j - i + 1) / slots));
+            i = end + 1;
         }
 
-        // Sort by time
-        result.Sort((a, b) => a.Time.CompareTo(b.Time));
+        // Refine each paced run between its already resolved neighbors using
+        // segment lengths, so unequal distances have equal velocities.
+        for (int i = 1; i < count - 1;)
+        {
+            if (((IKeyFrame)keyFrames[i]!).KeyTime.Type != KeyTimeType.Paced) { i++; continue; }
+            int end = i;
+            while (end < count - 1 && ((IKeyFrame)keyFrames[end]!).KeyTime.Type == KeyTimeType.Paced) end++;
+            double totalDistance = 0d;
+            for (int j = i; j <= end; j++)
+                totalDistance += AnimationValueOperations.Distance((T)((IKeyFrame)keyFrames[j - 1]!).Value, (T)((IKeyFrame)keyFrames[j]!).Value);
+            if (double.IsFinite(totalDistance) && totalDistance > 0d)
+            {
+                long startTime = times[i - 1], endTime = times[end];
+                double distance = 0d;
+                for (int j = i; j < end; j++)
+                {
+                    distance += AnimationValueOperations.Distance((T)((IKeyFrame)keyFrames[j - 1]!).Value, (T)((IKeyFrame)keyFrames[j]!).Value);
+                    times[j] = startTime + (long)((endTime - startTime) * (distance / totalDistance));
+                }
+            }
+            i = end + 1;
+        }
+
+        for (int i = 0; i < count; i++) result.Add(new ResolvedKeyFrame((IKeyFrame)keyFrames[i]!, TimeSpan.FromTicks(times[i]), i));
+        result.Sort(static (a, b) =>
+        {
+            int time = a.Time.CompareTo(b.Time);
+            return time != 0 ? time : a.Index.CompareTo(b.Index);
+        });
         return result;
     }
 

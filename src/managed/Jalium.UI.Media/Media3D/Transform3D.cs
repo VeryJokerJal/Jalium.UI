@@ -4,6 +4,13 @@ namespace Jalium.UI.Media.Media3D;
 
 public abstract class Transform3D : GeneralTransform3D
 {
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        OnFreezablePropertyChanged(e.OldValue as DependencyObject, e.NewValue as DependencyObject, e.Property);
+        WritePostscript();
+    }
+
     private static readonly Transform3D s_identity = CreateIdentity();
 
     public static Transform3D Identity => s_identity;
@@ -309,6 +316,12 @@ public sealed class Transform3DGroup : Transform3D
 
 public abstract class Rotation3D : Animatable, IFormattable
 {
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        WritePostscript();
+    }
+
     private static readonly Rotation3D s_identity = CreateIdentity();
 
     public static Rotation3D Identity => s_identity;

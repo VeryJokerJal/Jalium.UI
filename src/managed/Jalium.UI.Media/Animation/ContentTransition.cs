@@ -1,5 +1,6 @@
 using Jalium.UI.Media.Effects;
 using Jalium.UI.Threading;
+using System.Diagnostics;
 
 namespace Jalium.UI.Media.Animation;
 
@@ -146,34 +147,55 @@ public abstract class ContentTransition : DependencyObject
         IEasingFunction easing,
         Action<double> onFrame,
         Action onComplete)
+        => CreateFrameTimer(durationMs, easing, (_, easedProgress) => onFrame(easedProgress), onComplete);
+
+    protected static DispatcherTimer CreateFrameTimer(
+        double durationMs,
+        IEasingFunction easing,
+        Action<double, double> onFrame,
+        Action onComplete)
     {
-        var startTime = Environment.TickCount64;
+        var startTime = Jalium.UI.Animation.AnimationManager.CurrentFrameTimestampOrNow;
         var timer = new DispatcherTimer { Interval = CompositionTarget.FrameInterval };
+        bool completed = false;
+        void Finish()
+        {
+            timer.Stop();
+            if (completed) return;
+            completed = true;
+            onComplete();
+        }
         timer.Tick += (_, _) =>
         {
+            if (completed) return;
             try
             {
-                var elapsed = Environment.TickCount64 - startTime;
-                var rawProgress = durationMs > 0 ? Math.Min(1.0, elapsed / durationMs) : 1.0;
+                var elapsed = Stopwatch.GetElapsedTime(startTime, Jalium.UI.Animation.AnimationManager.CurrentFrameTimestampOrNow).TotalMilliseconds;
+                var rawProgress = durationMs > 0 ? Math.Clamp(elapsed / durationMs, 0d, 1d) : 1d;
                 var easedProgress = easing.Ease(rawProgress);
+                if (!double.IsFinite(easedProgress)) throw new InvalidOperationException("Transition easing returned a non-finite progress value.");
 
-                onFrame(easedProgress);
+                onFrame(rawProgress, easedProgress);
 
                 if (rawProgress >= 1.0)
                 {
-                    timer.Stop();
-                    onComplete();
+                    Finish();
                 }
             }
             catch (Exception ex)
             {
-                timer.Stop();
                 System.Diagnostics.Debug.WriteLine($"[ContentTransition] Animation frame error: {ex}");
+                Finish();
             }
         };
         timer.Start();
         return timer;
     }
+
+    /// <summary>Elapsed particle time for this frame, excluding its stagger delay.</summary>
+    protected static double GetParticleFrameSeconds(double previousProgress, double currentProgress, double delay, double durationMs) =>
+        Math.Max(0d, Math.Max(0d, currentProgress - delay) - Math.Max(0d, previousProgress - delay)) *
+        Math.Max(0d, durationMs) / 1000d;
 
     private static readonly CubicEase DefaultEasing = new() { EasingMode = EasingMode.EaseInOut };
 }

@@ -112,11 +112,18 @@ public sealed class AnimationClock : Clock, IAnimationClock
     private readonly AnimationTimeline _animation;
     private long _startTime;
     private long _firstStartTime;
+    private long _speedAnchorTimestamp;
+    private double _activeTicksAtAnchor;
+    private double _anchorSpeedRatio = 1d;
     private bool _isRunning;
     private double _currentProgress;
     private bool _isPaused;
     private long _pauseTimestamp;
     private bool _isCompleted;
+    internal bool HasStarted { get; private set; }
+    private uint _lastParentSampleVersion = uint.MaxValue;
+    private bool _samplingFromParent;
+    private bool _parentCompletionReported;
 
 #pragma warning disable CS0628 // WPF exposes this protected-internal constructor on the sealed AnimationClock type.
     protected internal AnimationClock(AnimationTimeline animation)
@@ -150,8 +157,8 @@ public sealed class AnimationClock : Clock, IAnimationClock
         // CSS easing can legitimately extrapolate beyond both endpoints.
         _currentProgress = progress;
         base.CurrentProgress = _currentProgress;
-        var duration = _animation.Duration.HasTimeSpan
-            ? _animation.Duration.TimeSpan : TimeSpan.FromSeconds(1);
+        var duration = NaturalDuration.HasTimeSpan
+            ? NaturalDuration.TimeSpan : TimeSpan.FromSeconds(1);
         CurrentTime = TimeSpan.FromTicks((long)Math.Round(duration.Ticks * Math.Clamp(progress, 0d, 1d)));
         CurrentIteration = 1;
         CurrentState = ClockState.Active;
@@ -159,9 +166,14 @@ public sealed class AnimationClock : Clock, IAnimationClock
 
     public bool IsRunning => _isRunning;
 
-    bool IAnimationClock.IsPaused => _isPaused;
+    // A stopped child can still belong to a repeating parent. Its current
+    // iteration has finished even while the parent has future timing work.
+    internal bool IsStoppedAfterCompletion => _isCompleted && CurrentState == ClockState.Stopped && _animation.BeginTime.HasValue;
 
-    bool IAnimationClock.IsCompleted => _isCompleted || (!_isRunning && !_isPaused);
+    bool IAnimationClock.IsPaused => IsPaused;
+
+    bool IAnimationClock.IsCompleted => Parent is ClockGroup { HasFutureTiming: true }
+        ? false : _isCompleted || (!_isRunning && !_isPaused);
 
     public object GetCurrentValue(object defaultOriginValue, object defaultDestinationValue) =>
         _animation.GetCurrentValue(defaultOriginValue, defaultDestinationValue, this);
@@ -172,6 +184,10 @@ public sealed class AnimationClock : Clock, IAnimationClock
 
     internal void BeginAt(long timestamp)
     {
+        HasStarted = true;
+        if (Parent != null) timestamp = 0;
+        _lastParentSampleVersion = uint.MaxValue;
+        _parentCompletionReported = false;
         ClockState oldState = CurrentState;
         _startTime = timestamp;
         if (_animation.BeginTime.HasValue)
@@ -180,14 +196,18 @@ public sealed class AnimationClock : Clock, IAnimationClock
         }
 
         _firstStartTime = _startTime;
-        _isRunning = true;
+        _speedAnchorTimestamp = _firstStartTime;
+        _activeTicksAtAnchor = 0d;
+        _anchorSpeedRatio = _animation.SpeedRatio * AppliedSpeedRatio;
+        LocalSpeedFactor = 1d;
+        _isRunning = _animation.BeginTime.HasValue;
         _currentProgress = 0d;
         base.CurrentProgress = 0d;
         CurrentTime = null;
         CurrentIteration = null;
         IsPaused = false;
         _isPaused = false;
-        _isCompleted = false;
+        _isCompleted = !_animation.BeginTime.HasValue;
         CurrentState = ClockState.Stopped;
 
         if (oldState != CurrentState)
@@ -204,18 +224,60 @@ public sealed class AnimationClock : Clock, IAnimationClock
 
     public void Resume() => ControllerResume();
 
-    public void Seek(TimeSpan offset, TimeSeekOrigin origin) => SeekCore(offset, origin);
+    public void Seek(TimeSpan offset, TimeSeekOrigin origin) => SeekCore(offset, origin, alignedToLastTick: false);
 
     void IAnimationClock.Seek(TimeSpan offset, AnimationSeekOrigin origin) =>
         SeekCore(
             offset,
             origin == AnimationSeekOrigin.Duration
                 ? TimeSeekOrigin.Duration
-                : TimeSeekOrigin.BeginTime);
+                : TimeSeekOrigin.BeginTime,
+            alignedToLastTick: false);
 
     public void Tick() => Tick(Stopwatch.GetTimestamp());
 
     public void Tick(long frameTimestamp)
+    {
+        if (Parent is ClockGroup parent)
+        {
+            parent.UpdateTiming(frameTimestamp);
+            if (_lastParentSampleVersion == parent.SampleVersion) return;
+            _lastParentSampleVersion = parent.SampleVersion;
+            SampleFromParent(parent);
+        }
+        else TickCore(frameTimestamp);
+    }
+
+    internal void SampleFromParent(ClockGroup parent)
+    {
+        if (!_animation.BeginTime.HasValue || parent.CurrentState == ClockState.Stopped)
+        {
+            ClockState previous = CurrentState;
+            CurrentState = ClockState.Stopped;
+            CurrentTime = null;
+            CurrentIteration = null;
+            _currentProgress = 0d;
+            base.CurrentProgress = 0d;
+            _isCompleted = !_animation.BeginTime.HasValue || !parent.HasFutureTiming;
+            if (previous != CurrentState) RaiseCurrentStateInvalidated();
+            RaiseCurrentTimeInvalidated();
+            return;
+        }
+        long localTimestamp = (long)(parent.SampleTime.TotalSeconds * Stopwatch.Frequency);
+        _isRunning = true;
+        _isCompleted = false;
+        _samplingFromParent = true;
+        try
+        {
+            TickCore(localTimestamp);
+            if (!_isCompleted) _parentCompletionReported = false;
+            if (!parent.HasFutureTiming && !_isCompleted)
+                CompleteAtProgress(_currentProgress, CurrentTime ?? TimeSpan.Zero, CurrentIteration ?? 1);
+        }
+        finally { _samplingFromParent = false; }
+    }
+
+    private void TickCore(long frameTimestamp)
     {
         if (!_isRunning || _isPaused || _isCompleted)
         {
@@ -224,11 +286,14 @@ public sealed class AnimationClock : Clock, IAnimationClock
 
         if (frameTimestamp < _firstStartTime)
         {
+            ClockState previous = CurrentState;
             CurrentState = ClockState.Stopped;
             CurrentTime = null;
             CurrentIteration = null;
             _currentProgress = 0d;
             base.CurrentProgress = 0d;
+            if (previous != CurrentState) RaiseCurrentStateInvalidated();
+            RaiseCurrentTimeInvalidated();
             return;
         }
 
@@ -239,13 +304,21 @@ public sealed class AnimationClock : Clock, IAnimationClock
             RaiseCurrentGlobalSpeedInvalidated();
         }
 
-        TimeSpan elapsed = Stopwatch.GetElapsedTime(_firstStartTime, frameTimestamp);
-        TimeSpan duration = _animation.Duration.HasTimeSpan
-            ? _animation.Duration.TimeSpan
-            : TimeSpan.FromSeconds(1);
+        Duration naturalDuration = NaturalDuration;
+        double activeTicks = GetActiveTicks(frameTimestamp);
+        if (naturalDuration == Duration.Forever)
+        {
+            CurrentTime = TimeSpan.FromTicks((long)Math.Min(TimeSpan.MaxValue.Ticks, activeTicks));
+            CurrentIteration = 1;
+            _currentProgress = 0d;
+            base.CurrentProgress = 0d;
+            RaiseCurrentTimeInvalidated();
+            return;
+        }
 
-        double effectiveSpeed = Math.Max(0d, _animation.SpeedRatio * AppliedSpeedRatio);
-        double activeTicks = Math.Max(0d, elapsed.Ticks * effectiveSpeed);
+        TimeSpan duration = naturalDuration.HasTimeSpan
+            ? naturalDuration.TimeSpan
+            : TimeSpan.FromSeconds(1);
         double simpleTicks = duration.Ticks;
         if (simpleTicks <= 0d)
         {
@@ -284,10 +357,15 @@ public sealed class AnimationClock : Clock, IAnimationClock
             currentSimpleTicks = Math.Min(simpleTicks, withinIteration);
         }
 
-        CurrentTime = TimeSpan.FromTicks((long)Math.Round(currentSimpleTicks));
         double simpleProgress = Math.Clamp(currentSimpleTicks / simpleTicks, 0d, 1d);
+        double speedFactor = GetAccelerationRate(simpleProgress) *
+            (_animation.AutoReverse && withinIteration > simpleTicks ? -1d : 1d);
+        bool speedChanged = speedFactor != LocalSpeedFactor;
+        LocalSpeedFactor = speedFactor;
         _currentProgress = ApplyAcceleration(simpleProgress);
+        CurrentTime = TimeSpan.FromTicks((long)Math.Round(simpleTicks * _currentProgress));
         base.CurrentProgress = _currentProgress;
+        if (speedChanged) RaiseCurrentGlobalSpeedInvalidated();
         RaiseCurrentTimeInvalidated();
 
         if (terminal)
@@ -324,6 +402,7 @@ public sealed class AnimationClock : Clock, IAnimationClock
         long delta = now - _pauseTimestamp;
         _startTime += delta;
         _firstStartTime += delta;
+        _speedAnchorTimestamp += delta;
         _isPaused = false;
         _isRunning = true;
         IsPaused = false;
@@ -332,14 +411,35 @@ public sealed class AnimationClock : Clock, IAnimationClock
     }
 
     internal override void ControllerSeek(TimeSpan offset, TimeSeekOrigin origin, bool alignedToLastTick) =>
-        SeekCore(offset, origin);
+        SeekCore(offset, origin, alignedToLastTick);
+
+    internal override void ControllerSpeedRatioChanged()
+    {
+        long now = _isPaused ? _pauseTimestamp : Jalium.UI.Animation.AnimationManager.CurrentFrameTimestampOrNow;
+        _activeTicksAtAnchor = GetActiveTicks(now);
+        _speedAnchorTimestamp = Math.Max(now, _firstStartTime);
+        _anchorSpeedRatio = _animation.SpeedRatio * AppliedSpeedRatio;
+        base.ControllerSpeedRatioChanged();
+    }
+
+    private double GetActiveTicks(long timestamp) => Math.Max(0d,
+        _activeTicksAtAnchor + Stopwatch.GetElapsedTime(_speedAnchorTimestamp, timestamp).Ticks * _anchorSpeedRatio);
 
     internal override void ControllerStop()
     {
+        bool alreadyStopped = CurrentState == ClockState.Stopped;
         _isRunning = false;
         _isPaused = false;
         _isCompleted = true;
+        _currentProgress = 0d;
         base.ControllerStop();
+        if (alreadyStopped)
+        {
+            // Begin/delay clocks already report Stopped, but stopping them
+            // still removes their contribution and their handoff snapshot.
+            RaiseCurrentTimeInvalidated();
+            RaiseCurrentGlobalSpeedInvalidated();
+        }
     }
 
     internal override void ControllerSkipToFill()
@@ -349,10 +449,22 @@ public sealed class AnimationClock : Clock, IAnimationClock
             return;
         }
 
-        TimeSpan duration = _animation.Duration.HasTimeSpan
-            ? _animation.Duration.TimeSpan
+        Duration naturalDuration = NaturalDuration;
+        if (naturalDuration == Duration.Forever) return;
+        TimeSpan duration = naturalDuration.HasTimeSpan
+            ? naturalDuration.TimeSpan
             : TimeSpan.FromSeconds(1);
-        CompleteAtProgress(_animation.AutoReverse ? 0d : 1d, duration, CurrentIteration ?? 1);
+        double activeDuration = GetActiveDurationTicks(duration.Ticks * (_animation.AutoReverse ? 2d : 1d));
+        if (!double.IsFinite(activeDuration)) return;
+        long now = Jalium.UI.Animation.AnimationManager.CurrentFrameTimestampOrNow;
+        _firstStartTime = now;
+        _speedAnchorTimestamp = now;
+        _activeTicksAtAnchor = activeDuration;
+        _anchorSpeedRatio = 0d;
+        _isPaused = false;
+        IsPaused = false;
+        _isRunning = true;
+        Tick(now);
     }
 
     internal override void ControllerRemove()
@@ -361,26 +473,34 @@ public sealed class AnimationClock : Clock, IAnimationClock
         RaiseRemoveRequested();
     }
 
-    private void SeekCore(TimeSpan offset, TimeSeekOrigin origin)
+    private void SeekCore(TimeSpan offset, TimeSeekOrigin origin, bool alignedToLastTick)
     {
         if (!Enum.IsDefined(origin))
         {
             throw new ArgumentOutOfRangeException(nameof(origin));
         }
 
-        TimeSpan duration = _animation.Duration.HasTimeSpan
-            ? _animation.Duration.TimeSpan
+        Duration naturalDuration = NaturalDuration;
+        if (origin == TimeSeekOrigin.Duration && naturalDuration == Duration.Forever)
+            throw new InvalidOperationException("An infinite timeline has no duration endpoint to seek from.");
+        TimeSpan duration = naturalDuration.HasTimeSpan
+            ? naturalDuration.TimeSpan
             : TimeSpan.FromSeconds(1);
-        TimeSpan target = origin == TimeSeekOrigin.Duration ? duration - offset : offset;
+        TimeSpan target = origin == TimeSeekOrigin.Duration ? duration + offset : offset;
+        if (target < TimeSpan.Zero) target = TimeSpan.Zero;
+        bool wasPaused = _isPaused;
         long now = Jalium.UI.Animation.AnimationManager.CurrentFrameTimestampOrNow;
-        double speedRatio = Math.Max(_animation.SpeedRatio * AppliedSpeedRatio, 1e-9);
-        _startTime = now - (long)(target.TotalSeconds / speedRatio * Stopwatch.Frequency);
-        _firstStartTime = _startTime;
+        _startTime = now;
+        _firstStartTime = now;
+        _speedAnchorTimestamp = now;
+        _activeTicksAtAnchor = target.Ticks;
+        _anchorSpeedRatio = _animation.SpeedRatio * AppliedSpeedRatio;
         CurrentTime = null;
         CurrentIteration = null;
         _currentProgress = 0d;
         base.CurrentProgress = 0d;
         _isCompleted = false;
+        HasStarted = true;
         _isRunning = true;
         _isPaused = false;
         IsPaused = false;
@@ -389,6 +509,15 @@ public sealed class AnimationClock : Clock, IAnimationClock
         RaiseCurrentTimeInvalidated();
         RaiseCurrentStateInvalidated();
         RaiseCurrentGlobalSpeedInvalidated();
+        if (alignedToLastTick || wasPaused) Tick(now);
+        if (wasPaused && !_isCompleted)
+        {
+            _isPaused = true;
+            _isRunning = false;
+            _pauseTimestamp = now;
+            IsPaused = true;
+            RaiseCurrentGlobalSpeedInvalidated();
+        }
     }
 
     private double GetActiveDurationTicks(double iterationTicks)
@@ -433,6 +562,18 @@ public sealed class AnimationClock : Clock, IAnimationClock
         return maximumRate * (progress - acceleration / 2d);
     }
 
+    private double GetAccelerationRate(double progress)
+    {
+        double acceleration = _animation.AccelerationRatio;
+        double deceleration = _animation.DecelerationRatio;
+        double maximumRate = 2d / (2d - acceleration - deceleration);
+        if (acceleration > 0d && progress < acceleration)
+            return maximumRate * progress / acceleration;
+        if (deceleration > 0d && progress > 1d - deceleration)
+            return maximumRate * (1d - progress) / deceleration;
+        return maximumRate;
+    }
+
     private void CompleteAtProgress(double terminalProgress, TimeSpan terminalTime, int terminalIteration)
     {
         CurrentTime = terminalTime;
@@ -449,7 +590,11 @@ public sealed class AnimationClock : Clock, IAnimationClock
         RaiseCurrentTimeInvalidated();
         RaiseCurrentStateInvalidated();
         RaiseCurrentGlobalSpeedInvalidated();
-        RaiseCompleted();
+        if (!_samplingFromParent || !_parentCompletionReported)
+        {
+            _parentCompletionReported = _samplingFromParent;
+            RaiseCompleted();
+        }
     }
 
     private static bool IsWholeNumber(double value) =>

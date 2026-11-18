@@ -79,13 +79,8 @@ public sealed class VortexTransition : ContentTransition
         host.ActiveParticles = particles;
 
         var easing = EffectiveEasing;
-        var startTime = Environment.TickCount64;
-        var timer = new DispatcherTimer { Interval = CompositionTarget.FrameInterval };
-        timer.Tick += (_, _) =>
+        return CreateFrameTimer(durationMs, easing, (rawProgress, easedProgress) =>
         {
-            var elapsed = Environment.TickCount64 - startTime;
-            var rawProgress = durationMs > 0 ? Math.Min(1.0, elapsed / durationMs) : 1.0;
-            var easedProgress = easing.Ease(rawProgress);
 
             // New content expands from center
             host.NewContentOpacity = Math.Min(1.0, rawProgress * 1.5);
@@ -128,14 +123,10 @@ public sealed class VortexTransition : ContentTransition
             host.ActiveParticles = particles;
             host.InvalidateTransitionVisual();
 
-            if (rawProgress >= 1.0)
-            {
-                timer.Stop();
-                host.ActiveParticles = null;
-                onComplete();
-            }
-        };
-        timer.Start();
-        return timer;
+        }, () =>
+        {
+            host.ActiveParticles = null;
+            onComplete();
+        });
     }
 }

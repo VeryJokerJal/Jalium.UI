@@ -78,20 +78,9 @@ public sealed partial class RectAnimation : RectAnimationBase
             progress = EasingFunction.Ease(progress);
         }
 
-        var from = From ?? defaultOriginValue;
-        var to = To ?? (By.HasValue
-            ? new Rect(
-                from.X + By.Value.X,
-                from.Y + By.Value.Y,
-                from.Width + By.Value.Width,
-                from.Height + By.Value.Height)
-            : defaultDestinationValue);
-
-        return new Rect(
-            from.X + (to.X - from.X) * progress,
-            from.Y + (to.Y - from.Y) * progress,
-            from.Width + (to.Width - from.Width) * progress,
-            from.Height + (to.Height - from.Height) * progress);
+        return AnimationValueOperations.EvaluateFromToBy(
+            defaultOriginValue, defaultDestinationValue, From, To, By,
+            progress, animationClock.CurrentIteration ?? 1, IsAdditive, IsCumulative);
     }
 
     // --- from AdditionalSimpleAnimations.WpfParity.cs ---

@@ -51,7 +51,12 @@ public class Clock : DispatcherObject
 
     public int? CurrentIteration { get; internal set; }
 
-    public bool IsPaused { get; internal set; }
+    private bool _isPaused;
+    public bool IsPaused
+    {
+        get => _isPaused || Parent?.IsPaused == true;
+        internal set => _isPaused = value;
+    }
 
     public Duration NaturalDuration => _timeline.GetNaturalDuration(this);
 
@@ -66,7 +71,7 @@ public class Clock : DispatcherObject
                 return null;
             }
 
-            if (IsPaused)
+            if (IsPaused || _currentState == ClockState.Filling)
             {
                 return 0d;
             }
@@ -81,7 +86,7 @@ public class Clock : DispatcherObject
                 }
                 parentSpeed = inheritedSpeed.Value;
             }
-            return parentSpeed * _timeline.SpeedRatio * _controller.SpeedRatio;
+            return parentSpeed * _timeline.SpeedRatio * _controller.SpeedRatio * LocalSpeedFactor;
         }
     }
 
@@ -90,6 +95,10 @@ public class Clock : DispatcherObject
     public bool HasControllableRoot => _hasControllableRoot || Parent?.HasControllableRoot == true;
 
     internal double AppliedSpeedRatio => _controller.SpeedRatio;
+
+    internal double LocalSpeedFactor { get; set; } = 1d;
+
+    internal bool IsTimeProgressBlocked => IsPaused || AppliedSpeedRatio == 0d || Parent?.IsTimeProgressBlocked == true;
 
     public event EventHandler? Completed;
     public event EventHandler? CurrentStateInvalidated;
@@ -167,7 +176,7 @@ public class Clock : DispatcherObject
         Duration duration = NaturalDuration;
         if (origin == TimeSeekOrigin.Duration && duration.HasTimeSpan)
         {
-            target = duration.TimeSpan - offset;
+            target = duration.TimeSpan + offset;
         }
 
         if (target < TimeSpan.Zero)
@@ -253,6 +262,13 @@ public class Clock : DispatcherObject
         RaiseCurrentGlobalSpeedInvalidated();
     }
 
+    internal virtual void NotifyParentTimingChanged()
+    {
+        RaiseCurrentTimeInvalidated();
+        RaiseCurrentStateInvalidated();
+        RaiseCurrentGlobalSpeedInvalidated();
+    }
+
     protected internal void RaiseCompleted() => Completed?.Invoke(this, EventArgs.Empty);
     protected internal void RaiseCurrentStateInvalidated() => CurrentStateInvalidated?.Invoke(this, EventArgs.Empty);
     protected internal void RaiseCurrentTimeInvalidated() => CurrentTimeInvalidated?.Invoke(this, EventArgs.Empty);
@@ -273,6 +289,10 @@ public class ClockGroup : Clock
 {
     private readonly List<Clock> _children = [];
     private readonly ClockCollection _childrenView;
+    private AnimationClock? _timingClock;
+    private long _lastFrameTimestamp = long.MinValue;
+    private bool _completionPending;
+    internal uint SampleVersion { get; private set; }
 
     protected internal ClockGroup(TimelineGroup timelineGroup)
         : base(timelineGroup)
@@ -286,6 +306,97 @@ public class ClockGroup : Clock
 
     internal IReadOnlyList<Clock> ChildClocks => _children;
 
+    internal bool HasFutureTiming => Timeline.BeginTime.HasValue &&
+        (Parent is ClockGroup parent ? parent.HasFutureTiming :
+            _timingClock != null && !((IAnimationClock)_timingClock).IsCompleted);
+
+    internal TimeSpan SampleTime
+    {
+        get
+        {
+            Duration duration = _timingClock?.NaturalDuration ?? NaturalDuration;
+            return duration.HasTimeSpan && CurrentProgress.HasValue
+                ? TimeSpan.FromTicks((long)(duration.TimeSpan.Ticks * CurrentProgress.Value))
+                : CurrentTime ?? TimeSpan.Zero;
+        }
+    }
+
+    private AnimationClock TimingClock
+    {
+        get
+        {
+            if (_timingClock != null) return _timingClock;
+            var timing = new DoubleAnimation
+            {
+                Duration = NaturalDuration,
+                BeginTime = Timeline.BeginTime,
+                RepeatBehavior = Timeline.RepeatBehavior,
+                AutoReverse = Timeline.AutoReverse,
+                SpeedRatio = Timeline.SpeedRatio,
+                AccelerationRatio = Timeline.AccelerationRatio,
+                DecelerationRatio = Timeline.DecelerationRatio,
+                FillBehavior = Timeline.FillBehavior
+            };
+            _timingClock = new AnimationClock(timing);
+            _timingClock.Completed += (_, _) => _completionPending = true;
+            return _timingClock;
+        }
+    }
+
+    internal void UpdateTiming(long frameTimestamp)
+    {
+        if (_lastFrameTimestamp == frameTimestamp) return;
+        var timing = TimingClock;
+        if (!timing.HasStarted)
+            timing.BeginAt(Parent == null ? frameTimestamp : 0);
+        if (Parent is ClockGroup parent)
+        {
+            parent.UpdateTiming(frameTimestamp);
+            timing.SampleFromParent(parent);
+        }
+        else timing.Tick(frameTimestamp);
+        _lastFrameTimestamp = frameTimestamp;
+        unchecked { SampleVersion++; }
+        SynchronizeTiming();
+    }
+
+    internal void TickChildren(long frameTimestamp)
+    {
+        UpdateTiming(frameTimestamp);
+        foreach (var child in _children)
+        {
+            if (child is AnimationClock animation) animation.Tick(frameTimestamp);
+            else if (child is ClockGroup group) group.TickChildren(frameTimestamp);
+        }
+    }
+
+    private void SynchronizeTiming()
+    {
+        if (_timingClock == null) return;
+        ClockState previous = CurrentState;
+        CurrentState = _timingClock.CurrentState;
+        CurrentTime = _timingClock.CurrentTime;
+        CurrentProgress = _timingClock.CurrentProgress;
+        CurrentIteration = _timingClock.CurrentIteration;
+        LocalSpeedFactor = _timingClock.LocalSpeedFactor;
+        IsPaused = _timingClock.IsPaused;
+        RaiseCurrentTimeInvalidated();
+        if (previous != CurrentState) RaiseCurrentStateInvalidated();
+        RaiseCurrentGlobalSpeedInvalidated();
+        if (_completionPending)
+        {
+            _completionPending = false;
+            RaiseCompleted();
+        }
+    }
+
+    internal override void NotifyParentTimingChanged()
+    {
+        _lastFrameTimestamp = long.MinValue;
+        base.NotifyParentTimingChanged();
+        foreach (var child in _children) child.NotifyParentTimingChanged();
+    }
+
     internal void AddChild(Clock clock)
     {
         ArgumentNullException.ThrowIfNull(clock);
@@ -296,6 +407,8 @@ public class ClockGroup : Clock
     internal override void ControllerBegin()
     {
         base.ControllerBegin();
+        TimingClock.BeginAt(Parent == null ? Jalium.UI.Animation.AnimationManager.CurrentFrameTimestampOrNow : 0);
+        _lastFrameTimestamp = long.MinValue;
         foreach (Clock child in _children)
         {
             child.ControllerBegin();
@@ -304,33 +417,35 @@ public class ClockGroup : Clock
 
     internal override void ControllerPause()
     {
+        if (Parent == null) TimingClock.Pause();
         base.ControllerPause();
-        foreach (Clock child in _children)
-        {
-            child.ControllerPause();
-        }
+        SynchronizeTiming();
+        foreach (Clock child in _children) child.NotifyParentTimingChanged();
     }
 
     internal override void ControllerResume()
     {
+        if (Parent == null) TimingClock.Resume();
         base.ControllerResume();
-        foreach (Clock child in _children)
-        {
-            child.ControllerResume();
-        }
+        SynchronizeTiming();
+        foreach (Clock child in _children) child.NotifyParentTimingChanged();
     }
 
     internal override void ControllerSeek(TimeSpan offset, TimeSeekOrigin origin, bool alignedToLastTick)
     {
-        base.ControllerSeek(offset, origin, alignedToLastTick);
-        foreach (Clock child in _children)
-        {
-            child.ControllerSeek(offset, origin, alignedToLastTick);
-        }
+        // Seeking to the end can clear IsPaused as the clock enters its fill period.
+        bool sampleImmediately = alignedToLastTick || IsPaused;
+        TimingClock.ControllerSeek(offset, origin, alignedToLastTick);
+        _lastFrameTimestamp = long.MinValue;
+        SynchronizeTiming();
+        foreach (Clock child in _children) child.NotifyParentTimingChanged();
+        if (sampleImmediately)
+            TickChildren(Jalium.UI.Animation.AnimationManager.CurrentFrameTimestampOrNow);
     }
 
     internal override void ControllerStop()
     {
+        _timingClock?.Stop();
         base.ControllerStop();
         foreach (Clock child in _children)
         {
@@ -340,11 +455,16 @@ public class ClockGroup : Clock
 
     internal override void ControllerSkipToFill()
     {
-        base.ControllerSkipToFill();
-        foreach (Clock child in _children)
-        {
-            child.ControllerSkipToFill();
-        }
+        TimingClock.ControllerSkipToFill();
+        _lastFrameTimestamp = long.MinValue;
+        TickChildren(Jalium.UI.Animation.AnimationManager.CurrentFrameTimestampOrNow);
+    }
+
+    internal override void ControllerSpeedRatioChanged()
+    {
+        TimingClock.SetInteractiveSpeedRatio(AppliedSpeedRatio);
+        base.ControllerSpeedRatioChanged();
+        foreach (Clock child in _children) child.NotifyParentTimingChanged();
     }
 
     internal override void ControllerRemove()

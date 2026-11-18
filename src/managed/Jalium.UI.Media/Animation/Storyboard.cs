@@ -9,10 +9,22 @@ public partial class Storyboard : ParallelTimeline
 {
     private static readonly HashSet<Storyboard> _activeStoryboards = [];
     private static readonly object _lock = new();
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<DependencyObject, Dictionary<DependencyProperty, RawAnimationState>> _rawAnimations = new();
+
+    private sealed class RawAnimationState
+    {
+        internal readonly List<RawAnimationEntry> Entries = new();
+        internal object? Snapshot;
+        internal bool HasSnapshot;
+        internal bool Updating;
+    }
+
+    private sealed record RawAnimationEntry(Storyboard Owner, IAnimationClock Clock, IAnimationTimeline Animation);
 
     private readonly List<IAnimationClock> _clocks = [];
-    private readonly List<(IAnimationClock Clock, DependencyObject Target, DependencyProperty Property, object? OriginalValue, bool ElementDriven)> _activeAnimations = [];
+    private readonly List<(IAnimationClock Clock, DependencyObject Target, DependencyProperty Property, bool ElementDriven)> _activeAnimations = [];
     private readonly HashSet<IAnimationClock> _settledClocks = new(ReferenceEqualityComparer.Instance);
+    private readonly HashSet<IAnimationClock> _terminatedClocks = new(ReferenceEqualityComparer.Instance);
     private readonly RuntimeAdapter _runtimeAdapter;
     private int _terminatedCount;
     private bool _isRunning;
@@ -20,6 +32,8 @@ public partial class Storyboard : ParallelTimeline
     private DependencyObject? _containingObject;
     private FrameworkTemplate? _frameworkTemplate;
     private AnimationTickSubscription? _tickSubscription;
+    private ClockGroup? _rootClock;
+    private bool _rootCompletionPending;
 
     public Storyboard()
     {
@@ -202,9 +216,13 @@ public partial class Storyboard : ParallelTimeline
         DependencyObject? storyboardTarget = GetTarget(this);
         string? storyboardTargetName = GetTargetName(this);
         PropertyPath? storyboardTargetProperty = GetTargetProperty(this);
+        var resolved = new List<(IAnimationTimeline Animation, DependencyObject Target, DependencyProperty Property, IAnimationClock Clock)>();
+        _rootClock = (ClockGroup)AllocateClock();
+        _rootClock.SetHasControllableRoot(isControllable);
+        _rootClock.Completed += OnRootClockCompleted;
 
         foreach (AnimationBinding binding in EnumerateAnimationBindings(
-                     Children,
+                     _rootClock,
                      storyboardTarget,
                      storyboardTargetName,
                      storyboardTargetProperty))
@@ -223,47 +241,72 @@ public partial class Storyboard : ParallelTimeline
                 throw new InvalidOperationException("A storyboard animation requires a TargetProperty.");
             }
 
-            DependencyProperty? property = ResolveProperty(target, binding.TargetProperty);
+            DependencyProperty? property = ResolveProperty(ref target, binding.TargetProperty);
             if (property is null)
             {
                 throw new InvalidOperationException(
                     $"The storyboard property path '{binding.TargetProperty.Path}' could not be resolved on '{target.GetType().Name}'.");
             }
 
-            IAnimationClock clock = binding.Animation.CreateClock();
-            object? originalValue = target.GetAnimationBaseValue(property);
-            _clocks.Add(clock);
-            clock.Completed += OnClockCompleted;
-
-            bool elementDriven = false;
-            if (target is UIElement uiElement)
+            target.VerifyAccess();
+            if (target.IsSealed || property.ReadOnly ||
+                property.GetMetadata(target.GetType()) is UIPropertyMetadata { IsAnimationProhibited: true })
             {
-                elementDriven = uiElement.BeginStoryboardAnimation(
-                    property,
-                    binding.Animation,
-                    clock,
-                    _runtimeAdapter,
-                    handoffBehavior);
+                throw new InvalidOperationException($"The storyboard target property '{property.Name}' cannot be animated.");
             }
-
-            if (!elementDriven)
+            Type propertyType = Nullable.GetUnderlyingType(property.PropertyType) ?? property.PropertyType;
+            if (!propertyType.IsAssignableFrom(binding.Animation.TargetPropertyType))
             {
-                clock.Begin();
+                throw new ArgumentException($"The animation type does not match '{property.Name}'.");
             }
-
-            _activeAnimations.Add((clock, target, property, originalValue, elementDriven));
+            resolved.Add((binding.Animation, target, property, binding.Clock));
         }
 
-        if (_clocks.Count == 0)
+        try
+        {
+            _rootClock.ControllerBegin();
+            foreach (var (animation, target, property, clock) in resolved)
+            {
+                _clocks.Add(clock);
+                clock.Completed += OnClockCompleted;
+
+                bool elementDriven = false;
+                if (target is UIElement uiElement)
+                {
+                    elementDriven = uiElement.BeginStoryboardAnimation(
+                        property,
+                        animation,
+                        clock,
+                        _runtimeAdapter,
+                        handoffBehavior);
+                }
+                else if (target is Animatable animatable && clock is AnimationClock animationClock)
+                {
+                    elementDriven = animatable.BeginStoryboardAnimation(property, animationClock, _runtimeAdapter, handoffBehavior);
+                }
+
+                if (!elementDriven)
+                {
+                    ClaimRawAnimation(target, property, clock, animation, handoffBehavior);
+                    if (clock is not AnimationClock { HasStarted: true }) clock.Begin();
+                }
+
+                _activeAnimations.Add((clock, target, property, elementDriven));
+            }
+        }
+        catch
+        {
+            StopCore(remove: false);
+            throw;
+        }
+
+        if (!_rootClock.HasFutureTiming)
         {
             return;
         }
 
         _isRunning = true;
-        if (HasPendingNonElementWork())
-        {
-            RegisterTickSubscription();
-        }
+        RegisterTickSubscription();
 
         lock (_lock)
         {
@@ -320,6 +363,13 @@ public partial class Storyboard : ParallelTimeline
         bool hadClocks = _clocks.Count > 0;
         _isRunning = false;
         UnregisterTickSubscription();
+        if (_rootClock is { } rootClock)
+        {
+            rootClock.Completed -= OnRootClockCompleted;
+            rootClock.ControllerStop();
+            _rootClock = null;
+        }
+        _rootCompletionPending = false;
 
         lock (_lock)
         {
@@ -327,7 +377,7 @@ public partial class Storyboard : ParallelTimeline
         }
 
         var entries = _activeAnimations.ToArray();
-        foreach (var (clock, target, property, originalValue, elementDriven) in entries)
+        foreach (var (clock, target, property, elementDriven) in entries)
         {
             if (remove && clock is AnimationClock animationClock)
             {
@@ -342,13 +392,18 @@ public partial class Storyboard : ParallelTimeline
                 // values and turn CSS/style fallback values into native local values.
                 uiElement.StopStoryboardAnimation(property, clock);
             }
+            else if (elementDriven && target is Animatable animatable)
+            {
+                animatable.StopStoryboardAnimation(property, clock);
+                clock.Stop();
+            }
             else
             {
                 if (!remove)
                 {
                     clock.Stop();
                 }
-                target.SetValue(property, originalValue ?? property.DefaultMetadata.DefaultValue);
+                RemoveRawAnimation(target, property, clock);
             }
 
             clock.Completed -= OnClockCompleted;
@@ -357,6 +412,7 @@ public partial class Storyboard : ParallelTimeline
         _clocks.Clear();
         _activeAnimations.Clear();
         _settledClocks.Clear();
+        _terminatedClocks.Clear();
         _terminatedCount = 0;
         _containingObject = null;
         _frameworkTemplate = null;
@@ -396,10 +452,12 @@ public partial class Storyboard : ParallelTimeline
 
     private void PauseCore()
     {
-        foreach (IAnimationClock clock in _clocks)
+        if (_rootClock != null) _rootClock.ControllerPause();
+        else foreach (IAnimationClock clock in _clocks)
         {
             clock.Pause();
         }
+        if (_rootClock?.IsPaused == true) UnregisterTickSubscription();
         OnCurrentGlobalSpeedInvalidated();
     }
 
@@ -428,7 +486,8 @@ public partial class Storyboard : ParallelTimeline
 
     private void ResumeCore()
     {
-        foreach (IAnimationClock clock in _clocks)
+        if (_rootClock != null) _rootClock.ControllerResume();
+        else foreach (IAnimationClock clock in _clocks)
         {
             clock.Resume();
         }
@@ -461,14 +520,14 @@ public partial class Storyboard : ParallelTimeline
     public void SeekAlignedToLastTick(TimeSpan offset) =>
         SeekAlignedToLastTick(offset, TimeSeekOrigin.BeginTime);
 
-    public void SeekAlignedToLastTick(TimeSpan offset, TimeSeekOrigin origin) => SeekCore(offset, origin);
+    public void SeekAlignedToLastTick(TimeSpan offset, TimeSeekOrigin origin) => SeekCore(offset, origin, alignedToLastTick: true);
 
     public void SeekAlignedToLastTick(FrameworkElement containingObject, TimeSpan offset, TimeSeekOrigin origin)
     {
         ArgumentNullException.ThrowIfNull(containingObject);
         if (CanControl(containingObject))
         {
-            SeekCore(offset, origin);
+            SeekCore(offset, origin, alignedToLastTick: true);
         }
     }
 
@@ -480,39 +539,48 @@ public partial class Storyboard : ParallelTimeline
         ArgumentNullException.ThrowIfNull(containingObject);
         if (CanControl(containingObject))
         {
-            SeekCore(offset, origin);
+            SeekCore(offset, origin, alignedToLastTick: true);
         }
     }
 
-    private void SeekCore(TimeSpan offset, TimeSeekOrigin origin)
+    private void SeekCore(TimeSpan offset, TimeSeekOrigin origin, bool alignedToLastTick = false)
     {
         if (!Enum.IsDefined(origin))
         {
             throw new ArgumentOutOfRangeException(nameof(origin));
         }
 
+        if (_rootClock != null)
+        {
+            bool sampleImmediately = alignedToLastTick || _rootClock.IsPaused;
+            _settledClocks.Clear();
+            _settledClocks.UnionWith(_terminatedClocks);
+            _terminatedCount = _terminatedClocks.Count;
+            _rootCompletionPending = false;
+            _isRunning = true;
+            lock (_lock) _activeStoryboards.Add(this);
+            _rootClock.ControllerSeek(offset, origin, alignedToLastTick);
+            EnsureFrameSourcesAfterClockRestart();
+            if (sampleImmediately)
+                OnAnimationFrame(AnimationManager.CurrentFrameTimestampOrNow);
+            OnCurrentTimeInvalidated();
+            OnCurrentStateInvalidated();
+            OnCurrentGlobalSpeedInvalidated();
+            return;
+        }
+
         foreach (IAnimationClock clock in _clocks.ToArray())
         {
-            bool paused = clock.IsPaused;
+            if (clock is AnimationClock animationClock)
+            {
+                animationClock.ControllerSeek(offset, origin, alignedToLastTick);
+                continue;
+            }
             clock.Seek(
                 offset,
                 origin == TimeSeekOrigin.Duration
                     ? AnimationSeekOrigin.Duration
                     : AnimationSeekOrigin.BeginTime);
-            clock.Tick(AnimationManager.CurrentFrameTimestampOrNow);
-            if (paused) clock.Pause();
-        }
-        // Paused clocks do not participate in the frame pump. A seek must still
-        // publish their current value immediately, including in designer previews.
-        foreach (var (clock, target, property, originalValue, elementDriven) in _activeAnimations.ToArray())
-        {
-            if (elementDriven && target is UIElement element)
-                element.RefreshStoryboardAnimationValue(property, clock);
-            else if (!clock.IsCompleted && clock.Timeline is IAnimationTimeline animation)
-            {
-                object value = originalValue ?? GetDefaultValue(property);
-                target.SetValue(property, animation.GetCurrentValue(value, value, clock));
-            }
         }
         EnsureFrameSourcesAfterClockRestart();
         OnCurrentTimeInvalidated();
@@ -547,10 +615,12 @@ public partial class Storyboard : ParallelTimeline
             throw new ArgumentException("Speed ratio must be finite and non-negative.", nameof(speedRatio));
         }
 
-        foreach (AnimationClock clock in _clocks.OfType<AnimationClock>())
+        if (_rootClock != null) _rootClock.SetInteractiveSpeedRatio(speedRatio);
+        else foreach (AnimationClock clock in _clocks.OfType<AnimationClock>())
         {
             clock.SetInteractiveSpeedRatio(speedRatio);
         }
+        EnsureFrameSourcesAfterClockRestart();
         OnCurrentGlobalSpeedInvalidated();
     }
 
@@ -576,7 +646,12 @@ public partial class Storyboard : ParallelTimeline
 
     private void SkipToFillCore()
     {
-        foreach (AnimationClock clock in _clocks.OfType<AnimationClock>().ToArray())
+        if (_rootClock != null)
+        {
+            _rootClock.ControllerSkipToFill();
+            OnAnimationFrame(AnimationManager.CurrentFrameTimestampOrNow);
+        }
+        else foreach (AnimationClock clock in _clocks.OfType<AnimationClock>().ToArray())
         {
             clock.ControllerSkipToFill();
         }
@@ -658,7 +733,7 @@ public partial class Storyboard : ParallelTimeline
         return IsCurrentOwner(containingObject) && GetIsPaused();
     }
 
-    private AnimationClock? FirstClock() => _clocks.OfType<AnimationClock>().FirstOrDefault();
+    private Clock? FirstClock() => (Clock?)_rootClock ?? _clocks.OfType<AnimationClock>().FirstOrDefault();
 
     private bool CanControl(DependencyObject containingObject) =>
         _isControllable && IsCurrentOwner(containingObject);
@@ -668,14 +743,25 @@ public partial class Storyboard : ParallelTimeline
 
     private void EnsureFrameSourcesAfterClockRestart()
     {
+        if (_rootClock is { HasFutureTiming: true, IsPaused: false, AppliedSpeedRatio: > 0d }) RegisterTickSubscription();
         bool nonElementPending = false;
-        foreach (var (clock, target, _, _, elementDriven) in _activeAnimations)
+        foreach (var (clock, target, property, elementDriven) in _activeAnimations)
         {
             if (elementDriven)
             {
                 if (target is UIElement uiElement)
                 {
+                    if (!uiElement.OwnsStoryboardAnimation(property, clock) && !_terminatedClocks.Contains(clock) &&
+                        clock.Timeline is { } animation)
+                        uiElement.BeginStoryboardAnimation(property, animation, clock, _runtimeAdapter);
                     uiElement.EnsureAnimationFrameSource();
+                }
+                else if (target is Animatable animatable)
+                {
+                    if (!animatable.OwnsStoryboardAnimation(property, clock) && !_terminatedClocks.Contains(clock) &&
+                        clock is AnimationClock animationClock)
+                        animatable.BeginStoryboardAnimation(property, animationClock, _runtimeAdapter, HandoffBehavior.SnapshotAndReplace);
+                    animatable.EnsureAnimationFrameSource();
                 }
             }
             else if (!clock.IsCompleted)
@@ -714,31 +800,36 @@ public partial class Storyboard : ParallelTimeline
             return false;
         }
 
+        _rootClock?.TickChildren(frameTimestamp);
         bool anyActive = false;
         for (int i = 0; i < _activeAnimations.Count; i++)
         {
-            var (clock, target, property, originalValue, elementDriven) = _activeAnimations[i];
-            if (elementDriven || clock.IsCompleted || clock.IsPaused)
+            var (clock, target, property, elementDriven) = _activeAnimations[i];
+            if (elementDriven)
             {
                 continue;
             }
 
-            clock.Tick(frameTimestamp);
-            if (clock.IsCompleted)
-            {
-                continue;
-            }
-
-            if (clock.Timeline is IAnimationTimeline animation)
-            {
-                object origin = originalValue ?? GetDefaultValue(property);
-                target.SetValue(property, animation.GetCurrentValue(origin, origin, clock));
-            }
-            anyActive = true;
+            UpdateRawAnimation(target, property, frameTimestamp);
+            anyActive |= !clock.IsCompleted && !clock.IsPaused;
         }
 
-        return anyActive && _isRunning;
+        if (_rootCompletionPending)
+        {
+            _rootCompletionPending = false;
+            foreach (var clock in _clocks.ToArray()) SettleClock(clock, terminated: false);
+            if (_clocks.Count == 0)
+            {
+                _isRunning = false;
+                lock (_lock) _activeStoryboards.Remove(this);
+                AnimationManager.QueuePostFrame(OnCompleted);
+            }
+        }
+        return _isRunning && (_rootClock is { } root
+            ? root.HasFutureTiming && !root.IsPaused && root.AppliedSpeedRatio > 0d : anyActive);
     }
+
+    private void OnRootClockCompleted(object? sender, EventArgs e) => _rootCompletionPending = true;
 
     private void OnClockCompleted(object? sender, EventArgs e)
     {
@@ -749,25 +840,17 @@ public partial class Storyboard : ParallelTimeline
 
         for (int i = 0; i < _activeAnimations.Count; i++)
         {
-            var (entryClock, target, property, originalValue, elementDriven) = _activeAnimations[i];
+            var (entryClock, target, property, elementDriven) = _activeAnimations[i];
             if (!ReferenceEquals(entryClock, clock) || elementDriven)
             {
                 continue;
             }
 
-            if (clock.Timeline is IAnimationTimeline animation)
-            {
-                object origin = originalValue ?? GetDefaultValue(property);
-                target.SetValue(
-                    property,
-                    animation.AnimationFillBehavior == AnimationFillBehavior.Stop
-                        ? originalValue ?? property.DefaultMetadata.DefaultValue
-                        : animation.GetCurrentValue(origin, origin, clock));
-            }
+            UpdateRawAnimation(target, property);
             break;
         }
 
-        SettleClock(clock, terminated: false);
+        if (_rootClock == null) SettleClock(clock, terminated: false);
     }
 
     private void NotifyClockTerminated(IAnimationClock clock) =>
@@ -775,6 +858,83 @@ public partial class Storyboard : ParallelTimeline
 
     private void NotifyClockSuperseded(IAnimationClock clock) =>
         SettleClock(clock, terminated: false);
+
+    private void ClaimRawAnimation(DependencyObject target, DependencyProperty property, IAnimationClock clock,
+        IAnimationTimeline animation, HandoffBehavior handoffBehavior)
+    {
+        var properties = _rawAnimations.GetOrCreateValue(target);
+        properties.TryGetValue(property, out var previous);
+        RawAnimationEntry[] replaced = Array.Empty<RawAnimationEntry>();
+        var state = previous;
+        if (previous != null && handoffBehavior == HandoffBehavior.SnapshotAndReplace)
+        {
+            state = new RawAnimationState { Snapshot = target.GetValue(property), HasSnapshot = true };
+            replaced = previous.Entries.ToArray();
+        }
+        state ??= new RawAnimationState();
+        state.Entries.Add(new RawAnimationEntry(this, clock, animation));
+        properties[property] = state;
+        foreach (var entry in replaced)
+        {
+            if (ReferenceEquals(entry.Owner, this)) entry.Owner.NotifyClockSuperseded(entry.Clock);
+            else entry.Owner.NotifyClockTerminated(entry.Clock);
+            entry.Clock.Stop();
+        }
+    }
+
+    private static void RemoveRawAnimation(DependencyObject target, DependencyProperty property, IAnimationClock clock)
+    {
+        if (!_rawAnimations.TryGetValue(target, out var properties) || !properties.TryGetValue(property, out var state)) return;
+        int index = state.Entries.FindIndex(entry => ReferenceEquals(entry.Clock, clock));
+        if (index < 0) return;
+        state.Entries.RemoveAt(index);
+        if (state.Entries.Count == 0)
+        {
+            properties.Remove(property);
+            target.DiscardAnimatedValue(property);
+        }
+        else UpdateRawAnimation(target, property);
+    }
+
+    private static void UpdateRawAnimation(DependencyObject target, DependencyProperty property, long? frameTimestamp = null)
+    {
+        if (!_rawAnimations.TryGetValue(target, out var properties) || !properties.TryGetValue(property, out var state) || state.Updating) return;
+        var pool = System.Buffers.ArrayPool<RawAnimationEntry>.Shared;
+        var entries = pool.Rent(state.Entries.Count);
+        int count = state.Entries.Count;
+        state.Entries.CopyTo(entries);
+        state.Updating = true;
+        try
+        {
+            if (frameTimestamp.HasValue)
+            {
+                for (int i = 0; i < count; i++)
+                    if (state.Entries.Contains(entries[i])) entries[i].Clock.Tick(frameTimestamp.Value);
+            }
+            if (!properties.TryGetValue(property, out var current) || !ReferenceEquals(current, state)) return;
+            object? baseValue = target.GetAnimationBaseValue(property);
+            bool snapshotVisible = state.HasSnapshot && (state.Entries.Count == 0 ||
+                (state.Entries[0].Clock is AnimationClock animationClock
+                    ? !animationClock.IsStoppedAfterCompletion : !state.Entries[0].Clock.IsCompleted));
+            object? value = snapshotVisible ? state.Snapshot : baseValue;
+            bool applies = snapshotVisible;
+            for (int i = 0; i < count; i++)
+            {
+                var entry = entries[i];
+                if (!state.Entries.Contains(entry) || entry.Clock is Clock { CurrentState: ClockState.Stopped }) continue;
+                value = entry.Animation.GetCurrentValue(value!, baseValue!, entry.Clock);
+                applies = true;
+            }
+            if (applies) target.SetAnimatedValue(property, value, holdEndValue: false);
+            else target.DiscardAnimatedValue(property);
+        }
+        finally
+        {
+            state.Updating = false;
+            Array.Clear(entries, 0, count);
+            pool.Return(entries);
+        }
+    }
 
     private sealed class RuntimeAdapter : IFrameAnimatable, IStoryboardClockOwner
     {
@@ -804,6 +964,7 @@ public partial class Storyboard : ParallelTimeline
 
         if (terminated)
         {
+            _terminatedClocks.Add(clock);
             _terminatedCount++;
         }
 
@@ -827,13 +988,14 @@ public partial class Storyboard : ParallelTimeline
     }
 
     private static IEnumerable<AnimationBinding> EnumerateAnimationBindings(
-        IEnumerable<Timeline> timelines,
+        ClockGroup clocks,
         DependencyObject? inheritedTarget,
         string? inheritedTargetName,
         PropertyPath? inheritedTargetProperty)
     {
-        foreach (Timeline timeline in timelines)
+        foreach (Clock childClock in clocks.ChildClocks)
         {
+            Timeline timeline = childClock.Timeline;
             DependencyObject? target = GetTarget(timeline) ?? inheritedTarget;
             string? targetName = GetTargetName(timeline);
             if (string.IsNullOrEmpty(targetName))
@@ -842,15 +1004,15 @@ public partial class Storyboard : ParallelTimeline
             }
             PropertyPath? targetProperty = GetTargetProperty(timeline) ?? inheritedTargetProperty;
 
-            if (timeline is IAnimationTimeline animation)
+            if (timeline is IAnimationTimeline animation && childClock is IAnimationClock animationClock)
             {
-                yield return new AnimationBinding(animation, target, targetName, targetProperty);
+                yield return new AnimationBinding(animation, animationClock, target, targetName, targetProperty);
             }
 
-            if (timeline is TimelineGroup group)
+            if (childClock is ClockGroup group)
             {
                 foreach (AnimationBinding descendant in EnumerateAnimationBindings(
-                             group.Children,
+                             group,
                              target,
                              targetName,
                              targetProperty))
@@ -916,28 +1078,75 @@ public partial class Storyboard : ParallelTimeline
         return null;
     }
 
-    private static DependencyProperty? ResolveProperty(DependencyObject target, PropertyPath propertyPath)
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026",
+        Justification = "Dependency-property segments use the registry; CLR intermediate segments use source-generated property accessors, with reflection retained as the normal binding fallback.")]
+    private static DependencyProperty? ResolveProperty(ref DependencyObject target, PropertyPath propertyPath)
     {
-        if (propertyPath.PathParameters.Count > 0 && propertyPath.PathParameters[0] is DependencyProperty directProperty)
+        var segments = propertyPath.CachedParsedSegments;
+        object? current = target;
+        for (int i = 0; i < segments.Length; i++)
         {
-            return directProperty;
-        }
-
-        string propertyName = propertyPath.Path;
-        if (propertyName.StartsWith('(') && propertyName.EndsWith(')'))
-        {
-            propertyName = propertyName[1..^1];
-            int dot = propertyName.LastIndexOf('.');
-            if (dot >= 0)
+            string segment = segments[i];
+            bool indexed = PropertyPath.TryGetIndexedSegment(segment, out string propertyName, out string index);
+            string name = indexed ? propertyName : segment;
+            DependencyProperty? property = null;
+            if (current is DependencyObject dependencyObject)
             {
-                propertyName = propertyName[(dot + 1)..];
+                if (name.StartsWith('(') && name.EndsWith(')'))
+                {
+                    name = name[1..^1];
+                    if (int.TryParse(name, out int parameter) && parameter >= 0 && parameter < propertyPath.PathParameters.Count)
+                        property = propertyPath.PathParameters[parameter] as DependencyProperty;
+                    else
+                    {
+                        int dot = name.LastIndexOf('.');
+                        Type? owner = dot >= 0 ? TypeResolver.ResolveTypeByName?.Invoke(name[..dot]) : null;
+                        property = DependencyProperty.FromName(owner ?? dependencyObject.GetType(), dot >= 0 ? name[(dot + 1)..] : name);
+                    }
+                }
+                else if (name.Length > 0)
+                    property = DependencyProperty.FromName(dependencyObject.GetType(), name);
+
+                if (i == segments.Length - 1)
+                {
+                    if (indexed) return null;
+                    target = dependencyObject;
+                    return property;
+                }
+            }
+
+            if (property != null && current is DependencyObject ownerObject)
+            {
+                current = ownerObject.GetValue(property);
+                if (current is Freezable { IsFrozen: true } frozen)
+                {
+                    ownerObject.SetCurrentValue(property, frozen.CloneCurrentValue());
+                    current = ownerObject.GetValue(property);
+                }
+            }
+            else if (name.Length > 0)
+            {
+                if (current == null || !PropertyAccessorRegistry.TryReadProperty(current, name, out current)) return null;
+            }
+
+            if (indexed)
+            {
+                if (current is System.Collections.IList list && int.TryParse(index, out int item) && item >= 0 && item < list.Count)
+                {
+                    current = list[item];
+                    if (current is Freezable { IsFrozen: true } frozen)
+                    {
+                        current = frozen.CloneCurrentValue();
+                        list[item] = current;
+                    }
+                }
+                else if (current is System.Collections.IDictionary map && map.Contains(index))
+                    current = map[index];
+                else return null;
             }
         }
-        return DependencyProperty.FromName(target.GetType(), propertyName);
+        return null;
     }
-
-    private static object GetDefaultValue(DependencyProperty property) =>
-        property.DefaultMetadata.DefaultValue ?? 0d;
 
     private static void ValidateHandoffBehavior(HandoffBehavior handoffBehavior)
     {
@@ -949,6 +1158,7 @@ public partial class Storyboard : ParallelTimeline
 
     private readonly record struct AnimationBinding(
         IAnimationTimeline Animation,
+        IAnimationClock Clock,
         DependencyObject? Target,
         string? TargetName,
         PropertyPath? TargetProperty);

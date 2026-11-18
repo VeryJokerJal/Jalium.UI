@@ -56,17 +56,13 @@ public sealed class FallingTilesTransition : ContentTransition
 
         host.NewContentOpacity = 0.0;
         host.ActiveParticles = particles;
+        double previousProgress = 0d;
 
-        var startTime = Environment.TickCount64;
-        var timer = new DispatcherTimer { Interval = CompositionTarget.FrameInterval };
-        timer.Tick += (_, _) =>
+        return CreateFrameTimer(durationMs, EffectiveEasing, (rawProgress, easedProgress) =>
         {
-            var elapsed = Environment.TickCount64 - startTime;
-            var rawProgress = durationMs > 0 ? Math.Min(1.0, elapsed / durationMs) : 1.0;
 
             host.NewContentOpacity = Math.Min(1.0, rawProgress * 2.0);
 
-            var dt = 1.0 / 60.0;
             for (int i = 0; i < particles.Length; i++)
             {
                 ref var p = ref particles[i];
@@ -74,10 +70,11 @@ public sealed class FallingTilesTransition : ContentTransition
                     ? Math.Max(0, (rawProgress - p.Delay) / (1.0 - p.Delay))
                     : 1.0;
                 if (localProgress <= 0) continue;
+                double dt = GetParticleFrameSeconds(previousProgress, rawProgress, p.Delay, durationMs);
 
                 // Apply gravity
+                p.Y += p.VelocityY * dt + .5 * gravity * dt * dt;
                 p.VelocityY += gravity * dt;
-                p.Y += p.VelocityY * dt;
                 p.Rotation += p.AngularVelocity * dt;
 
                 // Bounce off bottom edge
@@ -92,17 +89,14 @@ public sealed class FallingTilesTransition : ContentTransition
                 p.Opacity = Math.Max(0, 1.0 - localProgress);
             }
 
+            previousProgress = rawProgress;
             host.ActiveParticles = particles;
             host.InvalidateTransitionVisual();
 
-            if (rawProgress >= 1.0)
-            {
-                timer.Stop();
-                host.ActiveParticles = null;
-                onComplete();
-            }
-        };
-        timer.Start();
-        return timer;
+        }, () =>
+        {
+            host.ActiveParticles = null;
+            onComplete();
+        });
     }
 }

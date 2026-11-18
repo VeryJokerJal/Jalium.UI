@@ -1,5 +1,8 @@
 ﻿using System.Reflection;
+using System.Diagnostics;
+using Jalium.UI.Animation;
 using Jalium.UI.Media;
+using Jalium.UI.Media.Animation;
 
 namespace Jalium.UI.Tests;
 
@@ -13,6 +16,7 @@ namespace Jalium.UI.Tests;
 /// PushTransform, so the cached drawing is unaffected by the change. The new
 /// path schedules a present without flipping the render-dirty flag.
 /// </summary>
+[Collection("Application")]
 public class CompositionInvalidationTests
 {
     private static FieldInfo? s_isRenderDirtyField;
@@ -101,6 +105,134 @@ public class CompositionInvalidationTests
 
         Assert.False(GetIsRenderDirty(element),
             "RenderTransform is a composition-only property — changing it must not invalidate the cache.");
+    }
+
+    [Fact]
+    public void TransformDependencyPropertyChanges_RequestPresentWithoutInput()
+    {
+        (Transform Transform, DependencyProperty Property, object Value)[] changes =
+        [
+            (new MatrixTransform(), MatrixTransform.MatrixProperty, new Matrix(1, 0, 0, 1, 10, 20)),
+            (new RotateTransform(), RotateTransform.AngleProperty, 90d),
+            (new RotateTransform(), RotateTransform.CenterXProperty, 10d),
+            (new RotateTransform(), RotateTransform.CenterYProperty, 20d),
+            (new ScaleTransform(), ScaleTransform.ScaleXProperty, 2d),
+            (new ScaleTransform(), ScaleTransform.ScaleYProperty, 3d),
+            (new ScaleTransform(), ScaleTransform.CenterXProperty, 10d),
+            (new ScaleTransform(), ScaleTransform.CenterYProperty, 20d),
+            (new TranslateTransform(), TranslateTransform.XProperty, 10d),
+            (new TranslateTransform(), TranslateTransform.YProperty, 20d),
+            (new SkewTransform(), SkewTransform.AngleXProperty, 15d),
+            (new SkewTransform(), SkewTransform.AngleYProperty, 30d),
+            (new SkewTransform(), SkewTransform.CenterXProperty, 10d),
+            (new SkewTransform(), SkewTransform.CenterYProperty, 20d),
+        ];
+
+        foreach (var (transform, property, value) in changes)
+        {
+            var host = new RecordingWindowHost();
+            var element = new TestVisualElement { RenderTransform = transform };
+            host.AddChild(element);
+            ClearIsRenderDirty(element);
+            host.Reset();
+            int notifications = 0;
+            transform.Changed += (_, _) => notifications++;
+
+            transform.SetValue(property, value);
+
+            Assert.Equal(1, notifications);
+            Assert.True(host.InvalidateWindowCalled, $"{transform.GetType().Name}.{property.Name} must request a present.");
+            Assert.Same(element, host.LastDirtyElement);
+            Assert.False(GetIsRenderDirty(element));
+
+            host.Reset();
+            transform.SetValue(property, value);
+            Assert.Equal(1, notifications);
+            Assert.False(host.InvalidateWindowCalled);
+
+            transform.ClearValue(property);
+            Assert.Equal(2, notifications);
+            Assert.True(host.InvalidateWindowCalled);
+        }
+    }
+
+    [Fact]
+    public void TransformClrSetter_RaisesChangedOnce()
+    {
+        var transform = new RotateTransform();
+        int notifications = 0;
+        transform.Changed += (_, _) => notifications++;
+
+        transform.Angle = 90;
+        transform.Angle = 90;
+
+        Assert.Equal(1, notifications);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void StoryboardTransformAnimation_RequestsPresentEveryFrameWithoutInput(bool nested)
+    {
+        var transform = new RotateTransform();
+        var element = new TestVisualElement
+        {
+            RenderTransform = nested ? new TransformGroup(transform) : transform
+        };
+        var host = new RecordingWindowHost();
+        host.AddChild(element);
+        var animation = new DoubleAnimation(0, 360, new Duration(TimeSpan.FromSeconds(1)))
+        {
+            RepeatBehavior = RepeatBehavior.Forever
+        };
+        Storyboard.SetTarget(animation, transform);
+        Storyboard.SetTargetProperty(animation, new PropertyPath(nameof(RotateTransform.Angle)));
+        var storyboard = new Storyboard();
+        storyboard.Children.Add(animation);
+        long start = Stopwatch.GetTimestamp();
+
+        try
+        {
+            AnimationEngineTests.RunInsideFrame(start, _ => storyboard.Begin());
+            for (int frame = 1; frame <= 3; frame++)
+            {
+                host.Reset();
+                ClearIsRenderDirty(element);
+
+                AnimationManager.ProcessFrame(start + frame * Stopwatch.Frequency / 4);
+
+                Assert.Equal(90d * frame, transform.Angle, precision: 5);
+                Assert.True(host.InvalidateWindowCalled, "An animation frame must request a present without mouse input.");
+                Assert.Same(element, host.LastDirtyElement);
+                Assert.False(GetIsRenderDirty(element));
+            }
+        }
+        finally
+        {
+            storyboard.Stop();
+            AnimationManager.ProcessFrame(Stopwatch.GetTimestamp());
+        }
+    }
+
+    [Fact]
+    public void TransformGroupChildrenSetValue_TracksReplacementAndNotifiesOwner()
+    {
+        var oldChild = new RotateTransform();
+        var newChild = new RotateTransform();
+        var group = new TransformGroup(oldChild);
+        var element = new TestVisualElement { RenderTransform = group };
+        var host = new RecordingWindowHost();
+        host.AddChild(element);
+        host.Reset();
+
+        group.SetValue(TransformGroup.ChildrenProperty, new TransformCollection { newChild });
+
+        Assert.True(host.InvalidateWindowCalled);
+        host.Reset();
+        oldChild.Angle = 45;
+        Assert.False(host.InvalidateWindowCalled);
+        newChild.SetValue(RotateTransform.AngleProperty, 90d);
+        Assert.True(host.InvalidateWindowCalled);
     }
 
     /// <summary>

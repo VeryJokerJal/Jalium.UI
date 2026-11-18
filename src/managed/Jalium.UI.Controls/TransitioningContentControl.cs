@@ -109,8 +109,11 @@ public class TransitioningContentControl : ContentControl, TransitionHost
     {
         var transition = GetEffectiveTransition();
         var oldElement = ContentElement;
+        var bounds = RenderSize.IsEmpty || (RenderSize.Width == 0 && RenderSize.Height == 0)
+            ? new Size(ActualWidth, ActualHeight) : RenderSize;
 
-        if (transition != null && oldElement != null && newContent != null)
+        if (transition != null && oldElement != null && newContent != null &&
+            double.IsFinite(bounds.Width) && double.IsFinite(bounds.Height) && bounds.Width > 0 && bounds.Height > 0)
         {
             // Cancel any in-progress transition immediately
             CancelTransition();
@@ -154,14 +157,20 @@ public class TransitioningContentControl : ContentControl, TransitionHost
             _gpuShaderMode = -1;
             _gpuShaderProgress = 0.0;
 
-            _activeTransition = transition.Run(
-                this,
-                null, // oldSnapshot not used in element-based approach
-                newElement,
-                RenderSize.IsEmpty || (RenderSize.Width == 0 && RenderSize.Height == 0)
-                    ? new Size(ActualWidth, ActualHeight)
-                    : RenderSize,
-                OnTransitionCompleted);
+            try
+            {
+                _activeTransition = transition.Run(
+                    this,
+                    null, // oldSnapshot not used in element-based approach
+                    newElement,
+                    bounds,
+                    OnTransitionCompleted);
+            }
+            catch
+            {
+                CancelTransition();
+                throw;
+            }
 
             InvalidateVisual();
         }
