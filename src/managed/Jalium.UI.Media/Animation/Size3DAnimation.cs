@@ -123,17 +123,17 @@ public sealed class Size3DAnimation : AnimationTimeline
             progress = EasingFunction.Ease(progress);
         }
 
-        var from = From ?? (defaultOriginValue is Size3D s ? s : default);
-        var to = To ?? (By.HasValue
-            ? new Size3D(from.X + By.Value.X, from.Y + By.Value.Y, from.Z + By.Value.Z)
-            : (defaultDestinationValue is Size3D ds ? ds : default));
+        var value = AnimationValueOperations.EvaluateFromToBy(
+            (Size3D)defaultOriginValue, (Size3D)defaultDestinationValue, From, To, By,
+            progress, animationClock.CurrentIteration ?? 1,
+            (bool)GetValue(IsAdditiveProperty)!, (bool)GetValue(IsCumulativeProperty)!);
 
         // A 3-D size component is never negative; clamp to keep the animation
         // valid even if From/To were authored with a degenerate value.
         return new Size3D(
-            Math.Max(0.0, from.X + (to.X - from.X) * progress),
-            Math.Max(0.0, from.Y + (to.Y - from.Y) * progress),
-            Math.Max(0.0, from.Z + (to.Z - from.Z) * progress));
+            Math.Max(0.0, value.X),
+            Math.Max(0.0, value.Y),
+            Math.Max(0.0, value.Z));
     }
 }
 

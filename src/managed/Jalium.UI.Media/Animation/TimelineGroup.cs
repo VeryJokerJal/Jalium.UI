@@ -97,14 +97,18 @@ public abstract class TimelineGroup : Timeline, IAddChild
 
         foreach (Timeline child in Children)
         {
+            if (!child.BeginTime.HasValue) continue;
             Clock childClock = child.CreateClock(hasControllableRoot: false);
             Duration childDuration = child.GetNaturalDuration(childClock);
-            if (!childDuration.HasTimeSpan)
-            {
-                continue;
-            }
-
-            TimeSpan total = (child.BeginTime ?? TimeSpan.Zero) + childDuration.TimeSpan;
+            if (childDuration == Duration.Forever || child.RepeatBehavior == RepeatBehavior.Forever) return Duration.Forever;
+            if (!childDuration.HasTimeSpan) continue;
+            double activeTicks = childDuration.TimeSpan.Ticks * (child.AutoReverse ? 2d : 1d);
+            if (child.RepeatBehavior.HasCount) activeTicks *= child.RepeatBehavior.Count;
+            else if (child.RepeatBehavior.HasDuration) activeTicks = child.RepeatBehavior.Duration.Ticks;
+            activeTicks /= child.SpeedRatio;
+            double totalTicks = child.BeginTime.Value.Ticks + activeTicks;
+            if (!double.IsFinite(totalTicks) || totalTicks >= TimeSpan.MaxValue.Ticks) return Duration.Forever;
+            TimeSpan total = TimeSpan.FromTicks((long)Math.Max(0d, totalTicks));
             if (!foundDuration || total > maximum)
             {
                 maximum = total;
@@ -112,7 +116,7 @@ public abstract class TimelineGroup : Timeline, IAddChild
             }
         }
 
-        return foundDuration ? new Duration(maximum) : Duration.Automatic;
+        return new Duration(foundDuration ? maximum : TimeSpan.Zero);
     }
 
     private static void OnChildrenChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)

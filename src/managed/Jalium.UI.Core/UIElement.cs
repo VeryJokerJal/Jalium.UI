@@ -4981,6 +4981,9 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
 
     private sealed class ElementAnimation
     {
+        private readonly UIElement _target;
+        public DependencyProperty Property { get; }
+        public ElementAnimation? Previous { get; set; }
         public IAnimationTimeline Animation { get; }
         public IAnimationClock Clock { get; }
         public object? BaseValue { get; }
@@ -5006,6 +5009,8 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         public IStoryboardClockOwner? StoryboardOwner { get; }
 
         public ElementAnimation(
+            UIElement target,
+            DependencyProperty property,
             IAnimationTimeline animation,
             IAnimationClock clock,
             object? baseValue,
@@ -5016,6 +5021,8 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
             IStoryboardClockOwner? storyboardOwner = null,
             bool isCssTransition = false)
         {
+            _target = target;
+            Property = property;
             Animation = animation;
             Clock = clock;
             BaseValue = baseValue;
@@ -5025,6 +5032,41 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
             HasHandoffSnapshot = hasHandoffSnapshot;
             StoryboardOwner = storyboardOwner;
             IsCssTransition = isCssTransition;
+        }
+
+        public void AttachClockHandlers()
+        {
+            if (Clock is not Media.Animation.Clock clock) return;
+            clock.CurrentTimeInvalidated += OnClockInvalidated;
+            clock.CurrentStateInvalidated += OnClockInvalidated;
+            clock.CurrentGlobalSpeedInvalidated += OnClockInvalidated;
+            clock.RemoveRequested += OnClockRemoved;
+        }
+
+        public void DetachClockHandlers()
+        {
+            if (Clock is not Media.Animation.Clock clock) return;
+            clock.CurrentTimeInvalidated -= OnClockInvalidated;
+            clock.CurrentStateInvalidated -= OnClockInvalidated;
+            clock.CurrentGlobalSpeedInvalidated -= OnClockInvalidated;
+            clock.RemoveRequested -= OnClockRemoved;
+        }
+
+        private void OnClockInvalidated(object? sender, EventArgs e)
+        {
+            if (!_target.TryFindAnimation(Property, Clock, out var current) || !ReferenceEquals(current, this)) return;
+            if (_target.UpdateAnimatedValue(Property))
+            {
+                if (_target.IsCompositionOnlyDp(Property)) _target.InvalidateComposition();
+                else _target.InvalidateVisual();
+            }
+            _target.EnsureAnimationFrameSource();
+        }
+
+        private void OnClockRemoved(object? sender, EventArgs e)
+        {
+            _target.RemoveAnimationEntry(Property, this, clearAnimatedValue: true);
+            _target.UnregisterFromAnimationManagerIfIdle();
         }
 
         public bool ConsumePendingStart()
@@ -5118,7 +5160,8 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     /// <param name="handoffBehavior">How to handle existing animations. With
     /// <see cref="Media.Animation.HandoffBehavior.SnapshotAndReplace"/> the currently displayed value is
     /// captured at the replacement instant and used as the new animation's origin;
-    /// <see cref="Media.Animation.HandoffBehavior.Compose"/> currently degrades to the same behavior.</param>
+    /// <see cref="Media.Animation.HandoffBehavior.Compose"/> appends a clock that receives the
+    /// value produced by the existing animations.</param>
     internal void BeginAnimation(
         DependencyProperty dp,
         IAnimationTimeline? animation,
@@ -5148,10 +5191,19 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         IStoryboardClockOwner? storyboardOwner = null,
         bool isCssTransition = false)
     {
+        VerifyAccess();
+        if (dp.ReadOnly || dp.GetMetadata(GetType()) is UIPropertyMetadata { IsAnimationProhibited: true })
+            throw new ArgumentException("This property cannot be animated.", nameof(dp));
+        Type propertyType = Nullable.GetUnderlyingType(dp.PropertyType) ?? dp.PropertyType;
+        if (animation != null && !propertyType.IsAssignableFrom(animation.TargetPropertyType))
+            throw new ArgumentException($"The animation type does not match '{dp.Name}'.", nameof(animation));
+        if (animation == null && handoffBehavior == Media.Animation.HandoffBehavior.Compose) return true;
+
         _activeAnimations ??= new Dictionary<DependencyProperty, ElementAnimation>();
 
         object? handoffSnapshot = null;
         var hasHandoffSnapshot = false;
+        ElementAnimation? previousAnimation = null;
 
         // Stop any existing animation on this property
         if (_activeAnimations.TryGetValue(dp, out var existing))
@@ -5166,21 +5218,20 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
                 return false;
             }
 
-            // Compose degrades to SnapshotAndReplace (documented on BeginAnimation):
-            // both take the snapshot, otherwise a Compose caller would restart the
-            // new animation from the base value — a visible jump when the old
-            // animation was mid-flight with FillBehavior.Stop.
-            if (animation != null &&
-                (handoffBehavior == Media.Animation.HandoffBehavior.SnapshotAndReplace ||
-                 handoffBehavior == Media.Animation.HandoffBehavior.Compose))
+            if (animation != null && handoffBehavior == Media.Animation.HandoffBehavior.Compose &&
+                kind != ElementAnimationKind.AutomaticTransition && existing.Kind != ElementAnimationKind.AutomaticTransition)
             {
-                // Capture the currently displayed value BEFORE the old animation
-                // is removed — the animated layer is still in effect here.
-                handoffSnapshot = GetValue(dp);
-                hasHandoffSnapshot = true;
+                previousAnimation = existing;
             }
-
-            RemoveAnimationCore(dp, existing, clearAnimatedValueOnReplace);
+            else
+            {
+                if (animation != null)
+                {
+                    handoffSnapshot = GetValue(dp);
+                    hasHandoffSnapshot = true;
+                }
+                RemoveAnimationCore(dp, existing, clearAnimatedValueOnReplace);
+            }
         }
 
         if (animation == null)
@@ -5193,7 +5244,9 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         var baseValue = GetAnimationBaseValue(dp);
         var clock = existingClock ?? animation.CreateClock();
 
-        _activeAnimations[dp] = new ElementAnimation(
+        var added = new ElementAnimation(
+            this,
+            dp,
             animation,
             clock,
             baseValue,
@@ -5202,19 +5255,21 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
             handoffSnapshot,
             hasHandoffSnapshot,
             storyboardOwner,
-            isCssTransition);
+            isCssTransition) { Previous = previousAnimation };
+        _activeAnimations[dp] = added;
 
         // Subscribe to completion
         clock.Completed += OnAnimationClockCompleted;
+        added.AttachClockHandlers();
 
         if (!deferClockBeginUntilRendering)
         {
             // Start the clock immediately unless the caller needs the first rendered frame to begin at 0%.
-            clock.Begin();
+            if (clock is not Media.Animation.AnimationClock { HasStarted: true }) clock.Begin();
         }
 
         // Start receiving animation frames
-        RegisterWithAnimationManager();
+        EnsureAnimationFrameSource();
 
         // Set initial animated value
         if (useInitialAnimatedValue)
@@ -5252,7 +5307,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         // permanently suppress the storyboard's Completed event. Pre-settle it as
         // superseded (counts like natural completion); the terminated notification
         // fired by RemoveAnimationCore is then an idempotent no-op.
-        if (TryGetActiveAnimation(dp, out var existing) &&
+        if (handoffBehavior != Media.Animation.HandoffBehavior.Compose && TryGetActiveAnimation(dp, out var existing) &&
             ReferenceEquals(existing.StoryboardOwner, owner))
         {
             owner.NotifyClockSuperseded(existing.Clock);
@@ -5276,10 +5331,11 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     /// </summary>
     internal void StopStoryboardAnimation(DependencyProperty dp, IAnimationClock clock)
     {
-        if (!TryGetActiveAnimation(dp, out var existing) || !ReferenceEquals(existing.Clock, clock))
+        if (!TryFindAnimation(dp, clock, out var existing))
             return;
 
-        RemoveAnimationCore(dp, existing, clearAnimatedValue: true);
+        RemoveAnimationEntry(dp, existing, clearAnimatedValue: true);
+        clock.Stop();
         UnregisterFromAnimationManagerIfIdle();
     }
 
@@ -5305,6 +5361,46 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         return false;
     }
 
+    private bool TryFindAnimation(DependencyProperty dp, IAnimationClock clock, out ElementAnimation animation)
+    {
+        if (TryGetActiveAnimation(dp, out var current))
+        {
+            for (ElementAnimation? entry = current; entry != null; entry = entry.Previous)
+            {
+                if (!ReferenceEquals(entry.Clock, clock)) continue;
+                animation = entry;
+                return true;
+            }
+        }
+        animation = null!;
+        return false;
+    }
+
+    internal bool OwnsStoryboardAnimation(DependencyProperty dp, IAnimationClock clock) => TryFindAnimation(dp, clock, out _);
+
+    private void RemoveAnimationEntry(DependencyProperty dp, ElementAnimation animation, bool clearAnimatedValue, bool terminated = true)
+    {
+        if (!TryGetActiveAnimation(dp, out var root)) return;
+        if (ReferenceEquals(root, animation))
+        {
+            if (animation.Previous is { } previous) _activeAnimations![dp] = previous;
+            else _activeAnimations!.Remove(dp);
+        }
+        else
+        {
+            var parent = root;
+            while (parent.Previous != null && !ReferenceEquals(parent.Previous, animation)) parent = parent.Previous;
+            if (parent.Previous == null) return;
+            parent.Previous = animation.Previous;
+        }
+        animation.Previous = null;
+        animation.DetachClockHandlers();
+        animation.Clock.Completed -= OnAnimationClockCompleted;
+        if (TryGetActiveAnimation(dp, out _)) UpdateAnimatedValue(dp);
+        else if (clearAnimatedValue) DiscardAnimatedValue(dp);
+        if (terminated) animation.StoryboardOwner?.NotifyClockTerminated(animation.Clock);
+    }
+
     private void StopAnimationCore(DependencyProperty dp, ElementAnimationKind kind, bool clearAnimatedValue)
     {
         if (!TryGetActiveAnimation(dp, out var existing) || existing.Kind != kind)
@@ -5316,9 +5412,12 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
 
     private void RemoveAnimationCore(DependencyProperty dp, ElementAnimation animation, bool clearAnimatedValue)
     {
-        animation.Clock.Stop();
-        animation.Clock.Completed -= OnAnimationClockCompleted;
         _activeAnimations?.Remove(dp);
+        for (ElementAnimation? entry = animation; entry != null; entry = entry.Previous)
+        {
+            entry.DetachClockHandlers();
+            entry.Clock.Completed -= OnAnimationClockCompleted;
+        }
 
         if (clearAnimatedValue)
         {
@@ -5341,7 +5440,8 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         // release its static root. Idempotent for a clock that already settled
         // naturally. Notified last so the storyboard observes the element's
         // final state.
-        animation.StoryboardOwner?.NotifyClockTerminated(animation.Clock);
+        for (ElementAnimation? entry = animation; entry != null; entry = entry.Previous)
+            entry.StoryboardOwner?.NotifyClockTerminated(entry.Clock);
     }
 
     private void OnAnimationClockCompleted(object? sender, EventArgs e)
@@ -5358,10 +5458,10 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
 
         foreach (var (dp, anim) in _activeAnimations)
         {
-            if (anim.Clock == clock)
+            if (TryFindAnimation(dp, clock, out var entry))
             {
                 completedProperty = dp;
-                completedAnimation = anim;
+                completedAnimation = entry;
                 break;
             }
         }
@@ -5372,16 +5472,17 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         // Handle fill behavior
         var fillBehavior = completedAnimation.Animation.AnimationFillBehavior;
 
-        if (completedAnimation.IsCssTransition || fillBehavior == AnimationFillBehavior.Stop)
+        if (completedAnimation.IsCssTransition ||
+            (fillBehavior == AnimationFillBehavior.Stop && clock is not Media.Animation.AnimationClock
+                { Parent: Media.Animation.ClockGroup { HasFutureTiming: true } }))
         {
             // Remove animation and restore base value
-            RemoveAnimationCore(completedProperty, completedAnimation, clearAnimatedValue: true);
+            RemoveAnimationEntry(completedProperty, completedAnimation, clearAnimatedValue: true, terminated: false);
         }
         // For HoldEnd, keep the animation record but mark as completed
         // The final value remains via the animated value layer
 
         UnregisterFromAnimationManagerIfIdle();
-        InvalidateVisual();
     }
 
     private void RegisterWithAnimationManager()
@@ -5398,10 +5499,18 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     /// </summary>
     internal void EnsureAnimationFrameSource()
     {
-        if (_activeAnimations == null || _activeAnimations.Count == 0)
-            return;
+        if (HasRunnableAnimations()) RegisterWithAnimationManager();
+        else UnregisterFromAnimationManagerIfIdle();
+    }
 
-        RegisterWithAnimationManager();
+    private bool HasRunnableAnimations()
+    {
+        if (_activeAnimations == null) return false;
+        foreach (var root in _activeAnimations.Values)
+            for (ElementAnimation? entry = root; entry != null; entry = entry.Previous)
+                if (entry.StartPending || (!entry.Clock.IsCompleted && !entry.Clock.IsPaused &&
+                    entry.Clock is not Media.Animation.Clock { IsTimeProgressBlocked: true })) return true;
+        return false;
     }
 
     /// <summary>
@@ -5414,14 +5523,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         if (_animationTickSubscription == null)
             return;
 
-        if (_activeAnimations != null && _activeAnimations.Count > 0)
-        {
-            foreach (var anim in _activeAnimations.Values)
-            {
-                if (anim.StartPending || (!anim.Clock.IsCompleted && !anim.Clock.IsPaused))
-                    return;
-            }
-        }
+        if (HasRunnableAnimations()) return;
 
         Animation.AnimationManager.Unregister(_animationTickSubscription);
     }
@@ -5447,7 +5549,6 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         foreach (var pair in _activeAnimations)
             scratch[count++] = pair;
 
-        var hasRunningAnimation = false;
         var anyVisibleChange = false;
         var anyNonCompositionChange = false;
 
@@ -5464,25 +5565,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
                 if (!_activeAnimations.TryGetValue(dp, out var current) || !ReferenceEquals(current, anim))
                     continue;
 
-                if (anim.ConsumePendingStart())
-                {
-                    anim.Clock.BeginAt(frameTimestamp);
-                    hasRunningAnimation = true;
-                    // The first animated value is written on the next tick; nothing
-                    // changed this frame, so do not force an invalidation here.
-                    continue;
-                }
-
-                if (anim.Clock.IsCompleted)
-                    continue;
-
-                if (anim.Clock.IsPaused)
-                    continue;
-
-                hasRunningAnimation = true;
-
-                // Update clock progress
-                anim.Clock.Tick(frameTimestamp);
+                TickAnimationChain(dp, anim, frameTimestamp);
 
                 // Update animated value (routes through SetAnimatedValue → metadata
                 // callback → InvalidateVisual / InvalidateComposition). Crucially this
@@ -5516,19 +5599,25 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
                 InvalidateComposition();
         }
 
-        return hasRunningAnimation;
+        return HasRunnableAnimations();
+    }
+
+    private void TickAnimationChain(DependencyProperty dp, ElementAnimation animation, long frameTimestamp)
+    {
+        if (animation.Previous is { } previous) TickAnimationChain(dp, previous, frameTimestamp);
+        if (!TryFindAnimation(dp, animation.Clock, out var current) || !ReferenceEquals(current, animation)) return;
+        if (animation.ConsumePendingStart())
+        {
+            animation.Clock.BeginAt(frameTimestamp);
+            return;
+        }
+        if (!animation.Clock.IsCompleted && !animation.Clock.IsPaused)
+            animation.Clock.Tick(frameTimestamp);
     }
 
     private bool IsCompositionOnlyDp(DependencyProperty dp)
     {
         return dp.GetMetadata(GetType()) is FrameworkPropertyMetadata fpm && fpm.AffectsCompositionOnly;
-    }
-
-    /// <summary>Applies an explicit storyboard seek without advancing a paused clock.</summary>
-    internal void RefreshStoryboardAnimationValue(DependencyProperty dp, IAnimationClock clock)
-    {
-        if (_activeAnimations?.TryGetValue(dp, out var animation) == true && ReferenceEquals(animation.Clock, clock))
-            UpdateAnimatedValue(dp);
     }
 
     /// <summary>
@@ -5542,14 +5631,17 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         if (_activeAnimations == null || !_activeAnimations.TryGetValue(dp, out var anim))
             return false;
 
+        // A CSS/automatic transition owns its initial snapshot during a positive
+        // delay. A stopped clock returns the destination base value, which would
+        // otherwise flash the new value before the transition actually begins.
+        if (anim.Kind == ElementAnimationKind.AutomaticTransition &&
+            anim.Clock is Media.Animation.Clock { CurrentState: Media.Animation.ClockState.Stopped })
+            return false;
+
         try
         {
-            var baseValue = anim.BaseValue ?? dp.DefaultMetadata.DefaultValue ?? GetDefaultAnimationValue(dp);
-            // SnapshotAndReplace: the value displayed at the replacement instant
-            // is the origin, so a To-only animation continues from the visual
-            // value it took over instead of jumping back to the base value.
-            var originValue = anim.HasHandoffSnapshot ? (anim.HandoffSnapshot ?? baseValue) : baseValue;
-            var currentValue = anim.Animation.GetCurrentValue(originValue, baseValue, anim.Clock);
+            var baseValue = GetAnimationBaseValue(dp) ?? dp.GetMetadata(GetType()).DefaultValue ?? GetDefaultAnimationValue(dp);
+            var currentValue = EvaluateAnimationChain(anim, baseValue);
 
             var holdEnd = anim.Animation.AnimationFillBehavior == AnimationFillBehavior.HoldEnd;
             return SetAnimatedValue(dp, currentValue, holdEnd);
@@ -5559,6 +5651,16 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
             // If animation value calculation fails, silently continue
             return false;
         }
+    }
+
+    private static object EvaluateAnimationChain(ElementAnimation animation, object baseValue)
+    {
+        bool snapshotVisible = animation.HasHandoffSnapshot &&
+            animation.Clock is not Media.Animation.AnimationClock { IsStoppedAfterCompletion: true };
+        object origin = animation.Previous != null ? EvaluateAnimationChain(animation.Previous, baseValue) :
+            snapshotVisible ? animation.HandoffSnapshot ?? baseValue : baseValue;
+        if (animation.Clock is Media.Animation.Clock { CurrentState: Media.Animation.ClockState.Stopped }) return origin;
+        return animation.Animation.GetCurrentValue(origin, baseValue, animation.Clock);
     }
 
     [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2072:RequiresUnreferencedCode",

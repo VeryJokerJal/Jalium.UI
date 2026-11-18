@@ -31,7 +31,6 @@ public sealed class ShatterTransition : ContentTransition
         Size bounds,
         Action onComplete)
     {
-        var easing = EffectiveEasing;
         var durationMs = DurationMs;
         var width = bounds.Width;
         var height = bounds.Height;
@@ -80,45 +79,38 @@ public sealed class ShatterTransition : ContentTransition
 
         host.NewContentOpacity = 0.0;
         host.ActiveParticles = particles;
+        double previousProgress = 0d;
 
-        var startTime = Environment.TickCount64;
-        var timer = new DispatcherTimer { Interval = CompositionTarget.FrameInterval };
-        timer.Tick += (_, _) =>
+        return CreateFrameTimer(durationMs, EffectiveEasing, (rawProgress, easedProgress) =>
         {
-            var elapsed = Environment.TickCount64 - startTime;
-            var rawProgress = durationMs > 0 ? Math.Min(1.0, elapsed / durationMs) : 1.0;
 
             // Show new content early
             host.NewContentOpacity = Math.Min(1.0, rawProgress * 2.0);
 
             // Update each particle with physics
-            var dt = Math.Max(1.0 / 240.0, Math.Min(1.0 / 15.0, CompositionTarget.FrameInterval.TotalSeconds));
-            if (dt <= 0) dt = 1.0 / 60.0;
             for (int i = 0; i < particles.Length; i++)
             {
                 ref var p = ref particles[i];
                 var localProgress = p.Delay >= 1.0 ? 1.0 : Math.Clamp((rawProgress - p.Delay) / (1.0 - p.Delay), 0.0, 1.0);
                 if (localProgress <= 0) continue;
+                double dt = GetParticleFrameSeconds(previousProgress, rawProgress, p.Delay, durationMs);
 
-                p.VelocityY += gravity * dt;
                 p.X += p.VelocityX * dt;
-                p.Y += p.VelocityY * dt;
+                p.Y += p.VelocityY * dt + .5 * gravity * dt * dt;
+                p.VelocityY += gravity * dt;
                 p.Rotation += p.AngularVelocity * dt;
                 p.Opacity = Math.Max(0, 1.0 - localProgress * 1.5);
                 p.Scale = Math.Max(0.1, 1.0 - localProgress * 0.5);
             }
 
+            previousProgress = rawProgress;
             host.ActiveParticles = particles; // Trigger re-render
             host.InvalidateTransitionVisual();
 
-            if (rawProgress >= 1.0)
-            {
-                timer.Stop();
-                host.ActiveParticles = null;
-                onComplete();
-            }
-        };
-        timer.Start();
-        return timer;
+        }, () =>
+        {
+            host.ActiveParticles = null;
+            onComplete();
+        });
     }
 }

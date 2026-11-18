@@ -97,6 +97,27 @@ public abstract class Timeline : Animatable
     private EventHandler? _currentStateInvalidated;
     private EventHandler? _currentTimeInvalidated;
     private EventHandler? _removeRequested;
+    private uint _changeVersion;
+
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        uint previousVersion = _changeVersion;
+        base.OnPropertyChanged(e);
+        if (e.Property.GetMetadata(GetType()).PropertyChangedCallback == null)
+        {
+            OnFreezablePropertyChanged(e.OldValue as DependencyObject, e.NewValue as DependencyObject, e.Property);
+        }
+        if (_changeVersion == previousVersion)
+        {
+            WritePostscript();
+        }
+    }
+
+    protected override void OnChanged()
+    {
+        unchecked { _changeVersion++; }
+        base.OnChanged();
+    }
 
     protected Timeline()
     {

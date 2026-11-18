@@ -147,25 +147,14 @@ public sealed partial class Rotation3DAnimation : Rotation3DAnimationBase
             progress = EasingFunction.Ease(progress);
         }
 
-        var fromRotation = From ?? defaultOriginValue ?? Rotation3D.Identity;
-        var fromQuaternion = ToQuaternion(fromRotation);
-
-        Quaternion toQuaternion;
-        if (To != null)
-        {
-            toQuaternion = ToQuaternion(To);
-        }
-        else if (By != null)
-        {
-            // Composing rotations is a quaternion multiply.
-            toQuaternion = fromQuaternion * ToQuaternion(By);
-        }
-        else
-        {
-            toQuaternion = ToQuaternion(defaultDestinationValue ?? Rotation3D.Identity);
-        }
-
-        return new QuaternionRotation3D(Quaternion.Slerp(fromQuaternion, toQuaternion, progress));
+        var value = AnimationValueOperations.EvaluateFromToBy(
+            ToQuaternion(defaultOriginValue ?? Rotation3D.Identity),
+            ToQuaternion(defaultDestinationValue ?? Rotation3D.Identity),
+            From is { } from ? (Quaternion?)ToQuaternion(from) : null,
+            To is { } to ? (Quaternion?)ToQuaternion(to) : null,
+            By is { } by ? (Quaternion?)ToQuaternion(by) : null,
+            progress, animationClock.CurrentIteration ?? 1, IsAdditive, IsCumulative);
+        return new QuaternionRotation3D(value);
     }
 
     /// <summary>

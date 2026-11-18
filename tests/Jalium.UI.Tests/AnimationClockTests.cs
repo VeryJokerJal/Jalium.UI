@@ -99,13 +99,13 @@ public class AnimationClockTests
     }
 
     [Fact]
-    public void Seek_FromDurationEnd_LandsAtDurationMinusOffset()
+    public void Seek_FromDurationEnd_AppliesANegativeOffsetBeforeTheEnd()
     {
         var clock = CreateClock();
         clock.BeginAt(T0);
 
         long seekFrame = T0 + Ticks(0.1);
-        AnimationEngineTests.RunInsideFrame(seekFrame, _ => clock.Seek(TimeSpan.FromSeconds(0.25), TimeSeekOrigin.Duration));
+        AnimationEngineTests.RunInsideFrame(seekFrame, _ => clock.Seek(TimeSpan.FromSeconds(-0.25), TimeSeekOrigin.Duration));
 
         clock.Tick(seekFrame);
         Assert.Equal(0.75, clock.CurrentProgress, 3);
